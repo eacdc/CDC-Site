@@ -1,0 +1,547 @@
+import { Router } from 'express';
+import { getPool, sql } from './db.js';
+import multer from 'multer';
+import QrCode from 'qrcode-reader';
+import * as jimp from 'jimp';
+const { Jimp } = jimp;
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const router = Router();
+
+// Configure multer for file uploads
+const upload = multer({
+	storage: multer.memoryStorage(),
+	limits: {
+		fileSize: 5 * 1024 * 1024, // 5MB limit
+	},
+	fileFilter: (req, file, cb) => {
+		try {
+			// Some Android pickers/cameras send "application/octet-stream" or omit mimetype.
+			// Allow clear image mimetypes or unknown types and let Jimp validate later.
+			const type = (file.mimetype || '').toLowerCase();
+			const looksLikeImage = type.startsWith('image/');
+			const isUnknown = type === '' || type === 'application/octet-stream';
+			if (looksLikeImage || isUnknown) {
+				return cb(null, true);
+			}
+			return cb(new Error('Only image files are allowed'), false);
+		} catch (e) {
+			return cb(new Error('Only image files are allowed'), false);
+		}
+	}
+});
+
+// ---- Simple file logger for QR endpoints ----
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const logsDir = path.join(__dirname, '..', 'logs');
+const qrLogFile = path.join(logsDir, 'qr.log');
+const processStartLogFile = path.join(logsDir, 'process-start.log');
+
+function ensureLogsDir() {
+	try {
+		if (!fs.existsSync(logsDir)) {
+			fs.mkdirSync(logsDir, { recursive: true });
+		}
+	} catch (e) {
+		// Best effort; don't crash the app on logging failure
+		console.error('Failed to create logs directory:', e);
+	}
+}
+
+function logQr(message, extra = {}) {
+	try {
+		ensureLogsDir();
+		const timestamp = new Date().toISOString();
+		const entry = {
+			ts: timestamp,
+			message,
+			...extra,
+		};
+		fs.appendFileSync(qrLogFile, JSON.stringify(entry) + '\n');
+	} catch (e) {
+		console.error('Failed to write QR log entry:', e);
+	}
+}
+
+function logProcessStart(message, extra = {}) {
+    try {
+        ensureLogsDir();
+        const timestamp = new Date().toISOString();
+        const entry = {
+            ts: timestamp,
+            message,
+            ...extra,
+        };
+        fs.appendFileSync(processStartLogFile, JSON.stringify(entry) + '\n');
+    } catch (e) {
+        console.error('Failed to write process-start log entry:', e);
+    }
+}
+
+router.get('/auth/login', async (req, res) => {
+	try {
+		const { username } = req.query || {};
+		if (!username || username.trim() === '') {
+			return res.status(400).json({ status: false, error: 'Missing username' });
+		}
+
+		const trimmedUsername = username.trim();
+
+		const pool = await getPool();
+		const result = await pool.request()
+			.input('UserName', sql.NVarChar(255), trimmedUsername)
+			.execute('dbo.GetMachinesForUser');
+
+		// Debug: Log the first row to see available columns
+		if (result.recordset.length > 0) {
+			console.log('[DEBUG] First login row columns:', Object.keys(result.recordset[0]));
+			console.log('[DEBUG] First login row data:', result.recordset[0]);
+		}
+
+		const machines = result.recordset.map(r => ({
+			machineId: r.machineid,
+			machineName: r.machinename,
+			departmentId: r.departmentid,
+			productUnitId: r.productunitid
+		}));
+		if (machines.length === 0) {
+			return res.json({ status: false });
+		}
+
+		// Attempt to read userId and ledgerId from first row if provided by SP
+		const first = result.recordset[0] || {};
+		const userId = first.UserID ?? first.userid ?? first.userId ?? null;
+		const ledgerId = first.LedgerID ?? first.ledgerid ?? first.ledgerID ?? null;
+
+		return res.json({ status: true, userId, ledgerId, machines });
+	} catch (err) {
+		console.error('DB login error:', err);
+		return res.status(500).json({ status: false, error: 'Internal server error' });
+	}
+});
+
+router.get('/processes/pending', async (req, res) => {
+	try {
+		const { MachineID, jobcardcontentno, UserID } = req.query || {};
+		const machineIdNum = Number(MachineID);
+		const userIdNum = Number(UserID);
+		if (!Number.isInteger(machineIdNum)) {
+			return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
+		}
+		if (!Number.isInteger(userIdNum)) {
+			return res.status(400).json({ status: false, error: 'UserID must be an integer' });
+		}
+		if (!jobcardcontentno || jobcardcontentno.trim() === '') {
+			return res.status(400).json({ status: false, error: 'Missing jobcardcontentno' });
+		}
+
+		const trimmedJobCardContentNo = jobcardcontentno.trim();
+
+
+		const pool = await getPool();
+		const result = await pool.request()
+			.input('UserID', sql.Int, userIdNum)
+			.input('MachineID', sql.Int, machineIdNum)
+			.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
+			.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+
+		// Debug: Log the first row to see available columns
+		if (result.recordset.length > 0) {
+			console.log('[DEBUG] First process row columns:', Object.keys(result.recordset[0]));
+			console.log('[DEBUG] First process row data:', result.recordset[0]);
+		}
+
+		const processes = result.recordset.map(r => ({
+			pwoNo: r.PWOno,
+			pwoDate: r.PWODate,
+			client: r.Client,
+			jobName: r.JobName,
+			componentName: r.ComponentName ?? r.COmponentname,
+			formNo: r.FormNo,
+			scheduleQty: r.ScheduleQty,
+			qtyProduced: r.QtyProduced,
+			paperIssuedQty: r.PaperIssuedQty ?? null,
+			currentStatus: r.CurrentStatus ?? null,
+			jobcardContentNo: r.JobCardContentNo ?? r.jobcardcontentno,
+			jobBookingJobcardContentsId: parseInt(r.JobBookingJobCardContentsID) || 0,
+			processName: r.ProcessName,
+			processId: parseInt(r.ProcessID) || 0
+		}));
+
+		if (processes.length === 0) {
+			return res.json({ status: false });
+		}
+		return res.json({ status: true, processes });
+	} catch (err) {
+		console.error('Pending processes error:', err);
+		return res.status(500).json({ status: false, error: 'Internal server error' });
+	}
+});
+
+router.post('/processes/start', async (req, res) => {
+    try {
+        // Log raw incoming payload for traceability
+        console.log('[START] /api/processes/start called with body:', req.body);
+        logProcessStart('Start process called', { route: '/processes/start', ip: req.ip, body: req.body });
+
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
+
+        const userIdNum = Number(UserID);
+        const employeeIdNum = Number(EmployeeID);
+        const processIdNum = Number(ProcessID);
+        const jobBookingIdNum = Number(JobBookingJobCardContentsID);
+        const machineIdNum = Number(MachineID);
+        const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+
+        if (!Number.isInteger(userIdNum)) {
+            return res.status(400).json({ status: false, error: 'UserID must be an integer' });
+        }
+        if (!Number.isInteger(employeeIdNum)) {
+            return res.status(400).json({ status: false, error: 'EmployeeID must be an integer' });
+        }
+        if (!Number.isInteger(processIdNum)) {
+            return res.status(400).json({ status: false, error: 'ProcessID must be an integer' });
+        }
+        if (!Number.isInteger(jobBookingIdNum)) {
+            return res.status(400).json({ status: false, error: 'JobBookingJobCardContentsID must be an integer' });
+        }
+        if (!Number.isInteger(machineIdNum)) {
+            return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
+        }
+        if (!jobCardFormNoStr) {
+            return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
+        }
+
+        // Log normalized parameters after basic coercion
+        logProcessStart('Normalized start params', {
+            route: '/processes/start',
+            ip: req.ip,
+            normalized: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr
+            }
+        });
+
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('UserID', sql.Int, userIdNum)
+            .input('EmployeeID', sql.Int, employeeIdNum)
+            .input('ProcessID', sql.Int, processIdNum)
+            .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
+            .input('MachineID', sql.Int, machineIdNum)
+            .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
+            .execute('dbo.Production_Start_Manu');
+
+        logProcessStart('Start process succeeded', {
+            route: '/processes/start',
+            ip: req.ip,
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+        });
+        return res.json({ status: true, result: result.recordset || [] });
+    } catch (err) {
+        console.error('Start process error:', err);
+        logProcessStart('Start process failed', { route: '/processes/start', ip: req.ip, error: String(err) });
+        return res.status(500).json({ status: false, error: 'Internal server error' });
+    }
+});
+
+// QR Code processing endpoint
+router.post('/qr/process', upload.single('qrImage'), async (req, res) => {
+	try {
+		if (!req.file) {
+			logQr('No image provided to /qr/process', { route: '/qr/process', ip: req.ip });
+			return res.status(400).json({ 
+				status: false, 
+				error: 'No image file provided' 
+			});
+		}
+
+		// Process the uploaded image with Jimp
+		let image;
+		try {
+			image = await Jimp.read(req.file.buffer);
+		} catch (e) {
+			logQr('Failed to read image with Jimp', { error: String(e) });
+			return res.status(400).json({ status: false, error: 'Invalid image file' });
+		}
+		
+		// Create QR code reader
+		const qr = new QrCode();
+		
+		// Convert image to format that qrcode-reader can process
+		const imageData = {
+			data: new Uint8ClampedArray(image.bitmap.data),
+			width: image.bitmap.width,
+			height: image.bitmap.height
+		};
+
+		// Process QR code
+		const qrResult = await new Promise((resolve, reject) => {
+			qr.callback = (err, value) => {
+				if (err) {
+					reject(err);
+				} else {
+					resolve(value);
+				}
+			};
+			qr.decode(imageData);
+		});
+
+		if (qrResult && qrResult.result) {
+			logQr('QR decoded successfully', { route: '/qr/process' });
+			return res.json({ 
+				status: true, 
+				jobCardContentNo: qrResult.result.trim()
+			});
+		} else {
+			logQr('No QR code found in image', { route: '/qr/process' });
+			return res.json({ 
+				status: false, 
+				error: 'No QR code found in the image' 
+			});
+		}
+
+	} catch (err) {
+		console.error('QR processing error:', err);
+		logQr('Unhandled error in /qr/process', { error: String(err), stack: err?.stack });
+		return res.status(500).json({ 
+			status: false, 
+			error: 'Failed to process QR code' 
+		});
+	}
+});
+
+// QR Code processing endpoint for base64 data (for camera captures)
+router.post('/qr/process-base64', async (req, res) => {
+	try {
+		const { imageData } = req.body;
+		
+		if (!imageData) {
+			logQr('No imageData provided to /qr/process-base64', { route: '/qr/process-base64', ip: req.ip });
+			return res.status(400).json({ 
+				status: false, 
+				error: 'No image data provided' 
+			});
+		}
+
+		// Remove data URL prefix if present
+		const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
+		const buffer = Buffer.from(base64Data, 'base64');
+
+		// Process the image with Jimp
+		let image;
+		try {
+			image = await Jimp.read(buffer);
+		} catch (e) {
+			logQr('Failed to read base64 image with Jimp', { error: String(e) });
+			return res.status(400).json({ status: false, error: 'Invalid image data' });
+		}
+		
+		// Create QR code reader
+		const qr = new QrCode();
+		
+		// Convert image to format that qrcode-reader can process
+		const imageDataObj = {
+			data: new Uint8ClampedArray(image.bitmap.data),
+			width: image.bitmap.width,
+			height: image.bitmap.height
+		};
+
+		// Process QR code
+		const qrResult = await new Promise((resolve, reject) => {
+			qr.callback = (err, value) => {
+				if (err) {
+					reject(err);
+				} else {
+					resolve(value);
+				}
+			};
+			qr.decode(imageDataObj);
+		});
+
+		if (qrResult && qrResult.result) {
+			logQr('QR decoded successfully (base64)', { route: '/qr/process-base64' });
+			return res.json({ 
+				status: true, 
+				jobCardContentNo: qrResult.result.trim()
+			});
+		} else {
+			logQr('No QR code found in base64 image', { route: '/qr/process-base64' });
+			return res.json({ 
+				status: false, 
+				error: 'No QR code found in the image' 
+			});
+		}
+
+	} catch (err) {
+		console.error('QR processing error:', err);
+		logQr('Unhandled error in /qr/process-base64', { error: String(err), stack: err?.stack });
+		return res.status(500).json({ 
+			status: false, 
+			error: 'Failed to process QR code' 
+		});
+	}
+});
+
+// Complete production endpoint
+router.post('/processes/complete', async (req, res) => {
+    try {
+        console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
+        logProcessStart('Complete process called', { route: '/processes/complete', ip: req.ip, body: req.body });
+
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty } = req.body || {};
+
+        const userIdNum = Number(UserID);
+        const employeeIdNum = Number(EmployeeID);
+        const processIdNum = Number(ProcessID);
+        const jobBookingIdNum = Number(JobBookingJobCardContentsID);
+        const machineIdNum = Number(MachineID);
+        const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+        const productionQtyNum = Number(ProductionQty);
+        const wastageQtyNum = Number(WastageQty);
+
+        if (!Number.isInteger(userIdNum)) {
+            return res.status(400).json({ status: false, error: 'UserID must be an integer' });
+        }
+        if (!Number.isInteger(employeeIdNum)) {
+            return res.status(400).json({ status: false, error: 'EmployeeID must be an integer' });
+        }
+        if (!Number.isInteger(processIdNum)) {
+            return res.status(400).json({ status: false, error: 'ProcessID must be an integer' });
+        }
+        if (!Number.isInteger(jobBookingIdNum)) {
+            return res.status(400).json({ status: false, error: 'JobBookingJobCardContentsID must be an integer' });
+        }
+        if (!Number.isInteger(machineIdNum)) {
+            return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
+        }
+        if (!jobCardFormNoStr) {
+            return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
+        }
+        if (!Number.isInteger(productionQtyNum)) {
+            return res.status(400).json({ status: false, error: 'ProductionQty must be an integer' });
+        }
+        if (!Number.isInteger(wastageQtyNum)) {
+            return res.status(400).json({ status: false, error: 'WastageQty must be an integer' });
+        }
+
+        logProcessStart('Normalized complete params', {
+            route: '/processes/complete',
+            ip: req.ip,
+            normalized: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr,
+                ProductionQty: productionQtyNum,
+                WastageQty: wastageQtyNum
+            }
+        });
+
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('UserID', sql.Int, userIdNum)
+            .input('EmployeeID', sql.Int, employeeIdNum)
+            .input('ProcessID', sql.Int, processIdNum)
+            .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
+            .input('MachineID', sql.Int, machineIdNum)
+            .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
+            .input('ProductionQty', sql.Int, productionQtyNum)
+            .input('WastageQty', sql.Int, wastageQtyNum)
+            .execute('dbo.Production_End_Manu');
+
+        logProcessStart('Complete process succeeded', {
+            route: '/processes/complete',
+            ip: req.ip,
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+        });
+        return res.json({ status: true, result: result.recordset || [] });
+    } catch (err) {
+        console.error('Complete process error:', err);
+        logProcessStart('Complete process failed', { route: '/processes/complete', ip: req.ip, error: String(err) });
+        return res.status(500).json({ status: false, error: 'Internal server error' });
+    }
+});
+
+// Cancel production endpoint
+router.post('/processes/cancel', async (req, res) => {
+    try {
+        console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
+        logProcessStart('Cancel process called', { route: '/processes/cancel', ip: req.ip, body: req.body });
+
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
+
+        const userIdNum = Number(UserID);
+        const employeeIdNum = Number(EmployeeID);
+        const processIdNum = Number(ProcessID);
+        const jobBookingIdNum = Number(JobBookingJobCardContentsID);
+        const machineIdNum = Number(MachineID);
+        const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+
+        if (!Number.isInteger(userIdNum)) {
+            return res.status(400).json({ status: false, error: 'UserID must be an integer' });
+        }
+        if (!Number.isInteger(employeeIdNum)) {
+            return res.status(400).json({ status: false, error: 'EmployeeID must be an integer' });
+        }
+        if (!Number.isInteger(processIdNum)) {
+            return res.status(400).json({ status: false, error: 'ProcessID must be an integer' });
+        }
+        if (!Number.isInteger(jobBookingIdNum)) {
+            return res.status(400).json({ status: false, error: 'JobBookingJobCardContentsID must be an integer' });
+        }
+        if (!Number.isInteger(machineIdNum)) {
+            return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
+        }
+        if (!jobCardFormNoStr) {
+            return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
+        }
+
+        logProcessStart('Normalized cancel params', {
+            route: '/processes/cancel',
+            ip: req.ip,
+            normalized: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr
+            }
+        });
+
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('UserID', sql.Int, userIdNum)
+            .input('EmployeeID', sql.Int, employeeIdNum)
+            .input('ProcessID', sql.Int, processIdNum)
+            .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
+            .input('MachineID', sql.Int, machineIdNum)
+            .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
+            .execute('dbo.Production_Cancel_Manu');
+
+        logProcessStart('Cancel process succeeded', {
+            route: '/processes/cancel',
+            ip: req.ip,
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+        });
+        return res.json({ status: true, result: result.recordset || [] });
+    } catch (err) {
+        console.error('Cancel process error:', err);
+        logProcessStart('Cancel process failed', { route: '/processes/cancel', ip: req.ip, error: String(err) });
+        return res.status(500).json({ status: false, error: 'Internal server error' });
+    }
+});
+
+export default router;
+
+
