@@ -120,8 +120,8 @@ router.get('/auth/login', async (req, res) => {
 
 		// Debug: Log the first row to see available columns
 		if (result.recordset.length > 0) {
-			console.log('[DEBUG] First login row columns:', Object.keys(result.recordset[0]));
-			console.log('[DEBUG] First login row data:', result.recordset[0]);
+			//console.log('[DEBUG] First login row columns:', Object.keys(result.recordset[0]));
+			//console.log('[DEBUG] First login row data:', result.recordset[0]);
 		}
 
 		const machines = result.recordset.map(r => ({
@@ -173,8 +173,8 @@ router.get('/processes/pending', async (req, res) => {
 
 		// Debug: Log the first row to see available columns
 		if (result.recordset.length > 0) {
-			console.log('[DEBUG] First process row columns:', Object.keys(result.recordset[0]));
-			console.log('[DEBUG] First process row data:', result.recordset[0]);
+			//console.log('[DEBUG] First process row columns:', Object.keys(result.recordset[0]));
+			//console.log('[DEBUG] First process row data:', result.recordset[0]);
 		}
 
 		const processes = result.recordset.map(r => ({
@@ -207,7 +207,7 @@ router.get('/processes/pending', async (req, res) => {
 router.post('/processes/start', async (req, res) => {
     try {
         // Log raw incoming payload for traceability
-        console.log('[START] /api/processes/start called with body:', req.body);
+        //console.log('[START] /api/processes/start called with body:', req.body);
         logProcessStart('Start process called', { route: '/processes/start', ip: req.ip, body: req.body });
 
         const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
@@ -455,7 +455,7 @@ router.post('/qr/process-base64', async (req, res) => {
 // Complete production endpoint
 router.post('/processes/complete', async (req, res) => {
     try {
-        console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
+        //console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
         logProcessStart('Complete process called', { route: '/processes/complete', ip: req.ip, body: req.body });
 
         const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty } = req.body || {};
@@ -578,7 +578,7 @@ router.post('/processes/complete', async (req, res) => {
 // Cancel production endpoint
 router.post('/processes/cancel', async (req, res) => {
     try {
-        console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
+        //console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
         logProcessStart('Cancel process called', { route: '/processes/cancel', ip: req.ip, body: req.body });
 
         const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
