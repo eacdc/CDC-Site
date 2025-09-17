@@ -106,14 +106,15 @@ function _checkStatusOnlyResponse(recordset) {
 
 router.get('/auth/login', async (req, res) => {
 	try {
-		const { username } = req.query || {};
+		const { username, database } = req.query || {};
 		if (!username || username.trim() === '') {
 			return res.status(400).json({ status: false, error: 'Missing username' });
 		}
 
 		const trimmedUsername = username.trim();
+		const selectedDatabase = database || 'KOL'; // Default to KOL
 
-		const pool = await getPool();
+		const pool = await getPool(selectedDatabase);
 		const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
 			.execute('dbo.GetMachinesForUser');
@@ -148,10 +149,11 @@ router.get('/auth/login', async (req, res) => {
 
 router.get('/processes/pending', async (req, res) => {
 	try {
-		const { MachineID, jobcardcontentno, UserID, isManualEntry } = req.query || {};
+		const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
 		const machineIdNum = Number(MachineID);
 		const userIdNum = Number(UserID);
 		const isManualEntryMode = isManualEntry === 'true';
+		const selectedDatabase = database || 'KOL'; // Default to KOL
 		
 		if (!Number.isInteger(machineIdNum)) {
 			return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
@@ -165,7 +167,7 @@ router.get('/processes/pending', async (req, res) => {
 
 		const trimmedJobCardContentNo = jobcardcontentno.trim();
 
-		const pool = await getPool();
+		const pool = await getPool(selectedDatabase);
 		let result;
 		
 		if (isManualEntryMode) {
@@ -261,7 +263,7 @@ router.post('/processes/start', async (req, res) => {
         //console.log('[START] /api/processes/start called with body:', req.body);
         logProcessStart('Start process called', { route: '/processes/start', ip: req.ip, body: req.body });
 
-        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
 
         const userIdNum = Number(UserID);
         const employeeIdNum = Number(EmployeeID);
@@ -269,6 +271,7 @@ router.post('/processes/start', async (req, res) => {
         const jobBookingIdNum = Number(JobBookingJobCardContentsID);
         const machineIdNum = Number(MachineID);
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+        const selectedDatabase = database || 'KOL'; // Default to KOL
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
@@ -303,7 +306,7 @@ router.post('/processes/start', async (req, res) => {
             }
         });
 
-        const pool = await getPool();
+        const pool = await getPool(selectedDatabase);
         
         // Log query execution details
         logProcessStart('Executing Production_Start_Manu stored procedure', {
@@ -509,7 +512,7 @@ router.post('/processes/complete', async (req, res) => {
         //console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
         logProcessStart('Complete process called', { route: '/processes/complete', ip: req.ip, body: req.body });
 
-        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty } = req.body || {};
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty, database } = req.body || {};
 
         const userIdNum = Number(UserID);
         const employeeIdNum = Number(EmployeeID);
@@ -519,6 +522,7 @@ router.post('/processes/complete', async (req, res) => {
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
         const productionQtyNum = Number(ProductionQty);
         const wastageQtyNum = Number(WastageQty);
+        const selectedDatabase = database || 'KOL'; // Default to KOL
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
@@ -560,7 +564,7 @@ router.post('/processes/complete', async (req, res) => {
             }
         });
 
-        const pool = await getPool();
+        const pool = await getPool(selectedDatabase);
         
         // Log query execution details
         logProcessStart('Executing Production_End_Manu stored procedure', {
@@ -632,7 +636,7 @@ router.post('/processes/cancel', async (req, res) => {
         //console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
         logProcessStart('Cancel process called', { route: '/processes/cancel', ip: req.ip, body: req.body });
 
-        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo } = req.body || {};
+        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
 
         const userIdNum = Number(UserID);
         const employeeIdNum = Number(EmployeeID);
@@ -640,6 +644,7 @@ router.post('/processes/cancel', async (req, res) => {
         const jobBookingIdNum = Number(JobBookingJobCardContentsID);
         const machineIdNum = Number(MachineID);
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+        const selectedDatabase = database || 'KOL'; // Default to KOL
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
@@ -673,7 +678,7 @@ router.post('/processes/cancel', async (req, res) => {
             }
         });
 
-        const pool = await getPool();
+        const pool = await getPool(selectedDatabase);
         
         // Log query execution details
         logProcessStart('Executing Production_Cancel_Manu stored procedure', {
