@@ -169,10 +169,50 @@ router.get('/processes/pending', async (req, res) => {
 		let result;
 		
 		if (isManualEntryMode) {
-			// Use FindJobCardsByPartialNumber for manual entry
-			result = await pool.request()
+			// Two-step process for manual entry:
+			// 1. First, find job card numbers that match the partial input
+			const jobCardSearchResult = await pool.request()
 				.input('NumberPart', sql.NVarChar(255), trimmedJobCardContentNo)
 				.execute('dbo.FindJobCardsByPartialNumber');
+			
+			if (jobCardSearchResult.recordset.length === 0) {
+				return res.json({ status: false, error: 'No job cards found matching the partial number' });
+			}
+			
+			// 2. Collect processes from all matching job card numbers
+			let allProcesses = [];
+			
+			for (const jobCardRow of jobCardSearchResult.recordset) {
+				// Try different possible column names for the job card content number
+				const jobCardNumber = jobCardRow.JobCardContentNo || 
+									  jobCardRow.jobcardcontentno ||
+									  jobCardRow.JobCardNumber ||
+									  jobCardRow.Number ||
+									  jobCardRow.JobCardNo ||
+									  jobCardRow.jobcardno;
+				
+				if (jobCardNumber) {
+					try {
+						// Search for processes using this job card number
+						const processResult = await pool.request()
+							.input('UserID', sql.Int, userIdNum)
+							.input('MachineID', sql.Int, machineIdNum)
+							.input('JobCardContentNo', sql.NVarChar(255), jobCardNumber.toString())
+							.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+						
+						// Add processes from this job card to our collection
+						if (processResult.recordset && processResult.recordset.length > 0) {
+							allProcesses = allProcesses.concat(processResult.recordset);
+						}
+					} catch (processErr) {
+						// Log error but continue with other job cards
+						console.error(`Error fetching processes for job card ${jobCardNumber}:`, processErr);
+					}
+				}
+			}
+			
+			// Create a result object with all collected processes
+			result = { recordset: allProcesses };
 		} else {
 			// Use original stored procedure for QR code scanning
 			result = await pool.request()
