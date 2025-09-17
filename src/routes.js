@@ -81,6 +81,29 @@ function logProcessStart(message, extra = {}) {
     }
 }
 
+// Helper function to check if result contains only Status column
+function _checkStatusOnlyResponse(recordset) {
+    if (!Array.isArray(recordset) || recordset.length === 0) {
+        return null;
+    }
+    
+    const firstRow = recordset[0];
+    const columns = Object.keys(firstRow);
+    
+    // Check if there's only one column and it's named "Status" (case insensitive)
+    if (columns.length === 1) {
+        const columnName = columns[0];
+        if (columnName.toLowerCase() === 'status') {
+            return {
+                message: `Status: ${firstRow[columnName]}`,
+                statusValue: firstRow[columnName]
+            };
+        }
+    }
+    
+    return null;
+}
+
 router.get('/auth/login', async (req, res) => {
 	try {
 		const { username } = req.query || {};
@@ -230,6 +253,22 @@ router.post('/processes/start', async (req, res) => {
         });
 
         const pool = await getPool();
+        
+        // Log query execution details
+        logProcessStart('Executing Production_Start_Manu stored procedure', {
+            route: '/processes/start',
+            ip: req.ip,
+            storedProcedure: 'dbo.Production_Start_Manu',
+            parameters: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr
+            }
+        });
+
         const result = await pool.request()
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
@@ -239,11 +278,34 @@ router.post('/processes/start', async (req, res) => {
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
             .execute('dbo.Production_Start_Manu');
 
-        logProcessStart('Start process succeeded', {
+        // Log detailed query results
+        logProcessStart('Start process query completed', {
             route: '/processes/start',
             ip: req.ip,
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+            storedProcedure: 'dbo.Production_Start_Manu',
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
+            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
+            resultData: result.recordset || [],
+            returnValue: result.returnValue,
+            rowsAffected: result.rowsAffected
         });
+        
+        // Check if result contains only Status column
+        const statusWarning = _checkStatusOnlyResponse(result.recordset);
+        if (statusWarning) {
+            logProcessStart('Status warning detected in start process', {
+                route: '/processes/start',
+                ip: req.ip,
+                statusWarning: statusWarning,
+                storedProcedure: 'dbo.Production_Start_Manu'
+            });
+            return res.json({ 
+                status: true, 
+                result: result.recordset || [],
+                statusWarning: statusWarning
+            });
+        }
+        
         return res.json({ status: true, result: result.recordset || [] });
     } catch (err) {
         console.error('Start process error:', err);
@@ -448,6 +510,24 @@ router.post('/processes/complete', async (req, res) => {
         });
 
         const pool = await getPool();
+        
+        // Log query execution details
+        logProcessStart('Executing Production_End_Manu stored procedure', {
+            route: '/processes/complete',
+            ip: req.ip,
+            storedProcedure: 'dbo.Production_End_Manu',
+            parameters: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr,
+                ProductionQty: productionQtyNum,
+                WastageQty: wastageQtyNum
+            }
+        });
+
         const result = await pool.request()
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
@@ -459,11 +539,34 @@ router.post('/processes/complete', async (req, res) => {
             .input('WastageQty', sql.Int, wastageQtyNum)
             .execute('dbo.Production_End_Manu');
 
-        logProcessStart('Complete process succeeded', {
+        // Log detailed query results
+        logProcessStart('Complete process query completed', {
             route: '/processes/complete',
             ip: req.ip,
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+            storedProcedure: 'dbo.Production_End_Manu',
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
+            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
+            resultData: result.recordset || [],
+            returnValue: result.returnValue,
+            rowsAffected: result.rowsAffected
         });
+        
+        // Check if result contains only Status column
+        const statusWarning = _checkStatusOnlyResponse(result.recordset);
+        if (statusWarning) {
+            logProcessStart('Status warning detected in complete process', {
+                route: '/processes/complete',
+                ip: req.ip,
+                statusWarning: statusWarning,
+                storedProcedure: 'dbo.Production_End_Manu'
+            });
+            return res.json({ 
+                status: true, 
+                result: result.recordset || [],
+                statusWarning: statusWarning
+            });
+        }
+        
         return res.json({ status: true, result: result.recordset || [] });
     } catch (err) {
         console.error('Complete process error:', err);
@@ -520,6 +623,22 @@ router.post('/processes/cancel', async (req, res) => {
         });
 
         const pool = await getPool();
+        
+        // Log query execution details
+        logProcessStart('Executing Production_Cancel_Manu stored procedure', {
+            route: '/processes/cancel',
+            ip: req.ip,
+            storedProcedure: 'dbo.Production_Cancel_Manu',
+            parameters: {
+                UserID: userIdNum,
+                EmployeeID: employeeIdNum,
+                ProcessID: processIdNum,
+                JobBookingJobCardContentsID: jobBookingIdNum,
+                MachineID: machineIdNum,
+                JobCardFormNo: jobCardFormNoStr
+            }
+        });
+
         const result = await pool.request()
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
@@ -529,16 +648,98 @@ router.post('/processes/cancel', async (req, res) => {
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
             .execute('dbo.Production_Cancel_Manu');
 
-        logProcessStart('Cancel process succeeded', {
+        // Log detailed query results
+        logProcessStart('Cancel process query completed', {
             route: '/processes/cancel',
             ip: req.ip,
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0
+            storedProcedure: 'dbo.Production_Cancel_Manu',
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
+            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
+            resultData: result.recordset || [],
+            returnValue: result.returnValue,
+            rowsAffected: result.rowsAffected
         });
+        
+        // Check if result contains only Status column
+        const statusWarning = _checkStatusOnlyResponse(result.recordset);
+        if (statusWarning) {
+            logProcessStart('Status warning detected in cancel process', {
+                route: '/processes/cancel',
+                ip: req.ip,
+                statusWarning: statusWarning,
+                storedProcedure: 'dbo.Production_Cancel_Manu'
+            });
+            return res.json({ 
+                status: true, 
+                result: result.recordset || [],
+                statusWarning: statusWarning
+            });
+        }
+        
         return res.json({ status: true, result: result.recordset || [] });
     } catch (err) {
         console.error('Cancel process error:', err);
         logProcessStart('Cancel process failed', { route: '/processes/cancel', ip: req.ip, error: String(err) });
         return res.status(500).json({ status: false, error: 'Internal server error' });
+    }
+});
+
+// Log viewer endpoint for debugging and monitoring
+router.get('/logs/process-start', async (req, res) => {
+    try {
+        const { lines = 50 } = req.query;
+        const maxLines = Math.min(parseInt(lines) || 50, 1000); // Limit to 1000 lines max
+        
+        if (!fs.existsSync(processStartLogFile)) {
+            return res.json({ 
+                status: true, 
+                logs: [], 
+                message: 'No log file found' 
+            });
+        }
+        
+        const fileContent = fs.readFileSync(processStartLogFile, 'utf8');
+        const allLines = fileContent.trim().split('\n').filter(line => line.trim());
+        
+        // Get the last N lines
+        const recentLines = allLines.slice(-maxLines);
+        
+        // Parse JSON logs
+        const parsedLogs = recentLines.map(line => {
+            try {
+                return JSON.parse(line);
+            } catch (e) {
+                return { raw: line, parseError: true };
+            }
+        });
+        
+        return res.json({
+            status: true,
+            logs: parsedLogs,
+            totalLines: allLines.length,
+            displayedLines: parsedLogs.length
+        });
+    } catch (err) {
+        console.error('Error reading process logs:', err);
+        return res.status(500).json({ 
+            status: false, 
+            error: 'Failed to read logs' 
+        });
+    }
+});
+
+// Serve log viewer HTML page
+router.get('/logs/viewer', (req, res) => {
+    try {
+        const logViewerPath = path.join(__dirname, '..', 'log-viewer.html');
+        if (fs.existsSync(logViewerPath)) {
+            res.sendFile(logViewerPath);
+        } else {
+            res.status(404).send('Log viewer not found');
+        }
+    } catch (err) {
+        console.error('Error serving log viewer:', err);
+        res.status(500).send('Error loading log viewer');
     }
 });
 
