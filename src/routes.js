@@ -148,9 +148,11 @@ router.get('/auth/login', async (req, res) => {
 
 router.get('/processes/pending', async (req, res) => {
 	try {
-		const { MachineID, jobcardcontentno, UserID } = req.query || {};
+		const { MachineID, jobcardcontentno, UserID, isManualEntry } = req.query || {};
 		const machineIdNum = Number(MachineID);
 		const userIdNum = Number(UserID);
+		const isManualEntryMode = isManualEntry === 'true';
+		
 		if (!Number.isInteger(machineIdNum)) {
 			return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
 		}
@@ -163,13 +165,22 @@ router.get('/processes/pending', async (req, res) => {
 
 		const trimmedJobCardContentNo = jobcardcontentno.trim();
 
-
 		const pool = await getPool();
-		const result = await pool.request()
-			.input('UserID', sql.Int, userIdNum)
-			.input('MachineID', sql.Int, machineIdNum)
-			.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
-			.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+		let result;
+		
+		if (isManualEntryMode) {
+			// Use FindJobCardsByPartialNumber for manual entry
+			result = await pool.request()
+				.input('NumberPart', sql.NVarChar(255), trimmedJobCardContentNo)
+				.execute('dbo.FindJobCardsByPartialNumber');
+		} else {
+			// Use original stored procedure for QR code scanning
+			result = await pool.request()
+				.input('UserID', sql.Int, userIdNum)
+				.input('MachineID', sql.Int, machineIdNum)
+				.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
+				.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+		}
 
 		// Debug: Log the first row to see available columns
 		if (result.recordset.length > 0) {
