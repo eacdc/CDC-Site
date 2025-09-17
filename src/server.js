@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import routes from './routes.js';
+import { closeAllPools } from './db.js';
 
 dotenv.config();
 
@@ -31,8 +32,27 @@ app.get('/health', (req, res) => {
 	res.json({ status: 'ok' });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
 	//console.log(`Server running on port ${port}`);
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+	console.log('Received SIGINT, shutting down gracefully...');
+	await closeAllPools();
+	server.close(() => {
+		console.log('Server closed');
+		process.exit(0);
+	});
+});
+
+process.on('SIGTERM', async () => {
+	console.log('Received SIGTERM, shutting down gracefully...');
+	await closeAllPools();
+	server.close(() => {
+		console.log('Server closed');
+		process.exit(0);
+	});
 });
 
 

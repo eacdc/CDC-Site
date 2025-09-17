@@ -33,45 +33,91 @@ const sqlConfig = {
 	}
 };
 
-let poolPromise;
-let currentDatabase = null;
+// Store multiple pools for different databases
+const pools = new Map();
 
-export function getPool(database = null) {
-	// If database is specified and different from current, create new connection
-	if (database && database !== currentDatabase) {
-		// Close existing pool if it exists
-		if (poolPromise) {
-			poolPromise.then(pool => {
-				if (pool && pool.close) {
-					pool.close();
-				}
-			}).catch(err => {
-				console.error('Error closing existing pool:', err);
-			});
-		}
-		
-		// Determine the database name based on selection
-		let dbName = process.env.DB_NAME;
-		if (database === 'AHM') {
-			dbName = process.env.DB_NAME + '2';
-		}
-		// For 'KOL', use the original database name as is
-		
-		// Create new config with the selected database
-		const newConfig = {
-			...sqlConfig,
-			database: dbName
-		};
-		
-		poolPromise = sql.connect(newConfig);
-		currentDatabase = database;
-	} else if (!poolPromise) {
-		// Default connection if no specific database requested
-		poolPromise = sql.connect(sqlConfig);
-		currentDatabase = 'KOL'; // Default
+export function getPool(database = 'KOL') {
+	const dbKey = database || 'KOL';
+	
+	// Return existing pool if available and still connected
+	if (pools.has(dbKey)) {
+		const existingPool = pools.get(dbKey);
+		return existingPool.then(pool => {
+			// Check if pool is still connected
+			if (pool && pool.connected) {
+				return pool;
+			} else {
+				// Pool is disconnected, remove from cache and create new one
+				console.log(`Pool for ${dbKey} is disconnected, creating new connection`);
+				pools.delete(dbKey);
+				return getPool(database); // Recursive call to create new pool
+			}
+		}).catch(err => {
+			console.error(`Error checking pool for ${dbKey}:`, err);
+			pools.delete(dbKey);
+			return getPool(database); // Recursive call to create new pool
+		});
 	}
 	
+	// Determine the database name based on selection
+	let dbName = process.env.DB_NAME;
+	if (database === 'AHM') {
+		dbName = process.env.DB_NAME + '2';
+	}
+	// For 'KOL', use the original database name as is
+	
+	console.log(`Creating new database connection for ${dbKey} (${dbName})`);
+	
+	// Create new config with the selected database
+	const newConfig = {
+		...sqlConfig,
+		database: dbName
+	};
+	
+	// Create new pool for this database
+	const poolPromise = sql.connect(newConfig).then(pool => {
+		console.log(`Successfully connected to database ${dbKey} (${dbName})`);
+		
+		// Handle pool events
+		pool.on('error', err => {
+			console.error(`Pool error for ${dbKey}:`, err);
+			pools.delete(dbKey);
+		});
+		
+		return pool;
+	});
+	
+	// Store the pool promise
+	pools.set(dbKey, poolPromise);
+	
+	// Handle pool errors
+	poolPromise.catch(err => {
+		console.error(`Database connection error for ${dbKey} (${dbName}):`, err);
+		// Remove failed pool from cache
+		pools.delete(dbKey);
+	});
+	
 	return poolPromise;
+}
+
+// Function to close all database connections
+export async function closeAllPools() {
+	const promises = [];
+	for (const [dbKey, poolPromise] of pools) {
+		promises.push(
+			poolPromise.then(pool => {
+				if (pool && pool.close) {
+					console.log(`Closing database pool for ${dbKey}`);
+					return pool.close();
+				}
+			}).catch(err => {
+				console.error(`Error closing pool for ${dbKey}:`, err);
+			})
+		);
+	}
+	
+	await Promise.all(promises);
+	pools.clear();
 }
 
 export { sql };

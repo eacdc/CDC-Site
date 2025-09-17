@@ -114,6 +114,8 @@ router.get('/auth/login', async (req, res) => {
 		const trimmedUsername = username.trim();
 		const selectedDatabase = database || 'KOL'; // Default to KOL
 
+		console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
+
 		const pool = await getPool(selectedDatabase);
 		const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
