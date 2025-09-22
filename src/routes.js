@@ -129,8 +129,12 @@ router.get('/auth/login', async (req, res) => {
 			return res.status(400).json({ status: false, error: 'Missing username' });
 		}
 
-		const trimmedUsername = username.trim();
-        const selectedDatabase = database || 'KOL'; // Default to KOL
+        const trimmedUsername = username.trim();
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            logAuth('Login rejected - invalid database', { database });
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
         logAuth('Login params normalized', { username: trimmedUsername, databaseParam: database ?? null, selectedDatabase });
 
         console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
@@ -192,11 +196,14 @@ router.get('/auth/login', async (req, res) => {
 
 router.get('/processes/pending', async (req, res) => {
 	try {
-		const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
+        const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
 		const machineIdNum = Number(MachineID);
 		const userIdNum = Number(UserID);
-		const isManualEntryMode = isManualEntry === 'true';
-		const selectedDatabase = database || 'KOL'; // Default to KOL
+        const isManualEntryMode = isManualEntry === 'true';
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
 		
 		if (!Number.isInteger(machineIdNum)) {
 			return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
@@ -565,7 +572,10 @@ router.post('/processes/complete', async (req, res) => {
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
         const productionQtyNum = Number(ProductionQty);
         const wastageQtyNum = Number(WastageQty);
-        const selectedDatabase = database || 'KOL'; // Default to KOL
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
@@ -698,7 +708,10 @@ router.post('/processes/cancel', async (req, res) => {
         const jobBookingIdNum = Number(JobBookingJobCardContentsID);
         const machineIdNum = Number(MachineID);
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
-        const selectedDatabase = database || 'KOL'; // Default to KOL
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });

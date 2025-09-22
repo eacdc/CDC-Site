@@ -36,9 +36,14 @@ const sqlConfig = {
 // Store multiple pools for different databases
 const pools = new Map();
 
-export function getPool(database = 'KOL') {
-	const dbKey = database || 'KOL';
+export function getPool(database) {
+	const dbKey = (database || '').toUpperCase();
 	console.log('[DB] getPool called', { input: database, normalizedKey: dbKey });
+
+	// Strict validation: require explicit KOL or AHM
+	if (dbKey !== 'KOL' && dbKey !== 'AHM') {
+		throw new Error(`Invalid or missing database selection: ${database}`);
+	}
 	
 	// Return existing pool if available and still connected
 	if (pools.has(dbKey)) {
