@@ -101,11 +101,8 @@ export function getPool(database) {
 		server: serverHost, 
 		port: serverPort || null,
 		envVars: {
-			DB_NAME: process.env.DB_NAME,
 			DB_NAME_KOL: process.env.DB_NAME_KOL,
-			DB_NAME_AHM: process.env.DB_NAME_AHM,
-			resolvedKolDb: kolDb,
-			resolvedAhmDb: ahmDb
+			DB_NAME_AHM: process.env.DB_NAME_AHM
 		}
 	});
 	

@@ -122,14 +122,14 @@ function _checkStatusOnlyResponse(recordset) {
 
 router.get('/auth/login', async (req, res) => {
 	try {
-        const { username, database } = req.query || {};
+		const { username, database } = req.query || {};
         logAuth('Login request received', { route: '/auth/login', ip: req.ip, rawQuery: req.query });
 		if (!username || username.trim() === '') {
             logAuth('Login rejected - missing username', { route: '/auth/login' });
 			return res.status(400).json({ status: false, error: 'Missing username' });
 		}
 
-        const trimmedUsername = username.trim();
+		const trimmedUsername = username.trim();
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             logAuth('Login rejected - invalid database', { database });
@@ -137,10 +137,10 @@ router.get('/auth/login', async (req, res) => {
         }
         logAuth('Login params normalized', { username: trimmedUsername, databaseParam: database ?? null, selectedDatabase });
 
-        console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
+		console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
         logAuth('Attempting to get DB pool', { selectedDatabase });
 
-        const pool = await getPool(selectedDatabase);
+		const pool = await getPool(selectedDatabase);
         logAuth('DB pool acquired', { selectedDatabase });
 
         // Diagnostics: verify actual DB context and SP existence
@@ -166,7 +166,7 @@ router.get('/auth/login', async (req, res) => {
             logAuth('Diagnostics failed', { selectedDatabase, error: String(diagErr) });
         }
         
-        const result = await pool.request()
+		const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
 			.execute('dbo.GetMachinesForUser');
 
@@ -189,10 +189,10 @@ router.get('/auth/login', async (req, res) => {
 			departmentId: r.departmentid,
 			productUnitId: r.productunitid
 		}));
-        if (machines.length === 0) {
+		if (machines.length === 0) {
             logAuth('Login completed - no machines for user', { selectedDatabase, username: trimmedUsername, currentDb, getMachinesForUserExists });
             return res.json({ status: false, error: 'No machines found for this user in selected database', selectedDatabase, currentDb });
-        }
+		}
 
 		// Attempt to read userId and ledgerId from first row if provided by SP
 		const first = result.recordset[0] || {};
@@ -209,10 +209,10 @@ router.get('/auth/login', async (req, res) => {
 
 router.get('/processes/pending', async (req, res) => {
 	try {
-        const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
+		const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
 		const machineIdNum = Number(MachineID);
 		const userIdNum = Number(UserID);
-        const isManualEntryMode = isManualEntry === 'true';
+		const isManualEntryMode = isManualEntry === 'true';
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
@@ -918,6 +918,27 @@ router.post('/admin/clear-db-cache', async (req, res) => {
         console.error('[ADMIN] Error clearing database cache:', err);
         logAuth('Failed to clear database cache', { route: '/admin/clear-db-cache', ip: req.ip, error: String(err) });
         return res.status(500).json({ status: false, error: 'Failed to clear database cache' });
+    }
+});
+
+// Diagnostic endpoint to check environment variables
+router.get('/admin/env-check', (req, res) => {
+    try {
+        const envInfo = {
+            DB_NAME: process.env.DB_NAME || null,
+            DB_NAME_KOL: process.env.DB_NAME_KOL || null,
+            DB_NAME_AHM: process.env.DB_NAME_AHM || null,
+            DB_SERVER: process.env.DB_SERVER || null,
+            DB_USER: process.env.DB_USER || null,
+            NODE_ENV: process.env.NODE_ENV || null,
+            timestamp: new Date().toISOString()
+        };
+        console.log('[ADMIN] Environment check:', envInfo);
+        logAuth('Environment check requested', { route: '/admin/env-check', ip: req.ip, envInfo });
+        return res.json({ status: true, environment: envInfo });
+    } catch (err) {
+        console.error('[ADMIN] Error checking environment:', err);
+        return res.status(500).json({ status: false, error: 'Failed to check environment' });
     }
 });
 
