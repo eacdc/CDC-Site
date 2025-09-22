@@ -144,12 +144,15 @@ router.get('/auth/login', async (req, res) => {
         logAuth('DB pool acquired', { selectedDatabase });
 
         // Diagnostics: verify actual DB context and SP existence
+        let currentDb = null;
+        let getMachinesForUserExists = null;
         try {
             const dbInfo = await pool.request().query("SELECT DB_NAME() AS currentDb");
-            const currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
+            currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
             const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.GetMachinesForUser') AS spId");
             const spId = spCheck?.recordset?.[0]?.spId || null;
-            logAuth('Diagnostics - DB and SP availability', { selectedDatabase, currentDb, getMachinesForUserExists: !!spId, spId });
+            getMachinesForUserExists = !!spId;
+            logAuth('Diagnostics - DB and SP availability', { selectedDatabase, currentDb, getMachinesForUserExists, spId });
         } catch (diagErr) {
             logAuth('Diagnostics failed', { selectedDatabase, error: String(diagErr) });
         }
@@ -176,17 +179,17 @@ router.get('/auth/login', async (req, res) => {
 			departmentId: r.departmentid,
 			productUnitId: r.productunitid
 		}));
-		if (machines.length === 0) {
-            logAuth('Login completed - no machines for user', { selectedDatabase, username: trimmedUsername });
-			return res.json({ status: false });
-		}
+        if (machines.length === 0) {
+            logAuth('Login completed - no machines for user', { selectedDatabase, username: trimmedUsername, currentDb, getMachinesForUserExists });
+            return res.json({ status: false, error: 'No machines found for this user in selected database', selectedDatabase, currentDb });
+        }
 
 		// Attempt to read userId and ledgerId from first row if provided by SP
 		const first = result.recordset[0] || {};
 		const userId = first.UserID ?? first.userid ?? first.userId ?? null;
 		const ledgerId = first.LedgerID ?? first.ledgerid ?? first.ledgerID ?? null;
-        logAuth('Login success', { selectedDatabase, username: trimmedUsername, userId, ledgerId, machinesCount: machines.length });
-		return res.json({ status: true, userId, ledgerId, machines });
+        logAuth('Login success', { selectedDatabase, username: trimmedUsername, userId, ledgerId, machinesCount: machines.length, currentDb });
+        return res.json({ status: true, userId, ledgerId, machines, selectedDatabase, currentDb });
 	} catch (err) {
 		console.error('DB login error:', err);
         logAuth('Login failed', { route: '/auth/login', ip: req.ip, error: String(err), stack: err?.stack });
