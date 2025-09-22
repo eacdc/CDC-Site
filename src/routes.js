@@ -906,6 +906,21 @@ router.get('/logs/auth', async (req, res) => {
     }
 });
 
+// Clear database pool cache endpoint
+router.post('/admin/clear-db-cache', async (req, res) => {
+    try {
+        const { closeAllPools } = await import('./db.js');
+        await closeAllPools();
+        console.log('[ADMIN] Database pool cache cleared');
+        logAuth('Database pool cache cleared', { route: '/admin/clear-db-cache', ip: req.ip });
+        return res.json({ status: true, message: 'Database pool cache cleared successfully' });
+    } catch (err) {
+        console.error('[ADMIN] Error clearing database cache:', err);
+        logAuth('Failed to clear database cache', { route: '/admin/clear-db-cache', ip: req.ip, error: String(err) });
+        return res.status(500).json({ status: false, error: 'Failed to clear database cache' });
+    }
+});
+
 export default router;
 
 

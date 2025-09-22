@@ -67,12 +67,12 @@ export function getPool(database) {
 		});
 	}
 	
-	// Determine the database name based on selection
+	// Determine the database name based on selection - NO FALLBACKS
 	let dbName;
 	if (database === 'KOL') {
-		dbName = process.env.DB_NAME_KOL || process.env.DB_NAME; // fallback for backward compatibility
+		dbName = process.env.DB_NAME_KOL;
 	} else if (database === 'AHM') {
-		dbName = process.env.DB_NAME_AHM || (process.env.DB_NAME + '2'); // fallback to old logic
+		dbName = process.env.DB_NAME_AHM;
 	}
 	
 	// Validate that we have a database name
@@ -80,10 +80,18 @@ export function getPool(database) {
 		throw new Error(`No database name configured for ${database}`);
 	}
 	
+	// Strict validation - require explicit database names, no fallbacks
+	if (database === 'KOL' && !process.env.DB_NAME_KOL) {
+		throw new Error(`DB_NAME_KOL environment variable is required for KOL database selection`);
+	}
+	if (database === 'AHM' && !process.env.DB_NAME_AHM) {
+		throw new Error(`DB_NAME_AHM environment variable is required for AHM database selection`);
+	}
+
 	// Validate that KOL and AHM databases are different (prevent accidental same-DB config)
-	const kolDb = process.env.DB_NAME_KOL || process.env.DB_NAME;
-	const ahmDb = process.env.DB_NAME_AHM || (process.env.DB_NAME + '2');
-	if (kolDb === ahmDb) {
+	const kolDb = process.env.DB_NAME_KOL;
+	const ahmDb = process.env.DB_NAME_AHM;
+	if (kolDb && ahmDb && kolDb === ahmDb) {
 		throw new Error(`KOL and AHM databases cannot be the same (both: ${kolDb}). Please configure DB_NAME_KOL and DB_NAME_AHM with different values.`);
 	}
 	
