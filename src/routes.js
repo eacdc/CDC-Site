@@ -153,9 +153,19 @@ router.get('/auth/login', async (req, res) => {
             const spId = spCheck?.recordset?.[0]?.spId || null;
             getMachinesForUserExists = !!spId;
             logAuth('Diagnostics - DB and SP availability', { selectedDatabase, currentDb, getMachinesForUserExists, spId });
+            
+            // Check if required stored procedure exists
+            if (!spId) {
+                logAuth('Required stored procedure missing', { selectedDatabase, currentDb, missingProcedure: 'dbo.GetMachinesForUser' });
+                return res.status(500).json({ 
+                    status: false, 
+                    error: `Database ${selectedDatabase} is not properly configured. Missing required stored procedure: dbo.GetMachinesForUser` 
+                });
+            }
         } catch (diagErr) {
             logAuth('Diagnostics failed', { selectedDatabase, error: String(diagErr) });
         }
+        
         const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
 			.execute('dbo.GetMachinesForUser');

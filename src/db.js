@@ -68,12 +68,38 @@ export function getPool(database) {
 	}
 	
 	// Determine the database name based on selection
-	let dbName = process.env.DB_NAME;
-	if (database === 'AHM') {
-		dbName = process.env.DB_NAME + '2';
+	let dbName;
+	if (database === 'KOL') {
+		dbName = process.env.DB_NAME_KOL || process.env.DB_NAME; // fallback for backward compatibility
+	} else if (database === 'AHM') {
+		dbName = process.env.DB_NAME_AHM || (process.env.DB_NAME + '2'); // fallback to old logic
 	}
-	// For 'KOL', use the original database name as is
-	console.log(`[DB] Creating new database connection`, { dbKey, dbName, server: serverHost, port: serverPort || null });
+	
+	// Validate that we have a database name
+	if (!dbName) {
+		throw new Error(`No database name configured for ${database}`);
+	}
+	
+	// Validate that KOL and AHM databases are different (prevent accidental same-DB config)
+	const kolDb = process.env.DB_NAME_KOL || process.env.DB_NAME;
+	const ahmDb = process.env.DB_NAME_AHM || (process.env.DB_NAME + '2');
+	if (kolDb === ahmDb) {
+		throw new Error(`KOL and AHM databases cannot be the same (both: ${kolDb}). Please configure DB_NAME_KOL and DB_NAME_AHM with different values.`);
+	}
+	
+	console.log(`[DB] Creating new database connection`, { 
+		dbKey, 
+		dbName, 
+		server: serverHost, 
+		port: serverPort || null,
+		envVars: {
+			DB_NAME: process.env.DB_NAME,
+			DB_NAME_KOL: process.env.DB_NAME_KOL,
+			DB_NAME_AHM: process.env.DB_NAME_AHM,
+			resolvedKolDb: kolDb,
+			resolvedAhmDb: ahmDb
+		}
+	});
 	
 	// Create new config with the selected database
 	const newConfig = {
