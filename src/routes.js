@@ -138,7 +138,18 @@ router.get('/auth/login', async (req, res) => {
 
         const pool = await getPool(selectedDatabase);
         logAuth('DB pool acquired', { selectedDatabase });
-		const result = await pool.request()
+
+        // Diagnostics: verify actual DB context and SP existence
+        try {
+            const dbInfo = await pool.request().query("SELECT DB_NAME() AS currentDb");
+            const currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
+            const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.GetMachinesForUser') AS spId");
+            const spId = spCheck?.recordset?.[0]?.spId || null;
+            logAuth('Diagnostics - DB and SP availability', { selectedDatabase, currentDb, getMachinesForUserExists: !!spId, spId });
+        } catch (diagErr) {
+            logAuth('Diagnostics failed', { selectedDatabase, error: String(diagErr) });
+        }
+        const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
 			.execute('dbo.GetMachinesForUser');
 
@@ -597,6 +608,17 @@ router.post('/processes/complete', async (req, res) => {
         });
 
         const pool = await getPool(selectedDatabase);
+
+        // Diagnostics: verify actual DB context and SP existence
+        try {
+            const dbInfo = await pool.request().query("SELECT DB_NAME() AS currentDb");
+            const currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
+            const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.Production_End_Manu') AS spId");
+            const spId = spCheck?.recordset?.[0]?.spId || null;
+            logProcessStart('Diagnostics - DB and SP availability (complete)', { selectedDatabase, currentDb, productionEndManuExists: !!spId, spId });
+        } catch (diagErr) {
+            logProcessStart('Diagnostics failed (complete)', { selectedDatabase, error: String(diagErr) });
+        }
         
         // Log query execution details
         logProcessStart('Executing Production_End_Manu stored procedure', {
