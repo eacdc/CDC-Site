@@ -39,6 +39,7 @@ const __dirname = path.dirname(__filename);
 const logsDir = path.join(__dirname, '..', 'logs');
 const qrLogFile = path.join(logsDir, 'qr.log');
 const processStartLogFile = path.join(logsDir, 'process-start.log');
+const authLogFile = path.join(logsDir, 'auth.log');
 
 function ensureLogsDir() {
 	try {
@@ -81,6 +82,21 @@ function logProcessStart(message, extra = {}) {
     }
 }
 
+function logAuth(message, extra = {}) {
+    try {
+        ensureLogsDir();
+        const timestamp = new Date().toISOString();
+        const entry = {
+            ts: timestamp,
+            message,
+            ...extra,
+        };
+        fs.appendFileSync(authLogFile, JSON.stringify(entry) + '\n');
+    } catch (e) {
+        console.error('Failed to write auth log entry:', e);
+    }
+}
+
 // Helper function to check if result contains only Status column
 function _checkStatusOnlyResponse(recordset) {
     if (!Array.isArray(recordset) || recordset.length === 0) {
@@ -106,17 +122,22 @@ function _checkStatusOnlyResponse(recordset) {
 
 router.get('/auth/login', async (req, res) => {
 	try {
-		const { username, database } = req.query || {};
+        const { username, database } = req.query || {};
+        logAuth('Login request received', { route: '/auth/login', ip: req.ip, rawQuery: req.query });
 		if (!username || username.trim() === '') {
+            logAuth('Login rejected - missing username', { route: '/auth/login' });
 			return res.status(400).json({ status: false, error: 'Missing username' });
 		}
 
 		const trimmedUsername = username.trim();
-		const selectedDatabase = database || 'KOL'; // Default to KOL
+        const selectedDatabase = database || 'KOL'; // Default to KOL
+        logAuth('Login params normalized', { username: trimmedUsername, databaseParam: database ?? null, selectedDatabase });
 
-		console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
+        console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
+        logAuth('Attempting to get DB pool', { selectedDatabase });
 
-		const pool = await getPool(selectedDatabase);
+        const pool = await getPool(selectedDatabase);
+        logAuth('DB pool acquired', { selectedDatabase });
 		const result = await pool.request()
 			.input('UserName', sql.NVarChar(255), trimmedUsername)
 			.execute('dbo.GetMachinesForUser');
@@ -127,6 +148,13 @@ router.get('/auth/login', async (req, res) => {
 			//console.log('[DEBUG] First login row data:', result.recordset[0]);
 		}
 
+        logAuth('Login SP executed', {
+            storedProcedure: 'dbo.GetMachinesForUser',
+            selectedDatabase,
+            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
+            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : []
+        });
+
 		const machines = result.recordset.map(r => ({
 			machineId: r.machineid,
 			machineName: r.machinename,
@@ -134,6 +162,7 @@ router.get('/auth/login', async (req, res) => {
 			productUnitId: r.productunitid
 		}));
 		if (machines.length === 0) {
+            logAuth('Login completed - no machines for user', { selectedDatabase, username: trimmedUsername });
 			return res.json({ status: false });
 		}
 
@@ -141,10 +170,11 @@ router.get('/auth/login', async (req, res) => {
 		const first = result.recordset[0] || {};
 		const userId = first.UserID ?? first.userid ?? first.userId ?? null;
 		const ledgerId = first.LedgerID ?? first.ledgerid ?? first.ledgerID ?? null;
-
+        logAuth('Login success', { selectedDatabase, username: trimmedUsername, userId, ledgerId, machinesCount: machines.length });
 		return res.json({ status: true, userId, ledgerId, machines });
 	} catch (err) {
 		console.error('DB login error:', err);
+        logAuth('Login failed', { route: '/auth/login', ip: req.ip, error: String(err), stack: err?.stack });
 		return res.status(500).json({ status: false, error: 'Internal server error' });
 	}
 });
@@ -798,6 +828,33 @@ router.get('/logs/viewer', (req, res) => {
     } catch (err) {
         console.error('Error serving log viewer:', err);
         res.status(500).send('Error loading log viewer');
+    }
+});
+
+// Auth logs endpoint (to inspect login flow)
+router.get('/logs/auth', async (req, res) => {
+    try {
+        const { lines = 200 } = req.query;
+        const maxLines = Math.min(parseInt(lines) || 200, 2000);
+
+        if (!fs.existsSync(authLogFile)) {
+            return res.json({ status: true, logs: [], message: 'No auth log file found' });
+        }
+
+        const fileContent = fs.readFileSync(authLogFile, 'utf8');
+        const allLines = fileContent.trim().split('\n').filter(line => line.trim());
+        const recentLines = allLines.slice(-maxLines);
+        const parsedLogs = recentLines.map(line => {
+            try {
+                return JSON.parse(line);
+            } catch (e) {
+                return { raw: line, parseError: true };
+            }
+        });
+        return res.json({ status: true, logs: parsedLogs, totalLines: allLines.length, displayedLines: parsedLogs.length });
+    } catch (err) {
+        console.error('Error reading auth logs:', err);
+        return res.status(500).json({ status: false, error: 'Failed to read auth logs' });
     }
 });
 

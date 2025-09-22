@@ -38,13 +38,16 @@ const pools = new Map();
 
 export function getPool(database = 'KOL') {
 	const dbKey = database || 'KOL';
+	console.log('[DB] getPool called', { input: database, normalizedKey: dbKey });
 	
 	// Return existing pool if available and still connected
 	if (pools.has(dbKey)) {
 		const existingPool = pools.get(dbKey);
+		console.log(`[DB] Reusing existing pool for ${dbKey}`);
 		return existingPool.then(pool => {
 			// Check if pool is still connected
 			if (pool && pool.connected) {
+				console.log(`[DB] Existing pool for ${dbKey} is connected`);
 				return pool;
 			} else {
 				// Pool is disconnected, remove from cache and create new one
@@ -65,8 +68,7 @@ export function getPool(database = 'KOL') {
 		dbName = process.env.DB_NAME + '2';
 	}
 	// For 'KOL', use the original database name as is
-	
-	console.log(`Creating new database connection for ${dbKey} (${dbName})`);
+	console.log(`[DB] Creating new database connection`, { dbKey, dbName, server: serverHost, port: serverPort || null });
 	
 	// Create new config with the selected database
 	const newConfig = {
@@ -76,7 +78,7 @@ export function getPool(database = 'KOL') {
 	
 	// Create new pool for this database
 	const poolPromise = sql.connect(newConfig).then(pool => {
-		console.log(`Successfully connected to database ${dbKey} (${dbName})`);
+		console.log(`[DB] Successfully connected`, { dbKey, dbName });
 		
 		// Handle pool events
 		pool.on('error', err => {
@@ -92,7 +94,7 @@ export function getPool(database = 'KOL') {
 	
 	// Handle pool errors
 	poolPromise.catch(err => {
-		console.error(`Database connection error for ${dbKey} (${dbName}):`, err);
+		console.error(`[DB] Connection error`, { dbKey, dbName, error: String(err) });
 		// Remove failed pool from cache
 		pools.delete(dbKey);
 	});
