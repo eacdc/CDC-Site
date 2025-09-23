@@ -942,6 +942,46 @@ router.get('/admin/env-check', (req, res) => {
     }
 });
 
+// GRN: Initiate Challan by Barcode
+router.post('/grn/initiate', async (req, res) => {
+    try {
+        const { barcode, database, userId } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('Status', sql.NVarChar(50), 'new-check')
+            .input('UserID', sql.Int, userIdNum)
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+
+        // Normalize response
+        const rows = result.recordset || [];
+        // Try to pick ledger/client name from common columns
+        const first = rows[0] || {};
+        const ledgerName = first.ledgername || first.LedgerName || first.client || first.Client || null;
+
+        return res.json({ status: true, data: rows, ledgerName });
+    } catch (err) {
+        console.error('GRN initiate error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to initiate challan' });
+    }
+});
+
 export default router;
 
 
