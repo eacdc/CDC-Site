@@ -982,6 +982,52 @@ router.post('/grn/initiate', async (req, res) => {
     }
 });
 
+// GRN: Save Delivery Note
+router.post('/grn/save-delivery-note', async (req, res) => {
+    try {
+        const { barcode, database, userId, clientName, modeOfTransport, containerNumber, sealNumber, transporterName, vehicleNumber } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        // Validate required fields
+        if (!clientName || !modeOfTransport || !containerNumber || !sealNumber || !transporterName || !vehicleNumber) {
+            return res.status(400).json({ status: false, error: 'All fields are mandatory' });
+        }
+
+        // For now, return default DN number as requested
+        const deliveryNoteNumber = "25-26/26";
+
+        return res.json({ 
+            status: true, 
+            deliveryNoteNumber,
+            data: {
+                clientName,
+                modeOfTransport,
+                containerNumber,
+                sealNumber,
+                transporterName,
+                vehicleNumber,
+                barcode: barcodeNum
+            }
+        });
+    } catch (err) {
+        console.error('GRN save delivery note error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to save delivery note' });
+    }
+});
+
 export default router;
 
 
