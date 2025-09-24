@@ -1078,6 +1078,62 @@ router.post('/grn/save-delivery-note', async (req, res) => {
     }
 });
 
+// GRN: Update Delivery Note (append line items)
+router.post('/grn/update-delivery-note', async (req, res) => {
+    try {
+        const { barcode, database, userId, fgTransactionId } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+        const fgIdNum = Number(fgTransactionId);
+        if (!Number.isInteger(fgIdNum) || fgIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing FGTransactionID' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('Status', sql.NVarChar(50), 'update')
+            .input('UserID', sql.Int, userIdNum)
+            .input('FGTransactionID', sql.Int, fgIdNum)
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+
+        const rows = result.recordset || [];
+        const first = rows[0] || {};
+        const normalized = {
+            statusText: first.Status || first.status || null,
+            transactionId: first.FGTransactionID || first.fgtransactionid || null,
+            voucherNo: first.VoucherNo || first.voucherno || null,
+            jobName: first.JobName || first.jobname || null,
+            orderQty: first.OrderQty || first.orderqty || null,
+            gpnQty: first.GPNQty || first.gpnqty || null,
+            deliveredThisVoucher: first.DeliveredThisVoucher || first.deliveredthisvoucher || null,
+            deliveredTotal: first.DeliveredTotal || first.deliveredtotal || null,
+            cartonCount: first.CartonCt || first.cartonct || null
+        };
+
+        // Fail handling
+        const statusTextLower = (normalized.statusText || '').toString().toLowerCase();
+        if (statusTextLower.startsWith('fail')) {
+            return res.json({ status: false, error: normalized.statusText || 'Operation failed', sp: normalized });
+        }
+
+        return res.json({ status: true, sp: normalized });
+    } catch (err) {
+        console.error('GRN update delivery note error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to update delivery note' });
+    }
+});
+
 // GRN: List Transporters for dropdown
 router.get('/grn/transporters', async (req, res) => {
     try {
