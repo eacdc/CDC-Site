@@ -985,7 +985,7 @@ router.post('/grn/initiate', async (req, res) => {
 // GRN: Save Delivery Note
 router.post('/grn/save-delivery-note', async (req, res) => {
     try {
-        const { barcode, database, userId, clientName, modeOfTransport, containerNumber, sealNumber, transporterName, vehicleNumber } = req.body || {};
+        const { barcode, database, userId, clientName, modeOfTransport, containerNumber, sealNumber, transporterName, transporterLedgerId, vehicleNumber } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
@@ -1006,21 +1006,61 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             return res.status(400).json({ status: false, error: 'All fields are mandatory' });
         }
 
-        // For now, return default DN number as requested
-        const deliveryNoteNumber = "25-26/26";
+        const transporterIdNum = Number(transporterLedgerId);
+        if (!Number.isInteger(transporterIdNum) || transporterIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing transporterLedgerId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('Status', sql.NVarChar(50), 'new-start')
+            .input('UserID', sql.Int, userIdNum)
+            .input('TransporterLedgerID', sql.Int, transporterIdNum)
+            .input('ModeOfTransport', sql.NVarChar(255), modeOfTransport)
+            .input('VehicleNo', sql.NVarChar(255), vehicleNumber)
+            .input('ContainerNo', sql.NVarChar(255), containerNumber)
+            .input('SealNo', sql.NVarChar(255), sealNumber)
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+
+        const rows = result.recordset || [];
+        const first = rows[0] || {};
+        const normalized = {
+            statusText: first.Status || first.status || null,
+            transactionId: first.FGTransactionID || first.fgtransactionid || null,
+            voucherNo: first.VoucherNo || first.voucherno || null,
+            jobName: first.JobName || first.jobname || null,
+            orderQty: first.OrderQty || first.OrderQty || first.orderqty || null,
+            gpnQty: first.GPNQty || first.gpnqty || null,
+            deliveredThisVoucher: first.DeliveredThisVoucher || first.deliveredthisvoucher || null,
+            deliveredTotal: first.DeliveredTotal || first.deliveredtotal || null,
+            cartonCount: first.CartonCt || first.cartonct || null
+        };
+
+        // Handle known failure from SP (e.g., "Fail: Barcode already dispatched")
+        const statusTextLower = (normalized.statusText || '').toString().toLowerCase();
+        if (statusTextLower.startsWith('fail')) {
+            let msg = normalized.statusText || 'Operation failed';
+            if (statusTextLower.includes('barcode already dispatched')) {
+                msg = 'Barcode already dispatched';
+            }
+            return res.json({ status: false, error: msg, sp: normalized });
+        }
 
         return res.json({ 
-            status: true, 
-            deliveryNoteNumber,
+            status: true,
+            deliveryNoteNumber: normalized.voucherNo || '25-26/26',
             data: {
                 clientName,
                 modeOfTransport,
                 containerNumber,
                 sealNumber,
                 transporterName,
+                transporterLedgerId: transporterIdNum,
                 vehicleNumber,
                 barcode: barcodeNum
-            }
+            },
+            sp: normalized
         });
     } catch (err) {
         console.error('GRN save delivery note error:', err);
