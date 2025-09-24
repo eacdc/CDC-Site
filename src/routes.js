@@ -975,6 +975,12 @@ router.post('/grn/initiate', async (req, res) => {
         const first = rows[0] || {};
         const ledgerName = first.ledgername || first.LedgerName || first.client || first.Client || null;
 
+        // Handle Fail statuses from SP gracefully
+        const statusText = first.Status || first.status || '';
+        if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
+            return res.json({ status: false, error: statusText });
+        }
+
         return res.json({ status: true, data: rows, ledgerName });
     } catch (err) {
         console.error('GRN initiate error:', err?.message || err);
