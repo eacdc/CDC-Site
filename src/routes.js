@@ -977,8 +977,12 @@ router.post('/grn/initiate', async (req, res) => {
 
         return res.json({ status: true, data: rows, ledgerName });
     } catch (err) {
-        console.error('GRN initiate error:', err);
-        return res.status(500).json({ status: false, error: 'Failed to initiate challan' });
+        console.error('GRN initiate error:', err?.message || err);
+        return res.status(500).json({ 
+            status: false, 
+            error: 'Failed to initiate challan',
+            details: err?.message || String(err)
+        });
     }
 });
 
