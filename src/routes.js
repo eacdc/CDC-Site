@@ -1028,6 +1028,27 @@ router.post('/grn/save-delivery-note', async (req, res) => {
     }
 });
 
+// GRN: List Transporters for dropdown
+router.get('/grn/transporters', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().query("SELECT ledgerid, ledgername FROM ledgermaster WHERE ledgertype LIKE 'trans%' AND ISNULL(IsDeletedTransaction, 0) = 0");
+        const rows = (result.recordset || []).map(r => ({
+            ledgerId: r.ledgerid,
+            ledgerName: r.ledgername
+        }));
+        return res.json({ status: true, transporters: rows });
+    } catch (err) {
+        console.error('GRN transporters error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch transporters' });
+    }
+});
+
 export default router;
 
 
