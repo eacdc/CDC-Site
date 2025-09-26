@@ -1155,6 +1155,49 @@ router.get('/grn/transporters', async (req, res) => {
     }
 });
 
+// Get latest machine status per machine
+router.post('/machine-status/latest', async (req, res) => {
+    try {
+        const { database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ 
+                status: false, 
+                error: 'Invalid or missing database (must be KOL or AHM)' 
+            });
+        }
+
+        console.log(`[MACHINE-STATUS] Getting latest machine status for database: ${selectedDatabase}`);
+        
+        const pool = await getPool(selectedDatabase);
+        
+        // Execute the stored procedure
+        const result = await pool.request()
+            .execute('GetLatestMachineStatusPerMachine');
+        
+        console.log(`[MACHINE-STATUS] Query completed. Records found: ${result.recordset?.length || 0}`);
+        
+        // Log first record for debugging
+        if (result.recordset && result.recordset.length > 0) {
+            console.log('[MACHINE-STATUS] First record columns:', Object.keys(result.recordset[0]));
+            console.log('[MACHINE-STATUS] First record data:', result.recordset[0]);
+        }
+        
+        return res.json({
+            status: true,
+            data: result.recordset || [],
+            message: 'Machine statuses retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[MACHINE-STATUS] Error getting machine statuses:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to get machine statuses: ' + error.message
+        });
+    }
+});
+
 export default router;
 
 
