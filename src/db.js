@@ -25,7 +25,7 @@ const sqlConfig = {
 	pool: {
 		max: 10,
 		min: 0,
-		idleTimeoutMillis: 30000
+		idleTimeoutMillis: 300000
 	},
 	options: {
 		encrypt: true,
@@ -49,11 +49,19 @@ export function getPool(database) {
 	if (pools.has(dbKey)) {
 		const existingPool = pools.get(dbKey);
 		console.log(`[DB] Reusing existing pool for ${dbKey}`);
-		return existingPool.then(pool => {
-			// Check if pool is still connected
+		return existingPool.then(async pool => {
+			// Check if pool appears connected
 			if (pool && pool.connected) {
-				console.log(`[DB] Existing pool for ${dbKey} is connected`);
-				return pool;
+				// Actively verify with a lightweight ping; some drivers keep connected=true after idle closes
+				try {
+					await pool.request().query('SELECT 1');
+					console.log(`[DB] Existing pool for ${dbKey} is healthy`);
+					return pool;
+				} catch (pingErr) {
+					console.warn(`[DB] Pool for ${dbKey} failed health check, recreating`, { error: String(pingErr) });
+					pools.delete(dbKey);
+					return getPool(database);
+				}
 			} else {
 				// Pool is disconnected, remove from cache and create new one
 				console.log(`Pool for ${dbKey} is disconnected, creating new connection`);
