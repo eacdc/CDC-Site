@@ -29,8 +29,11 @@ const sqlConfig = {
 	},
 	options: {
 		encrypt: true,
-		trustServerCertificate: true
-	}
+		trustServerCertificate: true,
+		enableArithAbort: true
+	},
+	connectionTimeout: 30000,
+	requestTimeout: 30000
 };
 
 // Store multiple pools for different databases
@@ -54,11 +57,22 @@ export function getPool(database) {
 			if (pool && pool.connected) {
 				// Actively verify with a lightweight ping; some drivers keep connected=true after idle closes
 				try {
-					await pool.request().query('SELECT 1');
+					// Use a timeout for the health check to prevent hanging
+					const healthCheckPromise = pool.request().query('SELECT 1');
+					const timeoutPromise = new Promise((_, reject) => 
+						setTimeout(() => reject(new Error('Health check timeout')), 5000)
+					);
+					await Promise.race([healthCheckPromise, timeoutPromise]);
 					console.log(`[DB] Existing pool for ${dbKey} is healthy`);
 					return pool;
 				} catch (pingErr) {
 					console.warn(`[DB] Pool for ${dbKey} failed health check, recreating`, { error: String(pingErr) });
+					// Close the bad pool before removing
+					try {
+						await pool.close();
+					} catch (closeErr) {
+						console.warn(`[DB] Error closing bad pool for ${dbKey}:`, closeErr);
+					}
 					pools.delete(dbKey);
 					return getPool(database);
 				}
@@ -126,8 +140,27 @@ export function getPool(database) {
 		
 		// Handle pool events
 		pool.on('error', err => {
-			console.error(`Pool error for ${dbKey}:`, err);
+			console.error(`[DB] Pool error for ${dbKey}:`, err);
 			pools.delete(dbKey);
+			// Try to close the pool
+			pool.close().catch(closeErr => {
+				console.error(`[DB] Error closing pool after error for ${dbKey}:`, closeErr);
+			});
+		});
+		
+		// Auto-cleanup: remove pool after extended idle time
+		// This prevents stale connections from persisting too long
+		const cleanupTimeout = setTimeout(() => {
+			if (pools.has(dbKey)) {
+				console.log(`[DB] Auto-cleanup: closing idle pool for ${dbKey}`);
+				pool.close().catch(err => console.warn(`[DB] Error during auto-cleanup for ${dbKey}:`, err));
+				pools.delete(dbKey);
+			}
+		}, 600000); // 10 minutes of idle time
+		
+		// Clear timeout if pool is manually closed
+		pool.on('close', () => {
+			clearTimeout(cleanupTimeout);
 		});
 		
 		return pool;
