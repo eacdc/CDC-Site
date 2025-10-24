@@ -226,6 +226,12 @@ export async function closeAllPools() {
 	pools.clear();
 }
 
+// Function to clear pool cache (for logout/session clearing)
+export function clearPoolCache() {
+	console.log('[DB] Clearing pool cache', { poolKeys: Array.from(pools.keys()) });
+	pools.clear();
+}
+
 export { sql };
 
 

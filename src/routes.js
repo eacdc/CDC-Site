@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getPool, sql } from './db.js';
+import { getPool, sql, clearPoolCache } from './db.js';
 import multer from 'multer';
 import QrCode from 'qrcode-reader';
 import * as jimp from 'jimp';
@@ -248,10 +248,14 @@ router.get('/auth/login', async (req, res) => {
 	}
 });
 
-// Logout endpoint to clear session/cookies
+// Logout endpoint to clear session/cookies AND database pool cache
 router.post('/auth/logout', async (req, res) => {
 	try {
 		logAuth('Logout request received', { route: '/auth/logout', ip: req.ip });
+		
+		// CRITICAL: Clear database pool cache to prevent wrong DB reuse
+		clearPoolCache();
+		console.log('[AUTH] Database pool cache cleared on logout');
 		
 		// Clear any session data if using express-session
 		if (req.session) {
@@ -267,7 +271,7 @@ router.post('/auth/logout', async (req, res) => {
 		res.clearCookie('connect.sid'); // Default express-session cookie name
 		res.clearCookie('session'); // Alternative session cookie name
 		
-		logAuth('Logout successful', { route: '/auth/logout', ip: req.ip });
+		logAuth('Logout successful - session, cookies, and DB pools cleared', { route: '/auth/logout', ip: req.ip });
 		return res.json({ status: true, message: 'Logged out successfully' });
 	} catch (err) {
 		console.error('Logout error:', err);
