@@ -77,17 +77,34 @@ export function getPool(database) {
 						match: actualDbName === expectedDbName
 					});
 					
-					// If connected to wrong database, close and recreate
+					// If connected to wrong database, switch to correct one
 					if (actualDbName !== expectedDbName) {
-						console.error(`[DB] CRITICAL: Pool ${dbKey} connected to WRONG database! Expected: ${expectedDbName}, Actual: ${actualDbName}`);
-						console.log(`[DB] Closing wrong pool and recreating...`);
+						console.warn(`[DB] Pool ${dbKey} on wrong database! Expected: ${expectedDbName}, Actual: ${actualDbName}`);
+						console.log(`[DB] Switching to correct database [${expectedDbName}]...`);
+						
 						try {
-							await pool.close();
-						} catch (closeErr) {
-							console.warn(`[DB] Error closing wrong pool for ${dbKey}:`, closeErr);
+							await pool.request().query(`USE [${expectedDbName}]`);
+							
+							// Verify switch was successful
+							const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+							const newActualDb = verifyDb.recordset[0]?.currentDb;
+							
+							if (newActualDb !== expectedDbName) {
+								console.error(`[DB] Failed to switch database! Still on: ${newActualDb}`);
+								// Close and recreate pool
+								await pool.close().catch(() => {});
+								pools.delete(dbKey);
+								return getPool(database);
+							}
+							
+							console.log(`[DB] Successfully switched pool ${dbKey} to [${expectedDbName}]`);
+						} catch (switchErr) {
+							console.error(`[DB] Error switching database:`, switchErr);
+							// Close and recreate pool
+							await pool.close().catch(() => {});
+							pools.delete(dbKey);
+							return getPool(database);
 						}
-						pools.delete(dbKey);
-						return getPool(database);
 					}
 					
 					console.log(`[DB] Existing pool for ${dbKey} is healthy and connected to correct database`);
@@ -162,8 +179,26 @@ export function getPool(database) {
 	};
 	
 	// Create new pool for this database
-	const poolPromise = sql.connect(newConfig).then(pool => {
+	const poolPromise = sql.connect(newConfig).then(async pool => {
 		console.log(`[DB] Successfully connected`, { dbKey, dbName });
+		
+		// CRITICAL: Explicitly switch to the correct database using USE statement
+		// This ensures we're using the right DB even if user's default DB is different
+		try {
+			await pool.request().query(`USE [${dbName}]`);
+			console.log(`[DB] Explicitly switched to database [${dbName}]`);
+			
+			// Verify we're on the correct database
+			const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+			const actualDb = verifyDb.recordset[0]?.currentDb;
+			if (actualDb !== dbName) {
+				throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+			}
+			console.log(`[DB] Verified connection to correct database`, { expected: dbName, actual: actualDb });
+		} catch (useErr) {
+			console.error(`[DB] Failed to switch to database ${dbName}:`, useErr);
+			throw useErr;
+		}
 		
 		// Handle pool events
 		pool.on('error', err => {
