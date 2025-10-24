@@ -52,10 +52,11 @@ export function getPool(database) {
 	if (pools.has(dbKey)) {
 		const existingPool = pools.get(dbKey);
 		console.log(`[DB] Reusing existing pool for ${dbKey}`);
+		console.log(`[DB] Current pools in cache:`, Array.from(pools.keys()));
 		return existingPool.then(async pool => {
 			// Check if pool appears connected
 			if (pool && pool.connected) {
-				// Actively verify with a lightweight ping; some drivers keep connected=true after idle closes
+				// Actively verify with a lightweight ping AND check which database we're connected to
 				try {
 					// Use a timeout for the health check to prevent hanging
 					const healthCheckPromise = pool.request().query('SELECT 1');
@@ -63,7 +64,33 @@ export function getPool(database) {
 						setTimeout(() => reject(new Error('Health check timeout')), 5000)
 					);
 					await Promise.race([healthCheckPromise, timeoutPromise]);
-					console.log(`[DB] Existing pool for ${dbKey} is healthy`);
+					
+					// CRITICAL: Verify we're connected to the CORRECT database
+					const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+					const actualDbName = dbCheck.recordset[0]?.currentDb;
+					const expectedDbName = dbKey === 'KOL' ? process.env.DB_NAME_KOL : process.env.DB_NAME_AHM;
+					
+					console.log(`[DB] Pool verification for ${dbKey}:`, {
+						requestedKey: dbKey,
+						actualDatabase: actualDbName,
+						expectedDatabase: expectedDbName,
+						match: actualDbName === expectedDbName
+					});
+					
+					// If connected to wrong database, close and recreate
+					if (actualDbName !== expectedDbName) {
+						console.error(`[DB] CRITICAL: Pool ${dbKey} connected to WRONG database! Expected: ${expectedDbName}, Actual: ${actualDbName}`);
+						console.log(`[DB] Closing wrong pool and recreating...`);
+						try {
+							await pool.close();
+						} catch (closeErr) {
+							console.warn(`[DB] Error closing wrong pool for ${dbKey}:`, closeErr);
+						}
+						pools.delete(dbKey);
+						return getPool(database);
+					}
+					
+					console.log(`[DB] Existing pool for ${dbKey} is healthy and connected to correct database`);
 					return pool;
 				} catch (pingErr) {
 					console.warn(`[DB] Pool for ${dbKey} failed health check, recreating`, { error: String(pingErr) });
