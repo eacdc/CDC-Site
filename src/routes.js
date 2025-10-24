@@ -137,11 +137,39 @@ router.get('/auth/login', async (req, res) => {
         }
         logAuth('Login params normalized', { username: trimmedUsername, databaseParam: database ?? null, selectedDatabase });
 
-		console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
+	console.log(`Login attempt - Username: ${trimmedUsername}, Database: ${selectedDatabase}`);
         logAuth('Attempting to get DB pool', { selectedDatabase });
 
-		const pool = await getPool(selectedDatabase);
+	const pool = await getPool(selectedDatabase);
         logAuth('DB pool acquired', { selectedDatabase });
+
+        // Ensure pool is fully connected and ready before proceeding
+        if (!pool.connected) {
+            console.warn(`[AUTH] Pool not connected yet, waiting...`);
+            // Wait a bit for pool to be ready
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Check again
+            if (!pool.connected) {
+                logAuth('Pool connection failed', { selectedDatabase });
+                return res.status(500).json({ 
+                    status: false, 
+                    error: 'Database connection not ready. Please try again.' 
+                });
+            }
+        }
+        
+        // Verify pool is healthy with a quick test query
+        try {
+            await pool.request().query('SELECT 1 AS test');
+            console.log(`[AUTH] Pool verified as healthy for ${selectedDatabase}`);
+        } catch (verifyErr) {
+            console.error(`[AUTH] Pool health verification failed:`, verifyErr);
+            return res.status(500).json({ 
+                status: false, 
+                error: 'Database connection error. Please try again.' 
+            });
+        }
 
         // Diagnostics: verify actual DB context and SP existence
         let currentDb = null;
