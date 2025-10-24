@@ -194,15 +194,28 @@ router.get('/auth/login', async (req, res) => {
             logAuth('Diagnostics failed', { selectedDatabase, error: String(diagErr) });
         }
         
-		const result = await pool.request()
-			.input('UserName', sql.NVarChar(255), trimmedUsername)
-			.execute('dbo.GetMachinesForUser');
+	const result = await pool.request()
+		.input('UserName', sql.NVarChar(255), trimmedUsername)
+		.execute('dbo.GetMachinesForUser');
 
-		// Debug: Log the first row to see available columns
-		if (result.recordset.length > 0) {
-			//console.log('[DEBUG] First login row columns:', Object.keys(result.recordset[0]));
-			//console.log('[DEBUG] First login row data:', result.recordset[0]);
-		}
+	// Enhanced logging to debug empty results
+        console.log('[AUTH] Stored procedure executed', {
+            database: selectedDatabase,
+            username: trimmedUsername,
+            actualDb: currentDb,
+            rowCount: result.recordset?.length || 0
+        });
+        
+        if (result.recordset.length > 0) {
+            console.log('[AUTH] First row columns:', Object.keys(result.recordset[0]));
+            console.log('[AUTH] First row data:', result.recordset[0]);
+        } else {
+            console.warn('[AUTH] No rows returned from GetMachinesForUser', {
+                username: trimmedUsername,
+                database: selectedDatabase,
+                actualDb: currentDb
+            });
+        }
 
         logAuth('Login SP executed', {
             storedProcedure: 'dbo.GetMachinesForUser',
