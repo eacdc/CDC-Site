@@ -248,6 +248,34 @@ router.get('/auth/login', async (req, res) => {
 	}
 });
 
+// Logout endpoint to clear session/cookies
+router.post('/auth/logout', async (req, res) => {
+	try {
+		logAuth('Logout request received', { route: '/auth/logout', ip: req.ip });
+		
+		// Clear any session data if using express-session
+		if (req.session) {
+			req.session.destroy((err) => {
+				if (err) {
+					console.error('Session destroy error:', err);
+					logAuth('Logout - session destroy failed', { error: String(err) });
+				}
+			});
+		}
+		
+		// Clear cookies
+		res.clearCookie('connect.sid'); // Default express-session cookie name
+		res.clearCookie('session'); // Alternative session cookie name
+		
+		logAuth('Logout successful', { route: '/auth/logout', ip: req.ip });
+		return res.json({ status: true, message: 'Logged out successfully' });
+	} catch (err) {
+		console.error('Logout error:', err);
+		logAuth('Logout failed', { route: '/auth/logout', ip: req.ip, error: String(err) });
+		return res.status(500).json({ status: false, error: 'Logout failed' });
+	}
+});
+
 router.get('/processes/pending', async (req, res) => {
 	try {
 		const { MachineID, jobcardcontentno, UserID, isManualEntry, database } = req.query || {};
