@@ -225,6 +225,12 @@ router.get('/auth/login', async (req, res) => {
         });
 
 		const machines = result.recordset.map(r => ({
+			// Mobile app expects camelCase
+			machineId: r.machineid || r.MachineID,
+			machineName: r.machinename || r.MachineName,
+			departmentId: r.departmentid || r.DepartmentID,
+			productUnitId: r.productunitid || r.ProductUnitID,
+			// Web app expects PascalCase
 			MachineID: r.machineid || r.MachineID,
 			MachineName: r.machinename || r.MachineName,
 			DepartmentID: r.departmentid || r.DepartmentID,
@@ -367,6 +373,22 @@ router.get('/processes/pending', async (req, res) => {
 		}
 
 		const processes = result.recordset.map(r => ({
+			// Mobile app expects camelCase
+			pwoNo: r.PWOno || r.PWONo,
+			pwoDate: r.PWODate,
+			client: r.Client,
+			jobName: r.JobName,
+			componentName: r.ComponentName ?? r.COmponentname,
+			formNo: r.FormNo,
+			scheduleQty: r.ScheduleQty,
+			qtyProduced: r.QtyProduced,
+			paperIssuedQty: r.PaperIssuedQty ?? null,
+			currentStatus: r.CurrentStatus ?? null,
+			jobcardContentNo: r.JobCardContentNo ?? r.jobcardcontentno,
+			jobBookingJobcardContentsId: parseInt(r.JobBookingJobCardContentsID) || 0,
+			processName: r.ProcessName,
+			processId: parseInt(r.ProcessID) || 0,
+			// Web app expects PascalCase
 			PWONo: r.PWOno || r.PWONo,
 			PWODate: r.PWODate,
 			Client: r.Client,
