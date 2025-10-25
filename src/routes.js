@@ -225,10 +225,10 @@ router.get('/auth/login', async (req, res) => {
         });
 
 		const machines = result.recordset.map(r => ({
-			machineId: r.machineid,
-			machineName: r.machinename,
-			departmentId: r.departmentid,
-			productUnitId: r.productunitid
+			MachineID: r.machineid || r.MachineID,
+			MachineName: r.machinename || r.MachineName,
+			DepartmentID: r.departmentid || r.DepartmentID,
+			ProductUnitID: r.productunitid || r.ProductUnitID
 		}));
 		if (machines.length === 0) {
             logAuth('Login completed - no machines for user', { selectedDatabase, username: trimmedUsername, currentDb, getMachinesForUserExists });
@@ -367,20 +367,20 @@ router.get('/processes/pending', async (req, res) => {
 		}
 
 		const processes = result.recordset.map(r => ({
-			pwoNo: r.PWOno,
-			pwoDate: r.PWODate,
-			client: r.Client,
-			jobName: r.JobName,
-			componentName: r.ComponentName ?? r.COmponentname,
-			formNo: r.FormNo,
-			scheduleQty: r.ScheduleQty,
-			qtyProduced: r.QtyProduced,
-			paperIssuedQty: r.PaperIssuedQty ?? null,
-			currentStatus: r.CurrentStatus ?? null,
-			jobcardContentNo: r.JobCardContentNo ?? r.jobcardcontentno,
-			jobBookingJobcardContentsId: parseInt(r.JobBookingJobCardContentsID) || 0,
-			processName: r.ProcessName,
-			processId: parseInt(r.ProcessID) || 0
+			PWONo: r.PWOno || r.PWONo,
+			PWODate: r.PWODate,
+			Client: r.Client,
+			JobName: r.JobName,
+			ComponentName: r.ComponentName ?? r.COmponentname,
+			FormNo: r.FormNo,
+			ScheduleQty: r.ScheduleQty,
+			QtyProduced: r.QtyProduced,
+			PaperIssuedQty: r.PaperIssuedQty ?? null,
+			CurrentStatus: r.CurrentStatus ?? null,
+			JobCardContentNo: r.JobCardContentNo ?? r.jobcardcontentno,
+			JobBookingJobCardContentsID: parseInt(r.JobBookingJobCardContentsID) || 0,
+			ProcessName: r.ProcessName,
+			ProcessID: parseInt(r.ProcessID) || 0
 		}));
 
 		if (processes.length === 0) {
