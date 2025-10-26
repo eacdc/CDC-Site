@@ -481,14 +481,15 @@ router.post('/processes/start', async (req, res) => {
             }
         });
 
-        const result = await pool.request()
+        const request = pool.request();
+        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for start operations
+        const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
             .input('ProcessID', sql.Int, processIdNum)
             .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
             .input('MachineID', sql.Int, machineIdNum)
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
-            .timeout(120000) // Increase timeout to 2 minutes (120 seconds) for start operations
             .execute('dbo.Production_Start_Manu');
 
         // Log detailed query results
@@ -756,7 +757,9 @@ router.post('/processes/complete', async (req, res) => {
             }
         });
 
-        const result = await pool.request()
+        const request = pool.request();
+        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for complete operations
+        const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
             .input('ProcessID', sql.Int, processIdNum)
@@ -765,7 +768,6 @@ router.post('/processes/complete', async (req, res) => {
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
             .input('ProductionQty', sql.Int, productionQtyNum)
             .input('WastageQty', sql.Int, wastageQtyNum)
-            .timeout(120000) // Increase timeout to 2 minutes (120 seconds) for complete operations
             .execute('dbo.Production_End_Manu');
 
         // Log detailed query results
@@ -872,14 +874,15 @@ router.post('/processes/cancel', async (req, res) => {
             }
         });
 
-        const result = await pool.request()
+        const request = pool.request();
+        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for cancel operations
+        const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
             .input('ProcessID', sql.Int, processIdNum)
             .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
             .input('MachineID', sql.Int, machineIdNum)
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
-            .timeout(120000) // Increase timeout to 2 minutes (120 seconds) for cancel operations
             .execute('dbo.Production_Cancel_Manu');
 
         // Log detailed query results
