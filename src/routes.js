@@ -10,6 +10,115 @@ import { fileURLToPath } from 'url';
 
 const router = Router();
 
+// ============================================
+// In-Memory Job Processing System
+// ============================================
+
+// In-memory job storage
+const jobs = new Map();
+let jobIdCounter = Date.now();
+
+// Helper to generate unique job ID
+function generateJobId() {
+  return `job_${jobIdCounter++}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Background worker function
+async function processJobInBackground(jobId, jobType, requestData, database) {
+  try {
+    console.log(`[JOB ${jobId}] Starting ${jobType} operation`);
+    
+    // Update job status to processing
+    if (jobs.has(jobId)) {
+      jobs.get(jobId).status = 'processing';
+      jobs.get(jobId).startedAt = new Date();
+    }
+
+    const pool = await getPool(database);
+    const request = pool.request();
+    request.timeout = 180000; // 3 minutes
+
+    let result;
+    
+    // Execute based on job type
+    if (jobType === 'start') {
+      result = await request
+        .input('UserID', sql.Int, requestData.UserID)
+        .input('EmployeeID', sql.Int, requestData.EmployeeID)
+        .input('ProcessID', sql.Int, requestData.ProcessID)
+        .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
+        .input('MachineID', sql.Int, requestData.MachineID)
+        .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
+        .execute('dbo.Production_Start_Manu');
+    } 
+    else if (jobType === 'complete') {
+      result = await request
+        .input('UserID', sql.Int, requestData.UserID)
+        .input('EmployeeID', sql.Int, requestData.EmployeeID)
+        .input('ProcessID', sql.Int, requestData.ProcessID)
+        .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
+        .input('MachineID', sql.Int, requestData.MachineID)
+        .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
+        .input('ProductionQty', sql.Int, requestData.ProductionQty)
+        .input('WastageQty', sql.Int, requestData.WastageQty)
+        .execute('dbo.Production_End_Manu');
+    }
+    else if (jobType === 'cancel') {
+      result = await request
+        .input('UserID', sql.Int, requestData.UserID)
+        .input('EmployeeID', sql.Int, requestData.EmployeeID)
+        .input('ProcessID', sql.Int, requestData.ProcessID)
+        .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
+        .input('MachineID', sql.Int, requestData.MachineID)
+        .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
+        .execute('dbo.Production_Cancel_Manu');
+    }
+
+    console.log(`[JOB ${jobId}] ${jobType} operation completed successfully`);
+
+    // Check for status warnings
+    const statusWarning = _checkStatusOnlyResponse(result.recordset);
+
+    // Update job as completed
+    if (jobs.has(jobId)) {
+      jobs.get(jobId).status = 'completed';
+      jobs.get(jobId).result = result.recordset || [];
+      jobs.get(jobId).statusWarning = statusWarning;
+      jobs.get(jobId).completedAt = new Date();
+    }
+
+    // Auto-delete job after 5 minutes to prevent memory leaks
+    setTimeout(() => {
+      if (jobs.has(jobId)) {
+        console.log(`[JOB ${jobId}] Auto-deleting completed job`);
+        jobs.delete(jobId);
+      }
+    }, 300000);
+
+  } catch (error) {
+    console.error(`[JOB ${jobId}] Failed:`, error);
+    
+    // Update job as failed
+    if (jobs.has(jobId)) {
+      jobs.get(jobId).status = 'failed';
+      jobs.get(jobId).error = error.message;
+      jobs.get(jobId).completedAt = new Date();
+    }
+
+    // Auto-delete failed job after 5 minutes
+    setTimeout(() => {
+      if (jobs.has(jobId)) {
+        console.log(`[JOB ${jobId}] Auto-deleting failed job`);
+        jobs.delete(jobId);
+      }
+    }, 300000);
+  }
+}
+
+// ============================================
+// End of Job Processing System
+// ============================================
+
 // Configure multer for file uploads
 const upload = multer({
 	storage: multer.memoryStorage(),
@@ -920,6 +1029,202 @@ router.post('/processes/cancel', async (req, res) => {
         return res.status(500).json({ status: false, error: 'Internal server error' });
     }
 });
+
+// ============================================
+// Async Process Endpoints (Background Jobs)
+// ============================================
+
+// Start Process Async
+router.post('/processes/start-async', async (req, res) => {
+  try {
+    const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
+    
+    // Validate database
+    const selectedDatabase = (database || '').toUpperCase();
+    if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+      return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
+
+    // Validate required fields
+    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(EmployeeID)) || 
+        !Number.isInteger(Number(ProcessID)) || !Number.isInteger(Number(JobBookingJobCardContentsID)) ||
+        !Number.isInteger(Number(MachineID)) || !JobCardFormNo) {
+      return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
+    }
+
+    const jobId = generateJobId();
+    
+    // Store job in memory
+    jobs.set(jobId, {
+      id: jobId,
+      type: 'start',
+      status: 'pending',
+      requestData: {
+        UserID: Number(UserID),
+        EmployeeID: Number(EmployeeID),
+        ProcessID: Number(ProcessID),
+        JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
+        MachineID: Number(MachineID),
+        JobCardFormNo: String(JobCardFormNo)
+      },
+      createdAt: new Date()
+    });
+
+    console.log(`[JOB ${jobId}] Created start process job`);
+
+    // Start background processing (non-blocking)
+    setImmediate(() => processJobInBackground(jobId, 'start', jobs.get(jobId).requestData, selectedDatabase));
+
+    // Return immediately
+    return res.json({
+      status: true,
+      jobId: jobId,
+      message: 'Job created. Processing in background...'
+    });
+
+  } catch (err) {
+    console.error('Start async error:', err);
+    return res.status(500).json({ status: false, error: 'Internal server error' });
+  }
+});
+
+// Complete Process Async
+router.post('/processes/complete-async', async (req, res) => {
+  try {
+    const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty, database } = req.body || {};
+    
+    // Validate database
+    const selectedDatabase = (database || '').toUpperCase();
+    if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+      return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
+
+    // Validate required fields
+    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(EmployeeID)) || 
+        !Number.isInteger(Number(ProcessID)) || !Number.isInteger(Number(JobBookingJobCardContentsID)) ||
+        !Number.isInteger(Number(MachineID)) || !JobCardFormNo ||
+        !Number.isInteger(Number(ProductionQty)) || !Number.isInteger(Number(WastageQty))) {
+      return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
+    }
+
+    const jobId = generateJobId();
+    
+    jobs.set(jobId, {
+      id: jobId,
+      type: 'complete',
+      status: 'pending',
+      requestData: {
+        UserID: Number(UserID),
+        EmployeeID: Number(EmployeeID),
+        ProcessID: Number(ProcessID),
+        JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
+        MachineID: Number(MachineID),
+        JobCardFormNo: String(JobCardFormNo),
+        ProductionQty: Number(ProductionQty),
+        WastageQty: Number(WastageQty)
+      },
+      createdAt: new Date()
+    });
+
+    console.log(`[JOB ${jobId}] Created complete process job`);
+
+    setImmediate(() => processJobInBackground(jobId, 'complete', jobs.get(jobId).requestData, selectedDatabase));
+
+    return res.json({
+      status: true,
+      jobId: jobId,
+      message: 'Job created. Processing in background...'
+    });
+
+  } catch (err) {
+    console.error('Complete async error:', err);
+    return res.status(500).json({ status: false, error: 'Internal server error' });
+  }
+});
+
+// Cancel Process Async
+router.post('/processes/cancel-async', async (req, res) => {
+  try {
+    const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
+    
+    // Validate database
+    const selectedDatabase = (database || '').toUpperCase();
+    if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+      return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
+
+    // Validate required fields
+    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(EmployeeID)) || 
+        !Number.isInteger(Number(ProcessID)) || !Number.isInteger(Number(JobBookingJobCardContentsID)) ||
+        !Number.isInteger(Number(MachineID)) || !JobCardFormNo) {
+      return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
+    }
+
+    const jobId = generateJobId();
+    
+    jobs.set(jobId, {
+      id: jobId,
+      type: 'cancel',
+      status: 'pending',
+      requestData: {
+        UserID: Number(UserID),
+        EmployeeID: Number(EmployeeID),
+        ProcessID: Number(ProcessID),
+        JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
+        MachineID: Number(MachineID),
+        JobCardFormNo: String(JobCardFormNo)
+      },
+      createdAt: new Date()
+    });
+
+    console.log(`[JOB ${jobId}] Created cancel process job`);
+
+    setImmediate(() => processJobInBackground(jobId, 'cancel', jobs.get(jobId).requestData, selectedDatabase));
+
+    return res.json({
+      status: true,
+      jobId: jobId,
+      message: 'Job created. Processing in background...'
+    });
+
+  } catch (err) {
+    console.error('Cancel async error:', err);
+    return res.status(500).json({ status: false, error: 'Internal server error' });
+  }
+});
+
+// Check Job Status
+router.get('/jobs/:jobId/status', (req, res) => {
+  const { jobId } = req.params;
+  
+  if (!jobs.has(jobId)) {
+    return res.status(404).json({
+      status: false,
+      error: 'Job not found or expired'
+    });
+  }
+
+  const job = jobs.get(jobId);
+  
+  return res.json({
+    status: true,
+    job: {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      result: job.result,
+      statusWarning: job.statusWarning,
+      error: job.error,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt
+    }
+  });
+});
+
+// ============================================
+// End of Async Process Endpoints
+// ============================================
 
 // Log viewer endpoint for debugging and monitoring
 router.get('/logs/process-start', async (req, res) => {
