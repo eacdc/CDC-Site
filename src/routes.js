@@ -39,6 +39,7 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
     request.timeout = 180000; // 3 minutes
 
     let result;
+    let productionId;
     
     // Execute based on job type
     if (jobType === 'start') {
@@ -49,16 +50,18 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
         .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
         .input('MachineID', sql.Int, requestData.MachineID)
         .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
-        .execute('dbo.Production_Start_Manu');
+        .execute('dbo.Production_Start_Manu_v2');
+      
+      // Extract ProductionID from the result
+      if (result.recordset && result.recordset.length > 0 && result.recordset[0].ProductionID) {
+        productionId = result.recordset[0].ProductionID;
+        console.log(`[JOB ${jobId}] ProductionID returned: ${productionId}`);
+      }
     } 
     else if (jobType === 'complete') {
       result = await request
         .input('UserID', sql.Int, requestData.UserID)
-        .input('EmployeeID', sql.Int, requestData.EmployeeID)
-        .input('ProcessID', sql.Int, requestData.ProcessID)
-        .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
-        .input('MachineID', sql.Int, requestData.MachineID)
-        .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
+        .input('ProductionID', sql.Int, requestData.ProductionID)
         .input('ProductionQty', sql.Int, requestData.ProductionQty)
         .input('WastageQty', sql.Int, requestData.WastageQty)
         .execute('dbo.Production_End_Manu');
@@ -66,12 +69,8 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
     else if (jobType === 'cancel') {
       result = await request
         .input('UserID', sql.Int, requestData.UserID)
-        .input('EmployeeID', sql.Int, requestData.EmployeeID)
-        .input('ProcessID', sql.Int, requestData.ProcessID)
-        .input('JobBookingJobCardContentsID', sql.Int, requestData.JobBookingJobCardContentsID)
-        .input('MachineID', sql.Int, requestData.MachineID)
-        .input('JobCardFormNo', sql.NVarChar(255), requestData.JobCardFormNo)
-        .execute('dbo.Production_Cancel_Manu');
+        .input('ProductionID', sql.Int, requestData.ProductionID)
+        .execute('dbo.Production_Cancel_Manu_v2');
     }
 
     console.log(`[JOB ${jobId}] ${jobType} operation completed successfully`);
@@ -83,6 +82,7 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
     if (jobs.has(jobId)) {
       jobs.get(jobId).status = 'completed';
       jobs.get(jobId).result = result.recordset || [];
+      jobs.get(jobId).productionId = productionId; // Store ProductionID for start jobs
       jobs.get(jobId).statusWarning = statusWarning;
       jobs.get(jobId).completedAt = new Date();
     }
@@ -576,10 +576,10 @@ router.post('/processes/start', async (req, res) => {
         const pool = await getPool(selectedDatabase);
         
         // Log query execution details
-        logProcessStart('Executing Production_Start_Manu stored procedure', {
+        logProcessStart('Executing Production_Start_Manu_v2 stored procedure', {
             route: '/processes/start',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_Start_Manu',
+            storedProcedure: 'dbo.Production_Start_Manu_v2',
             parameters: {
                 UserID: userIdNum,
                 EmployeeID: employeeIdNum,
@@ -599,13 +599,20 @@ router.post('/processes/start', async (req, res) => {
             .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
             .input('MachineID', sql.Int, machineIdNum)
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
-            .execute('dbo.Production_Start_Manu');
+            .execute('dbo.Production_Start_Manu_v2');
+
+        // Extract ProductionID from result
+        let productionId = null;
+        if (result.recordset && result.recordset.length > 0 && result.recordset[0].ProductionID) {
+            productionId = result.recordset[0].ProductionID;
+        }
 
         // Log detailed query results
         logProcessStart('Start process query completed', {
             route: '/processes/start',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_Start_Manu',
+            storedProcedure: 'dbo.Production_Start_Manu_v2',
+            productionId: productionId,
             resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
             resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
             resultData: result.recordset || [],
@@ -620,16 +627,21 @@ router.post('/processes/start', async (req, res) => {
                 route: '/processes/start',
                 ip: req.ip,
                 statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_Start_Manu'
+                storedProcedure: 'dbo.Production_Start_Manu_v2'
             });
             return res.json({ 
                 status: true, 
                 result: result.recordset || [],
+                productionId: productionId,
                 statusWarning: statusWarning
             });
         }
         
-        return res.json({ status: true, result: result.recordset || [] });
+        return res.json({ 
+            status: true, 
+            result: result.recordset || [],
+            productionId: productionId
+        });
     } catch (err) {
         console.error('Start process error:', err);
         logProcessStart('Start process failed', { route: '/processes/start', ip: req.ip, error: String(err) });
@@ -781,14 +793,10 @@ router.post('/processes/complete', async (req, res) => {
         //console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
         logProcessStart('Complete process called', { route: '/processes/complete', ip: req.ip, body: req.body });
 
-        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty, database } = req.body || {};
+        const { UserID, ProductionID, ProductionQty, WastageQty, database } = req.body || {};
 
         const userIdNum = Number(UserID);
-        const employeeIdNum = Number(EmployeeID);
-        const processIdNum = Number(ProcessID);
-        const jobBookingIdNum = Number(JobBookingJobCardContentsID);
-        const machineIdNum = Number(MachineID);
-        const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+        const productionIdNum = Number(ProductionID);
         const productionQtyNum = Number(ProductionQty);
         const wastageQtyNum = Number(WastageQty);
         const selectedDatabase = (database || '').toUpperCase();
@@ -799,20 +807,8 @@ router.post('/processes/complete', async (req, res) => {
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
         }
-        if (!Number.isInteger(employeeIdNum)) {
-            return res.status(400).json({ status: false, error: 'EmployeeID must be an integer' });
-        }
-        if (!Number.isInteger(processIdNum)) {
-            return res.status(400).json({ status: false, error: 'ProcessID must be an integer' });
-        }
-        if (!Number.isInteger(jobBookingIdNum)) {
-            return res.status(400).json({ status: false, error: 'JobBookingJobCardContentsID must be an integer' });
-        }
-        if (!Number.isInteger(machineIdNum)) {
-            return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
-        }
-        if (!jobCardFormNoStr) {
-            return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
+        if (!Number.isInteger(productionIdNum)) {
+            return res.status(400).json({ status: false, error: 'ProductionID must be an integer' });
         }
         if (!Number.isInteger(productionQtyNum)) {
             return res.status(400).json({ status: false, error: 'ProductionQty must be an integer' });
@@ -826,11 +822,7 @@ router.post('/processes/complete', async (req, res) => {
             ip: req.ip,
             normalized: {
                 UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr,
+                ProductionID: productionIdNum,
                 ProductionQty: productionQtyNum,
                 WastageQty: wastageQtyNum
             }
@@ -856,11 +848,7 @@ router.post('/processes/complete', async (req, res) => {
             storedProcedure: 'dbo.Production_End_Manu',
             parameters: {
                 UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr,
+                ProductionID: productionIdNum,
                 ProductionQty: productionQtyNum,
                 WastageQty: wastageQtyNum
             }
@@ -870,11 +858,7 @@ router.post('/processes/complete', async (req, res) => {
         request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for complete operations
         const result = await request
             .input('UserID', sql.Int, userIdNum)
-            .input('EmployeeID', sql.Int, employeeIdNum)
-            .input('ProcessID', sql.Int, processIdNum)
-            .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
-            .input('MachineID', sql.Int, machineIdNum)
-            .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
+            .input('ProductionID', sql.Int, productionIdNum)
             .input('ProductionQty', sql.Int, productionQtyNum)
             .input('WastageQty', sql.Int, wastageQtyNum)
             .execute('dbo.Production_End_Manu');
@@ -921,14 +905,10 @@ router.post('/processes/cancel', async (req, res) => {
         //console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
         logProcessStart('Cancel process called', { route: '/processes/cancel', ip: req.ip, body: req.body });
 
-        const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
+        const { UserID, ProductionID, database } = req.body || {};
 
         const userIdNum = Number(UserID);
-        const employeeIdNum = Number(EmployeeID);
-        const processIdNum = Number(ProcessID);
-        const jobBookingIdNum = Number(JobBookingJobCardContentsID);
-        const machineIdNum = Number(MachineID);
-        const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
+        const productionIdNum = Number(ProductionID);
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
@@ -937,20 +917,8 @@ router.post('/processes/cancel', async (req, res) => {
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
         }
-        if (!Number.isInteger(employeeIdNum)) {
-            return res.status(400).json({ status: false, error: 'EmployeeID must be an integer' });
-        }
-        if (!Number.isInteger(processIdNum)) {
-            return res.status(400).json({ status: false, error: 'ProcessID must be an integer' });
-        }
-        if (!Number.isInteger(jobBookingIdNum)) {
-            return res.status(400).json({ status: false, error: 'JobBookingJobCardContentsID must be an integer' });
-        }
-        if (!Number.isInteger(machineIdNum)) {
-            return res.status(400).json({ status: false, error: 'MachineID must be an integer' });
-        }
-        if (!jobCardFormNoStr) {
-            return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
+        if (!Number.isInteger(productionIdNum)) {
+            return res.status(400).json({ status: false, error: 'ProductionID must be an integer' });
         }
 
         logProcessStart('Normalized cancel params', {
@@ -958,28 +926,20 @@ router.post('/processes/cancel', async (req, res) => {
             ip: req.ip,
             normalized: {
                 UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr
+                ProductionID: productionIdNum
             }
         });
 
         const pool = await getPool(selectedDatabase);
         
         // Log query execution details
-        logProcessStart('Executing Production_Cancel_Manu stored procedure', {
+        logProcessStart('Executing Production_Cancel_Manu_v2 stored procedure', {
             route: '/processes/cancel',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_Cancel_Manu',
+            storedProcedure: 'dbo.Production_Cancel_Manu_v2',
             parameters: {
                 UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr
+                ProductionID: productionIdNum
             }
         });
 
@@ -987,18 +947,14 @@ router.post('/processes/cancel', async (req, res) => {
         request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for cancel operations
         const result = await request
             .input('UserID', sql.Int, userIdNum)
-            .input('EmployeeID', sql.Int, employeeIdNum)
-            .input('ProcessID', sql.Int, processIdNum)
-            .input('JobBookingJobCardContentsID', sql.Int, jobBookingIdNum)
-            .input('MachineID', sql.Int, machineIdNum)
-            .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
-            .execute('dbo.Production_Cancel_Manu');
+            .input('ProductionID', sql.Int, productionIdNum)
+            .execute('dbo.Production_Cancel_Manu_v2');
 
         // Log detailed query results
         logProcessStart('Cancel process query completed', {
             route: '/processes/cancel',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_Cancel_Manu',
+            storedProcedure: 'dbo.Production_Cancel_Manu_v2',
             resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
             resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
             resultData: result.recordset || [],
@@ -1013,7 +969,7 @@ router.post('/processes/cancel', async (req, res) => {
                 route: '/processes/cancel',
                 ip: req.ip,
                 statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_Cancel_Manu'
+                storedProcedure: 'dbo.Production_Cancel_Manu_v2'
             });
             return res.json({ 
                 status: true, 
