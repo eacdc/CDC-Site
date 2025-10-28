@@ -1233,6 +1233,11 @@ router.get('/jobs/:jobId/status', (req, res) => {
 
   const job = jobs.get(jobId);
   
+  // Log job status with ProductionID if available
+  if (job.productionId) {
+    console.log(`[JOB ${jobId}] Status polled - ProductionID: ${job.productionId}, Status: ${job.status}`);
+  }
+  
   return res.json({
     status: true,
     job: {
@@ -1240,6 +1245,7 @@ router.get('/jobs/:jobId/status', (req, res) => {
       type: job.type,
       status: job.status,
       result: job.result,
+      productionId: job.productionId,  // Include ProductionID for start jobs
       statusWarning: job.statusWarning,
       error: job.error,
       createdAt: job.createdAt,
