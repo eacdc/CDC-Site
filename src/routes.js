@@ -43,6 +43,19 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
     
     // Execute based on job type
     if (jobType === 'start') {
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`[JOB ${jobId}] CALLING START PROCEDURE`);
+      console.log(`Procedure: dbo.Production_Start_Manu_v2`);
+      console.log(`Parameters:`);
+      console.log(`  - UserID: ${requestData.UserID} (${typeof requestData.UserID})`);
+      console.log(`  - EmployeeID: ${requestData.EmployeeID} (${typeof requestData.EmployeeID})`);
+      console.log(`  - ProcessID: ${requestData.ProcessID} (${typeof requestData.ProcessID})`);
+      console.log(`  - JobBookingJobCardContentsID: ${requestData.JobBookingJobCardContentsID} (${typeof requestData.JobBookingJobCardContentsID})`);
+      console.log(`  - MachineID: ${requestData.MachineID} (${typeof requestData.MachineID})`);
+      console.log(`  - JobCardFormNo: ${requestData.JobCardFormNo} (${typeof requestData.JobCardFormNo})`);
+      console.log(`Database: ${database}`);
+      console.log(`${'='.repeat(80)}\n`);
+      
       result = await request
         .input('UserID', sql.Int, requestData.UserID)
         .input('EmployeeID', sql.Int, requestData.EmployeeID)
@@ -55,10 +68,21 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
       // Extract ProductionID from the result
       if (result.recordset && result.recordset.length > 0 && result.recordset[0].ProductionID) {
         productionId = result.recordset[0].ProductionID;
-        console.log(`[JOB ${jobId}] ProductionID returned: ${productionId}`);
+        console.log(`[JOB ${jobId}] ✅ ProductionID returned: ${productionId}`);
       }
     } 
     else if (jobType === 'complete') {
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`[JOB ${jobId}] CALLING COMPLETE PROCEDURE`);
+      console.log(`Procedure: dbo.Production_End_Manu`);
+      console.log(`Parameters:`);
+      console.log(`  - UserID: ${requestData.UserID} (${typeof requestData.UserID})`);
+      console.log(`  - ProductionID: ${requestData.ProductionID} (${typeof requestData.ProductionID})`);
+      console.log(`  - ProductionQty: ${requestData.ProductionQty} (${typeof requestData.ProductionQty})`);
+      console.log(`  - WastageQty: ${requestData.WastageQty} (${typeof requestData.WastageQty})`);
+      console.log(`Database: ${database}`);
+      console.log(`${'='.repeat(80)}\n`);
+      
       result = await request
         .input('UserID', sql.Int, requestData.UserID)
         .input('ProductionID', sql.Int, requestData.ProductionID)
@@ -67,13 +91,22 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
         .execute('dbo.Production_End_Manu');
     }
     else if (jobType === 'cancel') {
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`[JOB ${jobId}] CALLING CANCEL PROCEDURE`);
+      console.log(`Procedure: dbo.Production_Cancel_Manu_v2`);
+      console.log(`Parameters:`);
+      console.log(`  - UserID: ${requestData.UserID} (${typeof requestData.UserID})`);
+      console.log(`  - ProductionID: ${requestData.ProductionID} (${typeof requestData.ProductionID})`);
+      console.log(`Database: ${database}`);
+      console.log(`${'='.repeat(80)}\n`);
+      
       result = await request
         .input('UserID', sql.Int, requestData.UserID)
         .input('ProductionID', sql.Int, requestData.ProductionID)
         .execute('dbo.Production_Cancel_Manu_v2');
     }
 
-    console.log(`[JOB ${jobId}] ${jobType} operation completed successfully`);
+    console.log(`[JOB ${jobId}] ✅ ${jobType} operation completed successfully`);
 
     // Check for status warnings
     const statusWarning = _checkStatusOnlyResponse(result.recordset);
@@ -590,6 +623,19 @@ router.post('/processes/start', async (req, res) => {
             }
         });
 
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`[SYNC START] CALLING START PROCEDURE`);
+        console.log(`Procedure: dbo.Production_Start_Manu_v2`);
+        console.log(`Parameters:`);
+        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
+        console.log(`  - EmployeeID: ${employeeIdNum} (${typeof employeeIdNum})`);
+        console.log(`  - ProcessID: ${processIdNum} (${typeof processIdNum})`);
+        console.log(`  - JobBookingJobCardContentsID: ${jobBookingIdNum} (${typeof jobBookingIdNum})`);
+        console.log(`  - MachineID: ${machineIdNum} (${typeof machineIdNum})`);
+        console.log(`  - JobCardFormNo: ${jobCardFormNoStr} (${typeof jobCardFormNoStr})`);
+        console.log(`Database: ${selectedDatabase}`);
+        console.log(`${'='.repeat(80)}\n`);
+
         const request = pool.request();
         request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for start operations
         const result = await request
@@ -605,6 +651,7 @@ router.post('/processes/start', async (req, res) => {
         let productionId = null;
         if (result.recordset && result.recordset.length > 0 && result.recordset[0].ProductionID) {
             productionId = result.recordset[0].ProductionID;
+            console.log(`[SYNC START] ✅ ProductionID returned: ${productionId}`);
         }
 
         // Log detailed query results
@@ -854,6 +901,17 @@ router.post('/processes/complete', async (req, res) => {
             }
         });
 
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`[SYNC COMPLETE] CALLING COMPLETE PROCEDURE`);
+        console.log(`Procedure: dbo.Production_End_Manu`);
+        console.log(`Parameters:`);
+        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
+        console.log(`  - ProductionID: ${productionIdNum} (${typeof productionIdNum})`);
+        console.log(`  - ProductionQty: ${productionQtyNum} (${typeof productionQtyNum})`);
+        console.log(`  - WastageQty: ${wastageQtyNum} (${typeof wastageQtyNum})`);
+        console.log(`Database: ${selectedDatabase}`);
+        console.log(`${'='.repeat(80)}\n`);
+
         const request = pool.request();
         request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for complete operations
         const result = await request
@@ -862,6 +920,8 @@ router.post('/processes/complete', async (req, res) => {
             .input('ProductionQty', sql.Int, productionQtyNum)
             .input('WastageQty', sql.Int, wastageQtyNum)
             .execute('dbo.Production_End_Manu');
+        
+        console.log(`[SYNC COMPLETE] ✅ Complete operation finished successfully`);
 
         // Log detailed query results
         logProcessStart('Complete process query completed', {
@@ -943,12 +1003,23 @@ router.post('/processes/cancel', async (req, res) => {
             }
         });
 
+        console.log(`\n${'='.repeat(80)}`);
+        console.log(`[SYNC CANCEL] CALLING CANCEL PROCEDURE`);
+        console.log(`Procedure: dbo.Production_Cancel_Manu_v2`);
+        console.log(`Parameters:`);
+        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
+        console.log(`  - ProductionID: ${productionIdNum} (${typeof productionIdNum})`);
+        console.log(`Database: ${selectedDatabase}`);
+        console.log(`${'='.repeat(80)}\n`);
+
         const request = pool.request();
         request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for cancel operations
         const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('ProductionID', sql.Int, productionIdNum)
             .execute('dbo.Production_Cancel_Manu_v2');
+        
+        console.log(`[SYNC CANCEL] ✅ Cancel operation finished successfully`);
 
         // Log detailed query results
         logProcessStart('Cancel process query completed', {
