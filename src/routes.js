@@ -1118,7 +1118,7 @@ router.post('/processes/start-async', async (req, res) => {
 // Complete Process Async
 router.post('/processes/complete-async', async (req, res) => {
   try {
-    const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, ProductionQty, WastageQty, database } = req.body || {};
+    const { UserID, ProductionID, ProductionQty, WastageQty, database } = req.body || {};
     
     // Validate database
     const selectedDatabase = (database || '').toUpperCase();
@@ -1127,14 +1127,20 @@ router.post('/processes/complete-async', async (req, res) => {
     }
 
     // Validate required fields
-    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(EmployeeID)) || 
-        !Number.isInteger(Number(ProcessID)) || !Number.isInteger(Number(JobBookingJobCardContentsID)) ||
-        !Number.isInteger(Number(MachineID)) || !JobCardFormNo ||
+    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(ProductionID)) || 
         !Number.isInteger(Number(ProductionQty)) || !Number.isInteger(Number(WastageQty))) {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
     const jobId = generateJobId();
+    
+    console.log(`[JOB ${jobId}] Creating complete job with params:`, {
+      UserID: Number(UserID),
+      ProductionID: Number(ProductionID),
+      ProductionQty: Number(ProductionQty),
+      WastageQty: Number(WastageQty),
+      database: selectedDatabase
+    });
     
     jobs.set(jobId, {
       id: jobId,
@@ -1142,11 +1148,7 @@ router.post('/processes/complete-async', async (req, res) => {
       status: 'pending',
       requestData: {
         UserID: Number(UserID),
-        EmployeeID: Number(EmployeeID),
-        ProcessID: Number(ProcessID),
-        JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: Number(MachineID),
-        JobCardFormNo: String(JobCardFormNo),
+        ProductionID: Number(ProductionID),
         ProductionQty: Number(ProductionQty),
         WastageQty: Number(WastageQty)
       },
@@ -1172,7 +1174,7 @@ router.post('/processes/complete-async', async (req, res) => {
 // Cancel Process Async
 router.post('/processes/cancel-async', async (req, res) => {
   try {
-    const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
+    const { UserID, ProductionID, database } = req.body || {};
     
     // Validate database
     const selectedDatabase = (database || '').toUpperCase();
@@ -1181,13 +1183,17 @@ router.post('/processes/cancel-async', async (req, res) => {
     }
 
     // Validate required fields
-    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(EmployeeID)) || 
-        !Number.isInteger(Number(ProcessID)) || !Number.isInteger(Number(JobBookingJobCardContentsID)) ||
-        !Number.isInteger(Number(MachineID)) || !JobCardFormNo) {
+    if (!Number.isInteger(Number(UserID)) || !Number.isInteger(Number(ProductionID))) {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
     const jobId = generateJobId();
+    
+    console.log(`[JOB ${jobId}] Creating cancel job with params:`, {
+      UserID: Number(UserID),
+      ProductionID: Number(ProductionID),
+      database: selectedDatabase
+    });
     
     jobs.set(jobId, {
       id: jobId,
@@ -1195,11 +1201,7 @@ router.post('/processes/cancel-async', async (req, res) => {
       status: 'pending',
       requestData: {
         UserID: Number(UserID),
-        EmployeeID: Number(EmployeeID),
-        ProcessID: Number(ProcessID),
-        JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: Number(MachineID),
-        JobCardFormNo: String(JobCardFormNo)
+        ProductionID: Number(ProductionID)
       },
       createdAt: new Date()
     });
