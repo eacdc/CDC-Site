@@ -531,6 +531,7 @@ router.get('/processes/pending', async (req, res) => {
 			processName: r.ProcessName,
 			processId: parseInt(r.ProcessID) || 0,
 			runningProductionID: r.RunningProductionID ? parseInt(r.RunningProductionID) : null,
+			runningMachineID: r.RunningMachineID ? parseInt(r.RunningMachineID) : null,
 			// Web app expects PascalCase
 			PWONo: r.PWOno || r.PWONo,
 			PWODate: r.PWODate,
@@ -546,7 +547,8 @@ router.get('/processes/pending', async (req, res) => {
 			JobBookingJobCardContentsID: parseInt(r.JobBookingJobCardContentsID) || 0,
 			ProcessName: r.ProcessName,
 			ProcessID: parseInt(r.ProcessID) || 0,
-			RunningProductionID: r.RunningProductionID ? parseInt(r.RunningProductionID) : null
+			RunningProductionID: r.RunningProductionID ? parseInt(r.RunningProductionID) : null,
+			RunningMachineID: r.RunningMachineID ? parseInt(r.RunningMachineID) : null
 		}));
 
 		if (processes.length === 0) {
