@@ -74,7 +74,7 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
     else if (jobType === 'complete') {
       console.log(`\n${'='.repeat(80)}`);
       console.log(`[JOB ${jobId}] CALLING COMPLETE PROCEDURE`);
-      console.log(`Procedure: dbo.Production_End_Manu`);
+      console.log(`Procedure: dbo.Production_End_Manu_v2`);
       console.log(`Parameters:`);
       console.log(`  - UserID: ${requestData.UserID} (${typeof requestData.UserID})`);
       console.log(`  - ProductionID: ${requestData.ProductionID} (${typeof requestData.ProductionID})`);
@@ -88,7 +88,7 @@ async function processJobInBackground(jobId, jobType, requestData, database) {
         .input('ProductionID', sql.Int, requestData.ProductionID)
         .input('ProductionQty', sql.Int, requestData.ProductionQty)
         .input('WastageQty', sql.Int, requestData.WastageQty)
-        .execute('dbo.Production_End_Manu');
+        .execute('dbo.Production_End_Manu_v2');
     }
     else if (jobType === 'cancel') {
       console.log(`\n${'='.repeat(80)}`);
@@ -881,7 +881,7 @@ router.post('/processes/complete', async (req, res) => {
         try {
             const dbInfo = await pool.request().query("SELECT DB_NAME() AS currentDb");
             const currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
-            const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.Production_End_Manu') AS spId");
+            const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.Production_End_Manu_v2') AS spId");
             const spId = spCheck?.recordset?.[0]?.spId || null;
             logProcessStart('Diagnostics - DB and SP availability (complete)', { selectedDatabase, currentDb, productionEndManuExists: !!spId, spId });
         } catch (diagErr) {
@@ -889,10 +889,10 @@ router.post('/processes/complete', async (req, res) => {
         }
         
         // Log query execution details
-        logProcessStart('Executing Production_End_Manu stored procedure', {
+        logProcessStart('Executing Production_End_Manu_v2 stored procedure', {
             route: '/processes/complete',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_End_Manu',
+            storedProcedure: 'dbo.Production_End_Manu_v2',
             parameters: {
                 UserID: userIdNum,
                 ProductionID: productionIdNum,
@@ -903,7 +903,7 @@ router.post('/processes/complete', async (req, res) => {
 
         console.log(`\n${'='.repeat(80)}`);
         console.log(`[SYNC COMPLETE] CALLING COMPLETE PROCEDURE`);
-        console.log(`Procedure: dbo.Production_End_Manu`);
+        console.log(`Procedure: dbo.Production_End_Manu_v2`);
         console.log(`Parameters:`);
         console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
         console.log(`  - ProductionID: ${productionIdNum} (${typeof productionIdNum})`);
@@ -919,7 +919,7 @@ router.post('/processes/complete', async (req, res) => {
             .input('ProductionID', sql.Int, productionIdNum)
             .input('ProductionQty', sql.Int, productionQtyNum)
             .input('WastageQty', sql.Int, wastageQtyNum)
-            .execute('dbo.Production_End_Manu');
+            .execute('dbo.Production_End_Manu_v2');
         
         console.log(`[SYNC COMPLETE] ✅ Complete operation finished successfully`);
 
@@ -927,7 +927,7 @@ router.post('/processes/complete', async (req, res) => {
         logProcessStart('Complete process query completed', {
             route: '/processes/complete',
             ip: req.ip,
-            storedProcedure: 'dbo.Production_End_Manu',
+            storedProcedure: 'dbo.Production_End_Manu_v2',
             resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
             resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
             resultData: result.recordset || [],
@@ -942,7 +942,7 @@ router.post('/processes/complete', async (req, res) => {
                 route: '/processes/complete',
                 ip: req.ip,
                 statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_End_Manu'
+                storedProcedure: 'dbo.Production_End_Manu_v2'
             });
             return res.json({ 
                 status: true, 
