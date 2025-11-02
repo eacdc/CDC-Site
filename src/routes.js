@@ -1600,6 +1600,80 @@ router.get('/grn/transporters', async (req, res) => {
     }
 });
 
+// GPN Portal - Save Finish Goods by Barcode
+router.post('/gpn/save-finish-goods', async (req, res) => {
+    try {
+        const { barcode, database, userId, companyId = 2, branchId = 0, status = 'new' } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const companyIdNum = Number(companyId);
+        if (!Number.isInteger(companyIdNum) || companyIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid companyId' });
+        }
+
+        const branchIdNum = Number(branchId);
+        if (!Number.isInteger(branchIdNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid branchId' });
+        }
+
+        console.log(`[GPN] Calling SaveFinishGoodsByBarcode_Manu_v2`);
+        console.log(`  - BarcodeNo: ${barcodeNum}`);
+        console.log(`  - Status: ${status}`);
+        console.log(`  - UserID: ${userIdNum}`);
+        console.log(`  - CompanyID: ${companyIdNum}`);
+        console.log(`  - BranchID: ${branchIdNum}`);
+        console.log(`  - Database: ${selectedDatabase}`);
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('Status', sql.NVarChar(50), status)
+            .input('UserID', sql.Int, userIdNum)
+            .input('CompanyID', sql.Int, companyIdNum)
+            .input('BranchID', sql.Int, branchIdNum)
+            .execute('dbo.SaveFinishGoodsByBarcode_Manu_v2');
+
+        const rows = result.recordset || [];
+        console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
+
+        // Check for error status in response
+        const first = rows[0] || {};
+        const statusText = first.Status || first.status || '';
+        
+        if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
+            return res.json({
+                status: false,
+                error: statusText || 'Failed to save finish goods'
+            });
+        }
+
+        return res.json({
+            status: true,
+            message: 'Finish goods saved successfully',
+            data: first
+        });
+    } catch (err) {
+        console.error('[GPN] Error saving finish goods:', err);
+        return res.status(500).json({ 
+            status: false, 
+            error: 'Failed to save finish goods: ' + (err.message || 'Unknown error')
+        });
+    }
+});
+
 // Get latest machine status per machine
 router.post('/machine-status/latest', async (req, res) => {
     try {
