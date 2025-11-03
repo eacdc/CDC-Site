@@ -1603,7 +1603,7 @@ router.get('/grn/transporters', async (req, res) => {
 // GPN Portal - Save Finish Goods by Barcode
 router.post('/gpn/save-finish-goods', async (req, res) => {
     try {
-        const { barcode, database, userId, companyId = 2, branchId = 0, status = 'new' } = req.body || {};
+        const { barcode, database, userId, companyId = 2, branchId = 0, status = 'new', fgTransactionId } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
@@ -1629,22 +1629,39 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
             return res.status(400).json({ status: false, error: 'Invalid branchId' });
         }
 
+        // For update status, FGTransactionID is required
+        if (status === 'update') {
+            const fgIdNum = Number(fgTransactionId);
+            if (!Number.isInteger(fgIdNum) || fgIdNum <= 0) {
+                return res.status(400).json({ status: false, error: 'Invalid or missing FGTransactionID for update status' });
+            }
+        }
+
         console.log(`[GPN] Calling SaveFinishGoodsByBarcode_Manu_v2`);
         console.log(`  - BarcodeNo: ${barcodeNum}`);
         console.log(`  - Status: ${status}`);
         console.log(`  - UserID: ${userIdNum}`);
         console.log(`  - CompanyID: ${companyIdNum}`);
         console.log(`  - BranchID: ${branchIdNum}`);
+        if (fgTransactionId) {
+            console.log(`  - FGTransactionID: ${fgTransactionId}`);
+        }
         console.log(`  - Database: ${selectedDatabase}`);
 
         const pool = await getPool(selectedDatabase);
-        const result = await pool.request()
+        const request = pool.request()
             .input('BarcodeNo', sql.Int, barcodeNum)
             .input('Status', sql.NVarChar(50), status)
             .input('UserID', sql.Int, userIdNum)
             .input('CompanyID', sql.Int, companyIdNum)
-            .input('BranchID', sql.Int, branchIdNum)
-            .execute('dbo.SaveFinishGoodsByBarcode_Manu_v2');
+            .input('BranchID', sql.Int, branchIdNum);
+
+        // Only add FGTransactionID parameter if it's provided (for update status)
+        if (fgTransactionId) {
+            request.input('FGTransactionID', sql.Int, Number(fgTransactionId));
+        }
+
+        const result = await request.execute('dbo.SaveFinishGoodsByBarcode_Manu_v2');
 
         const rows = result.recordset || [];
         console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
