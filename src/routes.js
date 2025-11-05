@@ -1810,6 +1810,65 @@ router.post('/qc/inspection-template', async (req, res) => {
     }
 });
 
+// Save Process Inspection (QC Audit)
+router.post('/qc/save-inspection', async (req, res) => {
+    try {
+        const { userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ 
+                status: false, 
+                error: 'Invalid or missing database (must be KOL or AHM)' 
+            });
+        }
+        
+        // Validate required fields
+        if (!userId || !productionId || !processId || !jobBookingJobCardContentsId || !items) {
+            return res.status(400).json({
+                status: false,
+                error: 'Missing required fields: userId, productionId, processId, jobBookingJobCardContentsId, items'
+            });
+        }
+        
+        // Build the inspection JSON
+        const inspectionJson = {
+            voucherPrefix: "QC",
+            companyID: 2,
+            jobBookingJobCardContentsID: jobBookingJobCardContentsId,
+            jobBookingID: jobBookingId || 1869, // Use provided or default
+            items: items
+        };
+        
+        console.log(`[QC-SAVE] Saving inspection for UserID: ${userId}, ProductionID: ${productionId}, ProcessID: ${processId}`);
+        console.log('[QC-SAVE] Inspection JSON:', JSON.stringify(inspectionJson, null, 2));
+        
+        const pool = await getPool(selectedDatabase);
+        
+        // Execute the stored procedure
+        const result = await pool.request()
+            .input('UserID', sql.Int, userId)
+            .input('ProductionID', sql.Int, productionId)
+            .input('ProcessID', sql.Int, processId)
+            .input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspectionJson))
+            .execute('SaveProcessInspection');
+        
+        console.log('[QC-SAVE] Inspection saved successfully');
+        
+        return res.json({
+            status: true,
+            message: 'Inspection saved successfully',
+            result: result.recordset || []
+        });
+    } catch (error) {
+        console.error('[QC-SAVE] Error saving inspection:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to save inspection: ' + error.message
+        });
+    }
+});
+
 export default router;
 
 
