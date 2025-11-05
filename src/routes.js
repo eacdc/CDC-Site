@@ -1734,6 +1734,64 @@ router.post('/machine-status/latest', async (req, res) => {
     }
 });
 
+// Get Process Inspection Template for QC Audit
+// Test endpoint to verify QC routes are registered
+router.get('/qc/test', (req, res) => {
+    console.log('[QC-TEST] QC routes are registered and working');
+    res.json({ 
+        status: true, 
+        message: 'QC routes are working correctly',
+        timestamp: new Date().toISOString()
+    });
+});
+
+router.post('/qc/inspection-template', async (req, res) => {
+    try {
+        const { processId, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ 
+                status: false, 
+                error: 'Invalid or missing database (must be KOL or AHM)' 
+            });
+        }
+
+        // For now, use hardcoded processId 10337 as per requirement
+        const processIdToUse = 10337;
+        
+        console.log(`[QC-INSPECTION] Getting inspection template for ProcessID: ${processIdToUse}, Database: ${selectedDatabase}`);
+        
+        const pool = await getPool(selectedDatabase);
+        
+        // Execute the stored procedure
+        const result = await pool.request()
+            .input('ProcessID', sql.Int, processIdToUse)
+            .execute('GetProcessInspectionTemplate');
+        
+        console.log(`[QC-INSPECTION] Query completed. Records found: ${result.recordset?.length || 0}`);
+        
+        // Log first record for debugging
+        if (result.recordset && result.recordset.length > 0) {
+            console.log('[QC-INSPECTION] First record columns:', Object.keys(result.recordset[0]));
+            console.log('[QC-INSPECTION] First record data:', result.recordset[0]);
+        }
+        
+        return res.json({
+            status: true,
+            data: result.recordset || [],
+            processId: processIdToUse,
+            message: 'Inspection template retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[QC-INSPECTION] Error getting inspection template:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to get inspection template: ' + error.message
+        });
+    }
+});
+
 export default router;
 
 
