@@ -1747,16 +1747,21 @@ router.post('/qc/inspection-template', async (req, res) => {
             });
         }
 
-        // For now, use hardcoded processId 10337 as per requirement
-        const processIdToUse = 10337;
+        // Use the ProcessID from the request (from GetLatestMachineStatusPerMachine output)
+        if (!processId) {
+            return res.status(400).json({
+                status: false,
+                error: 'ProcessID is required'
+            });
+        }
         
-        console.log(`[QC-INSPECTION] Getting inspection template for ProcessID: ${processIdToUse}, Database: ${selectedDatabase}`);
+        console.log(`[QC-INSPECTION] Getting inspection template for ProcessID: ${processId}, Database: ${selectedDatabase}`);
         
         const pool = await getPool(selectedDatabase);
         
         // Execute the stored procedure
         const result = await pool.request()
-            .input('ProcessID', sql.Int, processIdToUse)
+            .input('ProcessID', sql.Int, processId)
             .execute('GetProcessInspectionTemplate');
         
         console.log(`[QC-INSPECTION] Query completed. Records found: ${result.recordset?.length || 0}`);
@@ -1798,7 +1803,7 @@ router.post('/qc/inspection-template', async (req, res) => {
         return res.json({
             status: true,
             data: inspectionData,
-            processId: processIdToUse,
+            processId: processId,
             message: 'Inspection template retrieved successfully'
         });
     } catch (error) {
@@ -1824,10 +1829,10 @@ router.post('/qc/save-inspection', async (req, res) => {
         }
         
         // Validate required fields
-        if (!userId || !productionId || !processId || !jobBookingJobCardContentsId || !items) {
+        if (!userId || !productionId || !processId || !jobBookingJobCardContentsId || !jobBookingId || !items) {
             return res.status(400).json({
                 status: false,
-                error: 'Missing required fields: userId, productionId, processId, jobBookingJobCardContentsId, items'
+                error: 'Missing required fields: userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items'
             });
         }
         
@@ -1836,7 +1841,7 @@ router.post('/qc/save-inspection', async (req, res) => {
             voucherPrefix: "QC",
             companyID: 2,
             jobBookingJobCardContentsID: jobBookingJobCardContentsId,
-            jobBookingID: jobBookingId || 1869, // Use provided or default
+            jobBookingID: jobBookingId, // Use actual JobBookingID from GetLatestMachineStatusPerMachine
             items: items
         };
         
