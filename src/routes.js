@@ -1735,16 +1735,6 @@ router.post('/machine-status/latest', async (req, res) => {
 });
 
 // Get Process Inspection Template for QC Audit
-// Test endpoint to verify QC routes are registered
-router.get('/qc/test', (req, res) => {
-    console.log('[QC-TEST] QC routes are registered and working');
-    res.json({ 
-        status: true, 
-        message: 'QC routes are working correctly',
-        timestamp: new Date().toISOString()
-    });
-});
-
 router.post('/qc/inspection-template', async (req, res) => {
     try {
         const { processId, database } = req.body || {};
@@ -1771,15 +1761,31 @@ router.post('/qc/inspection-template', async (req, res) => {
         
         console.log(`[QC-INSPECTION] Query completed. Records found: ${result.recordset?.length || 0}`);
         
-        // Log first record for debugging
+        // Parse the JSON from SQL Server's FOR JSON output
+        let inspectionData = [];
+        
         if (result.recordset && result.recordset.length > 0) {
-            console.log('[QC-INSPECTION] First record columns:', Object.keys(result.recordset[0]));
-            console.log('[QC-INSPECTION] First record data:', result.recordset[0]);
+            const firstRecord = result.recordset[0];
+            console.log('[QC-INSPECTION] First record columns:', Object.keys(firstRecord));
+            
+            // SQL Server returns JSON in a column with auto-generated name like 'JSON_F52E2B61-18A1-11d1-B105-00805F49916B'
+            // We need to find that column and parse its value
+            const jsonColumnKey = Object.keys(firstRecord).find(key => key.startsWith('JSON_'));
+            
+            if (jsonColumnKey && firstRecord[jsonColumnKey]) {
+                try {
+                    inspectionData = JSON.parse(firstRecord[jsonColumnKey]);
+                    console.log('[QC-INSPECTION] Parsed inspection data:', inspectionData);
+                } catch (parseError) {
+                    console.error('[QC-INSPECTION] Error parsing JSON:', parseError);
+                    throw new Error('Failed to parse inspection template data');
+                }
+            }
         }
         
         return res.json({
             status: true,
-            data: result.recordset || [],
+            data: inspectionData,
             processId: processIdToUse,
             message: 'Inspection template retrieved successfully'
         });
