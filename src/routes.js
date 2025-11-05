@@ -1774,10 +1774,22 @@ router.post('/qc/inspection-template', async (req, res) => {
             
             if (jsonColumnKey && firstRecord[jsonColumnKey]) {
                 try {
-                    inspectionData = JSON.parse(firstRecord[jsonColumnKey]);
+                    let jsonString = firstRecord[jsonColumnKey];
+                    console.log('[QC-INSPECTION] Raw JSON string:', jsonString);
+                    
+                    // Fix malformed JSON where "options": is followed by } or ,
+                    // Replace "options":} with "options":null}
+                    // Replace "options":, with "options":null,
+                    jsonString = jsonString.replace(/"options":\s*}/g, '"options":null}');
+                    jsonString = jsonString.replace(/"options":\s*,/g, '"options":null,');
+                    
+                    console.log('[QC-INSPECTION] Fixed JSON string:', jsonString);
+                    
+                    inspectionData = JSON.parse(jsonString);
                     console.log('[QC-INSPECTION] Parsed inspection data:', inspectionData);
                 } catch (parseError) {
                     console.error('[QC-INSPECTION] Error parsing JSON:', parseError);
+                    console.error('[QC-INSPECTION] Problematic JSON string:', firstRecord[jsonColumnKey]);
                     throw new Error('Failed to parse inspection template data');
                 }
             }
