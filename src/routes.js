@@ -1691,6 +1691,96 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
     }
 });
 
+// Get machine floor screen data for a specific machine
+router.get('/machine-floor/:machineId', async (req, res) => {
+    try {
+        const { machineId } = req.params;
+        const { database = 'KOL' } = req.query || {};
+
+        const machineIdNum = Number(machineId);
+        if (!Number.isInteger(machineIdNum) || machineIdNum <= 0) {
+            return res.status(400).json({
+                status: false,
+                error: 'machineId must be a positive integer'
+            });
+        }
+
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid or missing database (must be KOL or AHM)'
+            });
+        }
+
+        console.log(`[MACHINE-FLOOR] Fetching screen data for MachineID ${machineIdNum} (${selectedDatabase})`);
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('MachineID', sql.Int, machineIdNum)
+            .execute('GetMachineFloorScreenData');
+
+        const raw = (result.recordset && result.recordset.length > 0)
+            ? result.recordset[0]
+            : null;
+
+        if (!raw) {
+            return res.json({
+                status: false,
+                error: `No floor screen data returned for MachineID ${machineIdNum}`
+            });
+        }
+
+        const normalizeBoolean = (value) => {
+            if (typeof value === 'boolean') return value;
+            if (typeof value === 'number') return value === 1;
+            if (typeof value === 'string') {
+                const trimmed = value.trim().toLowerCase();
+                return trimmed === '1' || trimmed === 'true' || trimmed === 'yes';
+            }
+            return false;
+        };
+
+        const normalized = {
+            MachineID: raw.MachineID ?? raw.machineid ?? machineIdNum,
+            MachineName: raw.MachineName ?? raw.machinename ?? null,
+            MachineStatus: raw.MachineStatus ?? raw.machinestatus ?? null,
+            IsRunning: normalizeBoolean(raw.IsRunning ?? raw.isrunning),
+            CurrentJobNumber: raw.CurrentJobNumber ?? raw.currentjobnumber ?? null,
+            CurrentJobName: raw.CurrentJobName ?? raw.currentjobname ?? null,
+            CurrentJobStartedAt: raw.CurrentJobStartedAt ?? raw.currentjobstartedat ?? null,
+            RunningSinceMinutes: raw.RunningSinceMinutes ?? raw.runningsinceminutes ?? null,
+            PlanQty: raw.PlanQty ?? raw.planqty ?? null,
+            ProducedQty: raw.ProducedQty ?? raw.producedqty ?? null,
+            RemainingQty: raw.RemainingQty ?? raw.remainingqty ?? null,
+            MachineSpeedUPM: raw.MachineSpeedUPM ?? raw.machinespeedupm ?? null,
+            ChangeOverMinutes: raw.ChangeOverMinutes ?? raw.changeoverminutes ?? null,
+            TargetMinutesToFinish: raw.TargetMinutesToFinish ?? raw.targetminutestofinish ?? null,
+            TargetFinishAt: raw.TargetFinishAt ?? raw.targetfinishat ?? null,
+            IsBehindSchedule: normalizeBoolean(raw.IsBehindSchedule ?? raw.isbehindschedule),
+            StatusColor: raw.StatusColor ?? raw.statuscolor ?? null,
+            LastCompletedJobNumber: raw.LastCompletedJobNumber ?? raw.lastcompletedjobnumber ?? null,
+            LastCompletedJobName: raw.LastCompletedJobName ?? raw.lastcompletedjobname ?? null,
+            LastCompletedAt: raw.LastCompletedAt ?? raw.lastcompletedat ?? null,
+            IdleSinceMinutes: raw.IdleSinceMinutes ?? raw.idlesinceminutes ?? null,
+            BacklogJobsOnMachine: raw.BacklogJobsOnMachine ?? raw.backlogjobsonmachine ?? null,
+            BacklogJobsForProcess: raw.BacklogJobsForProcess ?? raw.backlogjobsforprocess ?? null
+        };
+
+        return res.json({
+            status: true,
+            data: normalized,
+            message: 'Machine floor data retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[MACHINE-FLOOR] Error fetching data:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to fetch machine floor data'
+        });
+    }
+});
+
 // Get latest machine status per machine
 router.post('/machine-status/latest', async (req, res) => {
     try {
