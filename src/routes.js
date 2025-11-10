@@ -1665,6 +1665,11 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
 
         const rows = result.recordset || [];
         console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
+        if (rows.length > 0) {
+            console.log('[GPN] Procedure response (first row):', rows[0]);
+        } else {
+            console.log('[GPN] Procedure response: <no rows>');
+        }
 
         // Check for error status in response
         const first = rows[0] || {};
