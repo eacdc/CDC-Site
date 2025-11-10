@@ -1665,8 +1665,20 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
 
         const rows = result.recordset || [];
         console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
+        console.log(`[GPN] Request barcode: ${barcodeNum}, Status: ${status}`);
+        if (fgTransactionId) {
+            console.log(`[GPN] Input FGTransactionID: ${fgTransactionId}`);
+        }
+        
         if (rows.length > 0) {
-            console.log('[GPN] Procedure response (first row):', rows[0]);
+            console.log('[GPN] Procedure response (first row):', JSON.stringify(rows[0], null, 2));
+            const first = rows[0];
+            const returnedFgId = first.FGTransactionID || first.fgtransactionid || first.FGTransactionId || null;
+            if (returnedFgId) {
+                console.log(`[GPN] Returned FGTransactionID: ${returnedFgId}`);
+            } else {
+                console.log('[GPN] WARNING: No FGTransactionID in response');
+            }
         } else {
             console.log('[GPN] Procedure response: <no rows>');
         }
@@ -1676,12 +1688,14 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
         const statusText = first.Status || first.status || '';
         
         if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
+            console.log(`[GPN] Procedure returned failure: ${statusText}`);
             return res.json({
                 status: false,
                 error: statusText || 'Failed to save finish goods'
             });
         }
 
+        console.log(`[GPN] Success response being sent to client`);
         return res.json({
             status: true,
             message: 'Finish goods saved successfully',
