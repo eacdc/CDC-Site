@@ -1600,6 +1600,80 @@ router.get('/grn/transporters', async (req, res) => {
     }
 });
 
+// GRN: Barcode status lookup across Packing Slip, GPN, and Delivery Note
+router.post('/grn/barcode-status', async (req, res) => {
+    try {
+        const { barcode, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        console.log(`[BARCODE STATUS] Lookup requested for barcode ${barcodeNum} (${selectedDatabase})`);
+
+        const pool = await getPool(selectedDatabase);
+        const request = pool.request();
+        request.input('BarcodeNo', sql.Int, barcodeNum);
+
+        const query = `
+            SELECT Category, EventDate, JobBookingNo
+            FROM (
+                SELECT
+                    'Packing Slip' AS Category,
+                    p.[DateTime] AS EventDate,
+                    b.JobBookingNo
+                FROM PackingSlipBarcodeEntry AS p
+                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
+                WHERE p.BarcodeNo = @BarcodeNo
+
+                UNION ALL
+
+                SELECT
+                    'GPN' AS Category,
+                    p.CreatedDate AS EventDate,
+                    b.JobBookingNo
+                FROM FinishGoodsTransactionDetail AS p
+                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
+                WHERE p.Barcode = @BarcodeNo
+                  AND ISNULL(p.ParentFGTransactionID, 0) = 0
+
+                UNION ALL
+
+                SELECT
+                    'Delivery Note' AS Category,
+                    p.CreatedDate AS EventDate,
+                    b.JobBookingNo
+                FROM FinishGoodsTransactionDetail AS p
+                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
+                WHERE p.Barcode = @BarcodeNo
+                  AND ISNULL(p.ParentFGTransactionID, 0) > 0
+            ) AS Combined
+            ORDER BY EventDate ASC, Category ASC
+        `;
+
+        const result = await request.query(query);
+        const records = result.recordset || [];
+
+        console.log(`[BARCODE STATUS] Records found: ${records.length}`);
+        if (records.length > 0) {
+            console.log('[BARCODE STATUS] First record:', records[0]);
+        }
+
+        return res.json({
+            status: true,
+            records
+        });
+    } catch (err) {
+        console.error('[BARCODE STATUS] Error fetching status:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch barcode status' });
+    }
+});
+
 // GPN Portal - Save Finish Goods by Barcode
 router.post('/gpn/save-finish-goods', async (req, res) => {
     try {
