@@ -1579,6 +1579,62 @@ router.post('/grn/update-delivery-note', async (req, res) => {
     }
 });
 
+// GRN: Delete Delivery Note entry for a barcode
+router.post('/grn/delete-delivery-note', async (req, res) => {
+    try {
+        const { barcode, database, userId, companyId = 2, branchId = 0 } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const companyIdNum = Number(companyId);
+        if (!Number.isInteger(companyIdNum) || companyIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid companyId' });
+        }
+
+        const branchIdNum = Number(branchId);
+        if (!Number.isInteger(branchIdNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid branchId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('UserID', sql.Int, userIdNum)
+            .input('CompanyID', sql.Int, companyIdNum)
+            .input('BranchID', sql.Int, branchIdNum)
+            .execute('dbo.DeleteDeliveryNoteByBarcode_Manu');
+
+        const rows = result.recordset || [];
+        const first = rows[0] || {};
+        const statusText = first.Status || first.status || '';
+
+        if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
+            return res.json({ status: false, error: statusText || 'Failed to delete delivery note', sp: first });
+        }
+
+        return res.json({
+            status: true,
+            message: 'Delivery note deleted successfully',
+            sp: first
+        });
+    } catch (err) {
+        console.error('GRN delete delivery note error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to delete delivery note' });
+    }
+});
+
 // GRN: List Transporters for dropdown
 router.get('/grn/transporters', async (req, res) => {
     try {
@@ -1780,6 +1836,78 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
         return res.status(500).json({ 
             status: false, 
             error: 'Failed to save finish goods: ' + (err.message || 'Unknown error')
+        });
+    }
+});
+
+// GPN Portal - Delete Finish Goods entry for a barcode
+router.post('/gpn/delete-finish-goods', async (req, res) => {
+    try {
+        const { barcode, database, userId, companyId = 2, branchId = 0 } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const barcodeNum = Number(barcode);
+        if (!Number.isFinite(barcodeNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing barcode' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const companyIdNum = Number(companyId);
+        if (!Number.isInteger(companyIdNum) || companyIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid companyId' });
+        }
+
+        const branchIdNum = Number(branchId);
+        if (!Number.isInteger(branchIdNum)) {
+            return res.status(400).json({ status: false, error: 'Invalid branchId' });
+        }
+
+        console.log(`[GPN DELETE] Calling DeleteFinishGoodsByBarcode_Manu`);
+        console.log(`  - BarcodeNo: ${barcodeNum}`);
+        console.log(`  - UserID: ${userIdNum}`);
+        console.log(`  - CompanyID: ${companyIdNum}`);
+        console.log(`  - BranchID: ${branchIdNum}`);
+        console.log(`  - Database: ${selectedDatabase}`);
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('UserID', sql.Int, userIdNum)
+            .input('CompanyID', sql.Int, companyIdNum)
+            .input('BranchID', sql.Int, branchIdNum)
+            .execute('dbo.DeleteFinishGoodsByBarcode_Manu');
+
+        const rows = result.recordset || [];
+        const first = rows[0] || {};
+        const statusText = first.Status || first.status || '';
+
+        if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
+            console.log(`[GPN DELETE] Procedure returned failure: ${statusText}`);
+            return res.json({
+                status: false,
+                error: statusText || 'Failed to delete finish goods entry',
+                sp: first
+            });
+        }
+
+        console.log(`[GPN DELETE] Success response being sent to client`);
+        return res.json({
+            status: true,
+            message: 'Finish goods entry deleted successfully',
+            sp: first
+        });
+    } catch (err) {
+        console.error('[GPN DELETE] Error deleting finish goods:', err);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to delete finish goods entry'
         });
     }
 });
