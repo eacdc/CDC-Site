@@ -1679,35 +1679,15 @@ router.post('/grn/barcode-status', async (req, res) => {
         const query = `
             SELECT Category, EventDate, JobBookingNo
             FROM (
-                SELECT
-                    'Packing Slip' AS Category,
-                    p.[DateTime] AS EventDate,
-                    b.JobBookingNo
-                FROM PackingSlipBarcodeEntry AS p
-                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
-                WHERE p.BarcodeNo = @BarcodeNo
-
-                UNION ALL
-
-                SELECT
-                    'GPN' AS Category,
-                    p.CreatedDate AS EventDate,
-                    b.JobBookingNo
-                FROM FinishGoodsTransactionDetail AS p
-                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
-                WHERE p.Barcode = @BarcodeNo
-                  AND ISNULL(p.ParentFGTransactionID, 0) = 0
-
-                UNION ALL
-
-                SELECT
-                    'Delivery Note' AS Category,
-                    p.CreatedDate AS EventDate,
-                    b.JobBookingNo
-                FROM FinishGoodsTransactionDetail AS p
-                INNER JOIN jobbookingjobcard AS b ON p.JobBookingID = b.JobBookingID
-                WHERE p.Barcode = @BarcodeNo
-                  AND ISNULL(p.ParentFGTransactionID, 0) > 0
+                select 'packing-slip' as Category, p.datetime, b.JobBookingNo from PackingSlipBarcodeEntry p inner join jobbookingjobcard b on p.JobBookingID=b.JobBookingID where barcodeno = 100067
+UNION
+select 'GPN' as Category, p.CreatedDate, b.JobBookingNo from FinishGoodsTransactionDetail p inner join jobbookingjobcard b on p.JobBookingID=b.JobBookingID 
+	inner join FinishGoodsTransactionMain p2 on p.FGTransactionID=p2.FGTransactionID where barcode = 100067 and ParentFGTransactionID=0 --gpn
+	and isnull(p.isdeletedtransaction,0)=0 and isnull(p2.isdeletedtransaction,0)=0
+UNION
+select 'Delivery Note' as Category, p.CreatedDate, b.JobBookingNo from FinishGoodsTransactionDetail p inner join jobbookingjobcard b on p.JobBookingID=b.JobBookingID 
+	inner join FinishGoodsTransactionMain p2 on p.FGTransactionID=p2.FGTransactionID where barcode = 100067 and ParentFGTransactionID>0 --dn
+	and isnull(p.isdeletedtransaction,0)=0 and isnull(p2.isdeletedtransaction,0)=0
             ) AS Combined
             ORDER BY EventDate ASC, Category ASC
         `;
