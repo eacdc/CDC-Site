@@ -2187,6 +2187,67 @@ router.post('/qc/save-inspection', async (req, res) => {
     }
 });
 
+// QC Inspector Daily Performance Dashboard
+router.post('/reports/qc-inspector-performance', async (req, res) => {
+    try {
+        const { startDate, endDate, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid or missing database (must be KOL or AHM)'
+            });
+        }
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                status: false,
+                error: 'Start date and end date are required'
+            });
+        }
+
+        const parsedStart = new Date(startDate);
+        const parsedEnd = new Date(endDate);
+
+        if (Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid date format. Use YYYY-MM-DD.'
+            });
+        }
+
+        if (parsedStart.getTime() > parsedEnd.getTime()) {
+            return res.status(400).json({
+                status: false,
+                error: 'Start date cannot be after end date'
+            });
+        }
+
+        console.log(`[QC-REPORT] Fetching inspector performance for ${selectedDatabase} from ${startDate} to ${endDate}`);
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('StartDateParam', sql.Date, parsedStart)
+            .input('EndDateParam', sql.Date, parsedEnd)
+            .query('EXEC Report_QCInspector_DailyPerformance @StartDateParam, @EndDateParam');
+
+        console.log(`[QC-REPORT] Records returned: ${result.recordset?.length || 0}`);
+
+        return res.json({
+            status: true,
+            data: result.recordset || [],
+            message: 'QC inspector performance data retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[QC-REPORT] Error fetching inspector performance:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to fetch QC inspector performance data'
+        });
+    }
+});
+
 export default router;
 
 
