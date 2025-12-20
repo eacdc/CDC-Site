@@ -2325,19 +2325,17 @@ router.post('/whatsapp/login', async (req, res) => {
             });
 
             // Call comm_pending_first_intimation procedure
+            // The procedure expects positional date parameters (not named parameters)
             let pendingData;
             try {
-                pendingData = await pool.request()
-                    .input('startDate', sql.Date, startDate)
-                    .input('endDate', sql.Date, endDate)
-                    .execute('dbo.comm_pending_first_intimation');
+                // Use raw query with positional parameters (as shown in user's example)
+                const query = `EXEC dbo.comm_pending_first_intimation '${startDate}', '${endDate}'`;
+                pendingData = await pool.request().query(query);
             } catch (procedureError) {
                 // If dbo schema fails, try without schema prefix
                 console.log('[WHATSAPP-LOGIN] Trying comm_pending_first_intimation without dbo schema prefix');
-                pendingData = await pool.request()
-                    .input('startDate', sql.Date, startDate)
-                    .input('endDate', sql.Date, endDate)
-                    .execute('comm_pending_first_intimation');
+                const query = `EXEC comm_pending_first_intimation '${startDate}', '${endDate}'`;
+                pendingData = await pool.request().query(query);
             }
 
             console.log('[WHATSAPP-LOGIN] Pending first intimation data fetched', {
