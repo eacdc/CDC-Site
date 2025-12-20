@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import axios from "axios";
+import nodemailer from "nodemailer";
 import { getPool, sql, clearPoolCache } from './db.js';
 import multer from 'multer';
 import QrCode from 'qrcode-reader';
@@ -7,6 +9,7 @@ const { Jimp } = jimp;
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
 
 const router = Router();
 
@@ -21,6 +24,103 @@ let jobIdCounter = Date.now();
 // Helper to generate unique job ID
 function generateJobId() {
   return `job_${jobIdCounter++}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function normalizeINPhone(mobile) {
+    const raw = String(mobile || "").replace(/[^\d]/g, "");
+    if (!raw) return null;
+    if (raw.startsWith("91") && raw.length === 12) return `+${raw}`;
+    if (raw.length === 10) return `+91${raw}`;
+    if (raw.length >= 11) return `+${raw}`;
+    return null;
+  }
+  
+  function splitCsv(str) {
+    return String(str || "").split(",").map(s => s.trim()).filter(Boolean);
+  }
+  
+  function fmtDate(d) {
+    if (!d) return "";
+    const dt = new Date(d);
+    if (Number.isNaN(dt.getTime())) return String(d);
+    return dt.toLocaleDateString("en-GB");
+  }
+  
+  function buildOrderLines(rows) {
+    return rows.map(r => {
+      return [
+        `• Item: ${r["Job Name"]}`,
+        `  Qty: ${r["Order Qty"]}`,
+        `  Job No: ${r["Job Card No"] || ""}`,
+        `  Committed Delivery: ${fmtDate(r["Final Delivery Date"])}`
+      ].join("\n");
+    }).join("\n\n");
+  }
+
+async function sendWhatsAppMaytapi({ productId, phoneId, apiKey, toNumber, text }) {
+  const url = `https://api.maytapi.com/api/${productId}/${phoneId}/sendMessage`;
+  const payload = { to_number: toNumber, type: "text", message: text };
+
+  console.log("message", payload.message);
+
+  console.log('[WHATSAPP] Sending message:', {
+    url,
+    toNumber,
+    productId,
+    phoneId,
+    apiKeyPreview: apiKey ? `${apiKey.substring(0, 8)}...` : 'MISSING',
+    textPreview: text ? text.substring(0, 50) + '...' : 'EMPTY'
+  });
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        "x-maytapi-key": apiKey
+      },
+      timeout: 20000
+    });
+
+    console.log('[WHATSAPP] Response:', {
+      status: response.status,
+      statusText: response.statusText,
+      data: response.data
+    });
+
+    return response;
+  } catch (err) {
+    console.error('[WHATSAPP] Request failed:', {
+      status: err.response?.status,
+      statusText: err.response?.statusText,
+      data: err.response?.data,
+      message: err.message
+    });
+    throw err;
+  }
+}
+
+async function sendEmailSMTP({ creds, to, subject, text }) {
+  const port = Number(creds.SMTPServerPort);
+  const transporter = nodemailer.createTransport({
+    host: creds.SMTPServer,
+    port: port,
+    secure: port === 465,  // Only use secure for port 465
+    auth: creds.SMTPAuthenticate
+      ? { user: creds.SMTPUserName, pass: creds.SMTPUserPassword }
+      : undefined,
+    tls: {
+      rejectUnauthorized: false  // Allow self-signed certs
+    }
+  });
+
+  const fromEmail = creds.EmailID || creds.SMTPUserName;
+
+  return transporter.sendMail({
+    from: fromEmail,
+    to,
+    subject,
+    text
+  });
 }
 
 // Background worker function
@@ -261,6 +361,160 @@ function _checkStatusOnlyResponse(recordset) {
     
     return null;
 }
+
+
+router.post("/comm/first-intimation/send", async (req, res) => {
+    try {
+      const { username, orderBookingDetailsIds } = req.body || {};
+  
+      if (!username || !Array.isArray(orderBookingDetailsIds) || orderBookingDetailsIds.length === 0) {
+        return res.status(400).json({ ok: false, message: "username and orderBookingDetailsIds[] required" });
+      }
+  
+      const pool = await getPool('KOL');
+  
+      // 1) get credentials
+      const credReq = pool.request();
+      credReq.input("Username", sql.NVarChar(100), username);
+      const credRes = await credReq.execute("dbo.comm_get_user_credentials");
+  
+      const creds = credRes.recordset?.[0];
+      if (!creds) {
+        return res.status(400).json({ ok: false, message: "Credentials not found" });
+      }
+  
+      const senderName = username;
+      const senderPhone = creds.ContactNo || "";
+  
+      // 2) TVP
+      const tvp = new sql.Table("dbo.IdList");
+      tvp.columns.add("Id", sql.Int, { nullable: false });
+      orderBookingDetailsIds.forEach(id => tvp.rows.add(Number(id)));
+  
+      // 3) fetch pending details
+      const detReq = pool.request();
+      detReq.input("Ids", tvp);
+      const detRes = await detReq.execute("dbo.comm_first_intimation_details_by_ids");
+  
+      const rows = detRes.recordset || [];
+      if (!rows.length) {
+        return res.json({ ok: true, message: "No pending items found." });
+      }
+  
+      // 4) group by client
+      const byClient = new Map();
+      for (const r of rows) {
+        if (!byClient.has(r.ClientLedgerID)) byClient.set(r.ClientLedgerID, []);
+        byClient.get(r.ClientLedgerID).push(r);
+      }
+  
+      const results = [];
+  
+      for (const [ledgerId, clientRows] of byClient.entries()) {
+        const clientName = clientRows[0]["Client Name"];
+        const contactName =
+          (clientRows[0]["Contact Person"] || "").split(",")[0] || clientName;
+  
+        const orderLines = buildOrderLines(clientRows);
+  
+        const whatsappText =
+  `Dear ${contactName},
+  
+Warm greetings from CDC Printers Pvt Ltd 😊
+  
+Your order(s) have been planned in our system. Details below:
+  
+  ${orderLines}
+  
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+  
+        const emailSubject = `Order Planned & Delivery Commitment | ${clientName}`;
+        const emailBody =
+  `Dear ${contactName},
+  
+  Warm greetings from CDC Printers Pvt Ltd.
+  
+  Your order(s) have been planned in our system. Details below:
+  
+  ${orderLines}
+  
+  Regards,
+  ${senderName}
+  Customer Relationship Manager
+  CDC Printers Pvt Ltd
+  ${senderPhone}`;
+  
+        const emailList = splitCsv(clientRows[0]["Concern Email"]);
+        const mobileList = splitCsv(clientRows[0]["Concern Mobile No"])
+          .map(normalizeINPhone)
+          .filter(Boolean);
+  
+        let sentEmail = false;
+        let sentWhatsapp = false;
+  
+        if (mobileList.length) {
+          for (const to of mobileList) {
+            try {
+              await sendWhatsAppMaytapi({
+                productId: creds.ProductID,
+                phoneId: creds.PhoneID,
+                apiKey: creds.ApiKey,
+                toNumber: to,
+                text: whatsappText
+              });
+              sentWhatsapp = true;
+            } catch (waErr) {
+              console.error('[WHATSAPP ERROR]', waErr.message);
+              throw waErr;
+            }
+          }
+        }
+  
+        if (emailList.length) {
+          try {
+            console.log('[EMAIL] SMTP Config:', {
+              host: creds.SMTPServer,
+              port: creds.SMTPServerPort,
+              secure: Number(creds.SMTPServerPort) === 465
+            });
+            await sendEmailSMTP({
+              creds,
+              to: emailList.join(","),
+              subject: emailSubject,
+              text: emailBody
+            });
+            sentEmail = true;
+          } catch (emailErr) {
+            console.error('[EMAIL ERROR]', emailErr.message);
+            throw emailErr;
+          }
+        }
+  
+        if (sentEmail || sentWhatsapp) {
+          const tvpClient = new sql.Table("dbo.IdList");
+          tvpClient.columns.add("Id", sql.Int, { nullable: false });
+          clientRows.forEach(r => tvpClient.rows.add(r.OrderBookingDetailsID));
+  
+          const markReq = pool.request();
+          markReq.input("OrderBookingDetailsIds", tvpClient);
+          markReq.input("SentEmail", sql.Bit, sentEmail ? 1 : 0);
+          markReq.input("SentWhatsapp", sql.Bit, sentWhatsapp ? 1 : 0);
+          markReq.input("SentByUser", sql.NVarChar(100), username);
+          await markReq.execute("dbo.comm_mark_first_intimation_sent");
+        }
+  
+        results.push({ clientName, sentEmail, sentWhatsapp });
+      }
+  
+      res.json({ ok: true, results });
+    } catch (err) {
+      res.status(500).json({ ok: false, message: err.message });
+    }
+  });
 
 router.get('/auth/login', async (req, res) => {
 	try {
