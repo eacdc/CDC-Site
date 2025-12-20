@@ -2274,7 +2274,7 @@ router.post('/whatsapp/login', async (req, res) => {
             });
         }
 
-        // Use KOL database by default (you can make this configurable if needed)
+        // WhatsApp app uses Kolkata (KOL) database only
         const selectedDatabase = 'KOL';
         
         console.log(`[WHATSAPP-LOGIN] Attempting login for user: ${trimmedUsername}, Database: ${selectedDatabase}`);
@@ -2309,11 +2309,50 @@ router.post('/whatsapp/login', async (req, res) => {
                 username: trimmedUsername,
                 returnedData: result.recordset[0]
             });
+
+            // Calculate dates for last 2 weeks (from 2 weeks ago to today)
+            const today = new Date();
+            const twoWeeksAgo = new Date();
+            twoWeeksAgo.setDate(today.getDate() - 14); // 14 days ago
+
+            // Format dates as YYYY-MM-DD
+            const endDate = today.toISOString().split('T')[0];
+            const startDate = twoWeeksAgo.toISOString().split('T')[0];
+
+            console.log('[WHATSAPP-LOGIN] Fetching pending first intimation data', {
+                startDate,
+                endDate
+            });
+
+            // Call comm_pending_first_intimation procedure
+            let pendingData;
+            try {
+                pendingData = await pool.request()
+                    .input('startDate', sql.Date, startDate)
+                    .input('endDate', sql.Date, endDate)
+                    .execute('dbo.comm_pending_first_intimation');
+            } catch (procedureError) {
+                // If dbo schema fails, try without schema prefix
+                console.log('[WHATSAPP-LOGIN] Trying comm_pending_first_intimation without dbo schema prefix');
+                pendingData = await pool.request()
+                    .input('startDate', sql.Date, startDate)
+                    .input('endDate', sql.Date, endDate)
+                    .execute('comm_pending_first_intimation');
+            }
+
+            console.log('[WHATSAPP-LOGIN] Pending first intimation data fetched', {
+                recordCount: pendingData.recordset?.length || 0
+            });
             
             return res.json({
                 status: true,
                 message: 'Login successful',
-                username: trimmedUsername
+                username: trimmedUsername,
+                pendingData: pendingData.recordset || [],
+                dateRange: {
+                    startDate,
+                    endDate
+                }
             });
         } else {
             console.warn('[WHATSAPP-LOGIN] Login failed - no rows returned', {
