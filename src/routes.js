@@ -2331,15 +2331,25 @@ router.post('/whatsapp/login', async (req, res) => {
                 // Use raw query with positional parameters (as shown in user's example)
                 const query = `EXEC dbo.comm_pending_first_intimation '${startDate}', '${endDate}'`;
                 pendingData = await pool.request().query(query);
+                console.log('[WHATSAPP-LOGIN] Procedure executed successfully with dbo schema');
             } catch (procedureError) {
                 // If dbo schema fails, try without schema prefix
-                console.log('[WHATSAPP-LOGIN] Trying comm_pending_first_intimation without dbo schema prefix');
-                const query = `EXEC comm_pending_first_intimation '${startDate}', '${endDate}'`;
-                pendingData = await pool.request().query(query);
+                console.log('[WHATSAPP-LOGIN] dbo schema failed, trying without schema prefix', procedureError.message);
+                try {
+                    const query = `EXEC comm_pending_first_intimation '${startDate}', '${endDate}'`;
+                    pendingData = await pool.request().query(query);
+                    console.log('[WHATSAPP-LOGIN] Procedure executed successfully without schema prefix');
+                } catch (altError) {
+                    console.error('[WHATSAPP-LOGIN] Failed to execute comm_pending_first_intimation', altError);
+                    // Return empty array if procedure fails, but still allow login
+                    pendingData = { recordset: [] };
+                }
             }
 
             console.log('[WHATSAPP-LOGIN] Pending first intimation data fetched', {
-                recordCount: pendingData.recordset?.length || 0
+                recordCount: pendingData.recordset?.length || 0,
+                hasRecordset: !!pendingData.recordset,
+                sampleRecord: pendingData.recordset?.[0] || null
             });
             
             return res.json({
