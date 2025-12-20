@@ -2695,6 +2695,86 @@ router.post('/whatsapp/send-message', async (req, res) => {
     }
 });
 
+// Update expected delivery date endpoint
+router.post('/whatsapp/update-delivery-date', async (req, res) => {
+    try {
+        const { username, orderBookingDetailsID, newExpectedDeliveryDate } = req.body;
+
+        // Validation
+        if (!username || typeof username !== 'string' || username.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Username is required'
+            });
+        }
+
+        if (!orderBookingDetailsID || typeof orderBookingDetailsID !== 'number') {
+            return res.status(400).json({
+                status: false,
+                error: 'OrderBookingDetailsID is required and must be a number'
+            });
+        }
+
+        if (!newExpectedDeliveryDate || typeof newExpectedDeliveryDate !== 'string') {
+            return res.status(400).json({
+                status: false,
+                error: 'NewExpectedDeliveryDate is required'
+            });
+        }
+
+        // Validate date format (YYYY-MM-DD)
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(newExpectedDeliveryDate)) {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid date format. Expected YYYY-MM-DD'
+            });
+        }
+
+        // WhatsApp app uses Kolkata (KOL) database only
+        const selectedDatabase = 'KOL';
+        
+        console.log('[WHATSAPP-UPDATE-DATE] Updating delivery date', {
+            username,
+            orderBookingDetailsID,
+            newExpectedDeliveryDate,
+            database: selectedDatabase
+        });
+
+        const pool = await getPool(selectedDatabase);
+
+        // Call the stored procedure
+        let result;
+        try {
+            const query = `EXEC dbo.comm_update_expected_delivery_date @OrderBookingDetailsID = ${orderBookingDetailsID}, @NewExpectedDeliveryDate = '${newExpectedDeliveryDate}'`;
+            result = await pool.request().query(query);
+            console.log('[WHATSAPP-UPDATE-DATE] Procedure executed successfully');
+        } catch (procedureError) {
+            // If dbo schema fails, try without schema prefix
+            console.log('[WHATSAPP-UPDATE-DATE] Trying without dbo schema prefix');
+            const query = `EXEC comm_update_expected_delivery_date @OrderBookingDetailsID = ${orderBookingDetailsID}, @NewExpectedDeliveryDate = '${newExpectedDeliveryDate}'`;
+            result = await pool.request().query(query);
+        }
+
+        console.log('[WHATSAPP-UPDATE-DATE] Delivery date updated successfully');
+
+        return res.json({
+            status: true,
+            message: 'Delivery date updated successfully',
+            data: {
+                orderBookingDetailsID,
+                newExpectedDeliveryDate
+            }
+        });
+    } catch (error) {
+        console.error('[WHATSAPP-UPDATE-DATE] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: error.message || 'Failed to update delivery date'
+        });
+    }
+});
+
 export default router;
 
 
