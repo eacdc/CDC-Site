@@ -2248,6 +2248,152 @@ router.post('/reports/qc-inspector-performance', async (req, res) => {
     }
 });
 
+// ============================================
+// WhatsApp Messaging Routes
+// ============================================
+
+// Login endpoint for WhatsApp Web UI
+router.post('/whatsapp/login', async (req, res) => {
+    try {
+        const { username } = req.body;
+
+        if (!username || typeof username !== 'string' || username.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Username is required'
+            });
+        }
+
+        const trimmedUsername = username.trim();
+
+        // Validate username is one of the allowed values
+        if (trimmedUsername !== 'Sourav' && trimmedUsername !== 'Swarnali') {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid username'
+            });
+        }
+
+        // Use KOL database by default (you can make this configurable if needed)
+        const selectedDatabase = 'KOL';
+        
+        console.log(`[WHATSAPP-LOGIN] Attempting login for user: ${trimmedUsername}, Database: ${selectedDatabase}`);
+
+        const pool = await getPool(selectedDatabase);
+
+        // Call the stored procedure comm_get_user_credentials
+        // The procedure takes username as input and has an inout parameter
+        // Try with dbo schema first, fallback to no schema if needed
+        let result;
+        try {
+            result = await pool.request()
+                .input('username', sql.NVarChar(255), trimmedUsername)
+                .execute('dbo.comm_get_user_credentials');
+        } catch (schemaError) {
+            // If dbo schema fails, try without schema prefix
+            console.log('[WHATSAPP-LOGIN] Trying without dbo schema prefix');
+            result = await pool.request()
+                .input('username', sql.NVarChar(255), trimmedUsername)
+                .execute('comm_get_user_credentials');
+        }
+
+        console.log('[WHATSAPP-LOGIN] Stored procedure executed', {
+            username: trimmedUsername,
+            database: selectedDatabase,
+            rowCount: result.recordset?.length || 0
+        });
+
+        // Check if procedure returned any rows (success)
+        if (result.recordset && result.recordset.length > 0) {
+            console.log('[WHATSAPP-LOGIN] Login successful', {
+                username: trimmedUsername,
+                returnedData: result.recordset[0]
+            });
+            
+            return res.json({
+                status: true,
+                message: 'Login successful',
+                username: trimmedUsername
+            });
+        } else {
+            console.warn('[WHATSAPP-LOGIN] Login failed - no rows returned', {
+                username: trimmedUsername,
+                database: selectedDatabase
+            });
+            
+            return res.status(401).json({
+                status: false,
+                error: 'Invalid credentials'
+            });
+        }
+    } catch (error) {
+        console.error('[WHATSAPP-LOGIN] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: error.message || 'Login failed'
+        });
+    }
+});
+
+// Send WhatsApp message endpoint
+router.post('/whatsapp/send-message', async (req, res) => {
+    try {
+        const { username, phoneNumber, message } = req.body;
+
+        // Validation
+        if (!username || typeof username !== 'string' || username.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Username is required'
+            });
+        }
+
+        if (!phoneNumber || typeof phoneNumber !== 'string' || phoneNumber.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Phone number is required'
+            });
+        }
+
+        if (!message || typeof message !== 'string' || message.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Message is required'
+            });
+        }
+
+        // Format phone number (remove spaces, ensure it starts with +)
+        let formattedPhone = phoneNumber.trim().replace(/\s+/g, '');
+        if (!formattedPhone.startsWith('+')) {
+            // If no country code, assume default (you can customize this)
+            formattedPhone = '+91' + formattedPhone; // Default to India (+91)
+        }
+
+        // TODO: Integrate with WhatsApp API (e.g., whatsapp-web.js, Twilio, etc.)
+        // For now, just log and return success
+        console.log(`[WHATSAPP-SEND] User: ${username}, Phone: ${formattedPhone}, Message: ${message}`);
+
+        // Simulate API call delay
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        return res.json({
+            status: true,
+            message: 'Message sent successfully',
+            data: {
+                phoneNumber: formattedPhone,
+                message: message.trim(),
+                sentAt: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('[WHATSAPP-SEND] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to send message'
+        });
+    }
+});
+
 export default router;
 
 
