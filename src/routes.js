@@ -9,6 +9,17 @@ const { Jimp } = jimp;
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import User from './models/User.js';
+import Contractor from './models/Contractor.js';
+import Operation from './models/Operation.js';
+import Job from './models/Job.js';
+import JobOperation from './models/JobOperation.js';
+import JobOpsMaster from './models/JobOpsMaster.js';
+import ContractorWD from './models/ContractorWD.js';
+import Bill from './models/Bill.js';
 
 
 const router = Router();
@@ -2773,6 +2784,1153 @@ router.post('/whatsapp/update-delivery-date', async (req, res) => {
             error: error.message || 'Failed to update delivery date'
         });
     }
+});
+
+// ============================================
+// Contractor PO System Routes
+// ============================================
+
+// Helper function to get MSSQL connection for contractor routes
+// Uses the same server config but different database (IndusEnterprise)
+let contractorPool = null;
+let contractorConnectionPromise = null;
+
+async function getContractorConnection() {
+  try {
+    if (contractorPool && contractorPool.connected) {
+      return contractorPool;
+    }
+
+    if (contractorConnectionPromise) {
+      console.log('⏳ [CONTRACTOR-MSSQL] Connection already in progress, waiting...');
+      return await contractorConnectionPromise;
+    }
+
+    console.log('🔌 [CONTRACTOR-MSSQL] Establishing connection...');
+    const startTime = Date.now();
+    
+    const serverEnv = process.env.DB_SERVER || 'cdcindas.24mycloud.com';
+    let serverHost = serverEnv;
+    let serverPort = Number(process.env.DB_PORT || 51175);
+
+    if (!serverPort && serverEnv.includes(',')) {
+      const parts = serverEnv.split(',');
+      serverHost = parts[0];
+      const parsed = parseInt(parts[1], 10);
+      if (!Number.isNaN(parsed)) {
+        serverPort = parsed;
+      }
+    }
+
+    const config = {
+      server: serverHost,
+      port: serverPort,
+      database: process.env.DB_NAME_CONTRACTOR || 'IndusEnterprise',
+      user: process.env.DB_USER || 'indus',
+      password: process.env.DB_PASSWORD || 'Param@99811',
+      connectionTimeout: 10000,
+      requestTimeout: 30000,
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+      },
+      options: {
+        encrypt: false,
+        trustServerCertificate: true,
+        enableArithAbort: true
+      }
+    };
+
+    contractorConnectionPromise = sql.connect(config);
+    contractorPool = await contractorConnectionPromise;
+    
+    const connectionTime = Date.now() - startTime;
+    console.log(`✅ [CONTRACTOR-MSSQL] Connected in ${connectionTime}ms`);
+    
+    contractorConnectionPromise = null;
+    
+    contractorPool.on('error', (err) => {
+      console.error('❌ [CONTRACTOR-MSSQL] Connection pool error:', err);
+      contractorPool = null;
+      contractorConnectionPromise = null;
+    });
+
+    return contractorPool;
+  } catch (error) {
+    console.error('❌ [CONTRACTOR-MSSQL] Connection error:', error);
+    contractorPool = null;
+    contractorConnectionPromise = null;
+    throw error;
+  }
+}
+
+// Auth routes
+router.post('/auth/login', async (req, res) => {
+  try {
+    const { userId, passkey } = req.body;
+
+    if (!userId || !passkey) {
+      return res.status(400).json({ error: 'User ID and passkey are required' });
+    }
+
+    const user = await User.findOne({ userId });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const isValid = passkey === user.passkey || await bcrypt.compare(passkey, user.passkey);
+
+    if (!isValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign(
+      { userId: user.userId, id: user._id },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      token,
+      user: {
+        userId: user.userId,
+        name: user.name || user.username,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Server error during login' });
+  }
+});
+
+router.post('/auth/register', async (req, res) => {
+  try {
+    const { userId, passkey, name, role } = req.body;
+
+    if (!userId || !passkey) {
+      return res.status(400).json({ error: 'User ID and passkey are required' });
+    }
+
+    const existingUser = await User.findOne({ userId });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    const hashedPasskey = await bcrypt.hash(passkey, 10);
+
+    const user = new User({
+      userId,
+      passkey: hashedPasskey,
+      name: name || userId,
+      role: role || 'user'
+    });
+
+    await user.save();
+
+    res.status(201).json({ message: 'User created successfully', userId: user.userId });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Server error during registration' });
+  }
+});
+
+// Jobs routes
+router.get('/jobs', async (req, res) => {
+  try {
+    const jobs = await Job.find().sort({ createdAt: -1 });
+    res.json(jobs);
+  } catch (error) {
+    console.error('Error fetching jobs:', error);
+    res.status(500).json({ error: 'Error fetching jobs' });
+  }
+});
+
+router.get('/jobs/search/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber }).lean();
+
+    let previousOps = null;
+
+    if (jobOpsMaster && jobOpsMaster.ops && jobOpsMaster.ops.length > 0) {
+      try {
+        const opIds = jobOpsMaster.ops.map(op => op.opId);
+
+        const opsDocs = await Operation.find(
+          { _id: { $in: opIds } },
+          { _id: 1, opsName: 1 }
+        ).lean();
+
+        const opsNameById = {};
+        opsDocs.forEach(op => {
+          opsNameById[op._id.toString()] = op.opsName;
+        });
+
+        const contractorWDDocs = await ContractorWD.find({
+          jobId: jobNumber
+        }).lean();
+
+        const contractorIds = [
+          ...new Set(contractorWDDocs.map(doc => doc.contractorId))
+        ];
+
+        const contractors = await Contractor.find({
+          contractorId: { $in: contractorIds }
+        }).lean();
+
+        const contractorNameById = {};
+        contractors.forEach(c => {
+          contractorNameById[c.contractorId] = c.name;
+        });
+
+        const quantitiesByOpAndContractor = {};
+        const totalCompletedByOp = {};
+
+        contractorWDDocs.forEach(doc => {
+          const contractorId = doc.contractorId;
+          (doc.opsDone || []).forEach(od => {
+            if (!od.opsId || od.opsDoneQty == null) {
+              return;
+            }
+
+            if (opIds.includes(od.opsId)) {
+              if (!quantitiesByOpAndContractor[od.opsId]) {
+                quantitiesByOpAndContractor[od.opsId] = {};
+              }
+              if (!quantitiesByOpAndContractor[od.opsId][contractorId]) {
+                quantitiesByOpAndContractor[od.opsId][contractorId] = 0;
+              }
+              quantitiesByOpAndContractor[od.opsId][contractorId] += od.opsDoneQty;
+
+              if (!totalCompletedByOp[od.opsId]) {
+                totalCompletedByOp[od.opsId] = 0;
+              }
+              totalCompletedByOp[od.opsId] += od.opsDoneQty;
+            }
+          });
+        });
+
+        previousOps = {
+          contractors: contractorIds.map(id => ({
+            contractorId: id,
+            name: contractorNameById[id] || id
+          })),
+          operations: jobOpsMaster.ops.map(op => {
+            const totalOpsQty = op.totalOpsQty || 0;
+            const totalCompleted = totalCompletedByOp[op.opId] || 0;
+            const pending = Math.max(0, totalOpsQty - totalCompleted);
+
+            return {
+              opsId: op.opId,
+              opsName: opsNameById[op.opId] || 'Unknown',
+              totalOpsQty,
+              totalCompleted,
+              pending,
+              quantitiesByContractor:
+                quantitiesByOpAndContractor[op.opId] || {}
+            };
+          })
+        };
+      } catch (aggError) {
+        console.error('Error building previous ops summary:', aggError);
+      }
+    }
+
+    res.json({
+      job: null,
+      operations: [],
+      previousOps
+    });
+  } catch (error) {
+    console.error('Error searching job:', error);
+    res.status(500).json({ error: 'Error searching job' });
+  }
+});
+
+router.get('/jobs/:id', async (req, res) => {
+  try {
+    const job = await Job.findById(req.params.id);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const operations = await JobOperation.find({ job: job._id })
+      .populate('operation', 'opsName type');
+
+    res.json({
+      job,
+      operations
+    });
+  } catch (error) {
+    console.error('Error fetching job:', error);
+    res.status(500).json({ error: 'Error fetching job' });
+  }
+});
+
+router.post('/jobs', async (req, res) => {
+  try {
+    const { jobNumber, clientName, jobTitle, qty, productCat, unitPrice } = req.body;
+
+    if (!jobNumber || !clientName || !jobTitle || !qty) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const existingJob = await Job.findOne({ jobNumber });
+    if (existingJob) {
+      return res.status(400).json({ error: 'Job number already exists' });
+    }
+
+    const job = new Job({
+      jobNumber,
+      clientName,
+      jobTitle,
+      qty,
+      productCat: productCat || '',
+      unitPrice: unitPrice || 0
+    });
+
+    await job.save();
+    res.status(201).json(job);
+  } catch (error) {
+    console.error('Error creating job:', error);
+    res.status(500).json({ error: 'Error creating job' });
+  }
+});
+
+router.post('/jobs/:jobId/operations', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { operations } = req.body;
+
+    const job = await Job.findById(jobId);
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const createdOperations = [];
+
+    for (const op of operations) {
+      const { operationId, qtyPerBook, rate, ratePerBook } = op;
+
+      if (!operationId || qtyPerBook === undefined || rate === undefined || ratePerBook === undefined) {
+        continue;
+      }
+
+      const jobOperation = new JobOperation({
+        job: jobId,
+        operation: operationId,
+        qtyPerBook,
+        rate,
+        ratePerBook,
+        contractorWork: []
+      });
+
+      await jobOperation.save();
+      createdOperations.push(jobOperation);
+    }
+
+    res.status(201).json(createdOperations);
+  } catch (error) {
+    console.error('Error adding operations to job:', error);
+    res.status(500).json({ error: 'Error adding operations to job' });
+  }
+});
+
+router.post('/jobs/jobopsmaster', async (req, res) => {
+  try {
+    const {
+      jobNumber,
+      operations,
+      qty
+    } = req.body;
+
+    if (!jobNumber || !operations || !Array.isArray(operations) || operations.length === 0) {
+      return res.status(400).json({ error: 'Job number and at least one operation are required' });
+    }
+
+    const totalQty = Number(qty || 0);
+
+    const ops = operations
+      .map(op => {
+        const { operationId, qtyPerBook, ratePerBook } = op;
+        if (!operationId || qtyPerBook === undefined || ratePerBook === undefined) {
+          return null;
+        }
+
+        const qtyPerBookNum = Number(qtyPerBook);
+        const valuePerBookNum = Number(ratePerBook);
+
+        if (isNaN(qtyPerBookNum) || qtyPerBookNum < 0 || isNaN(valuePerBookNum) || valuePerBookNum < 0) {
+          return null;
+        }
+
+        const totalOpsQty = qtyPerBookNum * totalQty;
+
+        return {
+          opId: String(operationId),
+          qtyPerBook: qtyPerBookNum,
+          totalOpsQty,
+          pendingOpsQty: totalOpsQty,
+          valuePerBook: valuePerBookNum
+        };
+      })
+      .filter(Boolean);
+
+    if (ops.length === 0) {
+      return res.status(400).json({ error: 'No valid operations to save' });
+    }
+
+    let jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber });
+
+    if (!jobOpsMaster) {
+      jobOpsMaster = new JobOpsMaster({
+        jobId: jobNumber,
+        totalQty,
+        ops
+      });
+    } else {
+      jobOpsMaster.totalQty = totalQty;
+
+      const existingOpIds = new Set(jobOpsMaster.ops.map(existingOp => existingOp.opId));
+
+      const newOpsToAdd = ops.filter(newOp => !existingOpIds.has(newOp.opId));
+
+      if (newOpsToAdd.length > 0) {
+        jobOpsMaster.ops = [...jobOpsMaster.ops, ...newOpsToAdd];
+      }
+    }
+
+    await jobOpsMaster.save();
+
+    res.status(201).json(jobOpsMaster);
+  } catch (error) {
+    console.error('Error saving job operations to JobopsMaster:', error);
+    res.status(500).json({ error: 'Error saving job operations' });
+  }
+});
+
+router.get('/jobs/jobopsmaster/jobnumbers', async (req, res) => {
+  try {
+    const jobOpsMasters = await JobOpsMaster.find({}, 'jobId').sort({ jobId: 1 }).lean();
+    const jobNumbers = jobOpsMasters.map(job => job.jobId);
+    res.json(jobNumbers);
+  } catch (error) {
+    console.error('Error fetching job numbers:', error);
+    res.status(500).json({ error: 'Error fetching job numbers' });
+  }
+});
+
+router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
+  try {
+    const { jobNumberPart } = req.params;
+    console.log('🔍 [BACKEND] /jobs/search-numbers called with jobNumberPart:', jobNumberPart);
+
+    if (!jobNumberPart || jobNumberPart.length < 4) {
+      return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getContractorConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+    request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
+
+    console.log('🔍 [MSSQL] Calling dbo.contractor_search_jobnumbers with @JobNumberPart =', jobNumberPart);
+
+    const queryStartTime = Date.now();
+    const result = await request.execute('dbo.contractor_search_jobnumbers');
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+
+    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
+    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
+
+    const jobNumbers = result.recordset.map((row, index) => {
+      console.log(`🔍 [MSSQL] Row ${index}:`, JSON.stringify(row, null, 2));
+      const jobNum = row.JobNumber || row.Job_Number || row.jobNumber || row.job_number || 
+             row.JobNo || row.Job_NO || Object.values(row)[0];
+      console.log(`🔍 [MSSQL] Row ${index} extracted jobNumber:`, jobNum);
+      return jobNum;
+    }).filter(Boolean);
+
+    console.log('🔍 [BACKEND] Final jobNumbers array:', jobNumbers);
+    res.json(jobNumbers);
+  } catch (error) {
+    console.error('❌ [BACKEND] Error searching job numbers:', error);
+    console.error('❌ [BACKEND] Error stack:', error.stack);
+    res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
+  }
+});
+
+router.get('/jobs/details/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getContractorConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('🔍 [MSSQL] Calling dbo.contractor_get_job_details with @JobBookingNo =', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.execute('dbo.contractor_get_job_details');
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const jobDetails = result.recordset[0];
+
+    res.json({
+      clientName: jobDetails['Client Name'] || jobDetails.ClientName || jobDetails.clientName || '',
+      jobTitle: jobDetails['Job Title'] || jobDetails.JobTitle || jobDetails.jobTitle || '',
+      qty: jobDetails.OrderQty || jobDetails.orderQty || jobDetails.Qty || jobDetails.qty || 0,
+      productCat: jobDetails.ProductCategory || jobDetails.productCategory || jobDetails.ProductCat || jobDetails.productCat || '',
+      unitPrice: jobDetails.UnitPrice || jobDetails.unitPrice || jobDetails.unit_price || 0
+    });
+  } catch (error) {
+    console.error('Error fetching job details:', error);
+    res.status(500).json({ error: 'Error fetching job details: ' + error.message });
+  }
+});
+
+// Operations routes
+router.get('/operations', async (req, res) => {
+  try {
+    const { search } = req.query;
+    let query = {};
+
+    if (search) {
+      query.opsName = { $regex: search, $options: 'i' };
+    }
+
+    const operations = await Operation.find(query).sort({ opsName: 1 });
+    res.json(operations);
+  } catch (error) {
+    console.error('Error fetching operations:', error);
+    res.status(500).json({ error: 'Error fetching operations' });
+  }
+});
+
+router.get('/operations/:id', async (req, res) => {
+  try {
+    const operation = await Operation.findById(req.params.id);
+    if (!operation) {
+      return res.status(404).json({ error: 'Operation not found' });
+    }
+    res.json(operation);
+  } catch (error) {
+    console.error('Error fetching operation:', error);
+    res.status(500).json({ error: 'Error fetching operation' });
+  }
+});
+
+router.post('/operations', async (req, res) => {
+  try {
+    const { opsName, type, ratePerUnit } = req.body;
+
+    if (!opsName || !type) {
+      return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
+    }
+
+    if (ratePerUnit === undefined || ratePerUnit === null || ratePerUnit === '') {
+      return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
+    }
+
+    const ratePerUnitNum = Number(ratePerUnit);
+    if (isNaN(ratePerUnitNum) || ratePerUnitNum < 0) {
+      return res.status(400).json({ error: 'Rate/unit must be a valid number greater than or equal to 0' });
+    }
+
+    const existingOp = await Operation.findOne({ opsName });
+    if (existingOp) {
+      return res.status(400).json({ error: 'Operation already exists' });
+    }
+
+    const operation = new Operation({
+      opsName,
+      type,
+      ratePerUnit: ratePerUnitNum
+    });
+
+    await operation.save();
+    res.status(201).json(operation);
+  } catch (error) {
+    console.error('Error creating operation:', error);
+    res.status(500).json({ error: 'Error creating operation' });
+  }
+});
+
+router.put('/operations/:id', async (req, res) => {
+  try {
+    const { opsName, type, ratePerUnit } = req.body;
+    
+    if (!opsName || !type) {
+      return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
+    }
+
+    if (ratePerUnit === undefined || ratePerUnit === null || ratePerUnit === '') {
+      return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
+    }
+
+    const ratePerUnitNum = Number(ratePerUnit);
+    if (isNaN(ratePerUnitNum) || ratePerUnitNum < 0) {
+      return res.status(400).json({ error: 'Rate/unit must be a valid number greater than or equal to 0' });
+    }
+    
+    const operation = await Operation.findByIdAndUpdate(
+      req.params.id,
+      { opsName, type, ratePerUnit: ratePerUnitNum },
+      { new: true, runValidators: true }
+    );
+
+    if (!operation) {
+      return res.status(404).json({ error: 'Operation not found' });
+    }
+
+    res.json(operation);
+  } catch (error) {
+    console.error('Error updating operation:', error);
+    res.status(500).json({ error: 'Error updating operation' });
+  }
+});
+
+router.delete('/operations/:id', async (req, res) => {
+  try {
+    const operation = await Operation.findByIdAndDelete(req.params.id);
+    if (!operation) {
+      return res.status(404).json({ error: 'Operation not found' });
+    }
+    res.json({ message: 'Operation deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting operation:', error);
+    res.status(500).json({ error: 'Error deleting operation' });
+  }
+});
+
+// Work routes
+router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber }).lean();
+    
+    if (!jobOpsMaster) {
+      return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
+    }
+
+    const pendingOps = jobOpsMaster.ops.filter(op => op.pendingOpsQty > 0);
+
+    if (pendingOps.length === 0) {
+      return res.json({
+        jobNumber,
+        operations: []
+      });
+    }
+
+    const opIds = pendingOps.map(op => {
+      try {
+        return new mongoose.Types.ObjectId(op.opId);
+      } catch (error) {
+        return null;
+      }
+    }).filter(Boolean);
+
+    const operations = await Operation.find({
+      _id: { $in: opIds }
+    }).lean();
+
+    const opsNameMap = {};
+    operations.forEach(op => {
+      opsNameMap[op._id.toString()] = op.opsName;
+    });
+
+    const operationsWithNames = pendingOps.map(op => {
+      const rate = op.qtyPerBook > 0 ? op.valuePerBook / op.qtyPerBook : 0;
+      
+      return {
+        opId: op.opId,
+        opsName: opsNameMap[op.opId] || 'Unknown',
+        totalOpsQty: op.totalOpsQty,
+        pendingOpsQty: op.pendingOpsQty,
+        qtyPerBook: op.qtyPerBook,
+        rate: rate
+      };
+    });
+
+    res.json({
+      jobNumber,
+      operations: operationsWithNames
+    });
+  } catch (error) {
+    console.error('Error fetching pending operations from JobOpsMaster:', error);
+    res.status(500).json({ error: 'Error fetching pending operations' });
+  }
+});
+
+router.get('/work/pending/:contractor/:jobNumber', async (req, res) => {
+  try {
+    const { contractor, jobNumber } = req.params;
+
+    const job = await Job.findOne({ jobNumber });
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const jobOperations = await JobOperation.find({ job: job._id })
+      .populate('operation', 'opsName type');
+
+    const pendingOps = jobOperations.map(jobOp => {
+      const contractorWork = jobOp.contractorWork.find(cw => cw.contractor === contractor);
+      const completedQty = contractorWork ? contractorWork.completedQty : 0;
+      const pendingQty = jobOp.qtyPerBook - completedQty;
+
+      return {
+        _id: jobOp._id,
+        operation: jobOp.operation,
+        qtyPerBook: jobOp.qtyPerBook,
+        pendingQty: Math.max(0, pendingQty),
+        completedQty
+      };
+    });
+
+    res.json({
+      job,
+      operations: pendingOps
+    });
+  } catch (error) {
+    console.error('Error fetching pending work:', error);
+    res.status(500).json({ error: 'Error fetching pending work' });
+  }
+});
+
+router.post('/work/update/jobopsmaster', async (req, res) => {
+  try {
+    const { contractorId, jobNumber, operations } = req.body;
+
+    if (!contractorId || !jobNumber || !operations || !Array.isArray(operations)) {
+      return res.status(400).json({ error: 'Missing required fields: contractorId, jobNumber, and operations are required' });
+    }
+
+    const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber });
+    
+    if (!jobOpsMaster) {
+      return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
+    }
+
+    const updates = [];
+    const contractorWDOps = [];
+
+    for (const op of operations) {
+      const { opId, qtyToAdd } = op;
+
+      if (!opId || qtyToAdd === undefined || qtyToAdd <= 0) {
+        continue;
+      }
+
+      const jobOp = jobOpsMaster.ops.find(jop => jop.opId === opId);
+      
+      if (!jobOp) {
+        continue;
+      }
+
+      const qtyToDeduct = Number(qtyToAdd);
+      jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
+      jobOp.lastUpdatedDate = new Date();
+
+      updates.push({
+        opId: jobOp.opId,
+        pendingOpsQty: jobOp.pendingOpsQty
+      });
+
+      contractorWDOps.push({
+        opsId: opId,
+        opsDoneQty: qtyToDeduct,
+        completionDate: new Date()
+      });
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No valid operations to update' });
+    }
+
+    await jobOpsMaster.save();
+
+    let contractorWD = await ContractorWD.findOne({
+      contractorId: contractorId,
+      jobId: jobNumber
+    });
+
+    if (contractorWD) {
+      contractorWD.opsDone.push(...contractorWDOps);
+    } else {
+      contractorWD = new ContractorWD({
+        contractorId: contractorId,
+        jobId: jobNumber,
+        opsDone: contractorWDOps
+      });
+    }
+
+    await contractorWD.save();
+
+    res.json({ 
+      message: 'Work updated successfully', 
+      updates,
+      jobNumber,
+      contractorId
+    });
+  } catch (error) {
+    console.error('Error updating work in JobOpsMaster and Contractor_WD:', error);
+    res.status(500).json({ error: 'Error updating work' });
+  }
+});
+
+router.post('/work/update', async (req, res) => {
+  try {
+    const { contractor, jobNumber, operations } = req.body;
+
+    if (!contractor || !jobNumber || !operations || !Array.isArray(operations)) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const job = await Job.findOne({ jobNumber });
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const updates = [];
+
+    for (const op of operations) {
+      const { jobOperationId, qtyToAdd } = op;
+
+      if (!jobOperationId || qtyToAdd === undefined) {
+        continue;
+      }
+
+      const jobOperation = await JobOperation.findById(jobOperationId);
+      if (!jobOperation) {
+        continue;
+      }
+
+      let contractorWork = jobOperation.contractorWork.find(
+        cw => cw.contractor === contractor
+      );
+
+      if (contractorWork) {
+        contractorWork.completedQty += qtyToAdd;
+        contractorWork.completedQty = Math.min(
+          contractorWork.completedQty,
+          jobOperation.qtyPerBook
+        );
+      } else {
+        jobOperation.contractorWork.push({
+          contractor,
+          completedQty: Math.min(qtyToAdd, jobOperation.qtyPerBook)
+        });
+      }
+
+      await jobOperation.save();
+      updates.push(jobOperation);
+    }
+
+    res.json({ message: 'Work updated successfully', updates });
+  } catch (error) {
+    console.error('Error updating work:', error);
+    res.status(500).json({ error: 'Error updating work' });
+  }
+});
+
+// Contractors routes
+router.get('/contractors', async (req, res) => {
+  try {
+    const contractors = await Contractor.find().sort({ creationDate: -1 });
+    res.json(contractors);
+  } catch (error) {
+    console.error('Error fetching contractors:', error);
+    res.status(500).json({ error: 'Error fetching contractors' });
+  }
+});
+
+router.post('/contractors', async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    let contractorId;
+    let existingContractor;
+    do {
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8).toUpperCase();
+      contractorId = `CTR${timestamp}${randomStr}`;
+      existingContractor = await Contractor.findOne({ contractorId });
+    } while (existingContractor);
+
+    const contractor = new Contractor({
+      contractorId,
+      name: name.trim(),
+      creationDate: new Date()
+    });
+
+    await contractor.save();
+    res.status(201).json(contractor);
+  } catch (error) {
+    console.error('Error creating contractor:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'Contractor ID already exists' });
+    }
+    res.status(500).json({ error: 'Error creating contractor' });
+  }
+});
+
+// Bills routes
+async function generateNextBillNumber() {
+  try {
+    const lastBill = await Bill.findOne().sort({ billNumber: -1 });
+    
+    if (!lastBill) {
+      return '00000001';
+    }
+    
+    const lastNumber = parseInt(lastBill.billNumber, 10);
+    const nextNumber = lastNumber + 1;
+    
+    return nextNumber.toString().padStart(8, '0');
+  } catch (error) {
+    console.error('Error generating bill number:', error);
+    throw error;
+  }
+}
+
+router.get('/bills', async (req, res) => {
+  try {
+    const bills = await Bill.find().sort({ billNumber: -1 });
+    res.json(bills);
+  } catch (error) {
+    console.error('Error fetching bills:', error);
+    res.status(500).json({ error: 'Error fetching bills' });
+  }
+});
+
+router.get('/bills/:billNumber', async (req, res) => {
+  try {
+    const { billNumber } = req.params;
+    const bill = await Bill.findOne({ billNumber });
+    
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    res.json(bill);
+  } catch (error) {
+    console.error('Error fetching bill:', error);
+    res.status(500).json({ error: 'Error fetching bill' });
+  }
+});
+
+router.post('/bills', async (req, res) => {
+  try {
+    const { contractorName, jobs } = req.body;
+
+    if (!contractorName || !contractorName.trim()) {
+      return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    if (!jobs || !Array.isArray(jobs) || jobs.length === 0) {
+      return res.status(400).json({ error: 'At least one job is required' });
+    }
+
+    for (const job of jobs) {
+      if (!job.jobNumber || !job.jobNumber.trim()) {
+        return res.status(400).json({ error: 'Each job must have a job number' });
+      }
+      if (!job.ops || !Array.isArray(job.ops) || job.ops.length === 0) {
+        return res.status(400).json({ error: 'Each job must have at least one operation' });
+      }
+
+      for (const op of job.ops) {
+        if (!op.opsName || !op.opsName.trim()) {
+          return res.status(400).json({ 
+            error: 'Each operation must have an operation name (opsName)' 
+          });
+        }
+        if (
+          op.qtyBook === undefined || 
+          op.rate === undefined || 
+          op.qtyCompleted === undefined || 
+          op.totalValue === undefined
+        ) {
+          return res.status(400).json({ 
+            error: 'Each operation must have qtyBook, rate, qtyCompleted, and totalValue' 
+          });
+        }
+
+        if (
+          isNaN(Number(op.qtyBook)) || 
+          isNaN(Number(op.rate)) || 
+          isNaN(Number(op.qtyCompleted)) || 
+          isNaN(Number(op.totalValue))
+        ) {
+          return res.status(400).json({ 
+            error: 'All operation fields must be valid numbers' 
+          });
+        }
+
+        if (
+          Number(op.qtyBook) < 0 || 
+          Number(op.rate) < 0 || 
+          Number(op.qtyCompleted) < 0 || 
+          Number(op.totalValue) < 0
+        ) {
+          return res.status(400).json({ 
+            error: 'All operation values must be non-negative' 
+          });
+        }
+      }
+    }
+
+    const billNumber = await generateNextBillNumber();
+
+    const bill = new Bill({
+      billNumber,
+      contractorName: contractorName.trim(),
+      jobs: jobs.map(job => ({
+        jobNumber: job.jobNumber,
+        ops: job.ops.map(op => ({
+          opsName: op.opsName.trim(),
+          qtyBook: Number(op.qtyBook),
+          rate: Number(op.rate),
+          qtyCompleted: Number(op.qtyCompleted),
+          totalValue: Number(op.totalValue)
+        }))
+      }))
+    });
+
+    await bill.save();
+    res.status(201).json(bill);
+  } catch (error) {
+    console.error('Error creating bill:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'Bill number already exists' });
+    }
+    res.status(500).json({ error: 'Error creating bill' });
+  }
+});
+
+router.put('/bills/:billNumber', async (req, res) => {
+  try {
+    const { billNumber } = req.params;
+    const { contractorName, jobs } = req.body;
+
+    const bill = await Bill.findOne({ billNumber });
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    if (contractorName !== undefined) {
+      if (!contractorName || !contractorName.trim()) {
+        return res.status(400).json({ error: 'Contractor name cannot be empty' });
+      }
+      bill.contractorName = contractorName.trim();
+    }
+
+    if (jobs !== undefined) {
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        return res.status(400).json({ error: 'At least one job is required' });
+      }
+
+      for (const job of jobs) {
+        if (!job.jobNumber || !job.jobNumber.trim()) {
+          return res.status(400).json({ error: 'Each job must have a job number' });
+        }
+        if (!job.ops || !Array.isArray(job.ops) || job.ops.length === 0) {
+          return res.status(400).json({ error: 'Each job must have at least one operation' });
+        }
+
+        for (const op of job.ops) {
+          if (
+            op.qtyBook === undefined || 
+            op.rate === undefined || 
+            op.qtyCompleted === undefined || 
+            op.totalValue === undefined
+          ) {
+            return res.status(400).json({ 
+              error: 'Each operation must have qtyBook, rate, qtyCompleted, and totalValue' 
+            });
+          }
+        }
+      }
+
+      bill.jobs = jobs.map(job => ({
+        jobNumber: job.jobNumber,
+        ops: job.ops.map(op => ({
+          opsName: op.opsName.trim(),
+          qtyBook: Number(op.qtyBook),
+          rate: Number(op.rate),
+          qtyCompleted: Number(op.qtyCompleted),
+          totalValue: Number(op.totalValue)
+        }))
+      }));
+    }
+
+    await bill.save();
+    res.json(bill);
+  } catch (error) {
+    console.error('Error updating bill:', error);
+    res.status(500).json({ error: 'Error updating bill' });
+  }
+});
+
+router.patch('/bills/:billNumber/pay', async (req, res) => {
+  try {
+    const { billNumber } = req.params;
+    const bill = await Bill.findOne({ billNumber });
+    
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    bill.paymentStatus = 'Yes';
+    bill.paymentDate = new Date();
+    
+    await bill.save();
+    res.json(bill);
+  } catch (error) {
+    console.error('Error marking bill as paid:', error);
+    res.status(500).json({ error: 'Error marking bill as paid' });
+  }
+});
+
+router.delete('/bills/:billNumber', async (req, res) => {
+  try {
+    const { billNumber } = req.params;
+    const bill = await Bill.findOneAndDelete({ billNumber });
+    
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    res.json({ message: 'Bill deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting bill:', error);
+    res.status(500).json({ error: 'Error deleting bill' });
+  }
 });
 
 export default router;

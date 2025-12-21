@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
+import mongoose from 'mongoose';
 import routes from './routes.js';
 import { closeAllPools } from './db.js';
 
@@ -26,6 +27,18 @@ app.use((req, res, next) => {
 	});
 	next();
 });
+// MongoDB Connection
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/contractor-po-system';
+
+mongoose.connect(MONGODB_URI)
+	.then(() => {
+		console.log('✅ Connected to MongoDB');
+	})
+	.catch((error) => {
+		console.error('❌ MongoDB connection error:', error);
+		// Don't exit, let it retry - MongoDB features will retry when needed
+	});
+
 app.use('/api', routes);
 
 app.get('/health', (req, res) => {
@@ -40,6 +53,7 @@ const server = app.listen(port, () => {
 process.on('SIGINT', async () => {
 	console.log('Received SIGINT, shutting down gracefully...');
 	await closeAllPools();
+	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
 		process.exit(0);
@@ -49,6 +63,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
 	console.log('Received SIGTERM, shutting down gracefully...');
 	await closeAllPools();
+	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
 		process.exit(0);
