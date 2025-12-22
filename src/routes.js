@@ -567,7 +567,7 @@ ${senderPhone}`;
 router.post("/comm/material-readiness/send", async (req, res) => {
   try {
     const { username, items } = req.body || {};
-    console.log('////////////////////////////items', items);
+    console.log('////////////////////////////items', items[0]);
     if (!username || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, message: "username and items[] are required" });
     }
@@ -577,13 +577,8 @@ router.post("/comm/material-readiness/send", async (req, res) => {
     const ids = [];
 
     for (const it of items) {
-      // Handle orderBookingDetailsId as array (from frontend) or single value
-      let id;
-      if (Array.isArray(it.orderBookingDetailsId)) {
-        id = Number(it.orderBookingDetailsId[0]);
-      } else {
-        id = Number(it.orderBookingDetailsId);
-      }
+      // orderBookingDetailsId should be a single number
+      const id = Number(it.orderBookingDetailsId);
       
       if (!id || isNaN(id)) {
         return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId" });
