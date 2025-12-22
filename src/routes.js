@@ -562,22 +562,6 @@ ${senderPhone}`;
     }
   });
 
-/* ---- Build readiness order lines (each order may have its own cartons/qty/date) ---- */
-function buildReadinessLines(rows, readinessByObdId) {
-  return rows.map(r => {
-    const id = r.OrderBookingDetailsID;
-    const rd = readinessByObdId.get(id);
-
-    return [
-      `• Item: ${r["JobName"] || r["Job Name"] || ""}`,
-      `  Qty: ${r["Order Qty"]}`,
-      `  Job No: ${r["JobCard Num"] || r["Job Card No"] || ""}`,
-      `  Ready Date: ${fmtDate(rd?.readyForDispatchDate)}`,
-      `  Cartons: ${rd?.noOfCarton ?? 0}`,
-      `  Qty/Carton: ${rd?.qtyPerCarton ?? 0}`
-    ].join("\n");
-  }).join("\n\n");
-}
 
 /* ---- Route ---- */
 router.post("/comm/material-readiness/send", async (req, res) => {
