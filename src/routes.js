@@ -576,8 +576,17 @@ router.post("/comm/material-readiness/send", async (req, res) => {
     const ids = [];
 
     for (const it of items) {
-      const id = Number(it.orderBookingDetailsId);
-      if (!id) return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId" });
+      // Handle orderBookingDetailsId as array (from frontend) or single value
+      let id;
+      if (Array.isArray(it.orderBookingDetailsId)) {
+        id = Number(it.orderBookingDetailsId[0]);
+      } else {
+        id = Number(it.orderBookingDetailsId);
+      }
+      
+      if (!id || isNaN(id)) {
+        return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId" });
+      }
 
       readinessByObdId.set(id, {
         readyForDispatchDate: it.readyForDispatchDate,
