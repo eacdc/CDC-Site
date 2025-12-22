@@ -351,6 +351,81 @@ function logAuth(message, extra = {}) {
 }
 
 // Helper function to check if result contains only Status column
+
+function normalizeINPhone(mobile) {
+  const raw = String(mobile || "").replace(/[^\d]/g, "");
+  if (!raw) return null;
+  if (raw.startsWith("91") && raw.length === 12) return `+${raw}`;
+  if (raw.length === 10) return `+91${raw}`;
+  if (raw.length >= 11) return `+${raw}`;
+  return null;
+}
+
+function splitCsv(str) {
+  return String(str || "").split(",").map(s => s.trim()).filter(Boolean);
+}
+
+function fmtDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return String(d);
+  return dt.toLocaleDateString("en-GB");
+}
+
+async function sendWhatsAppMaytapi({ productId, phoneId, apiKey, toNumber, message }) {
+  const url = `https://api.maytapi.com/api/${productId}/${phoneId}/sendMessage`;
+
+  const payload = {
+    to_number: toNumber,
+    type: "text",
+    message,   // ✅ required in your Maytapi setup
+    text: ""
+  };
+
+  const res = await axios.post(url, payload, {
+    headers: {
+      "Content-Type": "application/json",
+      "x-maytapi-key": apiKey
+    },
+    timeout: 20000
+  });
+
+  return res.data;
+}
+
+async function sendEmailSMTP({ creds, to, subject, text }) {
+  const transporter = nodemailer.createTransport({
+    host: creds.SMTPServer,
+    port: Number(creds.SMTPServerPort),
+    secure: !!creds.SMTPUseSSL,
+    auth: creds.SMTPAuthenticate
+      ? { user: creds.SMTPUserName, pass: creds.SMTPUserPassword }
+      : undefined
+  });
+
+  const fromEmail = creds.EmailID || creds.SMTPUserName;
+
+  return transporter.sendMail({ from: fromEmail, to, subject, text });
+}
+
+/* ---- Build readiness order lines (each order may have its own cartons/qty/date) ---- */
+function buildReadinessLines(rows, readinessByObdId) {
+  return rows.map(r => {
+    const id = r.OrderBookingDetailsID;
+    const rd = readinessByObdId.get(id);
+
+    return [
+      `• Item: ${r["JobName"] || r["Job Name"] || ""}`,
+      `  Qty: ${r["Order Qty"]}`,
+      `  Job No: ${r["JobCard Num"] || r["Job Card No"] || ""}`,
+      `  Ready Date: ${fmtDate(rd?.readyForDispatchDate)}`,
+      `  Cartons: ${rd?.noOfCarton ?? 0}`,
+      `  Qty/Carton: ${rd?.qtyPerCarton ?? 0}`
+    ].join("\n");
+  }).join("\n\n");
+}
+
+
 function _checkStatusOnlyResponse(recordset) {
     if (!Array.isArray(recordset) || recordset.length === 0) {
         return null;
@@ -539,6 +614,205 @@ ${senderPhone}`;
       res.status(500).json({ ok: false, message: err.message });
     }
   });
+
+/* ---- Build readiness order lines (each order may have its own cartons/qty/date) ---- */
+function buildReadinessLines(rows, readinessByObdId) {
+  return rows.map(r => {
+    const id = r.OrderBookingDetailsID;
+    const rd = readinessByObdId.get(id);
+
+    return [
+      `• Item: ${r["JobName"] || r["Job Name"] || ""}`,
+      `  Qty: ${r["Order Qty"]}`,
+      `  Job No: ${r["JobCard Num"] || r["Job Card No"] || ""}`,
+      `  Ready Date: ${fmtDate(rd?.readyForDispatchDate)}`,
+      `  Cartons: ${rd?.noOfCarton ?? 0}`,
+      `  Qty/Carton: ${rd?.qtyPerCarton ?? 0}`
+    ].join("\n");
+  }).join("\n\n");
+}
+
+/* ---- Route ---- */
+router.post("/comm/material-readiness/send", async (req, res) => {
+  try {
+    const { username, items } = req.body || {};
+    if (!username || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, message: "username and items[] are required" });
+    }
+
+    // Validate & build maps
+    const readinessByObdId = new Map();
+    const ids = [];
+
+    for (const it of items) {
+      const id = Number(it.orderBookingDetailsId);
+      if (!id) return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId" });
+
+      readinessByObdId.set(id, {
+        readyForDispatchDate: it.readyForDispatchDate,
+        noOfCarton: Number(it.noOfCarton || 0),
+        qtyPerCarton: Number(it.qtyPerCarton || 0)
+      });
+      ids.push(id);
+    }
+
+    const pool = await getpool();
+
+    // 1) Credentials
+    const credRes = await pool.request()
+      .input("Username", sql.NVarChar(100), username)
+      .execute("dbo.comm_get_user_credentials");
+
+    const creds = credRes.recordset?.[0];
+    if (!creds) return res.status(400).json({ ok: false, message: "Credentials not found" });
+
+    const senderName = username;
+    const senderPhone = creds.ContactNo || "";
+
+    // 2) Fetch rows for those OBD IDs from comm_pending_delivery_followup
+    // We don't have a by-ids proc for this screen, so we filter in Node.
+    // (If you want faster, we will create comm_pending_delivery_followup_by_ids.)
+    const listRes = await pool.request().execute("dbo.comm_pending_delivery_followup");
+    const allRows = listRes.recordset || [];
+
+    const selectedRows = allRows.filter(r => readinessByObdId.has(Number(r.OrderBookingDetailsID)));
+    if (!selectedRows.length) {
+      return res.json({ ok: true, message: "No matching pending orders found for given IDs." });
+    }
+
+    // 3) Group by client (one message per ledger)
+    const byClient = new Map();
+    for (const r of selectedRows) {
+      const ledgerId = r.ClientLedgerID || r.LedgerID || r["ClientLedgerID"];
+      if (!byClient.has(ledgerId)) byClient.set(ledgerId, []);
+      byClient.get(ledgerId).push(r);
+    }
+
+    const results = [];
+
+    for (const [clientLedgerId, clientRows] of byClient.entries()) {
+      const clientName = clientRows[0]["Client Name"] || "";
+      const contactName =
+        (clientRows[0]["Contact Person"] || "").split(",")[0].trim() || clientName;
+
+      const readinessLines = buildReadinessLines(clientRows, readinessByObdId);
+
+      const whatsappMessage =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd 😊
+
+Your material is ready and planned for dispatch as per details below:
+
+${readinessLines}
+
+For any coordination required, please reply here.
+
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`.trim();
+
+      const emailSubject = `Material Ready for Dispatch | ${clientName}`;
+      const emailBody =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd.
+
+Your material is ready and planned for dispatch as per details below:
+
+${readinessLines}
+
+For any coordination required, please reply to this email.
+
+Regards,
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`.trim();
+
+      const emailList = splitCsv(clientRows[0]["Contact Email"] || clientRows[0]["Concern Email"]);
+      const mobileList = splitCsv(clientRows[0]["Contact phone"] || clientRows[0]["Concern Mobile No"])
+        .map(normalizeINPhone)
+        .filter(Boolean);
+
+      let sentEmail = false;
+      let sentWhatsapp = false;
+      const errors = [];
+
+      // WhatsApp
+      if (mobileList.length && creds.ProductID && creds.ApiKey && creds.PhoneID) {
+        for (const to of mobileList) {
+          try {
+            await sendWhatsAppMaytapi({
+              productId: creds.ProductID,
+              phoneId: creds.PhoneID,
+              apiKey: creds.ApiKey,
+              toNumber: to,
+              message: whatsappMessage
+            });
+            sentWhatsapp = true;
+          } catch (e) {
+            errors.push({ channel: "whatsapp", to, error: e?.response?.data || e.message });
+          }
+        }
+      }
+
+      // Email
+      if (emailList.length && creds.SMTPServer && creds.SMTPUserName && creds.SMTPUserPassword) {
+        try {
+          await sendEmailSMTP({
+            creds,
+            to: emailList.join(","),
+            subject: emailSubject,
+            text: emailBody
+          });
+          sentEmail = true;
+        } catch (e) {
+          errors.push({ channel: "email", to: emailList, error: e?.response?.data || e.message });
+        }
+      }
+
+      // 4) Update DispatchSchedule for these OBD IDs (readiness fields + dispatch message sent dates)
+      // We update per client group; BUT readiness fields may differ per OBD.
+      // So we call proc per OBD (simple & safe).
+      if (sentEmail || sentWhatsapp) {
+        for (const r of clientRows) {
+          const id = Number(r.OrderBookingDetailsID);
+          const rd = readinessByObdId.get(id);
+
+          const tvpOne = new sql.Table("dbo.IdList");
+          tvpOne.columns.add("Id", sql.Int, { nullable: false });
+          tvpOne.rows.add(id);
+
+          await pool.request()
+            .input("OrderBookingDetailsIds", tvpOne)
+            .input("ReadyForDispatchDate", sql.DateTime, rd?.readyForDispatchDate ? new Date(rd.readyForDispatchDate) : null)
+            .input("NoOfCarton", sql.Int, Number(rd?.noOfCarton || 0))
+            .input("QtyPerCarton", sql.Int, Number(rd?.qtyPerCarton || 0))
+            .input("SentEmail", sql.Bit, sentEmail ? 1 : 0)
+            .input("SentWhatsapp", sql.Bit, sentWhatsapp ? 1 : 0)
+            .execute("dbo.comm_mark_readiness_message_sent");
+        }
+      }
+
+      results.push({
+        clientLedgerId,
+        clientName,
+        orderCount: clientRows.length,
+        sentEmail,
+        sentWhatsapp,
+        errors
+      });
+    }
+
+    return res.json({ ok: true, results });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+});
 
 router.get('/auth/login', async (req, res) => {
 	try {
