@@ -2921,11 +2921,11 @@ router.post('/whatsapp/second-intimation', async (req, res) => {
 
         const today = new Date();
             const fourmonthsago = new Date();
-            fourmonthsago.setDate(today.getDate() - 120); // 120 days ago
+            fourmonthsago.setDate(today.getDate() - 120); // 14 days ago
 
             // Format dates as YYYY-MM-DD
-            endDate = today.toISOString().split('T')[0];
-            startDate = fourmonthsago.toISOString().split('T')[0];
+            //endDate = today.toISOString().split('T')[0];
+            const startDate2 = fourmonthsago.toISOString().split('T')[0];
 
         const trimmedUsername = username.trim();
         const selectedDatabase = 'KOL';
@@ -2938,7 +2938,7 @@ router.post('/whatsapp/second-intimation', async (req, res) => {
         let pendingData;
         try {
             // Use raw query with positional parameters
-            const query = `EXEC dbo.comm_pending_delivery_followup '${startDate}', '${endDate}'`;
+            const query = `EXEC dbo.comm_pending_delivery_followup '${startDate2}', '${endDate}'`;
             pendingData = await pool.request().query(query);
             console.log('[WHATSAPP-2ND-INTIMATION] Procedure executed successfully with dbo schema');
         } catch (procedureError) {
