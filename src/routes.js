@@ -352,25 +352,6 @@ function logAuth(message, extra = {}) {
 
 // Helper function to check if result contains only Status column
 
-function normalizeINPhone(mobile) {
-  const raw = String(mobile || "").replace(/[^\d]/g, "");
-  if (!raw) return null;
-  if (raw.startsWith("91") && raw.length === 12) return `+${raw}`;
-  if (raw.length === 10) return `+91${raw}`;
-  if (raw.length >= 11) return `+${raw}`;
-  return null;
-}
-
-function splitCsv(str) {
-  return String(str || "").split(",").map(s => s.trim()).filter(Boolean);
-}
-
-function fmtDate(d) {
-  if (!d) return "";
-  const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return String(d);
-  return dt.toLocaleDateString("en-GB");
-}
 
 async function sendWhatsAppMaytapi({ productId, phoneId, apiKey, toNumber, message }) {
   const url = `https://api.maytapi.com/api/${productId}/${phoneId}/sendMessage`;
