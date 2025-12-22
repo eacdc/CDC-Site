@@ -518,7 +518,20 @@ ${senderPhone}`;
           await markReq.execute("dbo.comm_mark_first_intimation_sent");
         }
   
-        results.push({ clientName, sentEmail, sentWhatsapp });
+        // Add per-job details to results
+        clientRows.forEach(row => {
+          results.push({
+            orderBookingDetailsID: row.OrderBookingDetailsID,
+            jobCardNo: row["Job Card No"] || row["JobCardNo"] || '',
+            orderQty: row["Order Qty"] || row["OrderQty"] || '',
+            clientName: row["Client Name"] || row["ClientName"] || clientName,
+            jobName: row["Job Name"] || row["JobName"] || '',
+            finalDeliveryDate: row["Final Delivery Date"] || row["FinalDeliveryDate"] || '',
+            contactPerson: row["Contact Person"] || row["ContactPerson"] || '',
+            mailSent: sentEmail ? 'Yes' : 'No',
+            whatsappSent: sentWhatsapp ? 'Yes' : 'No'
+          });
+        });
       }
   
       res.json({ ok: true, results });
@@ -2643,6 +2656,80 @@ router.post('/whatsapp/login', async (req, res) => {
         return res.status(500).json({
             status: false,
             error: error.message || 'Login failed'
+        });
+    }
+});
+
+// Second intimation endpoint for WhatsApp Web UI
+router.post('/whatsapp/second-intimation', async (req, res) => {
+    try {
+        const { username, startDate, endDate } = req.body;
+
+        if (!username || typeof username !== 'string' || username.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Username is required'
+            });
+        }
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                status: false,
+                error: 'Start date and end date are required'
+            });
+        }
+
+        const trimmedUsername = username.trim();
+        const selectedDatabase = 'KOL';
+        
+        console.log(`[WHATSAPP-2ND-INTIMATION] Fetching data for user: ${trimmedUsername}, Database: ${selectedDatabase}, Date range: ${startDate} to ${endDate}`);
+
+        const pool = await getPool(selectedDatabase);
+
+        // Call comm_pending_delivery_followup procedure
+        let pendingData;
+        try {
+            // Use raw query with positional parameters
+            const query = `EXEC dbo.comm_pending_delivery_followup '${startDate}', '${endDate}'`;
+            pendingData = await pool.request().query(query);
+            console.log('[WHATSAPP-2ND-INTIMATION] Procedure executed successfully with dbo schema');
+        } catch (procedureError) {
+            // If dbo schema fails, try without schema prefix
+            console.log('[WHATSAPP-2ND-INTIMATION] dbo schema failed, trying without schema prefix', procedureError.message);
+            try {
+                const query = `EXEC comm_pending_delivery_followup '${startDate}', '${endDate}'`;
+                pendingData = await pool.request().query(query);
+                console.log('[WHATSAPP-2ND-INTIMATION] Procedure executed successfully without schema prefix');
+            } catch (altError) {
+                console.error('[WHATSAPP-2ND-INTIMATION] Failed to execute comm_pending_delivery_followup', altError);
+                return res.status(500).json({
+                    status: false,
+                    error: 'Failed to fetch second intimation data: ' + altError.message
+                });
+            }
+        }
+
+        console.log('[WHATSAPP-2ND-INTIMATION] Pending delivery followup data fetched', {
+            recordCount: pendingData.recordset?.length || 0,
+            hasRecordset: !!pendingData.recordset,
+            sampleRecord: pendingData.recordset?.[0] || null
+        });
+        
+        return res.json({
+            status: true,
+            message: 'Second intimation data fetched successfully',
+            username: trimmedUsername,
+            pendingData: pendingData.recordset || [],
+            dateRange: {
+                startDate,
+                endDate
+            }
+        });
+    } catch (error) {
+        console.error('[WHATSAPP-2ND-INTIMATION] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: error.message || 'Failed to fetch second intimation data'
         });
     }
 });
