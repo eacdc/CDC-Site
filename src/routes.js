@@ -358,16 +358,16 @@ function logAuth(message, extra = {}) {
 /* ---- Build readiness order lines (each order may have its own cartons/qty/date) ---- */
 function buildReadinessLines(rows, readinessByObdId) {
   return rows.map(r => {
-    const id = r.OrderBookingDetailsID;
-    const rd = readinessByObdId.get(id);
+    const id = Number(r.OrderBookingDetailsID);
+    const rd = readinessByObdId.get(id); // must exist
 
     return [
-      `• Item: ${r["JobName"] || r["Job Name"] || ""}`,
+      `• Item: ${r["JobName"] || ""}`,
       `  Qty: ${r["Order Qty"]}`,
-      `  Job No: ${r["JobCard Num"] || r["Job Card No"] || ""}`,
-      `  Ready Date: ${fmtDate(rd?.readyForDispatchDate)}`,
-      `  Cartons: ${rd?.noOfCarton ?? 0}`,
-      `  Qty/Carton: ${rd?.qtyPerCarton ?? 0}`
+      `  Job No: ${r["JobCard Num"] || ""}`,
+      `  Ready Date: ${fmtDate(rd.readyForDispatchDate)}`,
+      `  Cartons: ${rd.noOfCarton}`,
+      `  Qty/Carton: ${rd.qtyPerCarton}`
     ].join("\n");
   }).join("\n\n");
 }
@@ -567,35 +567,45 @@ ${senderPhone}`;
 router.post("/comm/material-readiness/send", async (req, res) => {
   try {
     const { username, items } = req.body || {};
-    console.log('////////////////////////////items', items[0]);
+
     if (!username || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, message: "username and items[] are required" });
     }
 
-    // Validate & build maps
+    // 1) Build readiness map from FRONTEND payload ONLY
     const readinessByObdId = new Map();
     const ids = [];
+    const missing = [];
 
     for (const it of items) {
-      // orderBookingDetailsId should be a single number
       const id = Number(it.orderBookingDetailsId);
-      
-      if (!id || isNaN(id)) {
-        return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId" });
+      if (!id) {
+        return res.status(400).json({ ok: false, message: "Invalid orderBookingDetailsId in items[]" });
       }
 
-      readinessByObdId.set(id, {
-        readyForDispatchDate: it.readyForDispatchDate,
-        noOfCarton: Number(it.noOfCarton || 0),
-        qtyPerCarton: Number(it.qtyPerCarton || 0)
-      });
+      const readyForDispatchDate = it.readyForDispatchDate;
+      const noOfCarton = Number(it.noOfCarton || 0);
+      const qtyPerCarton = Number(it.qtyPerCarton || 0);
+
+      if (!readyForDispatchDate) missing.push({ id, field: "readyForDispatchDate" });
+      if (!noOfCarton) missing.push({ id, field: "noOfCarton" });
+      if (!qtyPerCarton) missing.push({ id, field: "qtyPerCarton" });
+
+      readinessByObdId.set(id, { readyForDispatchDate, noOfCarton, qtyPerCarton });
       ids.push(id);
     }
 
-    // Use the same DB helper as other routes (e.g. first-intimation)
+    if (missing.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Please fill Ready Date, No of Cartons, and Qty per Carton for all selected orders.",
+        missing
+      });
+    }
+
     const pool = await getPool('KOL');
 
-    // 1) Credentials
+    // 2) Get sender credentials
     const credRes = await pool.request()
       .input("Username", sql.NVarChar(100), username)
       .execute("dbo.comm_get_user_credentials");
@@ -606,31 +616,52 @@ router.post("/comm/material-readiness/send", async (req, res) => {
     const senderName = username;
     const senderPhone = creds.ContactNo || "";
 
-    // 2) Fetch rows for those OBD IDs from comm_pending_delivery_followup
-    // We don't have a by-ids proc for this screen, so we filter in Node.
-    // (If you want faster, we will create comm_pending_delivery_followup_by_ids.)
-    const listRes = await pool.request().execute("dbo.comm_pending_delivery_followup");
-    const allRows = listRes.recordset || [];
+    // 3) Fetch ONLY selected rows from DB (fast + safe)
+    const tvp = new sql.Table("dbo.IdList");
+    tvp.columns.add("Id", sql.Int, { nullable: false });
+    ids.forEach(id => tvp.rows.add(id));
 
-    const selectedRows = allRows.filter(r => readinessByObdId.has(Number(r.OrderBookingDetailsID)));
-    if (!selectedRows.length) {
-      return res.json({ ok: true, message: "No matching pending orders found for given IDs." });
+    const dataRes = await pool.request()
+      .input("Ids", tvp)
+      .execute("dbo.comm_pending_delivery_followup_by_ids");
+
+    const rows = dataRes.recordset || [];
+    if (!rows.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "No matching pending rows found for selected IDs (maybe already delivered/closed or DispatchSchedule missing)."
+      });
     }
 
-    // 3) Group by client (one message per ledger)
+    // 4) Ensure DB rows correspond exactly to payload IDs
+    const foundSet = new Set(rows.map(r => Number(r.OrderBookingDetailsID)));
+    const notFound = ids.filter(id => !foundSet.has(Number(id)));
+    if (notFound.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Some selected IDs were not returned by DB (may be closed / already delivered / not eligible).",
+        notFound
+      });
+    }
+
+    // 5) Group by client ledger → 1 message per client
     const byClient = new Map();
-    for (const r of selectedRows) {
-      const ledgerId = r.ClientLedgerID || r.LedgerID || r["ClientLedgerID"];
+    for (const r of rows) {
+      const ledgerId = Number(r.ClientLedgerID);
       if (!byClient.has(ledgerId)) byClient.set(ledgerId, []);
       byClient.get(ledgerId).push(r);
     }
 
     const results = [];
 
-    for (const [clientLedgerId, clientRows] of byClient.entries()) {
+    for (const [clientLedgerId, clientRowsRaw] of byClient.entries()) {
+      // safety: only rows we have payload for
+      const clientRows = clientRowsRaw.filter(r => readinessByObdId.has(Number(r.OrderBookingDetailsID)));
+      if (!clientRows.length) continue;
+
+      // message header info
       const clientName = clientRows[0]["Client Name"] || "";
-      const contactName =
-        (clientRows[0]["Contact Person"] || "").split(",")[0].trim() || clientName;
+      const contactName = (clientRows[0]["Contact Person"] || "").split(",")[0].trim() || clientName;
 
       const readinessLines = buildReadinessLines(clientRows, readinessByObdId);
 
@@ -669,8 +700,9 @@ Customer Relationship Manager
 CDC Printers Pvt Ltd
 ${senderPhone}`.trim();
 
-      const emailList = splitCsv(clientRows[0]["Contact Email"] || clientRows[0]["Concern Email"]);
-      const mobileList = splitCsv(clientRows[0]["Contact phone"] || clientRows[0]["Concern Mobile No"])
+      // recipients (already filtered by flags in SQL proc)
+      const emailList = splitCsv(clientRows[0]["Contact Email"]);
+      const mobileList = splitCsv(clientRows[0]["Contact phone"])
         .map(normalizeINPhone)
         .filter(Boolean);
 
@@ -711,9 +743,7 @@ ${senderPhone}`.trim();
         }
       }
 
-      // 4) Update DispatchSchedule for these OBD IDs (readiness fields + dispatch message sent dates)
-      // We update per client group; BUT readiness fields may differ per OBD.
-      // So we call proc per OBD (simple & safe).
+      // 6) Update DispatchSchedule for each order (values differ per order)
       if (sentEmail || sentWhatsapp) {
         for (const r of clientRows) {
           const id = Number(r.OrderBookingDetailsID);
@@ -725,9 +755,9 @@ ${senderPhone}`.trim();
 
           await pool.request()
             .input("OrderBookingDetailsIds", tvpOne)
-            .input("ReadyForDispatchDate", sql.DateTime, rd?.readyForDispatchDate ? new Date(rd.readyForDispatchDate) : null)
-            .input("NoOfCarton", sql.Int, Number(rd?.noOfCarton || 0))
-            .input("QtyPerCarton", sql.Int, Number(rd?.qtyPerCarton || 0))
+            .input("ReadyForDispatchDate", sql.DateTime, new Date(rd.readyForDispatchDate))
+            .input("NoOfCarton", sql.Int, rd.noOfCarton)
+            .input("QtyPerCarton", sql.Int, rd.qtyPerCarton)
             .input("SentEmail", sql.Bit, sentEmail ? 1 : 0)
             .input("SentWhatsapp", sql.Bit, sentWhatsapp ? 1 : 0)
             .execute("dbo.comm_mark_readiness_message_sent");
@@ -745,7 +775,6 @@ ${senderPhone}`.trim();
     }
 
     return res.json({ ok: true, results });
-
   } catch (err) {
     return res.status(500).json({ ok: false, message: err.message });
   }
@@ -2889,6 +2918,14 @@ router.post('/whatsapp/second-intimation', async (req, res) => {
                 error: 'Start date and end date are required'
             });
         }
+
+        const today = new Date();
+            const fourmonthsago = new Date();
+            fourmonthsago.setDate(today.getDate() - 120); // 120 days ago
+
+            // Format dates as YYYY-MM-DD
+            endDate = today.toISOString().split('T')[0];
+            startDate = fourmonthsago.toISOString().split('T')[0];
 
         const trimmedUsername = username.trim();
         const selectedDatabase = 'KOL';
