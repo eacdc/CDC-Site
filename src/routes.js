@@ -587,7 +587,8 @@ router.post("/comm/material-readiness/send", async (req, res) => {
       ids.push(id);
     }
 
-    const pool = await getpool();
+    // Use the same DB helper as other routes (e.g. first-intimation)
+    const pool = await getPool('KOL');
 
     // 1) Credentials
     const credRes = await pool.request()
