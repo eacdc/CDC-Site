@@ -355,21 +355,6 @@ function logAuth(message, extra = {}) {
 
 
 
-async function sendEmailSMTP({ creds, to, subject, text }) {
-  const transporter = nodemailer.createTransport({
-    host: creds.SMTPServer,
-    port: Number(creds.SMTPServerPort),
-    secure: !!creds.SMTPUseSSL,
-    auth: creds.SMTPAuthenticate
-      ? { user: creds.SMTPUserName, pass: creds.SMTPUserPassword }
-      : undefined
-  });
-
-  const fromEmail = creds.EmailID || creds.SMTPUserName;
-
-  return transporter.sendMail({ from: fromEmail, to, subject, text });
-}
-
 /* ---- Build readiness order lines (each order may have its own cartons/qty/date) ---- */
 function buildReadinessLines(rows, readinessByObdId) {
   return rows.map(r => {
