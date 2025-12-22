@@ -353,26 +353,7 @@ function logAuth(message, extra = {}) {
 // Helper function to check if result contains only Status column
 
 
-async function sendWhatsAppMaytapi({ productId, phoneId, apiKey, toNumber, message }) {
-  const url = `https://api.maytapi.com/api/${productId}/${phoneId}/sendMessage`;
 
-  const payload = {
-    to_number: toNumber,
-    type: "text",
-    message,   // ✅ required in your Maytapi setup
-    text: ""
-  };
-
-  const res = await axios.post(url, payload, {
-    headers: {
-      "Content-Type": "application/json",
-      "x-maytapi-key": apiKey
-    },
-    timeout: 20000
-  });
-
-  return res.data;
-}
 
 async function sendEmailSMTP({ creds, to, subject, text }) {
   const transporter = nodemailer.createTransport({
@@ -731,7 +712,7 @@ ${senderPhone}`.trim();
               phoneId: creds.PhoneID,
               apiKey: creds.ApiKey,
               toNumber: to,
-              message: whatsappMessage
+              text: whatsappMessage
             });
             sentWhatsapp = true;
           } catch (e) {
