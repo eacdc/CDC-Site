@@ -567,6 +567,7 @@ ${senderPhone}`;
 router.post("/comm/material-readiness/send", async (req, res) => {
   try {
     const { username, items } = req.body || {};
+    console.log('items', items);
     if (!username || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, message: "username and items[] are required" });
     }
