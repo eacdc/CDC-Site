@@ -3944,6 +3944,107 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
   }
 });
 
+// Get job details for completion app (with isclose and jobcloseddate)
+// Uses direct SQL query instead of stored procedure
+router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getContractorConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+    
+    // Direct SQL query for job completion app
+    const query = `
+      SELECT ClientName, JobName, OrderQuantity, isclose, jobcloseddate 
+      FROM jobbookingjobcard 
+      WHERE jobbookingno = @JobBookingNo
+    `;
+    
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('🔍 [MSSQL] Executing direct query for job completion with @JobBookingNo =', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(query);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const jobDetails = result.recordset[0];
+
+    res.json({
+      clientName: jobDetails.ClientName || jobDetails.clientName || '',
+      qty: jobDetails.OrderQuantity || jobDetails.orderQuantity || 0,
+      isclose: jobDetails.isclose !== undefined ? jobDetails.isclose : 0,
+      jobcloseddate: jobDetails.jobcloseddate || null
+    });
+  } catch (error) {
+    console.error('Error fetching job details for completion:', error);
+    res.status(500).json({ error: 'Error fetching job details: ' + error.message });
+  }
+});
+
+// Complete job - close job in jobbookingjobcard table
+router.post('/jobs/complete/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getContractorConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+
+    // Execute UPDATE statement to close the job
+    const updateQuery = `
+      UPDATE jobbookingjobcard 
+      SET isclose = 1, 
+          jobclosedby = 2, 
+          jobcloseddate = GETDATE(), 
+          jobcloseremark = 'Closed - Manu' 
+      WHERE jobbookingno = @JobBookingNo
+    `;
+
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('✅ [MSSQL] Executing job completion update for:', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(updateQuery);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Update executed in ${queryTime}ms`);
+    console.log(`✅ [MSSQL] Rows affected: ${result.rowsAffected[0]}`);
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ error: 'Job not found or already closed' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Job completed successfully',
+      jobNumber: jobNumber,
+      rowsAffected: result.rowsAffected[0]
+    });
+  } catch (error) {
+    console.error('Error completing job:', error);
+    res.status(500).json({ error: 'Error completing job: ' + error.message });
+  }
+});
+
 // Operations routes
 router.get('/operations', async (req, res) => {
   try {
