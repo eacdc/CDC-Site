@@ -3206,14 +3206,17 @@ router.post('/whatsapp/update-delivery-dates-and-send', async (req, res) => {
             }
         }
 
-        // 4) Fetch order details using the same procedure as 1st intimation
+        // 4) Fetch order details using the procedure for 2nd intimation (same as material-readiness endpoint)
         const tvp = new sql.Table("dbo.IdList");
         tvp.columns.add("Id", sql.Int, { nullable: false });
-        items.forEach(item => tvp.rows.add(Number(item.orderBookingDetailsID)));
+        items.forEach(item => {
+            const id = Number(item.orderBookingDetailsID);
+            if (id) tvp.rows.add(id);
+        });
 
         const detReq = pool.request();
         detReq.input("Ids", tvp);
-        const detRes = await detReq.execute("dbo.comm_first_intimation_details_by_ids");
+        const detRes = await detReq.execute("dbo.comm_pending_delivery_followup_by_ids");
 
         const rows = detRes.recordset || [];
         if (!rows.length) {
@@ -3291,8 +3294,9 @@ Customer Relationship Manager
 CDC Printers Pvt Ltd
 ${senderPhone}`;
 
-            const emailList = splitCsv(clientRows[0]["Concern Email"]);
-            const mobileList = splitCsv(clientRows[0]["Concern Mobile No"])
+            // For 2nd intimation (comm_pending_delivery_followup_by_ids), use "Contact Email" and "Contact phone" like material-readiness endpoint
+            const emailList = splitCsv(clientRows[0]["Contact Email"] || clientRows[0]["ContactEmail"] || clientRows[0]["Concern Email"] || clientRows[0]["ConcernEmail"] || "");
+            const mobileList = splitCsv(clientRows[0]["Contact phone"] || clientRows[0]["Contactphone"] || clientRows[0]["Concern Mobile No"] || clientRows[0]["ConcernMobileNo"] || "")
                 .map(normalizeINPhone)
                 .filter(Boolean);
 
