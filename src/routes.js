@@ -3121,6 +3121,250 @@ router.post('/whatsapp/update-delivery-date', async (req, res) => {
     }
 });
 
+// Update delivery dates and send WhatsApp message (2nd intimation - delivery date update)
+router.post('/whatsapp/update-delivery-dates-and-send', async (req, res) => {
+    try {
+        const { username, items } = req.body || {};
+
+        // Validation
+        if (!username || typeof username !== 'string' || username.trim() === '') {
+            return res.status(400).json({
+                status: false,
+                error: 'Username is required'
+            });
+        }
+
+        if (!Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({
+                status: false,
+                error: 'Items array is required and must not be empty'
+            });
+        }
+
+        // Validate each item
+        for (const item of items) {
+            if (!item.orderBookingDetailsID || typeof item.orderBookingDetailsID !== 'number') {
+                return res.status(400).json({
+                    status: false,
+                    error: 'Each item must have orderBookingDetailsID (number)'
+                });
+            }
+            if (!item.newExpectedDeliveryDate || typeof item.newExpectedDeliveryDate !== 'string') {
+                return res.status(400).json({
+                    status: false,
+                    error: 'Each item must have newExpectedDeliveryDate (string)'
+                });
+            }
+            // Validate date format (YYYY-MM-DD)
+            const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+            if (!dateRegex.test(item.newExpectedDeliveryDate)) {
+                return res.status(400).json({
+                    status: false,
+                    error: 'Invalid date format. Expected YYYY-MM-DD'
+                });
+            }
+        }
+
+        const pool = await getPool('KOL');
+
+        // 1) Get credentials
+        const credReq = pool.request();
+        credReq.input("Username", sql.NVarChar(100), username);
+        const credRes = await credReq.execute("dbo.comm_get_user_credentials");
+
+        const creds = credRes.recordset?.[0];
+        if (!creds) {
+            return res.status(400).json({
+                status: false,
+                error: 'Credentials not found'
+            });
+        }
+
+        const senderName = username;
+        const senderPhone = creds.ContactNo || "";
+
+        // 2) Create map of new delivery dates by orderBookingDetailsID
+        const dateUpdatesMap = new Map();
+        items.forEach(item => {
+            dateUpdatesMap.set(Number(item.orderBookingDetailsID), item.newExpectedDeliveryDate);
+        });
+
+        // 3) First, update all delivery dates using the stored procedure
+        for (const item of items) {
+            try {
+                const query = `EXEC dbo.comm_update_expected_delivery_date @OrderBookingDetailsID = ${item.orderBookingDetailsID}, @NewExpectedDeliveryDate = '${item.newExpectedDeliveryDate}'`;
+                await pool.request().query(query);
+            } catch (procedureError) {
+                // If dbo schema fails, try without schema prefix
+                try {
+                    const query = `EXEC comm_update_expected_delivery_date @OrderBookingDetailsID = ${item.orderBookingDetailsID}, @NewExpectedDeliveryDate = '${item.newExpectedDeliveryDate}'`;
+                    await pool.request().query(query);
+                } catch (altError) {
+                    console.error(`[WHATSAPP-UPDATE-DATES-SEND] Failed to update date for OrderBookingDetailsID ${item.orderBookingDetailsID}:`, altError);
+                    // Continue with other items even if one fails
+                }
+            }
+        }
+
+        // 4) Fetch order details using the same procedure as 1st intimation
+        const tvp = new sql.Table("dbo.IdList");
+        tvp.columns.add("Id", sql.Int, { nullable: false });
+        items.forEach(item => tvp.rows.add(Number(item.orderBookingDetailsID)));
+
+        const detReq = pool.request();
+        detReq.input("Ids", tvp);
+        const detRes = await detReq.execute("dbo.comm_first_intimation_details_by_ids");
+
+        const rows = detRes.recordset || [];
+        if (!rows.length) {
+            return res.status(400).json({
+                status: false,
+                error: 'No order details found for the selected items'
+            });
+        }
+
+        // 5) Update the Final Delivery Date in rows with the new dates
+        rows.forEach(row => {
+            const newDate = dateUpdatesMap.get(Number(row.OrderBookingDetailsID));
+            if (newDate) {
+                row["Final Delivery Date"] = newDate;
+                row.FinalDeliveryDate = newDate;
+            }
+        });
+
+        // 6) Group by client
+        const byClient = new Map();
+        for (const r of rows) {
+            if (!byClient.has(r.ClientLedgerID)) byClient.set(r.ClientLedgerID, []);
+            byClient.get(r.ClientLedgerID).push(r);
+        }
+
+        const results = [];
+
+        // Helper function to build order lines with updated delivery dates
+        function buildOrderLinesWithUpdatedDates(rows) {
+            return rows.map(r => {
+                // Use the updated date from our map
+                const updatedDate = dateUpdatesMap.get(Number(r.OrderBookingDetailsID)) || r["Final Delivery Date"] || r.FinalDeliveryDate;
+                return [
+                    `• Item: ${r["Job Name"]}`,
+                    `  Qty: ${r["Order Qty"]}`,
+                    `  Job No: ${r["Job Card No"] || ""}`,
+                    `  Updated Committed Delivery: ${fmtDate(updatedDate)}`
+                ].join("\n");
+            }).join("\n\n");
+        }
+
+        // 7) Send messages for each client
+        for (const [ledgerId, clientRows] of byClient.entries()) {
+            const clientName = clientRows[0]["Client Name"];
+            const contactName = (clientRows[0]["Contact Person"] || "").split(",")[0] || clientName;
+
+            const orderLines = buildOrderLinesWithUpdatedDates(clientRows);
+
+            const whatsappText = `Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd 😊
+
+We regret to inform you that due to unforeseen circumstances, we will not be able to deliver the below jobs within the committed timeframe. Please find the updated committed delivery dates below:
+
+  ${orderLines}
+
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailSubject = `Updated Delivery Schedule | ${clientName}`;
+            const emailBody = `Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd.
+
+We regret to inform you that due to unforeseen circumstances, we will not be able to deliver the below jobs within the committed timeframe. Please find the updated committed delivery dates below:
+
+  ${orderLines}
+
+Regards,
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailList = splitCsv(clientRows[0]["Concern Email"]);
+            const mobileList = splitCsv(clientRows[0]["Concern Mobile No"])
+                .map(normalizeINPhone)
+                .filter(Boolean);
+
+            let sentEmail = false;
+            let sentWhatsapp = false;
+
+            // Send WhatsApp messages
+            if (mobileList.length && creds.ProductID && creds.ApiKey && creds.PhoneID) {
+                for (const to of mobileList) {
+                    try {
+                        await sendWhatsAppMaytapi({
+                            productId: creds.ProductID,
+                            phoneId: creds.PhoneID,
+                            apiKey: creds.ApiKey,
+                            toNumber: to,
+                            text: whatsappText
+                        });
+                        sentWhatsapp = true;
+                    } catch (waErr) {
+                        console.error('[WHATSAPP ERROR]', waErr.message);
+                        throw waErr;
+                    }
+                }
+            }
+
+            // Send Email
+            if (emailList.length && creds.SMTPServer && creds.SMTPUserName && creds.SMTPUserPassword) {
+                try {
+                    await sendEmailSMTP({
+                        creds,
+                        to: emailList.join(","),
+                        subject: emailSubject,
+                        text: emailBody
+                    });
+                    sentEmail = true;
+                } catch (emailErr) {
+                    console.error('[EMAIL ERROR]', emailErr.message);
+                    throw emailErr;
+                }
+            }
+
+            // Add per-job details to results
+            clientRows.forEach(row => {
+                const updatedDate = dateUpdatesMap.get(Number(row.OrderBookingDetailsID)) || row["Final Delivery Date"] || row.FinalDeliveryDate;
+                results.push({
+                    orderBookingDetailsID: row.OrderBookingDetailsID,
+                    jobCardNo: row["Job Card No"] || row["JobCardNo"] || '',
+                    orderQty: row["Order Qty"] || row["OrderQty"] || '',
+                    clientName: row["Client Name"] || row["ClientName"] || clientName,
+                    jobName: row["Job Name"] || row["JobName"] || '',
+                    finalDeliveryDate: updatedDate || '',
+                    contactPerson: row["Contact Person"] || row["ContactPerson"] || '',
+                    mailSent: sentEmail ? 'Yes' : 'No',
+                    whatsappSent: sentWhatsapp ? 'Yes' : 'No'
+                });
+            });
+        }
+
+        return res.json({
+            status: true,
+            message: 'Delivery dates updated and messages sent successfully',
+            results: results
+        });
+    } catch (error) {
+        console.error('[WHATSAPP-UPDATE-DATES-SEND] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: error.message || 'Failed to update delivery dates and send messages'
+        });
+    }
+});
+
 // ============================================
 // Contractor PO System Routes
 // ============================================
