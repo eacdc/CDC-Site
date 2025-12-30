@@ -3994,6 +3994,53 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
   }
 });
 
+// Search job numbers for completion app (uses direct query, not stored procedure)
+router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) => {
+  try {
+    const { jobNumberPart } = req.params;
+    console.log('🔍 [BACKEND] /jobs/search-numbers-completion called with jobNumberPart:', jobNumberPart);
+
+    if (!jobNumberPart || jobNumberPart.length < 4) {
+      return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getContractorConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+    
+    // Direct SQL query to search job numbers from jobbookingjobcard table
+    const searchQuery = `
+      SELECT DISTINCT jobbookingno 
+      FROM jobbookingjobcard 
+      WHERE jobbookingno LIKE @JobNumberPart + '%'
+      ORDER BY jobbookingno
+    `;
+    
+    request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
+
+    console.log('🔍 [MSSQL] Executing direct query to search job numbers with pattern:', jobNumberPart + '%');
+
+    const queryStartTime = Date.now();
+    const result = await request.query(searchQuery);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    const jobNumbers = result.recordset.map((row) => {
+      const jobNum = row.jobbookingno || row.JobBookingNo || row.jobBookingNo || Object.values(row)[0];
+      return jobNum;
+    }).filter(Boolean);
+
+    console.log('🔍 [BACKEND] Final jobNumbers array:', jobNumbers);
+    res.json(jobNumbers);
+  } catch (error) {
+    console.error('❌ [BACKEND] Error searching job numbers for completion:', error);
+    res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
+  }
+});
+
 // Complete job - close job in jobbookingjobcard table
 router.post('/jobs/complete/:jobNumber', async (req, res) => {
   try {
