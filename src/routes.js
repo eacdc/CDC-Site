@@ -3245,14 +3245,42 @@ router.post('/whatsapp/update-delivery-dates-and-send', async (req, res) => {
         const results = [];
 
         // Helper function to build order lines with updated delivery dates
+        // Access columns by their position: 3rd column = Job Number, 5th column = Job Name
         function buildOrderLinesWithUpdatedDates(rows) {
+            if (rows.length === 0) return "";
+            
+            // Get column names in order from the first row
+            const firstRow = rows[0];
+            const columnNames = Object.keys(firstRow);
+            
+            // 3rd column (index 2) = Job Number, 5th column (index 4) = Job Name
+            const jobNumberColumnIndex = 2; // 3rd column (0-based index)
+            const jobNameColumnIndex = 4;   // 5th column (0-based index)
+            
+            // Find Order Qty column (try to find it by name since position may vary)
+            let orderQtyColumnName = null;
+            for (const key of columnNames) {
+                const keyLower = key.toLowerCase();
+                if ((keyLower.includes('order') && keyLower.includes('qty')) ||
+                    key === 'Order Qty' || key === 'OrderQty') {
+                    orderQtyColumnName = key;
+                    break;
+                }
+            }
+            
             return rows.map(r => {
                 // Use the updated date from our map
-                const updatedDate = dateUpdatesMap.get(Number(r.OrderBookingDetailsID)) || r["Final Delivery Date"] || r.FinalDeliveryDate;
+                const updatedDate = dateUpdatesMap.get(Number(r.OrderBookingDetailsID)) || r["Committed Delivery Date"] || r["CommittedDeliveryDate"] || r["Final Delivery Date"] || r.FinalDeliveryDate;
+                
+                // Access by column position (3rd and 5th columns)
+                const jobNumber = (columnNames[jobNumberColumnIndex] && r[columnNames[jobNumberColumnIndex]]) ? String(r[columnNames[jobNumberColumnIndex]]) : "";
+                const jobName = (columnNames[jobNameColumnIndex] && r[columnNames[jobNameColumnIndex]]) ? String(r[columnNames[jobNameColumnIndex]]) : "";
+                const orderQty = orderQtyColumnName ? (r[orderQtyColumnName] ? String(r[orderQtyColumnName]) : "") : "";
+                
                 return [
-                    `• Item: ${r["Job Name"]}`,
-                    `  Qty: ${r["Order Qty"]}`,
-                    `  Job No: ${r["Job Card No"] || ""}`,
+                    `• Item: ${jobName}`,
+                    `  Qty: ${orderQty}`,
+                    `  Job No: ${jobNumber}`,
                     `  Updated Committed Delivery: ${fmtDate(updatedDate)}`
                 ].join("\n");
             }).join("\n\n");
@@ -3260,8 +3288,10 @@ router.post('/whatsapp/update-delivery-dates-and-send', async (req, res) => {
 
         // 7) Send messages for each client
         for (const [ledgerId, clientRows] of byClient.entries()) {
-            const clientName = clientRows[0]["Client Name"];
-            const contactName = (clientRows[0]["Contact Person"] || "").split(",")[0] || clientName;
+            // Use field names from comm_pending_delivery_followup_by_ids (same as material-readiness endpoint)
+            const clientName = clientRows[0]["Client Name"] || clientRows[0]["ClientName"] || "";
+            const contactPerson = clientRows[0]["Contact Person"] || clientRows[0]["ContactPerson"] || "";
+            const contactName = (contactPerson.split(",")[0] || clientName).trim();
 
             const orderLines = buildOrderLinesWithUpdatedDates(clientRows);
 
@@ -3339,14 +3369,37 @@ ${senderPhone}`;
             }
 
             // Add per-job details to results
+            // Get column names in order from the first row
+            const firstRow = clientRows[0];
+            const columnNames = Object.keys(firstRow);
+            const jobNumberColumnIndex = 2; // 3rd column (0-based index)
+            const jobNameColumnIndex = 4;    // 5th column (0-based index)
+            
+            // Find Order Qty column
+            let orderQtyColumnName = null;
+            for (const key of columnNames) {
+                const keyLower = key.toLowerCase();
+                if ((keyLower.includes('order') && keyLower.includes('qty')) ||
+                    key === 'Order Qty' || key === 'OrderQty') {
+                    orderQtyColumnName = key;
+                    break;
+                }
+            }
+            
             clientRows.forEach(row => {
-                const updatedDate = dateUpdatesMap.get(Number(row.OrderBookingDetailsID)) || row["Final Delivery Date"] || row.FinalDeliveryDate;
+                const updatedDate = dateUpdatesMap.get(Number(row.OrderBookingDetailsID)) || row["Committed Delivery Date"] || row["CommittedDeliveryDate"] || row["Final Delivery Date"] || row.FinalDeliveryDate;
+                
+                // Access by column position (3rd and 5th columns)
+                const jobNumber = (columnNames[jobNumberColumnIndex] && row[columnNames[jobNumberColumnIndex]]) ? String(row[columnNames[jobNumberColumnIndex]]) : "";
+                const jobName = (columnNames[jobNameColumnIndex] && row[columnNames[jobNameColumnIndex]]) ? String(row[columnNames[jobNameColumnIndex]]) : "";
+                const orderQty = orderQtyColumnName ? (row[orderQtyColumnName] ? String(row[orderQtyColumnName]) : "") : "";
+                
                 results.push({
                     orderBookingDetailsID: row.OrderBookingDetailsID,
-                    jobCardNo: row["Job Card No"] || row["JobCardNo"] || '',
-                    orderQty: row["Order Qty"] || row["OrderQty"] || '',
+                    jobCardNo: jobNumber,
+                    orderQty: orderQty,
                     clientName: row["Client Name"] || row["ClientName"] || clientName,
-                    jobName: row["Job Name"] || row["JobName"] || '',
+                    jobName: jobName,
                     finalDeliveryDate: updatedDate || '',
                     contactPerson: row["Contact Person"] || row["ContactPerson"] || '',
                     mailSent: sentEmail ? 'Yes' : 'No',
