@@ -3994,7 +3994,7 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
   }
 });
 
-// Search job numbers for completion app (uses direct query, not stored procedure)
+// Search job numbers for completion app (uses same stored procedure as Contractor PO System)
 router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) => {
   try {
     const { jobNumberPart } = req.params;
@@ -4010,26 +4010,23 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
     const request = pool.request();
-    
-    // Direct SQL query to search job numbers from jobbookingjobcard table
-    const searchQuery = `
-      SELECT DISTINCT jobbookingno 
-      FROM jobbookingjobcard 
-      WHERE jobbookingno LIKE @JobNumberPart + '%'
-      ORDER BY jobbookingno
-    `;
-    
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
 
-    console.log('🔍 [MSSQL] Executing direct query to search job numbers with pattern:', jobNumberPart + '%');
+    console.log('🔍 [MSSQL] Calling dbo.contractor_search_jobnumbers with @JobNumberPart =', jobNumberPart);
 
     const queryStartTime = Date.now();
-    const result = await request.query(searchQuery);
+    const result = await request.execute('dbo.contractor_search_jobnumbers');
     const queryTime = Date.now() - queryStartTime;
-    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
 
-    const jobNumbers = result.recordset.map((row) => {
-      const jobNum = row.jobbookingno || row.JobBookingNo || row.jobBookingNo || Object.values(row)[0];
+    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
+    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
+
+    const jobNumbers = result.recordset.map((row, index) => {
+      console.log(`🔍 [MSSQL] Row ${index}:`, JSON.stringify(row, null, 2));
+      const jobNum = row.JobNumber || row.Job_Number || row.jobNumber || row.job_number || 
+             row.JobNo || row.Job_NO || Object.values(row)[0];
+      console.log(`🔍 [MSSQL] Row ${index} extracted jobNumber:`, jobNum);
       return jobNum;
     }).filter(Boolean);
 
@@ -4037,6 +4034,7 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
     res.json(jobNumbers);
   } catch (error) {
     console.error('❌ [BACKEND] Error searching job numbers for completion:', error);
+    console.error('❌ [BACKEND] Error stack:', error.stack);
     res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
   }
 });
