@@ -3622,33 +3622,47 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
           contractorNameById[c.contractorId] = c.name;
         });
 
+        // Aggregate completed quantities by operation and contractor
+        // Use opsName + valuePerBook (rounded to 2 decimals) as key for matching
         const quantitiesByOpAndContractor = {};
-        const totalCompletedByOp = {};
+
+        const totalCompletedByOp = {}; // Track total completed across all contractors (key: opsName_valuePerBook)
 
         contractorWDDocs.forEach(doc => {
           const contractorId = doc.contractorId;
           (doc.opsDone || []).forEach(od => {
-            if (!od.opsId || od.opsDoneQty == null) {
+            if (!od.opsId || !od.opsName || od.opsDoneQty == null || od.valuePerBook == null) {
               return;
             }
 
-            if (opIds.includes(od.opsId)) {
-              if (!quantitiesByOpAndContractor[od.opsId]) {
-                quantitiesByOpAndContractor[od.opsId] = {};
-              }
-              if (!quantitiesByOpAndContractor[od.opsId][contractorId]) {
-                quantitiesByOpAndContractor[od.opsId][contractorId] = 0;
-              }
-              quantitiesByOpAndContractor[od.opsId][contractorId] += od.opsDoneQty;
+            // Round valuePerBook to 2 decimal places for matching
+            const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
+            const odOpsName = od.opsName.trim();
+            
+            // Create composite key: opsName_valuePerBook
+            const opKey = `${odOpsName}_${odValuePerBook}`;
 
-              if (!totalCompletedByOp[od.opsId]) {
-                totalCompletedByOp[od.opsId] = 0;
+            // Only count if this opId exists in JobopsMaster (preliminary check)
+            if (opIds.includes(od.opsId)) {
+              if (!quantitiesByOpAndContractor[opKey]) {
+                quantitiesByOpAndContractor[opKey] = {};
               }
-              totalCompletedByOp[od.opsId] += od.opsDoneQty;
+              if (!quantitiesByOpAndContractor[opKey][contractorId]) {
+                quantitiesByOpAndContractor[opKey][contractorId] = 0;
+              }
+              quantitiesByOpAndContractor[opKey][contractorId] += od.opsDoneQty;
+
+              // Track total completed for this operation
+              if (!totalCompletedByOp[opKey]) {
+                totalCompletedByOp[opKey] = 0;
+              }
+              totalCompletedByOp[opKey] += od.opsDoneQty;
             }
           });
         });
 
+        // Build previousOps from JobopsMaster.ops
+        // Match using opsName + valuePerBook (rounded to 2 decimals)
         previousOps = {
           contractors: contractorIds.map(id => ({
             contractorId: id,
@@ -3656,17 +3670,26 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
           })),
           operations: jobOpsMaster.ops.map(op => {
             const totalOpsQty = op.totalOpsQty || 0;
-            const totalCompleted = totalCompletedByOp[op.opId] || 0;
+            
+            // Get opsName and valuePerBook for this operation
+            const opOpsName = opsNameById[op.opId] || 'Unknown';
+            const opValuePerBook = parseFloat(Number(op.valuePerBook || 0).toFixed(2));
+            
+            // Create composite key: opsName_valuePerBook for matching
+            const opKey = `${opOpsName}_${opValuePerBook}`;
+
+            const totalCompleted = totalCompletedByOp[opKey] || 0;
+
             const pending = Math.max(0, totalOpsQty - totalCompleted);
 
             return {
               opsId: op.opId,
-              opsName: opsNameById[op.opId] || 'Unknown',
+              opsName: opOpsName,
               totalOpsQty,
               totalCompleted,
               pending,
               quantitiesByContractor:
-                quantitiesByOpAndContractor[op.opId] || {}
+                quantitiesByOpAndContractor[opKey] || {}
             };
           })
         };
@@ -4308,58 +4331,152 @@ router.post('/work/update/jobopsmaster', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: contractorId, jobNumber, and operations are required' });
     }
 
+    // Find job in JobOpsMaster
     const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber });
     
     if (!jobOpsMaster) {
       return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
     }
 
+    // Fetch operation names for all operations in JobOpsMaster and incoming operations
+    const allOpIds = [...new Set([
+      ...jobOpsMaster.ops.map(jop => jop.opId),
+      ...operations.map(op => op.opId).filter(Boolean)
+    ])];
+    
+    // Convert string IDs to ObjectIds for MongoDB query
+    const opObjectIds = allOpIds.map(opId => {
+      try {
+        return new mongoose.Types.ObjectId(opId);
+      } catch (error) {
+        console.error(`Invalid ObjectId format: ${opId}`, error);
+        return null;
+      }
+    }).filter(Boolean);
+    
+    const operationDocs = await Operation.find({ _id: { $in: opObjectIds } });
+    const operationNameMap = {};
+    operationDocs.forEach(op => {
+      const idStr = op._id.toString();
+      operationNameMap[idStr] = op.opsName;
+    });
+
     const updates = [];
     const contractorWDOps = [];
 
     for (const op of operations) {
-      const { opId, qtyToAdd } = op;
+      const { opId, opsName, valuePerBook, qtyToAdd } = op;
 
-      if (!opId || qtyToAdd === undefined || qtyToAdd <= 0) {
+      // Validate required fields - more strict validation
+      if (!opId || !opsName || opsName.trim() === '' || 
+          valuePerBook === undefined || valuePerBook === null || 
+          isNaN(Number(valuePerBook)) || 
+          qtyToAdd === undefined || qtyToAdd === null || 
+          isNaN(Number(qtyToAdd)) || Number(qtyToAdd) <= 0) {
+        console.warn('Skipping invalid operation:', { opId, opsName, valuePerBook, qtyToAdd });
         continue;
       }
 
-      const jobOp = jobOpsMaster.ops.find(jop => jop.opId === opId);
+      // Find the operation in the ops array using opsName + valuePerBook as unique key
+      // Since JobOpsMaster doesn't store opsName, we need to fetch it from Operation collection
+      const normalizedOpsName = opsName.trim();
+      const normalizedValuePerBook = parseFloat(Number(valuePerBook).toFixed(2));
+      
+      // Validate numeric conversion
+      if (isNaN(normalizedValuePerBook)) {
+        console.warn('Invalid valuePerBook for operation:', { opId, opsName, valuePerBook });
+        continue;
+      }
+      
+      const jobOp = jobOpsMaster.ops.find(jop => {
+        const jopOpsName = operationNameMap[String(jop.opId)] || 'Unknown';
+        const jopValuePerBook = parseFloat(Number(jop.valuePerBook).toFixed(2));
+        return jopOpsName === normalizedOpsName && jopValuePerBook === normalizedValuePerBook;
+      });
       
       if (!jobOp) {
+        console.warn('Job operation not found for:', { opId, opsName, normalizedOpsName, normalizedValuePerBook });
         continue;
       }
 
+      // Deduct qtyToAdd from pendingOpsQty
       const qtyToDeduct = Number(qtyToAdd);
+      if (isNaN(qtyToDeduct) || qtyToDeduct <= 0) {
+        console.warn('Invalid qtyToDeduct:', qtyToDeduct);
+        continue;
+      }
+      
       jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
       jobOp.lastUpdatedDate = new Date();
 
       updates.push({
         opId: jobOp.opId,
+        opsName: normalizedOpsName,
+        valuePerBook: jobOp.valuePerBook,
         pendingOpsQty: jobOp.pendingOpsQty
       });
 
-      contractorWDOps.push({
-        opsId: opId,
-        opsDoneQty: qtyToDeduct,
+      // Prepare Contractor_WD operation entry - use values from jobOp as authoritative source
+      // Ensure all required fields are properly set with validated values
+      const contractorWDOp = {
+        opsId: String(jobOp.opId).trim(), // Use jobOp.opId as authoritative source
+        opsName: normalizedOpsName, // Use normalized opsName
+        valuePerBook: Number(jobOp.valuePerBook), // Use jobOp.valuePerBook as authoritative source
+        opsDoneQty: qtyToDeduct, // Already validated
         completionDate: new Date()
-      });
+      };
+      
+      // Final validation before pushing - double check all required fields
+      if (!contractorWDOp.opsId || contractorWDOp.opsId === '' ||
+          !contractorWDOp.opsName || contractorWDOp.opsName === '' || 
+          contractorWDOp.valuePerBook === undefined || contractorWDOp.valuePerBook === null ||
+          isNaN(contractorWDOp.valuePerBook) || 
+          contractorWDOp.opsDoneQty === undefined || contractorWDOp.opsDoneQty === null ||
+          isNaN(contractorWDOp.opsDoneQty) || contractorWDOp.opsDoneQty <= 0) {
+        console.error('Invalid Contractor_WD operation entry - validation failed:', contractorWDOp);
+        console.error('Source operation data:', { opId, opsName, valuePerBook, qtyToAdd });
+        console.error('JobOp data:', jobOp);
+        continue;
+      }
+      
+      contractorWDOps.push(contractorWDOp);
     }
 
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No valid operations to update' });
     }
 
+    // Save JobOpsMaster
     await jobOpsMaster.save();
 
+    // Update or create Contractor_WD document
     let contractorWD = await ContractorWD.findOne({
       contractorId: contractorId,
       jobId: jobNumber
     });
 
     if (contractorWD) {
-      contractorWD.opsDone.push(...contractorWDOps);
+      // For each operation, check if entry with same opsName + valuePerBook exists
+      for (const newOp of contractorWDOps) {
+        // Round valuePerBook to 2 decimal places for comparison
+        const newOpValuePerBook = parseFloat(Number(newOp.valuePerBook).toFixed(2));
+        // Find existing entry with same opsName + valuePerBook
+        const existingOp = contractorWD.opsDone.find(od => {
+          const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
+          return od.opsName === newOp.opsName && odValuePerBook === newOpValuePerBook;
+        });
+        
+        if (existingOp) {
+          // Update existing entry: add to opsDoneQty
+          existingOp.opsDoneQty += newOp.opsDoneQty;
+          existingOp.completionDate = new Date(); // Update completion date
+        } else {
+          // Add new entry
+          contractorWD.opsDone.push(newOp);
+        }
+      }
     } else {
+      // Create new Contractor_WD document
       contractorWD = new ContractorWD({
         contractorId: contractorId,
         jobId: jobNumber,
@@ -4377,7 +4494,7 @@ router.post('/work/update/jobopsmaster', async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating work in JobOpsMaster and Contractor_WD:', error);
-    res.status(500).json({ error: 'Error updating work' });
+    res.status(500).json({ error: 'Error updating work', details: error.message });
   }
 });
 
@@ -4587,20 +4704,65 @@ router.post('/bills', async (req, res) => {
       }
     }
 
+    // Generate bill number
     const billNumber = await generateNextBillNumber();
 
+    // Collect all unique opIds from all jobs
+    const allOpIds = [];
+    jobs.forEach(job => {
+      job.ops.forEach(op => {
+        if (op.opId) {
+          allOpIds.push(op.opId);
+        }
+      });
+    });
+
+    // Fetch operation types for all operations
+    const operationTypeMap = {};
+    if (allOpIds.length > 0) {
+      const opObjectIds = allOpIds.map(opId => {
+        try {
+          return new mongoose.Types.ObjectId(opId);
+        } catch (error) {
+          return null;
+        }
+      }).filter(Boolean);
+
+      if (opObjectIds.length > 0) {
+        const operationDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
+        operationDocs.forEach(op => {
+          const idStr = op._id.toString();
+          operationTypeMap[idStr] = op.type;
+        });
+      }
+    }
+
+    // Create bill
     const bill = new Bill({
       billNumber,
       contractorName: contractorName.trim(),
       jobs: jobs.map(job => ({
         jobNumber: job.jobNumber,
-        ops: job.ops.map(op => ({
-          opsName: op.opsName.trim(),
-          qtyBook: Number(op.qtyBook),
-          rate: Number(op.rate),
-          qtyCompleted: Number(op.qtyCompleted),
-          totalValue: Number(op.totalValue)
-        }))
+        ops: job.ops.map(op => {
+          // Get operation type
+          const opIdStr = String(op.opId || '');
+          const operationType = operationTypeMap[opIdStr];
+          const actualQtyBook = Number(op.qtyBook);
+          
+          // For 1/x type operations, save qtyBook as 1/actual qtyBook
+          let qtyBookToSave = actualQtyBook;
+          if (operationType === '1/x' && actualQtyBook > 0) {
+            qtyBookToSave = 1 / actualQtyBook;
+          }
+          
+          return {
+            opsName: op.opsName.trim(),
+            qtyBook: qtyBookToSave,
+            rate: Number(op.rate),
+            qtyCompleted: Number(op.qtyCompleted),
+            totalValue: Number(op.totalValue)
+          };
+        })
       }))
     });
 
@@ -4659,15 +4821,58 @@ router.put('/bills/:billNumber', async (req, res) => {
         }
       }
 
+      // Collect all unique opIds from all jobs
+      const allOpIds = [];
+      jobs.forEach(job => {
+        job.ops.forEach(op => {
+          if (op.opId) {
+            allOpIds.push(op.opId);
+          }
+        });
+      });
+
+      // Fetch operation types for all operations
+      const operationTypeMap = {};
+      if (allOpIds.length > 0) {
+        const opObjectIds = allOpIds.map(opId => {
+          try {
+            return new mongoose.Types.ObjectId(opId);
+          } catch (error) {
+            return null;
+          }
+        }).filter(Boolean);
+
+        if (opObjectIds.length > 0) {
+          const operationDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
+          operationDocs.forEach(op => {
+            const idStr = op._id.toString();
+            operationTypeMap[idStr] = op.type;
+          });
+        }
+      }
+
       bill.jobs = jobs.map(job => ({
         jobNumber: job.jobNumber,
-        ops: job.ops.map(op => ({
-          opsName: op.opsName.trim(),
-          qtyBook: Number(op.qtyBook),
-          rate: Number(op.rate),
-          qtyCompleted: Number(op.qtyCompleted),
-          totalValue: Number(op.totalValue)
-        }))
+        ops: job.ops.map(op => {
+          // Get operation type
+          const opIdStr = String(op.opId || '');
+          const operationType = operationTypeMap[opIdStr];
+          const actualQtyBook = Number(op.qtyBook);
+          
+          // For 1/x type operations, save qtyBook as 1/actual qtyBook
+          let qtyBookToSave = actualQtyBook;
+          if (operationType === '1/x' && actualQtyBook > 0) {
+            qtyBookToSave = 1 / actualQtyBook;
+          }
+          
+          return {
+            opsName: op.opsName.trim(),
+            qtyBook: qtyBookToSave,
+            rate: Number(op.rate),
+            qtyCompleted: Number(op.qtyCompleted),
+            totalValue: Number(op.totalValue)
+          };
+        })
       }));
     }
 
