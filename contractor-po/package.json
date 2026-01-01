@@ -1,6 +1,0 @@
-{
-    "name": "contractor-po-backend",
-    "version": "1.0.0",
-    "type": "commonjs",
-    "description": "Contractor PO System backend routes"
-  }
