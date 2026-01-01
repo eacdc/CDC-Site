@@ -4233,12 +4233,14 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
 
+    // Find job in JobOpsMaster
     const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber }).lean();
     
     if (!jobOpsMaster) {
       return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
     }
 
+    // Filter operations where pendingOpsQty > 0
     const pendingOps = jobOpsMaster.ops.filter(op => op.pendingOpsQty > 0);
 
     if (pendingOps.length === 0) {
@@ -4248,6 +4250,7 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       });
     }
 
+    // Get all unique opIds and convert to ObjectIds
     const opIds = pendingOps.map(op => {
       try {
         return new mongoose.Types.ObjectId(op.opId);
@@ -4256,25 +4259,35 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       }
     }).filter(Boolean);
 
+    // Fetch operation details from Operation collection
+    // opId in JobOpsMaster is stored as String (ObjectId string), so we convert to ObjectId for query
     const operations = await Operation.find({
       _id: { $in: opIds }
     }).lean();
 
-    const opsNameMap = {};
+    // Create a map of opId to operation details (name and ratePerUnit)
+    const opsMap = {};
     operations.forEach(op => {
-      opsNameMap[op._id.toString()] = op.opsName;
+      opsMap[op._id.toString()] = {
+        opsName: op.opsName,
+        ratePerUnit: op.ratePerUnit || 0
+      };
     });
 
+    // Build response with operation name, totalOpsQty, pendingOpsQty, qtyPerBook, rate, and valuePerBook
     const operationsWithNames = pendingOps.map(op => {
-      const rate = op.qtyPerBook > 0 ? op.valuePerBook / op.qtyPerBook : 0;
+      // Get rate from Operation collection by mapping opId
+      const operationData = opsMap[op.opId] || {};
+      const rate = operationData.ratePerUnit || 0;
       
       return {
         opId: op.opId,
-        opsName: opsNameMap[op.opId] || 'Unknown',
+        opsName: operationData.opsName || 'Unknown',
         totalOpsQty: op.totalOpsQty,
         pendingOpsQty: op.pendingOpsQty,
         qtyPerBook: op.qtyPerBook,
-        rate: rate
+        rate: rate,
+        valuePerBook: op.valuePerBook || 0
       };
     });
 
