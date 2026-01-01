@@ -13,14 +13,15 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
-import Contractor from './models/Contractor.js';
-import Operation from './models/Operation.js';
-import Job from './models/Job.js';
-import JobOperation from './models/JobOperation.js';
-import JobOpsMaster from './models/JobOpsMaster.js';
-import ContractorWD from './models/ContractorWD.js';
-import Bill from './models/Bill.js';
-import Series from './models/Series.js';
+// Contractor PO System imports (commented out - using subfolder backend instead)
+// import Contractor from './models/Contractor.js';
+// import Operation from './models/Operation.js';
+// import Job from './models/Job.js';
+// import JobOperation from './models/JobOperation.js';
+// import JobOpsMaster from './models/JobOpsMaster.js';
+// import ContractorWD from './models/ContractorWD.js';
+// import Bill from './models/Bill.js';
+// import Series from './models/Series.js';
 
 
 const router = Router();
@@ -3424,8 +3425,9 @@ ${senderPhone}`;
 });
 
 // ============================================
-// Contractor PO System Routes
+// Contractor PO System Routes (COMMENTED OUT - using subfolder backend instead)
 // ============================================
+/*
 
 // Helper function to get MSSQL connection for contractor routes
 // ALWAYS uses IndusEnterprise database
@@ -5317,6 +5319,7 @@ router.get('/series/:id', async (req, res) => {
     res.status(500).json({ error: 'Error fetching series' });
   }
 });
+*/
 
 export default router;
 
