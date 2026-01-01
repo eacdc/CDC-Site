@@ -3632,8 +3632,10 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
 
     if (jobOpsMaster && jobOpsMaster.ops && jobOpsMaster.ops.length > 0) {
       try {
-        const opIds = jobOpsMaster.ops.map(op => op.opId);
+        // Get all opIds from JobopsMaster and normalize to strings
+        const opIds = jobOpsMaster.ops.map(op => String(op.opId));
 
+        // Get operation names from Operation collection
         const opsDocs = await Operation.find(
           { _id: { $in: opIds } },
           { _id: 1, opsName: 1 }
@@ -3644,14 +3646,17 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
           opsNameById[op._id.toString()] = op.opsName;
         });
 
+        // Check Contractor_WD for completed work (jobId is job number string)
         const contractorWDDocs = await ContractorWD.find({
           jobId: jobNumber
         }).lean();
 
+        // Collect unique contractor IDs
         const contractorIds = [
           ...new Set(contractorWDDocs.map(doc => doc.contractorId))
         ];
 
+        // Get contractor names
         const contractors = await Contractor.find({
           contractorId: { $in: contractorIds }
         }).lean();
@@ -3659,6 +3664,13 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
         const contractorNameById = {};
         contractors.forEach(c => {
           contractorNameById[c.contractorId] = c.name;
+        });
+
+        // Create a map of opId to valuePerBook from JobOpsMaster for fallback
+        const valuePerBookByOpId = {};
+        jobOpsMaster.ops.forEach(jop => {
+          const jopOpIdStr = String(jop.opId);
+          valuePerBookByOpId[jopOpIdStr] = jop.valuePerBook;
         });
 
         // Aggregate completed quantities by operation and contractor
@@ -3670,33 +3682,53 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
         contractorWDDocs.forEach(doc => {
           const contractorId = doc.contractorId;
           (doc.opsDone || []).forEach(od => {
-            if (!od.opsId || !od.opsName || od.opsDoneQty == null || od.valuePerBook == null) {
+            if (!od.opsId || !od.opsName || od.opsDoneQty == null) {
               return;
             }
 
-            // Round valuePerBook to 2 decimal places for matching
-            const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
+            // Normalize od.opsId to string for comparison
+            const normalizedOdOpsId = String(od.opsId);
+            
+            // Only process if this opId exists in JobopsMaster (preliminary check)
+            if (!opIds.includes(normalizedOdOpsId)) {
+              return;
+            }
+
+            // Get valuePerBook: use from ContractorWD if available, otherwise get from JobOpsMaster
+            let odValuePerBook;
+            if (od.valuePerBook != null && !isNaN(Number(od.valuePerBook))) {
+              // valuePerBook exists in ContractorWD, use it
+              odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
+            } else {
+              // valuePerBook missing in ContractorWD, get it from JobOpsMaster
+              const jobOpValuePerBook = valuePerBookByOpId[normalizedOdOpsId];
+              if (jobOpValuePerBook != null && !isNaN(Number(jobOpValuePerBook))) {
+                odValuePerBook = parseFloat(Number(jobOpValuePerBook).toFixed(2));
+              } else {
+                // Still can't find valuePerBook, skip this entry
+                console.warn(`Skipping ContractorWD entry: valuePerBook not found for opId ${normalizedOdOpsId}`);
+                return;
+              }
+            }
+
             const odOpsName = od.opsName.trim();
             
             // Create composite key: opsName_valuePerBook
             const opKey = `${odOpsName}_${odValuePerBook}`;
 
-            // Only count if this opId exists in JobopsMaster (preliminary check)
-            if (opIds.includes(od.opsId)) {
-              if (!quantitiesByOpAndContractor[opKey]) {
-                quantitiesByOpAndContractor[opKey] = {};
-              }
-              if (!quantitiesByOpAndContractor[opKey][contractorId]) {
-                quantitiesByOpAndContractor[opKey][contractorId] = 0;
-              }
-              quantitiesByOpAndContractor[opKey][contractorId] += od.opsDoneQty;
-
-              // Track total completed for this operation
-              if (!totalCompletedByOp[opKey]) {
-                totalCompletedByOp[opKey] = 0;
-              }
-              totalCompletedByOp[opKey] += od.opsDoneQty;
+            if (!quantitiesByOpAndContractor[opKey]) {
+              quantitiesByOpAndContractor[opKey] = {};
             }
+            if (!quantitiesByOpAndContractor[opKey][contractorId]) {
+              quantitiesByOpAndContractor[opKey][contractorId] = 0;
+            }
+            quantitiesByOpAndContractor[opKey][contractorId] += od.opsDoneQty;
+
+            // Track total completed for this operation
+            if (!totalCompletedByOp[opKey]) {
+              totalCompletedByOp[opKey] = 0;
+            }
+            totalCompletedByOp[opKey] += od.opsDoneQty;
           });
         });
 
@@ -3711,11 +3743,13 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
             const totalOpsQty = op.totalOpsQty || 0;
             
             // Get opsName and valuePerBook for this operation
-            const opOpsName = opsNameById[op.opId] || 'Unknown';
+            // Normalize op.opId to string for lookup
+            const opOpsName = opsNameById[String(op.opId)] || 'Unknown';
+            const normalizedOpOpsName = opOpsName.trim();
             const opValuePerBook = parseFloat(Number(op.valuePerBook || 0).toFixed(2));
             
-            // Create composite key: opsName_valuePerBook for matching
-            const opKey = `${opOpsName}_${opValuePerBook}`;
+            // Create composite key: opsName_valuePerBook for matching (must match the key used in ContractorWD processing)
+            const opKey = `${normalizedOpOpsName}_${opValuePerBook}`;
 
             const totalCompleted = totalCompletedByOp[opKey] || 0;
 
@@ -3723,7 +3757,7 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
 
             return {
               opsId: op.opId,
-              opsName: opOpsName,
+              opsName: normalizedOpOpsName,
               totalOpsQty,
               totalCompleted,
               pending,
