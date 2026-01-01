@@ -50,8 +50,10 @@ mongoose.connect(MONGODB_URI)
 app.use('/api', routes);
 
 // Mount Contractor PO routes at /contractor-po/api (CommonJS module)
-const contractorPORoutes = require(join(__dirname, '../contractor-po/routes/index.js'));
-app.use('/contractor-po/api', contractorPORoutes);
+// COMMENTED OUT: contractor-po directory doesn't exist in backend folder
+// If you need this, create the directory structure or fix the path
+// const contractorPORoutes = require(join(__dirname, '../contractor-po/routes/index.js'));
+// app.use('/contractor-po/api', contractorPORoutes);
 
 app.get('/health', (req, res) => {
 	res.json({ status: 'ok' });
