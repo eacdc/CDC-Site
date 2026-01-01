@@ -3849,7 +3849,21 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
       return res.status(400).json({ error: 'Job number and at least one operation are required' });
     }
 
+    // totalQty in JobopsMaster should be the qty from UI
     const totalQty = Number(qty || 0);
+    // Fetch all operations to get their types and names for calculation
+    const operationIds = operations.map(op => op.operationId).filter(Boolean);
+    const operationDocs = await Operation.find({ _id: { $in: operationIds } });
+    const operationTypeMap = {};
+    const operationNameMap = {};
+    operationDocs.forEach(op => {
+      // Normalize ID to string for consistent lookup
+      const idStr = op._id.toString();
+      operationTypeMap[idStr] = op.type;
+      operationNameMap[idStr] = op.opsName;
+    });
+    
+    console.log('Operation Type Map:', JSON.stringify(operationTypeMap, null, 2));
 
     const ops = operations
       .map(op => {
@@ -3864,14 +3878,34 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
         if (isNaN(qtyPerBookNum) || qtyPerBookNum < 0 || isNaN(valuePerBookNum) || valuePerBookNum < 0) {
           return null;
         }
-
-        const totalOpsQty = qtyPerBookNum * totalQty;
+        // Get operation type and name - normalize operationId to string for lookup
+        const opIdStr = String(operationId);
+        const operationType = operationTypeMap[opIdStr];
+        const opsName = operationNameMap[opIdStr] || 'Unknown';
+        
+        // Calculate totalOpsQty based on operation type
+        // For 1/x: totalOpsQty = totalQty / qtyPerBook (books/ops)
+        // For others (1:1, 1*x): totalOpsQty = qtyPerBook * totalQty
+        let totalOpsQty;
+        if (operationType === '1/x') {
+          // For 1/x, qtyPerBook is books/ops, so totalOpsQty = qty / (books/ops)
+          totalOpsQty = qtyPerBookNum > 0 ? totalQty / qtyPerBookNum : 0;
+          console.log(`[1/x] Operation ${opIdStr}: totalQty=${totalQty}, qtyPerBook=${qtyPerBookNum}, totalOpsQty=${totalOpsQty}`);
+        } else {
+          // For 1:1 and 1*x, use the standard formula
+          totalOpsQty = qtyPerBookNum * totalQty;
+          if (operationType) {
+            console.log(`[${operationType}] Operation ${opIdStr}: totalQty=${totalQty}, qtyPerBook=${qtyPerBookNum}, totalOpsQty=${totalOpsQty}`);
+          } else {
+            console.log(`[WARNING: Operation type not found] Operation ${opIdStr}: totalQty=${totalQty}, qtyPerBook=${qtyPerBookNum}, totalOpsQty=${totalOpsQty} (using default multiplication)`);
+          }
+        }
 
         return {
           opId: String(operationId),
           qtyPerBook: qtyPerBookNum,
           totalOpsQty,
-          pendingOpsQty: totalOpsQty,
+          pendingOpsQty: totalOpsQty, // completed qty = 0 initially
           valuePerBook: valuePerBookNum
         };
       })
@@ -4271,7 +4305,7 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
 router.get('/operations', async (req, res) => {
   try {
     const { search } = req.query;
-    let query = {};
+    let query = { isdeleted: 0 };
 
     if (search) {
       query.opsName = { $regex: search, $options: 'i' };
@@ -4315,7 +4349,7 @@ router.post('/operations', async (req, res) => {
       return res.status(400).json({ error: 'Rate/unit must be a valid number greater than or equal to 0' });
     }
 
-    const existingOp = await Operation.findOne({ opsName });
+    const existingOp = await Operation.findOne({ opsName, isdeleted: 0 });
     if (existingOp) {
       return res.status(400).json({ error: 'Operation already exists' });
     }
@@ -4323,7 +4357,8 @@ router.post('/operations', async (req, res) => {
     const operation = new Operation({
       opsName,
       type,
-      ratePerUnit: ratePerUnitNum
+      ratePerUnit: ratePerUnitNum,
+      isdeleted: 0
     });
 
     await operation.save();
@@ -4370,7 +4405,11 @@ router.put('/operations/:id', async (req, res) => {
 
 router.delete('/operations/:id', async (req, res) => {
   try {
-    const operation = await Operation.findByIdAndDelete(req.params.id);
+    const operation = await Operation.findByIdAndUpdate(
+      req.params.id,
+      { isdeleted: 1 },
+      { new: true }
+    );
     if (!operation) {
       return res.status(404).json({ error: 'Operation not found' });
     }
@@ -4723,7 +4762,7 @@ router.post('/work/update', async (req, res) => {
 // Contractors routes
 router.get('/contractors', async (req, res) => {
   try {
-    const contractors = await Contractor.find().sort({ creationDate: -1 });
+    const contractors = await Contractor.find({ isdeleted: 0 }).sort({ creationDate: -1 });
     res.json(contractors);
   } catch (error) {
     console.error('Error fetching contractors:', error);
@@ -4751,7 +4790,8 @@ router.post('/contractors', async (req, res) => {
     const contractor = new Contractor({
       contractorId,
       name: name.trim(),
-      creationDate: new Date()
+      creationDate: new Date(),
+      isdeleted: 0
     });
 
     await contractor.save();
@@ -4762,6 +4802,50 @@ router.post('/contractors', async (req, res) => {
       return res.status(400).json({ error: 'Contractor ID already exists' });
     }
     res.status(500).json({ error: 'Error creating contractor' });
+  }
+});
+
+router.put('/contractors/:id', async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    const contractor = await Contractor.findByIdAndUpdate(
+      req.params.id,
+      { name: name.trim() },
+      { new: true, runValidators: true }
+    );
+
+    if (!contractor) {
+      return res.status(404).json({ error: 'Contractor not found' });
+    }
+
+    res.json(contractor);
+  } catch (error) {
+    console.error('Error updating contractor:', error);
+    res.status(500).json({ error: 'Error updating contractor' });
+  }
+});
+
+router.delete('/contractors/:id', async (req, res) => {
+  try {
+    const contractor = await Contractor.findByIdAndUpdate(
+      req.params.id,
+      { isdeleted: 1 },
+      { new: true }
+    );
+
+    if (!contractor) {
+      return res.status(404).json({ error: 'Contractor not found' });
+    }
+
+    res.json({ message: 'Contractor deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting contractor:', error);
+    res.status(500).json({ error: 'Error deleting contractor' });
   }
 });
 
