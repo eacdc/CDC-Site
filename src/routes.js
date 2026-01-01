@@ -3892,12 +3892,57 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
     } else {
       jobOpsMaster.totalQty = totalQty;
 
-      const existingOpIds = new Set(jobOpsMaster.ops.map(existingOp => existingOp.opId));
+      // Fetch operation names for existing operations in JobOpsMaster and new operations
+      const existingOpIds = jobOpsMaster.ops.map(existingOp => existingOp.opId).filter(Boolean);
+      const newOpIds = ops.map(newOp => newOp.opId).filter(Boolean);
+      const allOpIds = [...new Set([...newOpIds, ...existingOpIds])];
+      
+      // Convert to ObjectIds for MongoDB query
+      const opObjectIds = allOpIds.map(opId => {
+        try {
+          return new mongoose.Types.ObjectId(opId);
+        } catch (error) {
+          return null;
+        }
+      }).filter(Boolean);
+      
+      const allOperationDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
+      const allOperationNameMap = {};
+      allOperationDocs.forEach(op => {
+        const idStr = op._id.toString();
+        allOperationNameMap[idStr] = op.opsName;
+      });
 
-      const newOpsToAdd = ops.filter(newOp => !existingOpIds.has(newOp.opId));
-
-      if (newOpsToAdd.length > 0) {
-        jobOpsMaster.ops = [...jobOpsMaster.ops, ...newOpsToAdd];
+      // Process each new operation
+      // Use opsName + valuePerBook (rounded to 2 decimals) as unique key
+      for (const newOp of ops) {
+        // Get opsName for this operation
+        const opIdStr = String(newOp.opId);
+        const opsName = allOperationNameMap[opIdStr] || 'Unknown';
+        const normalizedOpsName = opsName.trim();
+        const normalizedValuePerBook = parseFloat(Number(newOp.valuePerBook).toFixed(2));
+        
+        // Find existing operation with same opsName + valuePerBook (rounded to 2 decimals)
+        const existingOpIndex = jobOpsMaster.ops.findIndex(existingOp => {
+          // Get opsName for existing operation
+          const existingOpIdStr = String(existingOp.opId);
+          const existingOpsName = allOperationNameMap[existingOpIdStr] || 'Unknown';
+          const normalizedExistingOpsName = existingOpsName.trim();
+          const normalizedExistingValuePerBook = parseFloat(Number(existingOp.valuePerBook).toFixed(2));
+          return normalizedExistingOpsName === normalizedOpsName && normalizedExistingValuePerBook === normalizedValuePerBook;
+        });
+        
+        if (existingOpIndex !== -1) {
+          // Update existing operation: update totalOpsQty and pendingOpsQty
+          const existingOp = jobOpsMaster.ops[existingOpIndex];
+          // Add to existing quantities
+          existingOp.totalOpsQty += newOp.totalOpsQty;
+          existingOp.pendingOpsQty += newOp.pendingOpsQty;
+          existingOp.lastUpdatedDate = new Date();
+        } else {
+          // Add new operation
+          jobOpsMaster.ops.push(newOp);
+        }
       }
     }
 
