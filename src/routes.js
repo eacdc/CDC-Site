@@ -3429,8 +3429,70 @@ ${senderPhone}`;
 
 // Helper function to get MSSQL connection for contractor routes
 // ALWAYS uses IndusEnterprise database
+// Contractor PO MSSQL Connection (matching Contractor PO backend exactly)
 let contractorPool = null;
 let contractorConnectionPromise = null;
+
+async function getConnection() {
+  try {
+    // If already connected, return existing pool
+    if (contractorPool && contractorPool.connected) {
+      return contractorPool;
+    }
+
+    // If connection is in progress, wait for it
+    if (contractorConnectionPromise) {
+      console.log('⏳ [MSSQL] Connection already in progress, waiting...');
+      return await contractorConnectionPromise;
+    }
+
+    // Start new connection
+    console.log('🔌 [MSSQL] Establishing connection...');
+    const startTime = Date.now();
+    
+    const config = {
+      server: 'cdcindas.24mycloud.com',
+      port: 51175,
+      database: 'IndusEnterprise',
+      user: 'indus',
+      password: 'Param@99811',
+      connectionTimeout: 10000, // 10 seconds to establish connection
+      requestTimeout: 30000, // 30 seconds for queries to complete
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000
+      },
+      options: {
+        encrypt: false, // Use true if connecting to Azure
+        trustServerCertificate: true,
+        enableArithAbort: true
+      }
+    };
+    
+    contractorConnectionPromise = sql.connect(config);
+    contractorPool = await contractorConnectionPromise;
+    
+    const connectionTime = Date.now() - startTime;
+    console.log(`✅ [MSSQL] Connected to MSSQL Server in ${connectionTime}ms`);
+    
+    contractorConnectionPromise = null;
+    
+    // Handle connection errors
+    contractorPool.on('error', (err) => {
+      console.error('❌ [MSSQL] Connection pool error:', err);
+      contractorPool = null;
+      contractorConnectionPromise = null;
+    });
+
+    return contractorPool;
+  } catch (error) {
+    console.error('❌ [MSSQL] Connection error:', error);
+    contractorPool = null;
+    contractorConnectionPromise = null;
+    throw error;
+  }
+}
 
 async function getContractorConnection() {
   try {
@@ -3570,7 +3632,7 @@ router.post('/auth/login', async (req, res) => {
       token,
       user: {
         userId: user.userId,
-        name: user.name || user.username,
+        name: user.name,
         role: user.role
       }
     });
@@ -3632,8 +3694,8 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
 
     if (jobOpsMaster && jobOpsMaster.ops && jobOpsMaster.ops.length > 0) {
       try {
-        // Get all opIds from JobopsMaster and normalize to strings
-        const opIds = jobOpsMaster.ops.map(op => String(op.opId));
+        // Get all opIds from JobopsMaster
+        const opIds = jobOpsMaster.ops.map(op => op.opId);
 
         // Get operation names from Operation collection
         const opsDocs = await Operation.find(
@@ -3666,13 +3728,6 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
           contractorNameById[c.contractorId] = c.name;
         });
 
-        // Create a map of opId to valuePerBook from JobOpsMaster for fallback
-        const valuePerBookByOpId = {};
-        jobOpsMaster.ops.forEach(jop => {
-          const jopOpIdStr = String(jop.opId);
-          valuePerBookByOpId[jopOpIdStr] = jop.valuePerBook;
-        });
-
         // Aggregate completed quantities by operation and contractor
         // Use opsName + valuePerBook (rounded to 2 decimals) as key for matching
         const quantitiesByOpAndContractor = {};
@@ -3682,53 +3737,33 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
         contractorWDDocs.forEach(doc => {
           const contractorId = doc.contractorId;
           (doc.opsDone || []).forEach(od => {
-            if (!od.opsId || !od.opsName || od.opsDoneQty == null) {
+            if (!od.opsId || !od.opsName || od.opsDoneQty == null || od.valuePerBook == null) {
               return;
             }
 
-            // Normalize od.opsId to string for comparison
-            const normalizedOdOpsId = String(od.opsId);
-            
-            // Only process if this opId exists in JobopsMaster (preliminary check)
-            if (!opIds.includes(normalizedOdOpsId)) {
-              return;
-            }
-
-            // Get valuePerBook: use from ContractorWD if available, otherwise get from JobOpsMaster
-            let odValuePerBook;
-            if (od.valuePerBook != null && !isNaN(Number(od.valuePerBook))) {
-              // valuePerBook exists in ContractorWD, use it
-              odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
-            } else {
-              // valuePerBook missing in ContractorWD, get it from JobOpsMaster
-              const jobOpValuePerBook = valuePerBookByOpId[normalizedOdOpsId];
-              if (jobOpValuePerBook != null && !isNaN(Number(jobOpValuePerBook))) {
-                odValuePerBook = parseFloat(Number(jobOpValuePerBook).toFixed(2));
-              } else {
-                // Still can't find valuePerBook, skip this entry
-                console.warn(`Skipping ContractorWD entry: valuePerBook not found for opId ${normalizedOdOpsId}`);
-                return;
-              }
-            }
-
+            // Round valuePerBook to 2 decimal places for matching
+            const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
             const odOpsName = od.opsName.trim();
             
             // Create composite key: opsName_valuePerBook
             const opKey = `${odOpsName}_${odValuePerBook}`;
 
-            if (!quantitiesByOpAndContractor[opKey]) {
-              quantitiesByOpAndContractor[opKey] = {};
-            }
-            if (!quantitiesByOpAndContractor[opKey][contractorId]) {
-              quantitiesByOpAndContractor[opKey][contractorId] = 0;
-            }
-            quantitiesByOpAndContractor[opKey][contractorId] += od.opsDoneQty;
+            // Only count if this opId exists in JobopsMaster (preliminary check)
+            if (opIds.includes(od.opsId)) {
+              if (!quantitiesByOpAndContractor[opKey]) {
+                quantitiesByOpAndContractor[opKey] = {};
+              }
+              if (!quantitiesByOpAndContractor[opKey][contractorId]) {
+                quantitiesByOpAndContractor[opKey][contractorId] = 0;
+              }
+              quantitiesByOpAndContractor[opKey][contractorId] += od.opsDoneQty;
 
-            // Track total completed for this operation
-            if (!totalCompletedByOp[opKey]) {
-              totalCompletedByOp[opKey] = 0;
+              // Track total completed for this operation
+              if (!totalCompletedByOp[opKey]) {
+                totalCompletedByOp[opKey] = 0;
+              }
+              totalCompletedByOp[opKey] += od.opsDoneQty;
             }
-            totalCompletedByOp[opKey] += od.opsDoneQty;
           });
         });
 
@@ -3743,13 +3778,11 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
             const totalOpsQty = op.totalOpsQty || 0;
             
             // Get opsName and valuePerBook for this operation
-            // Normalize op.opId to string for lookup
-            const opOpsName = opsNameById[String(op.opId)] || 'Unknown';
-            const normalizedOpOpsName = opOpsName.trim();
+            const opOpsName = opsNameById[op.opId] || 'Unknown';
             const opValuePerBook = parseFloat(Number(op.valuePerBook || 0).toFixed(2));
             
-            // Create composite key: opsName_valuePerBook for matching (must match the key used in ContractorWD processing)
-            const opKey = `${normalizedOpOpsName}_${opValuePerBook}`;
+            // Create composite key: opsName_valuePerBook for matching
+            const opKey = `${opOpsName}_${opValuePerBook}`;
 
             const totalCompleted = totalCompletedByOp[opKey] || 0;
 
@@ -3757,7 +3790,7 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
 
             return {
               opsId: op.opId,
-              opsName: normalizedOpOpsName,
+              opsName: opOpsName,
               totalOpsQty,
               totalCompleted,
               pending,
@@ -3960,21 +3993,10 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
     } else {
       jobOpsMaster.totalQty = totalQty;
 
-      // Fetch operation names for existing operations in JobOpsMaster and new operations
+      // Fetch operation names for existing operations in JobOpsMaster
       const existingOpIds = jobOpsMaster.ops.map(existingOp => existingOp.opId).filter(Boolean);
-      const newOpIds = ops.map(newOp => newOp.opId).filter(Boolean);
-      const allOpIds = [...new Set([...newOpIds, ...existingOpIds])];
-      
-      // Convert to ObjectIds for MongoDB query
-      const opObjectIds = allOpIds.map(opId => {
-        try {
-          return new mongoose.Types.ObjectId(opId);
-        } catch (error) {
-          return null;
-        }
-      }).filter(Boolean);
-      
-      const allOperationDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
+      const allOpIds = [...new Set([...operationIds, ...existingOpIds])];
+      const allOperationDocs = await Operation.find({ _id: { $in: allOpIds } });
       const allOperationNameMap = {};
       allOperationDocs.forEach(op => {
         const idStr = op._id.toString();
@@ -3982,22 +4004,18 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
       });
 
       // Process each new operation
-      // Use opsName + valuePerBook (rounded to 2 decimals) as unique key
+      // Use opsName + valuePerBook as unique key
       for (const newOp of ops) {
         // Get opsName for this operation
         const opIdStr = String(newOp.opId);
         const opsName = allOperationNameMap[opIdStr] || 'Unknown';
-        const normalizedOpsName = opsName.trim();
-        const normalizedValuePerBook = parseFloat(Number(newOp.valuePerBook).toFixed(2));
         
-        // Find existing operation with same opsName + valuePerBook (rounded to 2 decimals)
+        // Find existing operation with same opsName + valuePerBook
         const existingOpIndex = jobOpsMaster.ops.findIndex(existingOp => {
           // Get opsName for existing operation
           const existingOpIdStr = String(existingOp.opId);
           const existingOpsName = allOperationNameMap[existingOpIdStr] || 'Unknown';
-          const normalizedExistingOpsName = existingOpsName.trim();
-          const normalizedExistingValuePerBook = parseFloat(Number(existingOp.valuePerBook).toFixed(2));
-          return normalizedExistingOpsName === normalizedOpsName && normalizedExistingValuePerBook === normalizedValuePerBook;
+          return existingOpsName === opsName && existingOp.valuePerBook === newOp.valuePerBook;
         });
         
         if (existingOpIndex !== -1) {
@@ -4044,23 +4062,9 @@ router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
     }
 
     const connectionStartTime = Date.now();
-    const pool = await getContractorConnection();
+    const pool = await getConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing stored procedure
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
@@ -4101,23 +4105,9 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
     }
 
     const connectionStartTime = Date.now();
-    const pool = await getContractorConnection();
+    const pool = await getConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing stored procedure
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
@@ -4158,7 +4148,7 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
     }
 
     const connectionStartTime = Date.now();
-    const pool = await getContractorConnection();
+    const pool = await getConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
@@ -4222,7 +4212,7 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
     }
 
     const connectionStartTime = Date.now();
-    const pool = await getContractorConnection();
+    const pool = await getConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
@@ -4280,7 +4270,7 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
     }
 
     const connectionStartTime = Date.now();
-    const pool = await getContractorConnection();
+    const pool = await getConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
