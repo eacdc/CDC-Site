@@ -2,10 +2,18 @@ import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
 import mongoose from 'mongoose';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import routes from './routes.js';
 import { closeAllPools } from './db.js';
 
 dotenv.config();
+
+// Create require function for CommonJS modules
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -40,6 +48,10 @@ mongoose.connect(MONGODB_URI)
 	});
 
 app.use('/api', routes);
+
+// Mount Contractor PO routes at /contractor-po/api
+const contractorPORoutes = require(join(__dirname, '../contractor-po/routes/index.js'));
+app.use('/contractor-po/api', contractorPORoutes);
 
 app.get('/health', (req, res) => {
 	res.json({ status: 'ok' });
