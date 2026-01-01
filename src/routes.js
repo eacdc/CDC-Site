@@ -3428,14 +3428,32 @@ ${senderPhone}`;
 // ============================================
 
 // Helper function to get MSSQL connection for contractor routes
-// Uses the same server config but different database (IndusEnterprise)
+// ALWAYS uses IndusEnterprise database
 let contractorPool = null;
 let contractorConnectionPromise = null;
 
 async function getContractorConnection() {
   try {
+    const expectedDb = 'IndusEnterprise'; // Always use IndusEnterprise for contractor PO system
+    
     if (contractorPool && contractorPool.connected) {
-      return contractorPool;
+      // Verify we're still on the correct database before returning
+      try {
+        const dbCheck = await contractorPool.request().query('SELECT DB_NAME() AS currentDb');
+        const currentDb = dbCheck.recordset[0]?.currentDb;
+        
+        if (currentDb !== expectedDb) {
+          console.warn(`⚠️ [CONTRACTOR-MSSQL] Database context mismatch. Expected: ${expectedDb}, Current: ${currentDb}. Reconnecting...`);
+          contractorPool = null;
+          // Fall through to create new connection
+        } else {
+          return contractorPool;
+        }
+      } catch (checkErr) {
+        console.warn('⚠️ [CONTRACTOR-MSSQL] Database check failed, reconnecting...', checkErr);
+        contractorPool = null;
+        // Fall through to create new connection
+      }
     }
 
     if (contractorConnectionPromise) {
@@ -3443,7 +3461,7 @@ async function getContractorConnection() {
       return await contractorConnectionPromise;
     }
 
-    console.log('🔌 [CONTRACTOR-MSSQL] Establishing connection...');
+    console.log('🔌 [CONTRACTOR-MSSQL] Establishing connection to IndusEnterprise...');
     const startTime = Date.now();
     
     const serverEnv = process.env.DB_SERVER || 'cdcindas.24mycloud.com';
@@ -3462,7 +3480,7 @@ async function getContractorConnection() {
     const config = {
       server: serverHost,
       port: serverPort,
-      database: process.env.DB_NAME_CONTRACTOR || 'IndusEnterprise',
+      database: expectedDb, // Always use IndusEnterprise - no environment variable override
       user: process.env.DB_USER || 'indus',
       password: process.env.DB_PASSWORD || 'Param@99811',
       connectionTimeout: 10000,
@@ -3484,6 +3502,26 @@ async function getContractorConnection() {
     
     const connectionTime = Date.now() - startTime;
     console.log(`✅ [CONTRACTOR-MSSQL] Connected in ${connectionTime}ms`);
+    
+    // CRITICAL: Explicitly switch to IndusEnterprise database using USE statement
+    // This ensures we're using the right DB even if user's default DB is different
+    try {
+      await contractorPool.request().query(`USE [${expectedDb}]`);
+      console.log(`✅ [CONTRACTOR-MSSQL] Explicitly switched to database [${expectedDb}]`);
+      
+      // Verify we're on the correct database
+      const verifyDb = await contractorPool.request().query('SELECT DB_NAME() AS currentDb');
+      const actualDb = verifyDb.recordset[0]?.currentDb;
+      if (actualDb !== expectedDb) {
+        throw new Error(`Failed to switch to database ${expectedDb}. Currently on: ${actualDb}`);
+      }
+      console.log(`✅ [CONTRACTOR-MSSQL] Verified connection to correct database`, { expected: expectedDb, actual: actualDb });
+    } catch (useErr) {
+      console.error(`❌ [CONTRACTOR-MSSQL] Failed to switch to database ${expectedDb}:`, useErr);
+      contractorPool = null;
+      contractorConnectionPromise = null;
+      throw useErr;
+    }
     
     contractorConnectionPromise = null;
     
@@ -3897,6 +3935,20 @@ router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
+    // Verify database context before executing stored procedure
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
     const request = pool.request();
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
 
@@ -3940,6 +3992,20 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
+    // Verify database context before executing stored procedure
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
     const request = pool.request();
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
 
@@ -3982,6 +4048,20 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
     const pool = await getContractorConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
 
     const request = pool.request();
     
@@ -4033,6 +4113,20 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
 
+    // Verify database context before executing stored procedure
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
     const request = pool.request();
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
 
@@ -4076,6 +4170,20 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
     const pool = await getContractorConnection();
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
 
     const request = pool.request();
 
