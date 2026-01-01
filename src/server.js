@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import routes from './routes.js';
 import { closeAllPools } from './db.js';
+import contractorPORoutes from '../contractor-po/routes/index.js';
 
 dotenv.config();
 
@@ -50,7 +51,6 @@ mongoose.connect(MONGODB_URI)
 app.use('/api', routes);
 
 // Mount Contractor PO routes at /contractor-po/api
-const contractorPORoutes = require(join(__dirname, '../contractor-po/routes/index.js'));
 app.use('/contractor-po/api', contractorPORoutes);
 
 app.get('/health', (req, res) => {
