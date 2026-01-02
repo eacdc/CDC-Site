@@ -3427,7 +3427,6 @@ ${senderPhone}`;
 // ============================================
 // Contractor PO System Routes (COMMENTED OUT - using subfolder backend instead)
 // ============================================
-/*
 
 // Helper function to get MSSQL connection for contractor routes
 // ALWAYS uses IndusEnterprise database
@@ -3495,6 +3494,8 @@ async function getConnection() {
     throw error;
   }
 }
+
+/*
 
 async function getContractorConnection() {
   try {
@@ -5320,6 +5321,198 @@ router.get('/series/:id', async (req, res) => {
   }
 });
 */
+
+// ============================================
+// Job Completion Routes (for Update Job Card and Job Completion UIs)
+// ============================================
+
+// Get job details for completion app (with isclose and jobcloseddate)
+// Uses direct SQL query instead of stored procedure
+router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    
+    // Direct SQL query for job completion app
+    const query = `
+      SELECT ClientName, JobName, OrderQuantity, isclose, jobcloseddate 
+      FROM jobbookingjobcard 
+      WHERE jobbookingno = @JobBookingNo
+    `;
+    
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('🔍 [MSSQL] Executing direct query for job completion with @JobBookingNo =', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(query);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const jobDetails = result.recordset[0];
+
+    res.json({
+      clientName: jobDetails.ClientName || jobDetails.clientName || '',
+      qty: jobDetails.OrderQuantity || jobDetails.orderQuantity || 0,
+      isclose: jobDetails.isclose !== undefined ? jobDetails.isclose : 0,
+      jobcloseddate: jobDetails.jobcloseddate || null
+    });
+  } catch (error) {
+    console.error('Error fetching job details for completion:', error);
+    res.status(500).json({ error: 'Error fetching job details: ' + error.message });
+  }
+});
+
+// Search job numbers for completion app (uses same stored procedure as Contractor PO System)
+router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) => {
+  try {
+    const { jobNumberPart } = req.params;
+    console.log('🔍 [BACKEND] /jobs/search-numbers-completion called with jobNumberPart:', jobNumberPart);
+
+    if (!jobNumberPart || jobNumberPart.length < 4) {
+      return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing stored procedure
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
+
+    console.log('🔍 [MSSQL] Calling dbo.contractor_search_jobnumbers with @JobNumberPart =', jobNumberPart);
+
+    const queryStartTime = Date.now();
+    const result = await request.execute('dbo.contractor_search_jobnumbers');
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+
+    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
+    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
+
+    const jobNumbers = result.recordset.map((row, index) => {
+      console.log(`🔍 [MSSQL] Row ${index}:`, JSON.stringify(row, null, 2));
+      const jobNum = row.JobNumber || row.Job_Number || row.jobNumber || row.job_number || 
+             row.JobNo || row.Job_NO || Object.values(row)[0];
+      console.log(`🔍 [MSSQL] Row ${index} extracted jobNumber:`, jobNum);
+      return jobNum;
+    }).filter(Boolean);
+
+    console.log('🔍 [BACKEND] Final jobNumbers array:', jobNumbers);
+    res.json(jobNumbers);
+  } catch (error) {
+    console.error('❌ [BACKEND] Error searching job numbers for completion:', error);
+    console.error('❌ [BACKEND] Error stack:', error.stack);
+    res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
+  }
+});
+
+// Complete job - close job in jobbookingjobcard table
+router.post('/jobs/complete/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+
+    // Execute UPDATE statement to close the job
+    const updateQuery = `
+      UPDATE jobbookingjobcard 
+      SET isclose = 1, 
+          jobclosedby = 2, 
+          jobcloseddate = GETDATE(), 
+          jobcloseremark = 'Closed - Manu' 
+      WHERE jobbookingno = @JobBookingNo
+    `;
+
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('✅ [MSSQL] Executing job completion update for:', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(updateQuery);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Update executed in ${queryTime}ms`);
+    console.log(`✅ [MSSQL] Rows affected: ${result.rowsAffected[0]}`);
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ error: 'Job not found or already closed' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Job completed successfully',
+      jobNumber: jobNumber,
+      rowsAffected: result.rowsAffected[0]
+    });
+  } catch (error) {
+    console.error('Error completing job:', error);
+    res.status(500).json({ error: 'Error completing job: ' + error.message });
+  }
+});
 
 export default router;
 
