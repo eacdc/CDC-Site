@@ -14,6 +14,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
+import getAudioModel from './models/Audio.js';
 // Contractor PO System imports
 import Contractor from './models/Contractor.js';
 import Operation from './models/Operation.js';
@@ -5904,7 +5905,7 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
 });
 
 // ============================================
-// Voice Notes Routes
+// Voice Notes Routes (Legacy - for text notes)
 // ============================================
 
 // Create a new voice note
@@ -5969,6 +5970,111 @@ router.get('/voice-notes/department/:department', async (req, res) => {
 	} catch (error) {
 		console.error('Error fetching voice notes by department:', error);
 		res.status(500).json({ error: 'Error fetching voice notes' });
+	}
+});
+
+// ============================================
+// Voice Note Tool API (Separate API for audio collection)
+// ============================================
+
+// Save audio to audio collection
+router.post('/voice-note-tool/audio', async (req, res) => {
+	try {
+		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy } = req.body;
+
+		if (!jobNumber || !toDepartment || !audioBlob || !audioMimeType || !createdBy) {
+			return res.status(400).json({ error: 'Missing required fields (jobNumber, toDepartment, audioBlob, audioMimeType, createdBy)' });
+		}
+
+		const Audio = await getAudioModel();
+		const newAudio = new Audio({
+			jobNumber,
+			toDepartment,
+			audioBlob: Buffer.from(audioBlob, 'base64'),
+			audioMimeType,
+			createdBy
+		});
+
+		await newAudio.save();
+		
+		// Return audio without the blob to reduce response size
+		res.status(201).json({
+			_id: newAudio._id,
+			jobNumber: newAudio.jobNumber,
+			toDepartment: newAudio.toDepartment,
+			audioMimeType: newAudio.audioMimeType,
+			createdBy: newAudio.createdBy,
+			createdAt: newAudio.createdAt,
+			updatedAt: newAudio.updatedAt
+		});
+	} catch (error) {
+		console.error('Error saving audio:', error);
+		res.status(500).json({ error: 'Error saving audio: ' + error.message });
+	}
+});
+
+// Get all audio files for a job number
+router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
+	try {
+		const { jobNumber } = req.params;
+		const Audio = await getAudioModel();
+		const audioFiles = await Audio.find({ jobNumber })
+			.select('jobNumber toDepartment audioMimeType createdBy createdAt updatedAt')
+			.sort({ createdAt: -1 })
+			.lean();
+		
+		res.json(audioFiles);
+	} catch (error) {
+		console.error('Error fetching audio files:', error);
+		res.status(500).json({ error: 'Error fetching audio files: ' + error.message });
+	}
+});
+
+// Get a specific audio file (with blob)
+router.get('/voice-note-tool/audio/:id', async (req, res) => {
+	try {
+		const { id } = req.params;
+		const Audio = await getAudioModel();
+		const audio = await Audio.findById(id);
+
+		if (!audio) {
+			return res.status(404).json({ error: 'Audio not found' });
+		}
+
+		// Convert buffer to base64
+		const base64Audio = audio.audioBlob.toString('base64');
+		
+		res.json({
+			_id: audio._id,
+			jobNumber: audio.jobNumber,
+			toDepartment: audio.toDepartment,
+			audioBlob: base64Audio,
+			audioMimeType: audio.audioMimeType,
+			createdBy: audio.createdBy,
+			createdAt: audio.createdAt,
+			updatedAt: audio.updatedAt
+		});
+	} catch (error) {
+		console.error('Error fetching audio file:', error);
+		res.status(500).json({ error: 'Error fetching audio file: ' + error.message });
+	}
+});
+
+// Delete an audio file
+router.delete('/voice-note-tool/audio/:id', async (req, res) => {
+	try {
+		const { id } = req.params;
+		const Audio = await getAudioModel();
+		const audio = await Audio.findByIdAndDelete(id);
+
+		if (!audio) {
+			return res.status(404).json({ error: 'Audio not found' });
+		}
+
+		res.json({ message: 'Audio deleted successfully' });
+	} catch (error) {
+		console.error('Error deleting audio:', error);
+		res.status(500).json({ error: 'Error deleting audio: ' + error.message });
 	}
 });
 
