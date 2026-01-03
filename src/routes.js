@@ -13,7 +13,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
-import VoiceNote from './models/VoiceNote.js';
+import getVoiceNoteModel from './models/VoiceNote.js';
 // Contractor PO System imports
 import Contractor from './models/Contractor.js';
 import Operation from './models/Operation.js';
@@ -5910,16 +5910,19 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
 // Create a new voice note
 router.post('/voice-notes', async (req, res) => {
 	try {
-		const { jobNumber, toDepartment, voiceNote, createdBy } = req.body;
+		const { jobNumber, toDepartment, voiceNote, audioBlob, audioMimeType, createdBy } = req.body;
 
-		if (!jobNumber || !toDepartment || !voiceNote || !createdBy) {
-			return res.status(400).json({ error: 'Missing required fields' });
+		if (!jobNumber || !toDepartment || !createdBy) {
+			return res.status(400).json({ error: 'Missing required fields (jobNumber, toDepartment, createdBy)' });
 		}
 
+		const VoiceNote = await getVoiceNoteModel();
 		const newVoiceNote = new VoiceNote({
 			jobNumber,
 			toDepartment,
-			voiceNote,
+			voiceNote: voiceNote || '',
+			audioBlob: audioBlob ? Buffer.from(audioBlob, 'base64') : undefined,
+			audioMimeType,
 			createdBy
 		});
 
@@ -5934,6 +5937,7 @@ router.post('/voice-notes', async (req, res) => {
 // Get all voice notes
 router.get('/voice-notes', async (req, res) => {
 	try {
+		const VoiceNote = await getVoiceNoteModel();
 		const voiceNotes = await VoiceNote.find().sort({ createdAt: -1 });
 		res.json(voiceNotes);
 	} catch (error) {
@@ -5946,6 +5950,7 @@ router.get('/voice-notes', async (req, res) => {
 router.get('/voice-notes/job/:jobNumber', async (req, res) => {
 	try {
 		const { jobNumber } = req.params;
+		const VoiceNote = await getVoiceNoteModel();
 		const voiceNotes = await VoiceNote.find({ jobNumber }).sort({ createdAt: -1 });
 		res.json(voiceNotes);
 	} catch (error) {
@@ -5958,6 +5963,7 @@ router.get('/voice-notes/job/:jobNumber', async (req, res) => {
 router.get('/voice-notes/department/:department', async (req, res) => {
 	try {
 		const { department } = req.params;
+		const VoiceNote = await getVoiceNoteModel();
 		const voiceNotes = await VoiceNote.find({ toDepartment: department }).sort({ createdAt: -1 });
 		res.json(voiceNotes);
 	} catch (error) {

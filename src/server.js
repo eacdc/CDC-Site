@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import routes from './routes.js';
 import { closeAllPools } from './db.js';
+import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
 dotenv.config();
 
@@ -67,6 +68,7 @@ const server = app.listen(port, () => {
 process.on('SIGINT', async () => {
 	console.log('Received SIGINT, shutting down gracefully...');
 	await closeAllPools();
+	await closeVoiceNotesConnection();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
@@ -77,6 +79,7 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
 	console.log('Received SIGTERM, shutting down gracefully...');
 	await closeAllPools();
+	await closeVoiceNotesConnection();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');

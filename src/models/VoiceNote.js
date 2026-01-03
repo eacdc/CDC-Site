@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { getVoiceNotesConnection } from '../db-voice-notes.js';
 
 const voiceNoteSchema = new mongoose.Schema({
   jobNumber: {
@@ -13,8 +14,13 @@ const voiceNoteSchema = new mongoose.Schema({
   },
   voiceNote: {
     type: String,
-    required: true,
     trim: true,
+  },
+  audioBlob: {
+    type: Buffer,
+  },
+  audioMimeType: {
+    type: String,
   },
   createdBy: {
     type: String,
@@ -28,4 +34,13 @@ const voiceNoteSchema = new mongoose.Schema({
 // Index for faster queries
 voiceNoteSchema.index({ jobNumber: 1, createdAt: -1 });
 
-export default mongoose.model('VoiceNote', voiceNoteSchema);
+// Create model using the voice notes connection
+let VoiceNote = null;
+
+export default async function getVoiceNoteModel() {
+  if (!VoiceNote) {
+    const connection = await getVoiceNotesConnection();
+    VoiceNote = connection.model('VoiceNote', voiceNoteSchema);
+  }
+  return VoiceNote;
+}
