@@ -13,18 +13,39 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
-// Contractor PO System imports (commented out - using subfolder backend instead)
-// import Contractor from './models/Contractor.js';
-// import Operation from './models/Operation.js';
-// import Job from './models/Job.js';
-// import JobOperation from './models/JobOperation.js';
-// import JobOpsMaster from './models/JobOpsMaster.js';
-// import ContractorWD from './models/ContractorWD.js';
-// import Bill from './models/Bill.js';
-// import Series from './models/Series.js';
+import VoiceNote from './models/VoiceNote.js';
+// Contractor PO System imports
+import Contractor from './models/Contractor.js';
+import Operation from './models/Operation.js';
+import Job from './models/Job.js';
+import JobOperation from './models/JobOperation.js';
+import JobOpsMaster from './models/JobOpsMaster.js';
+import ContractorWD from './models/ContractorWD.js';
+import Bill from './models/Bill.js';
+import Series from './models/Series.js';
 
 
 const router = Router();
+
+// Test route to verify routes are loading
+router.get('/test-route', (req, res) => {
+  res.json({ message: 'Routes are working!', timestamp: new Date().toISOString() });
+});
+
+// Debug route to list all registered routes
+router.get('/debug-routes', (req, res) => {
+  const routes = [];
+  router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      const methods = Object.keys(middleware.route.methods).join(', ').toUpperCase();
+      routes.push({
+        method: methods,
+        path: middleware.route.path
+      });
+    }
+  });
+  res.json({ routes: routes.filter(r => r.path.includes('jobs')) });
+});
 
 // ============================================
 // In-Memory Job Processing System
@@ -945,6 +966,33 @@ router.post('/auth/logout', async (req, res) => {
 		console.error('Logout error:', err);
 		logAuth('Logout failed', { route: '/auth/logout', ip: req.ip, error: String(err) });
 		return res.status(500).json({ status: false, error: 'Logout failed' });
+	}
+});
+
+// Login for voice note tool (username only, no password)
+router.post('/auth/login-voice-note', async (req, res) => {
+	try {
+		const { username } = req.body;
+
+		if (!username) {
+			return res.status(400).json({ error: 'Username is required' });
+		}
+
+		// For voice note tool, we just need a username
+		// Generate a simple token (in production, use proper JWT)
+		const token = jwt.sign(
+			{ username, tool: 'voice-note' },
+			process.env.JWT_SECRET || 'your-secret-key',
+			{ expiresIn: '24h' }
+		);
+
+		res.json({
+			token,
+			username
+		});
+	} catch (error) {
+		console.error('Voice note login error:', error);
+		res.status(500).json({ error: 'Server error during login' });
 	}
 });
 
@@ -3605,6 +3653,12 @@ async function getContractorConnection() {
   }
 }
 
+// ============================================
+// Contractor PO Routes (using MongoDB) - COMMENTED OUT TO AVOID CONFLICTS
+// These routes conflict with the main app routes
+// ============================================
+
+/*
 // Auth routes
 router.post('/auth/login', async (req, res) => {
   try {
@@ -3675,6 +3729,7 @@ router.post('/auth/register', async (req, res) => {
     res.status(500).json({ error: 'Server error during registration' });
   }
 });
+*/
 
 // Jobs routes
 router.get('/jobs', async (req, res) => {
@@ -3815,6 +3870,57 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
   } catch (error) {
     console.error('Error searching job:', error);
     res.status(500).json({ error: 'Error searching job' });
+  }
+});
+
+// IMPORTANT: Specific routes must come before the general /jobs/:id route
+// Search job numbers from MSSQL (when 4+ digits entered)
+// This route MUST come before /jobs/:id to avoid route matching conflicts
+router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
+  console.log('✅ [ROUTE] /jobs/search-numbers/:jobNumberPart route hit!');
+  console.log('✅ [ROUTE] Request params:', req.params);
+  console.log('✅ [ROUTE] Request URL:', req.url);
+  console.log('✅ [ROUTE] Request path:', req.path);
+  try {
+    const { jobNumberPart } = req.params;
+    console.log('🔍 [BACKEND] /jobs/search-numbers called with jobNumberPart:', jobNumberPart);
+
+    if (!jobNumberPart || jobNumberPart.length < 4) {
+      return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const request = pool.request();
+    request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
+
+    console.log('🔍 [MSSQL] Calling dbo.contractor_search_jobnumbers with @JobNumberPart =', jobNumberPart);
+
+    const queryStartTime = Date.now();
+    const result = await request.execute('dbo.contractor_search_jobnumbers');
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+
+    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
+    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
+
+    const jobNumbers = result.recordset.map((row, index) => {
+      console.log(`🔍 [MSSQL] Row ${index}:`, JSON.stringify(row, null, 2));
+      const jobNum = row.JobNumber || row.Job_Number || row.jobNumber || row.job_number || 
+             row.JobNo || row.Job_NO || Object.values(row)[0];
+      console.log(`🔍 [MSSQL] Row ${index} extracted jobNumber:`, jobNum);
+      return jobNum;
+    }).filter(Boolean);
+
+    console.log('🔍 [BACKEND] Final jobNumbers array:', jobNumbers);
+    res.json(jobNumbers);
+  } catch (error) {
+    console.error('❌ [BACKEND] Error searching job numbers:', error);
+    console.error('❌ [BACKEND] Error stack:', error.stack);
+    res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
   }
 });
 
@@ -4052,50 +4158,6 @@ router.get('/jobs/jobopsmaster/jobnumbers', async (req, res) => {
   } catch (error) {
     console.error('Error fetching job numbers:', error);
     res.status(500).json({ error: 'Error fetching job numbers' });
-  }
-});
-
-router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
-  try {
-    const { jobNumberPart } = req.params;
-    console.log('🔍 [BACKEND] /jobs/search-numbers called with jobNumberPart:', jobNumberPart);
-
-    if (!jobNumberPart || jobNumberPart.length < 4) {
-      return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
-    }
-
-    const connectionStartTime = Date.now();
-    const pool = await getConnection();
-    const connectionTime = Date.now() - connectionStartTime;
-    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    const request = pool.request();
-    request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
-
-    console.log('🔍 [MSSQL] Calling dbo.contractor_search_jobnumbers with @JobNumberPart =', jobNumberPart);
-
-    const queryStartTime = Date.now();
-    const result = await request.execute('dbo.contractor_search_jobnumbers');
-    const queryTime = Date.now() - queryStartTime;
-    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
-
-    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
-    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
-
-    const jobNumbers = result.recordset.map((row, index) => {
-      console.log(`🔍 [MSSQL] Row ${index}:`, JSON.stringify(row, null, 2));
-      const jobNum = row.JobNumber || row.Job_Number || row.jobNumber || row.job_number || 
-             row.JobNo || row.Job_NO || Object.values(row)[0];
-      console.log(`🔍 [MSSQL] Row ${index} extracted jobNumber:`, jobNum);
-      return jobNum;
-    }).filter(Boolean);
-
-    console.log('🔍 [BACKEND] Final jobNumbers array:', jobNumbers);
-    res.json(jobNumbers);
-  } catch (error) {
-    console.error('❌ [BACKEND] Error searching job numbers:', error);
-    console.error('❌ [BACKEND] Error stack:', error.stack);
-    res.status(500).json({ error: 'Error searching job numbers: ' + error.message });
   }
 });
 
@@ -5320,7 +5382,6 @@ router.get('/series/:id', async (req, res) => {
     res.status(500).json({ error: 'Error fetching series' });
   }
 });
-*/
 
 // ============================================
 // Job Completion Routes (for Update Job Card and Job Completion UIs)
@@ -5840,6 +5901,69 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
     console.error('Error completing job:', error);
     res.status(500).json({ error: 'Error completing job: ' + error.message });
   }
+});
+
+// ============================================
+// Voice Notes Routes
+// ============================================
+
+// Create a new voice note
+router.post('/voice-notes', async (req, res) => {
+	try {
+		const { jobNumber, toDepartment, voiceNote, createdBy } = req.body;
+
+		if (!jobNumber || !toDepartment || !voiceNote || !createdBy) {
+			return res.status(400).json({ error: 'Missing required fields' });
+		}
+
+		const newVoiceNote = new VoiceNote({
+			jobNumber,
+			toDepartment,
+			voiceNote,
+			createdBy
+		});
+
+		await newVoiceNote.save();
+		res.status(201).json(newVoiceNote);
+	} catch (error) {
+		console.error('Error creating voice note:', error);
+		res.status(500).json({ error: 'Error creating voice note' });
+	}
+});
+
+// Get all voice notes
+router.get('/voice-notes', async (req, res) => {
+	try {
+		const voiceNotes = await VoiceNote.find().sort({ createdAt: -1 });
+		res.json(voiceNotes);
+	} catch (error) {
+		console.error('Error fetching voice notes:', error);
+		res.status(500).json({ error: 'Error fetching voice notes' });
+	}
+});
+
+// Get voice notes by job number
+router.get('/voice-notes/job/:jobNumber', async (req, res) => {
+	try {
+		const { jobNumber } = req.params;
+		const voiceNotes = await VoiceNote.find({ jobNumber }).sort({ createdAt: -1 });
+		res.json(voiceNotes);
+	} catch (error) {
+		console.error('Error fetching voice notes by job number:', error);
+		res.status(500).json({ error: 'Error fetching voice notes' });
+	}
+});
+
+// Get voice notes by department
+router.get('/voice-notes/department/:department', async (req, res) => {
+	try {
+		const { department } = req.params;
+		const voiceNotes = await VoiceNote.find({ toDepartment: department }).sort({ createdAt: -1 });
+		res.json(voiceNotes);
+	} catch (error) {
+		console.error('Error fetching voice notes by department:', error);
+		res.status(500).json({ error: 'Error fetching voice notes' });
+	}
 });
 
 export default router;
