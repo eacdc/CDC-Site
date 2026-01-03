@@ -5326,6 +5326,334 @@ router.get('/series/:id', async (req, res) => {
 // Job Completion Routes (for Update Job Card and Job Completion UIs)
 // ============================================
 
+// Get job color details for update job card app (returns PlanContName list)
+router.get('/jobs/color-details/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    request.input('JobNumber', sql.NVarChar(255), jobNumber);
+
+    console.log('🔍 [MSSQL] Calling usp_GetJobColorDetails_JSON with @JobNumber =', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.execute('usp_GetJobColorDetails_JSON');
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+
+    console.log('🔍 [MSSQL] Raw result.recordset:', JSON.stringify(result.recordset, null, 2));
+    console.log('🔍 [MSSQL] result.recordset.length:', result.recordset.length);
+
+    // The stored procedure returns JSON, so we need to parse it
+    let jsonData = null;
+    if (result.recordset && result.recordset.length > 0) {
+      // The JSON might be in the first column of the first row
+      const firstRow = result.recordset[0];
+      const firstKey = Object.keys(firstRow)[0];
+      const jsonString = firstRow[firstKey];
+      
+      console.log('🔍 [MSSQL] First row key:', firstKey);
+      console.log('🔍 [MSSQL] JSON string type:', typeof jsonString);
+      console.log('🔍 [MSSQL] JSON string preview:', jsonString ? jsonString.substring(0, 200) : 'null');
+      
+      try {
+        if (typeof jsonString === 'string') {
+          jsonData = JSON.parse(jsonString);
+        } else if (typeof jsonString === 'object') {
+          // If it's already parsed, use it directly
+          jsonData = jsonString;
+        } else {
+          // Try to parse the entire recordset as JSON
+          jsonData = JSON.parse(JSON.stringify(result.recordset[0]));
+        }
+      } catch (parseErr) {
+        console.error('❌ [MSSQL] JSON parse error:', parseErr);
+        // If parsing fails, try to use the recordset directly
+        jsonData = result.recordset[0];
+      }
+    }
+
+    console.log('🔍 [BACKEND] Parsed jsonData:', JSON.stringify(jsonData, null, 2));
+
+    if (!jsonData || !jsonData.Contents || !Array.isArray(jsonData.Contents)) {
+      console.log('⚠️ [BACKEND] No Contents array found in response');
+      return res.json({
+        jobNumber: jobNumber,
+        planContNames: []
+      });
+    }
+
+    // Extract all PlanContName values from Contents array
+    const planContNames = jsonData.Contents
+      .map(content => content.PlanContName)
+      .filter(name => name != null && name !== '');
+
+    console.log('🔍 [BACKEND] Extracted planContNames:', planContNames);
+
+    res.json({
+      jobNumber: jsonData.JobNumber || jobNumber,
+      jobBookingID: jsonData.JobBookingID || null,
+      planContNames: planContNames,
+      fullData: jsonData // Include full data in case needed later
+    });
+  } catch (error) {
+    console.error('Error fetching job color details:', error);
+    res.status(500).json({ error: 'Error fetching job color details: ' + error.message });
+  }
+});
+
+// Get items from itemmaster for color dropdown
+router.get('/jobs/items-for-color', async (req, res) => {
+  try {
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    
+    // Query to get items from itemmaster
+    const query = `
+      SELECT itemid, itemname, InkColour, PantoneCode 
+      FROM itemmaster 
+      WHERE itemgroupid=3 
+        AND isitemactive=1 
+        AND isdeleted=0 
+        AND isblocked=0 
+        AND IsDeletedTransaction=0
+      ORDER BY itemname
+    `;
+
+    console.log('🔍 [MSSQL] Executing query to get items for color dropdown');
+    const queryStartTime = Date.now();
+    const result = await request.query(query);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    const items = result.recordset.map(row => ({
+      itemId: row.itemid || row.itemId || null,
+      itemName: row.itemname || row.itemName || '',
+      inkColour: row.InkColour || row.inkColour || null,
+      pantoneCode: row.PantoneCode || row.pantoneCode || null
+    }));
+
+    res.json({
+      items: items
+    });
+  } catch (error) {
+    console.error('Error fetching items for color:', error);
+    res.status(500).json({ error: 'Error fetching items: ' + error.message });
+  }
+});
+
+// Save color changes for update job card app
+router.post('/jobs/save-color-changes', async (req, res) => {
+  console.log('\n🔔 [BACKEND] ========================================');
+  console.log('🔔 [BACKEND] POST /jobs/save-color-changes - REQUEST RECEIVED');
+  console.log('🔔 [BACKEND] ========================================');
+  console.log('🔔 [BACKEND] Timestamp:', new Date().toISOString());
+  console.log('🔔 [BACKEND] Request headers:', JSON.stringify(req.headers, null, 2));
+  console.log('🔔 [BACKEND] Request body type:', typeof req.body);
+  console.log('🔔 [BACKEND] Request body:', req.body);
+  console.log('🔔 [BACKEND] Request body keys:', Object.keys(req.body || {}));
+  
+  try {
+    const colorData = req.body;
+    
+    console.log('🔔 [BACKEND] Parsed colorData:', colorData);
+
+    if (!colorData || !colorData.Contents || !Array.isArray(colorData.Contents) || colorData.Contents.length === 0) {
+      console.error('❌ [BACKEND] Invalid color data format');
+      console.error('❌ [BACKEND] colorData:', colorData);
+      console.error('❌ [BACKEND] Contents:', colorData?.Contents);
+      return res.status(400).json({ error: 'Invalid color data format' });
+    }
+
+    // Log the received JSON object with clear formatting
+    console.log('\n========================================');
+    console.log('💾 [BACKEND] SAVE COLOR CHANGES REQUEST');
+    console.log('========================================');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('Job Number:', colorData.JobNumber);
+    console.log('Job Booking ID:', colorData.JobBookingID);
+    console.log('\n📋 Full JSON Object:');
+    console.log(JSON.stringify(colorData, null, 2));
+    console.log('\n📊 Summary:');
+    console.log(`  - Contents Count: ${colorData.Contents.length}`);
+    colorData.Contents.forEach((content, index) => {
+      console.log(`  - Content ${index + 1}: ${content.PlanContName}`);
+      console.log(`    - Colors Count: ${content.Colors ? content.Colors.length : 0}`);
+      if (content.Colors && content.Colors.length > 0) {
+        content.Colors.forEach((color, colorIndex) => {
+          console.log(`      ${colorIndex + 1}. ${color.ColorSpecification}: ${color.ItemName} (ItemID: ${color.ItemID})`);
+        });
+      }
+    });
+    console.log('========================================\n');
+
+    // Get database connection (default to KOL, can be made configurable)
+    const pool = await getPool('KOL');
+    
+    // Process only the selected/updated content (should be only one in the array)
+    if (colorData.Contents.length !== 1) {
+      console.warn('⚠️ [BACKEND] Expected exactly one content, but received:', colorData.Contents.length);
+    }
+    
+    const selectedContent = colorData.Contents[0];
+    
+    // Convert content to JSON string (format matches the procedure's expected input)
+    const contentJson = JSON.stringify(selectedContent);
+    
+    console.log(`\n🔄 [BACKEND] Processing selected content: ${selectedContent.PlanContName}`);
+    console.log(`📋 [BACKEND] Content JSON:`, contentJson);
+    
+    try {
+      const request = pool.request();
+      
+      // Call the stored procedure with the selected content JSON
+      const result = await request
+        .input('Json', sql.NVarChar(sql.MAX), contentJson)
+        .input('CompanyID', sql.Int, 2)
+        .input('UserID', sql.Int, 0)
+        .execute('dbo.usp_ReplaceJobCardColorDetails_ByContents_JSON');
+      
+      console.log(`✅ [BACKEND] Stored procedure executed successfully for: ${selectedContent.PlanContName}`);
+      
+      res.json({ 
+        success: true, 
+        message: 'Color changes saved successfully',
+        content: selectedContent.PlanContName
+      });
+    } catch (spError) {
+      console.error(`❌ [BACKEND] Error executing stored procedure for ${selectedContent.PlanContName}:`, spError);
+      console.error(`❌ [BACKEND] Error details:`, spError.message);
+      console.error(`❌ [BACKEND] Error stack:`, spError.stack);
+      
+      res.status(500).json({ 
+        success: false,
+        error: 'Failed to save color changes: ' + spError.message,
+        content: selectedContent.PlanContName
+      });
+    }
+  } catch (error) {
+    console.error('\n❌ [ERROR] Error saving color changes:', error);
+    console.error('Error stack:', error.stack);
+    res.status(500).json({ error: 'Error saving color changes: ' + error.message });
+  }
+});
+
+// Get job details for update job card app (with ClientName, JobName, OrderQuantity, PODate)
+router.get('/jobs/details-update/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    
+    // Query for update job card app
+    const query = `
+      SELECT ClientName, JobName, OrderQuantity, PODate 
+      FROM jobbookingjobcard 
+      WHERE jobbookingno = @JobBookingNo
+    `;
+    
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('🔍 [MSSQL] Executing query for update job card with @JobBookingNo =', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(query);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    if (result.recordset.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const jobDetails = result.recordset[0];
+
+    // Format PODate to show only date (no time)
+    let poDateFormatted = null;
+    if (jobDetails.PODate) {
+      const poDate = new Date(jobDetails.PODate);
+      if (!isNaN(poDate.getTime())) {
+        // Format as YYYY-MM-DD
+        const year = poDate.getFullYear();
+        const month = String(poDate.getMonth() + 1).padStart(2, '0');
+        const day = String(poDate.getDate()).padStart(2, '0');
+        poDateFormatted = `${year}-${month}-${day}`;
+      }
+    }
+
+    res.json({
+      clientName: jobDetails.ClientName || jobDetails.clientName || null,
+      jobName: jobDetails.JobName || jobDetails.jobName || null,
+      orderQuantity: jobDetails.OrderQuantity || jobDetails.orderQuantity || 0,
+      poDate: poDateFormatted
+    });
+  } catch (error) {
+    console.error('Error fetching job details for update:', error);
+    res.status(500).json({ error: 'Error fetching job details: ' + error.message });
+  }
+});
+
 // Get job details for completion app (with isclose and jobcloseddate)
 // Uses direct SQL query instead of stored procedure
 router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
