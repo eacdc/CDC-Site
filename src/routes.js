@@ -6072,24 +6072,32 @@ router.get('/voice-note-tool/audio/:id', async (req, res) => {
 	try {
 		const { id } = req.params;
 		const Audio = await getAudioModel();
-		const audio = await Audio.findById(id);
+		
+		// Find document containing the recording with this ID
+		const audioDoc = await Audio.findOne({ 'recordings._id': id });
 
-		if (!audio) {
+		if (!audioDoc) {
 			return res.status(404).json({ error: 'Audio not found' });
 		}
 
-		// Convert buffer to base64
-		const base64Audio = audio.audioBlob.toString('base64');
+		// Find the specific recording
+		const recording = audioDoc.recordings.id(id);
 		
+		if (!recording) {
+			return res.status(404).json({ error: 'Audio recording not found' });
+		}
+
+		// Convert buffer to base64
+		const base64Audio = recording.audioBlob.toString('base64');
+
 		res.json({
-			_id: audio._id,
-			jobNumber: audio.jobNumber,
-			toDepartment: audio.toDepartment,
+			_id: recording._id,
+			jobNumber: audioDoc.jobNumber,
+			toDepartment: recording.toDepartment,
 			audioBlob: base64Audio,
-			audioMimeType: audio.audioMimeType,
-			createdBy: audio.createdBy,
-			createdAt: audio.createdAt,
-			updatedAt: audio.updatedAt
+			audioMimeType: recording.audioMimeType,
+			createdBy: audioDoc.createdBy,
+			createdAt: recording.createdAt
 		});
 	} catch (error) {
 		console.error('Error fetching audio file:', error);
