@@ -6171,7 +6171,7 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 			const transcription = await openai.audio.transcriptions.create({
 				file: fs.createReadStream(tempFilePath),
 				model: 'whisper-1',
-				language: 'bn' // Bengali language code
+				// language: 'bn' // Bengali language code
 			});
 
 			console.log('📝 Transcription:', transcription.text);
