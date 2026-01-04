@@ -15,6 +15,10 @@ const audioRecordingSchema = new mongoose.Schema({
     required: true,
     enum: ['prepress', 'postpress', 'printing'],
   },
+  summary: {
+    type: String,
+    default: '',
+  },
   createdAt: {
     type: Date,
     default: Date.now,

@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import OpenAI from 'openai';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
 import getAudioModel from './models/Audio.js';
@@ -27,6 +28,11 @@ import Series from './models/Series.js';
 
 
 const router = Router();
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 // Test route to verify routes are loading
 router.get('/test-route', (req, res) => {
@@ -5980,21 +5986,22 @@ router.get('/voice-notes/department/:department', async (req, res) => {
 // Save audio to audio collection
 router.post('/voice-note-tool/audio', async (req, res) => {
 	try {
-		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy } = req.body;
+		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy, summary } = req.body;
 
 		if (!jobNumber || !toDepartment || !audioBlob || !audioMimeType || !createdBy) {
 			return res.status(400).json({ error: 'Missing required fields (jobNumber, toDepartment, audioBlob, audioMimeType, createdBy)' });
 		}
 
 		const Audio = await getAudioModel();
-		
+
 		// Find existing document for this user and job number
 		let audioDoc = await Audio.findOne({ jobNumber, createdBy });
-		
+
 		const newRecording = {
 			audioBlob: Buffer.from(audioBlob, 'base64'),
 			audioMimeType,
 			toDepartment,
+			summary: summary || '',
 			createdAt: new Date()
 		};
 
@@ -6132,6 +6139,111 @@ router.delete('/voice-note-tool/audio/:recordingId', async (req, res) => {
 	} catch (error) {
 		console.error('Error deleting audio:', error);
 		res.status(500).json({ error: 'Error deleting audio: ' + error.message });
+	}
+});
+
+// Analyze audio with OpenAI (transcription + summary)
+router.post('/voice-note-tool/analyze-audio', async (req, res) => {
+	try {
+		const { audioBlob, audioMimeType, toDepartment } = req.body;
+
+		if (!audioBlob || !audioMimeType || !toDepartment) {
+			return res.status(400).json({ error: 'Missing required fields (audioBlob, audioMimeType, toDepartment)' });
+		}
+
+		// Convert base64 to buffer
+		const audioBuffer = Buffer.from(audioBlob, 'base64');
+
+		// Determine file extension from mime type
+		let extension = 'webm';
+		if (audioMimeType.includes('wav')) extension = 'wav';
+		else if (audioMimeType.includes('mp3')) extension = 'mp3';
+		else if (audioMimeType.includes('m4a')) extension = 'm4a';
+		else if (audioMimeType.includes('ogg')) extension = 'ogg';
+
+		// Create a temporary file for OpenAI (Whisper API requires file upload)
+		const tempFilePath = path.join(process.cwd(), `temp_audio_${Date.now()}.${extension}`);
+		fs.writeFileSync(tempFilePath, audioBuffer);
+
+		try {
+			// Step 1: Transcribe audio using Whisper
+			console.log('🎙️ Transcribing audio with Whisper...');
+			const transcription = await openai.audio.transcriptions.create({
+				file: fs.createReadStream(tempFilePath),
+				model: 'whisper-1',
+				language: 'bn' // Bengali language code
+			});
+
+			console.log('📝 Transcription:', transcription.text);
+
+			// Step 2: Analyze with GPT-4 for summary and department alignment
+			console.log('🤖 Analyzing with GPT-4...');
+			const completion = await openai.chat.completions.create({
+				model: 'gpt-4',
+				messages: [
+					{
+						role: 'system',
+						content: `You are an assistant that analyzes voice notes for a manufacturing company. The company has three departments: prepress, postpress, and printing.
+
+Your task:
+1. Summarize the instruction/voice note in bullet points (3-5 points)
+2. Determine if the instruction is aligned with the selected department
+3. Respond in Bengali language BUT write it using English alphabets (Romanized Bengali/Banglish)
+
+Example of Romanized Bengali:
+- "ami vat khabo" (I will eat rice)
+- "ei kaj ta korte hobe" (This work needs to be done)
+- "printing quality ta valo hoyni" (The printing quality was not good)
+
+Department descriptions:
+- prepress: Design, layout, color separation, plate making, pre-printing work
+- postpress: Cutting, binding, folding, finishing work after printing
+- printing: Actual printing process, press operation, ink management
+
+Output format:
+Summary:
+• [bullet point 1 in Romanized Bengali]
+• [bullet point 2 in Romanized Bengali]
+• [bullet point 3 in Romanized Bengali]
+
+Department Alignment: [YES/NO]
+Reason: [Brief explanation in Romanized Bengali]`
+					},
+					{
+						role: 'user',
+						content: `The transcription of the voice note is: "${transcription.text}"
+
+The selected department is: ${toDepartment}
+
+Please analyze this and provide the summary and department alignment check in Romanized Bengali (Bengali written in English alphabets).`
+					}
+				],
+				temperature: 0.7
+			});
+
+			const analysis = completion.choices[0].message.content;
+			console.log('✅ Analysis complete:', analysis);
+
+			// Clean up temp file
+			fs.unlinkSync(tempFilePath);
+
+			res.json({
+				transcription: transcription.text,
+				analysis: analysis,
+				success: true
+			});
+
+		} catch (openaiError) {
+			// Clean up temp file even if error occurs
+			if (fs.existsSync(tempFilePath)) {
+				fs.unlinkSync(tempFilePath);
+			}
+			throw openaiError;
+		}
+
+	} catch (error) {
+		console.error('Error analyzing audio:', error);
+		res.status(500).json({ error: 'Error analyzing audio: ' + error.message });
 	}
 });
 

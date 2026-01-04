@@ -14,7 +14,22 @@ DB_USER=your_sql_user
 DB_PASSWORD=your_sql_password
 DB_NAME=your_database_name
 DB_SERVER=localhost\\SQLEXPRESS
+
+# MongoDB Configuration
+MONGODB_URI=mongodb://localhost:27017/contractor-po-system
+MONGODB_URI_VT=mongodb://localhost:27017/voice-tool
+
+# OpenAI Configuration (Required for Voice Note Tool AI analysis)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# JWT Secret
+JWT_SECRET=your_jwt_secret_here
 ```
+
+**Note:** To use the Voice Note Tool's AI analysis feature, you need to:
+1. Sign up for an OpenAI API account at https://platform.openai.com/
+2. Create an API key from your OpenAI dashboard
+3. Add the API key to your `.env` file as `OPENAI_API_KEY`
 
 3. Start the server
 
