@@ -5987,25 +5987,40 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 		}
 
 		const Audio = await getAudioModel();
-		const newAudio = new Audio({
-			jobNumber,
-			toDepartment,
+		
+		// Find existing document for this user and job number
+		let audioDoc = await Audio.findOne({ jobNumber, createdBy });
+		
+		const newRecording = {
 			audioBlob: Buffer.from(audioBlob, 'base64'),
 			audioMimeType,
-			createdBy
-		});
+			toDepartment,
+			createdAt: new Date()
+		};
 
-		await newAudio.save();
-		
-		// Return audio without the blob to reduce response size
+		if (audioDoc) {
+			// Add recording to existing document
+			audioDoc.recordings.push(newRecording);
+			await audioDoc.save();
+		} else {
+			// Create new document
+			audioDoc = new Audio({
+				jobNumber,
+				createdBy,
+				recordings: [newRecording]
+			});
+			await audioDoc.save();
+		}
+
+		// Return the last recording info
+		const lastRecording = audioDoc.recordings[audioDoc.recordings.length - 1];
 		res.status(201).json({
-			_id: newAudio._id,
-			jobNumber: newAudio.jobNumber,
-			toDepartment: newAudio.toDepartment,
-			audioMimeType: newAudio.audioMimeType,
-			createdBy: newAudio.createdBy,
-			createdAt: newAudio.createdAt,
-			updatedAt: newAudio.updatedAt
+			_id: lastRecording._id,
+			jobNumber: audioDoc.jobNumber,
+			toDepartment: lastRecording.toDepartment,
+			audioMimeType: lastRecording.audioMimeType,
+			createdBy: audioDoc.createdBy,
+			createdAt: lastRecording.createdAt
 		});
 	} catch (error) {
 		console.error('Error saving audio:', error);
@@ -6017,12 +6032,34 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 	try {
 		const { jobNumber } = req.params;
-		const Audio = await getAudioModel();
-		const audioFiles = await Audio.find({ jobNumber })
-			.select('jobNumber toDepartment audioMimeType createdBy createdAt updatedAt')
-			.sort({ createdAt: -1 })
-			.lean();
+		const { username } = req.query; // Get username from query parameter
 		
+		const Audio = await getAudioModel();
+		const query = { jobNumber };
+		
+		// Filter by username if provided
+		if (username) {
+			query.createdBy = username;
+		}
+		
+		const audioDoc = await Audio.findOne(query)
+			.select('jobNumber createdBy recordings')
+			.lean();
+
+		if (!audioDoc || !audioDoc.recordings || audioDoc.recordings.length === 0) {
+			return res.json([]);
+		}
+
+		// Transform recordings into individual audio file objects
+		const audioFiles = audioDoc.recordings.map(recording => ({
+			_id: recording._id,
+			jobNumber: audioDoc.jobNumber,
+			toDepartment: recording.toDepartment,
+			audioMimeType: recording.audioMimeType,
+			createdBy: audioDoc.createdBy,
+			createdAt: recording.createdAt
+		})).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // Sort by newest first
+
 		res.json(audioFiles);
 	} catch (error) {
 		console.error('Error fetching audio files:', error);
@@ -6060,15 +6097,27 @@ router.get('/voice-note-tool/audio/:id', async (req, res) => {
 	}
 });
 
-// Delete an audio file
-router.delete('/voice-note-tool/audio/:id', async (req, res) => {
+// Delete a specific audio recording
+router.delete('/voice-note-tool/audio/:recordingId', async (req, res) => {
 	try {
-		const { id } = req.params;
+		const { recordingId } = req.params;
 		const Audio = await getAudioModel();
-		const audio = await Audio.findByIdAndDelete(id);
+		
+		// Find document containing the recording
+		const audioDoc = await Audio.findOne({ 'recordings._id': recordingId });
 
-		if (!audio) {
+		if (!audioDoc) {
 			return res.status(404).json({ error: 'Audio not found' });
+		}
+
+		// Remove the recording from the array
+		audioDoc.recordings.pull(recordingId);
+		
+		// If no recordings left, delete the entire document
+		if (audioDoc.recordings.length === 0) {
+			await Audio.findByIdAndDelete(audioDoc._id);
+		} else {
+			await audioDoc.save();
 		}
 
 		res.json({ message: 'Audio deleted successfully' });
