@@ -976,26 +976,82 @@ router.post('/auth/logout', async (req, res) => {
 	}
 });
 
-// Login for voice note tool (username only, no password)
-router.post('/auth/login-voice-note', async (req, res) => {
+// Create new user for voice note tool
+router.post('/voice-note-tool/users', async (req, res) => {
 	try {
-		const { username } = req.body;
+		const { username, password } = req.body;
 
-		if (!username) {
-			return res.status(400).json({ error: 'Username is required' });
+		if (!username || !password) {
+			return res.status(400).json({ error: 'Username and password are required' });
 		}
 
-		// For voice note tool, we just need a username
-		// Generate a simple token (in production, use proper JWT)
+		if (username.trim().length === 0 || password.trim().length === 0) {
+			return res.status(400).json({ error: 'Username and password cannot be empty' });
+		}
+
+		const VoiceNoteUser = await getVoiceNoteUserModel();
+
+		// Check if user already exists
+		const existingUser = await VoiceNoteUser.findOne({ username: username.toLowerCase().trim() });
+		if (existingUser) {
+			return res.status(400).json({ error: 'Username already exists' });
+		}
+
+		// Create new user (password stored as plain text as per requirement)
+		const newUser = new VoiceNoteUser({
+			username: username.toLowerCase().trim(),
+			password: password // Storing as plain text
+		});
+
+		await newUser.save();
+
+		res.status(201).json({
+			message: 'User created successfully',
+			username: newUser.username,
+			createdAt: newUser.createdAt
+		});
+	} catch (error) {
+		console.error('Error creating user:', error);
+		if (error.code === 11000) {
+			return res.status(400).json({ error: 'Username already exists' });
+		}
+		res.status(500).json({ error: 'Error creating user: ' + error.message });
+	}
+});
+
+// Login for voice note tool (username and password)
+router.post('/auth/login-voice-note', async (req, res) => {
+	try {
+		const { username, password } = req.body;
+
+		if (!username || !password) {
+			return res.status(400).json({ error: 'Username and password are required' });
+		}
+
+		const VoiceNoteUser = await getVoiceNoteUserModel();
+
+		// Find user by username
+		const user = await VoiceNoteUser.findOne({ username: username.toLowerCase().trim() });
+
+		if (!user) {
+			return res.status(401).json({ error: 'Invalid username or password' });
+		}
+
+		// Compare passwords (plain text comparison as per requirement)
+		if (user.password !== password) {
+			return res.status(401).json({ error: 'Invalid username or password' });
+		}
+
+		// Generate JWT token
 		const token = jwt.sign(
-			{ username, tool: 'voice-note' },
+			{ username: user.username, tool: 'voice-note' },
 			process.env.JWT_SECRET || 'your-secret-key',
 			{ expiresIn: '24h' }
 		);
 
 		res.json({
 			token,
-			username
+			username: user.username
 		});
 	} catch (error) {
 		console.error('Voice note login error:', error);
