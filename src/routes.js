@@ -16,6 +16,7 @@ import OpenAI from 'openai';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
 import getAudioModel from './models/Audio.js';
+import getVoiceNoteUserModel from './models/VoiceNoteUser.js';
 // Contractor PO System imports
 import Contractor from './models/Contractor.js';
 import Operation from './models/Operation.js';
