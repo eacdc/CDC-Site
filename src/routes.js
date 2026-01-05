@@ -6074,6 +6074,50 @@ router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 	}
 });
 
+// Get all audio files for a job number (all users, with full details including summary)
+router.get('/voice-note-tool/audio/job/:jobNumber/all', async (req, res) => {
+	try {
+		const { jobNumber } = req.params;
+		const Audio = await getAudioModel();
+		
+		// Find all documents for this job number (all users)
+		const audioDocs = await Audio.find({ jobNumber })
+			.select('jobNumber createdBy recordings')
+			.lean();
+		
+		if (!audioDocs || audioDocs.length === 0) {
+			return res.json([]);
+		}
+		
+		// Aggregate all recordings from all documents
+		const allRecordings = [];
+		audioDocs.forEach(audioDoc => {
+			if (audioDoc.recordings && audioDoc.recordings.length > 0) {
+				audioDoc.recordings.forEach(recording => {
+					allRecordings.push({
+						_id: recording._id,
+						jobNumber: audioDoc.jobNumber,
+						toDepartment: recording.toDepartment,
+						department: recording.toDepartment, // Alias for clarity
+						audioMimeType: recording.audioMimeType,
+						summary: recording.summary || '',
+						createdBy: audioDoc.createdBy,
+						createdAt: recording.createdAt
+					});
+				});
+			}
+		});
+		
+		// Sort by newest first
+		allRecordings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+		
+		res.json(allRecordings);
+	} catch (error) {
+		console.error('Error fetching all audio files for job:', error);
+		res.status(500).json({ error: 'Error fetching all audio files: ' + error.message });
+	}
+});
+
 // Get a specific audio file (with blob)
 router.get('/voice-note-tool/audio/:id', async (req, res) => {
 	try {
