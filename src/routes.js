@@ -6187,13 +6187,14 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 
 Your task:
 1. Summarize the instruction/voice note in bullet points (3-5 points)
-2. Determine if the instruction is aligned with the selected department
+2. Extract actionable items from the voice note as bullet points (2-4 actionable tasks)
 3. Respond in Bengali language BUT write it using English alphabets (Romanized Bengali/Banglish)
 
 Example of Romanized Bengali:
 - "ami vat khabo" (I will eat rice)
 - "ei kaj ta korte hobe" (This work needs to be done)
 - "printing quality ta valo hoyni" (The printing quality was not good)
+- "machine ta clean korte hobe" (The machine needs to be cleaned)
 
 Department descriptions:
 - prepress: Design, layout, color separation, plate making, pre-printing work
@@ -6206,8 +6207,10 @@ Summary:
 • [bullet point 2 in Romanized Bengali]
 • [bullet point 3 in Romanized Bengali]
 
-Department Alignment: [YES/NO]
-Reason: [Brief explanation in Romanized Bengali]`
+Actionable Items:
+• [actionable task 1 in Romanized Bengali]
+• [actionable task 2 in Romanized Bengali]
+• [actionable task 3 in Romanized Bengali]`
 					},
 					{
 						role: 'user',
@@ -6215,7 +6218,7 @@ Reason: [Brief explanation in Romanized Bengali]`
 
 The selected department is: ${toDepartment}
 
-Please analyze this and provide the summary and department alignment check in Romanized Bengali (Bengali written in English alphabets).`
+Please analyze this and provide the summary and actionable items in Romanized Bengali (Bengali written in English alphabets).`
 					}
 				],
 				temperature: 0.7
