@@ -6075,12 +6075,27 @@ router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 });
 
 // Get all audio files for a job number (all users, with full details including summary)
-router.get('/voice-note-tool/audio/job/:jobNumber/all', async (req, res) => {
+// Using regex pattern to handle job numbers with slashes (e.g., "J02011/25-26")
+router.get(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/, async (req, res) => {
 	try {
-		const { jobNumber } = req.params;
+		// Extract job number from the path (handles slashes, underscores, hyphens like "J02011/25-26_ABC")
+		// The regex captures everything between /job/ and /all
+		const match = req.path.match(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/);
+		let jobNumber = match ? match[1] : null;
+		
+		if (!jobNumber) {
+			return res.status(400).json({ error: 'Job number is required' });
+		}
+		
+		// Decode URL encoding in case job number was encoded (handles %2F for /, %5F for _, etc.)
+		jobNumber = decodeURIComponent(jobNumber);
+		
+		console.log('📋 [API] Fetching all recordings for job number:', jobNumber);
+		
 		const Audio = await getAudioModel();
 		
 		// Find all documents for this job number (all users)
+		// Include audioBlob in the query to return audio data
 		const audioDocs = await Audio.find({ jobNumber })
 			.select('jobNumber createdBy recordings')
 			.lean();
@@ -6094,12 +6109,16 @@ router.get('/voice-note-tool/audio/job/:jobNumber/all', async (req, res) => {
 		audioDocs.forEach(audioDoc => {
 			if (audioDoc.recordings && audioDoc.recordings.length > 0) {
 				audioDoc.recordings.forEach(recording => {
+					// Convert audio buffer to base64 for API response
+					const base64Audio = recording.audioBlob ? recording.audioBlob.toString('base64') : '';
+					
 					allRecordings.push({
 						_id: recording._id,
 						jobNumber: audioDoc.jobNumber,
 						toDepartment: recording.toDepartment,
 						department: recording.toDepartment, // Alias for clarity
 						audioMimeType: recording.audioMimeType,
+						audioBlob: base64Audio, // Include audio data as base64
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						createdAt: recording.createdAt
