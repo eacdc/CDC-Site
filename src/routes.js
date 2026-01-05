@@ -6166,12 +6166,12 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 		fs.writeFileSync(tempFilePath, audioBuffer);
 
 		try {
-			// Step 1: Transcribe audio using Whisper
-			console.log('🎙️ Transcribing audio with Whisper...');
+			// Step 1: Transcribe audio using gpt-4o-mini-transcribe
+			console.log('🎙️ Transcribing audio with gpt-4o-mini-transcribe...');
 			const transcription = await openai.audio.transcriptions.create({
 				file: fs.createReadStream(tempFilePath),
-				model: 'whisper-1',
-				// language: 'bn' // Bengali language code
+				model: 'gpt-4o-mini-transcribe'
+				// Language auto-detection - model will detect Bengali automatically
 			});
 
 			console.log('📝 Transcription:', transcription.text);
