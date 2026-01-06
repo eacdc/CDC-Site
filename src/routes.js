@@ -5735,9 +5735,10 @@ router.get('/jobs/details-update/:jobNumber', async (req, res) => {
     
     // Query for update job card app
     const query = `
-      SELECT ClientName, JobName, OrderQuantity, PODate 
-      FROM jobbookingjobcard 
-      WHERE jobbookingno = @JobBookingNo
+      SELECT LM.LedgerName as ClientName, j.JobName, j.OrderQuantity, j.PODate 
+      FROM jobbookingjobcard j 
+      INNER JOIN LedgerMaster lm ON lm.ledgerid = j.LedgerID 
+      WHERE j.jobbookingno = @JobBookingNo
     `;
     
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
