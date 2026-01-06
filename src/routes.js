@@ -4302,7 +4302,7 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
       select lm.LedgerName as ClientName,j.JobName,j.OrderQuantity,j.isclose 
       from jobbookingjobcard 
       j inner join LedgerMaster lm on lm.ledgerid=j.LedgerID 
-      where j.jobbookingno= = @JobBookingNo
+      where j.jobbookingno = @JobBookingNo
     `;
     
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
