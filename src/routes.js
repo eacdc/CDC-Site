@@ -3988,6 +3988,67 @@ router.get('/jobs/search-numbers/:jobNumberPart', async (req, res) => {
   }
 });
 
+// IMPORTANT: Specific routes like /jobs/items-for-color must come BEFORE /jobs/:id
+// Otherwise Express will match "items-for-color" as an :id parameter
+
+// Get items for color dropdown (must be before /jobs/:id)
+router.get('/jobs/items-for-color', async (req, res) => {
+  try {
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    // Verify database context before executing query
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+    
+    // Query to get items from itemmaster
+    const query = `
+      SELECT itemid, itemname, InkColour, PantoneCode 
+      FROM itemmaster 
+      WHERE itemgroupid=3 
+        AND isitemactive=1 
+        AND isdeleted=0 
+        AND isblocked=0 
+        AND IsDeletedTransaction=0
+      ORDER BY itemname
+    `;
+
+    console.log('🔍 [MSSQL] Executing query to get items for color dropdown');
+    const queryStartTime = Date.now();
+    const result = await request.query(query);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+
+    const items = result.recordset.map(row => ({
+      itemId: row.itemid || row.itemId || null,
+      itemName: row.itemname || row.itemName || '',
+      inkColour: row.InkColour || row.inkColour || null,
+      pantoneCode: row.PantoneCode || row.pantoneCode || null
+    }));
+
+    res.json({
+      items: items
+    });
+  } catch (error) {
+    console.error('Error fetching items for color:', error);
+    res.status(500).json({ error: 'Error fetching items: ' + error.message });
+  }
+});
+
 router.get('/jobs/:id', async (req, res) => {
   try {
     const job = await Job.findById(req.params.id);
@@ -5551,63 +5612,6 @@ router.get('/jobs/color-details/:jobNumber', async (req, res) => {
 });
 
 // Get items from itemmaster for color dropdown
-router.get('/jobs/items-for-color', async (req, res) => {
-  try {
-    const connectionStartTime = Date.now();
-    const pool = await getConnection();
-    const connectionTime = Date.now() - connectionStartTime;
-    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing query
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
-
-    const request = pool.request();
-    
-    // Query to get items from itemmaster
-    const query = `
-      SELECT itemid, itemname, InkColour, PantoneCode 
-      FROM itemmaster 
-      WHERE itemgroupid=3 
-        AND isitemactive=1 
-        AND isdeleted=0 
-        AND isblocked=0 
-        AND IsDeletedTransaction=0
-      ORDER BY itemname
-    `;
-
-    console.log('🔍 [MSSQL] Executing query to get items for color dropdown');
-    const queryStartTime = Date.now();
-    const result = await request.query(query);
-    const queryTime = Date.now() - queryStartTime;
-    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
-
-    const items = result.recordset.map(row => ({
-      itemId: row.itemid || row.itemId || null,
-      itemName: row.itemname || row.itemName || '',
-      inkColour: row.InkColour || row.inkColour || null,
-      pantoneCode: row.PantoneCode || row.pantoneCode || null
-    }));
-
-    res.json({
-      items: items
-    });
-  } catch (error) {
-    console.error('Error fetching items for color:', error);
-    res.status(500).json({ error: 'Error fetching items: ' + error.message });
-  }
-});
-
 // Save color changes for update job card app
 router.post('/jobs/save-color-changes', async (req, res) => {
   console.log('\n🔔 [BACKEND] ========================================');
