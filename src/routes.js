@@ -4299,9 +4299,10 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
     
     // Direct SQL query for job completion app
     const query = `
-      SELECT ClientName, JobName, OrderQuantity, isclose, jobcloseddate 
-      FROM jobbookingjobcard 
-      WHERE jobbookingno = @JobBookingNo
+      select lm.LedgerName as ClientName,j.JobName,j.OrderQuantity,j.isclose 
+      from jobbookingjobcard 
+      j inner join LedgerMaster lm on lm.ledgerid=j.LedgerID 
+      where j.jobbookingno= = @JobBookingNo
     `;
     
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
