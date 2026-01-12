@@ -10,7 +10,7 @@ const voiceNoteSchema = new mongoose.Schema({
   toDepartment: {
     type: String,
     required: true,
-    enum: ['prepress', 'postpress', 'printing'],
+    enum: ['prepress', 'postpress', 'printing', 'sales', 'post printing', 'packing and dispatch', 'other'],
   },
   voiceNote: {
     type: String,
