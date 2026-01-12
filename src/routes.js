@@ -6398,7 +6398,7 @@ IMPORTANT:
 - If the transcription is in any other language, respond in Romanized form of that language
 - Always match the language of the original transcription
 
-Examples of Romanized forms(strictly follow this format like along with romanization reply the english translation of the romanized form in brackets like this "ami vat khabo (I will eat rice)"):
+Examples of Romanized forms(strictly follow this format):
 Romanized Bengali (Banglish):
 - "ami vat khabo" (I will eat rice)
 - "ei kaj ta korte hobe" (This work needs to be done)
