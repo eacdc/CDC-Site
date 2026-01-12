@@ -6274,6 +6274,93 @@ router.get(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/, async (req, res) => {
 	}
 });
 
+// Get audio files with summaries for multiple job numbers
+router.post('/voice-note-tool/audio/jobs/batch', async (req, res) => {
+	try {
+		const { jobNumbers } = req.body;
+
+		if (!jobNumbers || !Array.isArray(jobNumbers)) {
+			return res.status(400).json({ error: 'jobNumbers must be an array' });
+		}
+
+		if (jobNumbers.length === 0) {
+			return res.json([]);
+		}
+
+		// Trim and filter out empty strings
+		const validJobNumbers = jobNumbers
+			.map(jn => typeof jn === 'string' ? jn.trim() : String(jn).trim())
+			.filter(jn => jn.length > 0);
+
+		if (validJobNumbers.length === 0) {
+			return res.json([]);
+		}
+
+		console.log('📋 [API] Fetching audio files for job numbers:', validJobNumbers);
+
+		const Audio = await getAudioModel();
+
+		// Find all documents matching any of the job numbers using $in operator
+		const audioDocs = await Audio.find({
+			jobNumber: { $in: validJobNumbers }
+		})
+			.select('jobNumber createdBy userId recordings')
+			.lean();
+
+		if (!audioDocs || audioDocs.length === 0) {
+			console.log('ℹ️ [API] No audio files found for the provided job numbers');
+			return res.json([]);
+		}
+
+		console.log(`✅ [API] Found ${audioDocs.length} audio document(s) for ${validJobNumbers.length} job number(s)`);
+
+		// Aggregate all recordings from all matching documents
+		const allRecordings = [];
+		audioDocs.forEach(audioDoc => {
+			if (audioDoc.recordings && audioDoc.recordings.length > 0) {
+				audioDoc.recordings.forEach(recording => {
+					// Convert audio buffer to base64 for API response
+					const base64Audio = recording.audioBlob ? recording.audioBlob.toString('base64') : '';
+
+					allRecordings.push({
+						_id: recording._id,
+						jobNumber: audioDoc.jobNumber,
+						toDepartment: recording.toDepartment,
+						department: recording.toDepartment, // Alias for clarity
+						audioMimeType: recording.audioMimeType,
+						audioBlob: base64Audio, // Include audio data as base64
+						summary: recording.summary || '',
+						createdBy: audioDoc.createdBy,
+						userId: audioDoc.userId ? audioDoc.userId.toString() : null,
+						createdAt: recording.createdAt
+					});
+				});
+			}
+		});
+
+		// Sort by job number, then by creation date (newest first)
+		allRecordings.sort((a, b) => {
+			// First sort by job number
+			if (a.jobNumber !== b.jobNumber) {
+				return a.jobNumber.localeCompare(b.jobNumber);
+			}
+			// Then by creation date (newest first)
+			return new Date(b.createdAt) - new Date(a.createdAt);
+		});
+
+		console.log(`✅ [API] Returning ${allRecordings.length} recording(s) for ${validJobNumbers.length} job number(s)`);
+
+		res.json({
+			count: allRecordings.length,
+			jobNumbers: validJobNumbers,
+			recordings: allRecordings
+		});
+	} catch (error) {
+		console.error('❌ [API] Error fetching audio files for multiple job numbers:', error);
+		res.status(500).json({ error: 'Error fetching audio files: ' + error.message });
+	}
+});
+
 // Get a specific audio file (with blob)
 router.get('/voice-note-tool/audio/:id', async (req, res) => {
 	try {
