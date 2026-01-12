@@ -54,6 +54,21 @@ router.get('/test-route', (req, res) => {
   res.json({ message: 'Routes are working!', timestamp: new Date().toISOString() });
 });
 
+// Test Cloudinary configuration
+router.get('/test-cloudinary', (req, res) => {
+  const hasCloudName = !!process.env.CLOUDINARY_CLOUD_NAME;
+  const hasApiKey = !!process.env.CLOUDINARY_API_KEY;
+  const hasApiSecret = !!process.env.CLOUDINARY_API_SECRET;
+  
+  res.json({
+    cloudinaryConfigured: hasCloudName && hasApiKey && hasApiSecret,
+    cloudName: hasCloudName ? 'Set ✓' : 'Missing ✗',
+    apiKey: hasApiKey ? 'Set ✓' : 'Missing ✗',
+    apiSecret: hasApiSecret ? 'Set ✓' : 'Missing ✗',
+    cloudinaryInstance: typeof cloudinary !== 'undefined' ? 'Available ✓' : 'Not available ✗'
+  });
+});
+
 // Debug route to list all registered routes
 router.get('/debug-routes', (req, res) => {
   const routes = [];
@@ -6081,9 +6096,74 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 			audioDoc = await Audio.findOne({ jobNumber, createdBy: createdBy.toLowerCase().trim() });
 		}
 
+		// Upload audio to Cloudinary
+		let cloudinaryUrl = '';
+		let cloudinaryPublicId = '';
+		
+		if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+			try {
+				console.log('📤 [CLOUDINARY] Starting upload to Cloudinary...');
+				
+				// Convert base64 to buffer
+				const audioBuffer = Buffer.from(audioBlob, 'base64');
+				console.log('📤 [CLOUDINARY] Audio buffer size:', audioBuffer.length, 'bytes');
+				
+				// Determine file format from mime type
+				let format = 'mp3';
+				if (audioMimeType.includes('webm')) format = 'webm';
+				else if (audioMimeType.includes('wav')) format = 'wav';
+				else if (audioMimeType.includes('m4a')) format = 'm4a';
+				else if (audioMimeType.includes('ogg')) format = 'ogg';
+				
+				console.log('📤 [CLOUDINARY] Format:', format);
+				
+				// Create unique public_id with job number and timestamp
+				const sanitizedJobNumber = jobNumber.replace(/[^a-zA-Z0-9]/g, '-');
+				const timestamp = Date.now();
+				const publicId = `voice-notes/job-${sanitizedJobNumber}-${timestamp}`;
+				
+				console.log('📤 [CLOUDINARY] Public ID:', publicId);
+				
+				// Upload to Cloudinary using upload_stream
+				const uploadResult = await new Promise((resolve, reject) => {
+					const uploadStream = cloudinary.uploader.upload_stream(
+						{
+							resource_type: 'video', // Cloudinary treats audio as video
+							folder: 'voice-notes',
+							public_id: publicId,
+							format: format,
+						},
+						(error, result) => {
+							if (error) {
+								console.error('❌ [CLOUDINARY] Upload error:', error);
+								reject(error);
+							} else {
+								console.log('✅ [CLOUDINARY] Upload result:', result);
+								resolve(result);
+							}
+						}
+					);
+					
+					uploadStream.end(audioBuffer);
+				});
+
+				cloudinaryUrl = uploadResult.secure_url;
+				cloudinaryPublicId = uploadResult.public_id;
+				console.log('✅ [CLOUDINARY] Audio uploaded successfully. URL:', cloudinaryUrl);
+			} catch (cloudinaryError) {
+				console.error('⚠️ [CLOUDINARY] Error uploading to Cloudinary:', cloudinaryError);
+				console.error('⚠️ [CLOUDINARY] Error details:', cloudinaryError.message);
+				// Continue without Cloudinary URL if upload fails (audio blob will still be saved)
+			}
+		} else {
+			console.warn('⚠️ [CLOUDINARY] Cloudinary credentials not configured. Skipping upload.');
+		}
+
 		const newRecording = {
 			audioBlob: Buffer.from(audioBlob, 'base64'),
 			audioMimeType,
+			cloudinaryUrl,
+			cloudinaryPublicId,
 			toDepartment,
 			summary: summary || '',
 			createdAt: new Date()
