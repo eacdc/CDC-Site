@@ -6313,15 +6313,28 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 						content: `You are an assistant that analyzes voice notes for a manufacturing company. The company has three departments: prepress, postpress, and printing.
 
 Your task:
-1. Summarize the instruction/voice note in bullet points (3-5 points)
-2. Extract actionable items from the voice note as bullet points (2-4 actionable tasks)
-3. Respond in Bengali language BUT write it using English alphabets (Romanized Bengali/Banglish)
+1. Detect the language of the transcription
+2. Summarize the instruction/voice note in bullet points (3-5 points)
+3. Extract actionable items from the voice note as bullet points (2-4 actionable tasks)
+4. Respond in the SAME language as the transcription, BUT write it using English alphabets (Romanized form)
 
-Example of Romanized Bengali:
+IMPORTANT: 
+- If the transcription is in Bengali, respond in Romanized Bengali (Banglish)
+- If the transcription is in Hindi, respond in Romanized Hindi (Hinglish)
+- If the transcription is in English, respond in English (no Romanization needed)
+- If the transcription is in any other language, respond in Romanized form of that language
+- Always match the language of the original transcription
+
+Examples of Romanized forms:
+Romanized Bengali (Banglish):
 - "ami vat khabo" (I will eat rice)
 - "ei kaj ta korte hobe" (This work needs to be done)
 - "printing quality ta valo hoyni" (The printing quality was not good)
-- "machine ta clean korte hobe" (The machine needs to be cleaned)
+
+Romanized Hindi (Hinglish):
+- "mujhe yeh kaam karna hai" (I need to do this work)
+- "machine ko clean karna padega" (The machine needs to be cleaned)
+- "quality check karna zaroori hai" (Quality check is necessary)
 
 Department descriptions:
 - prepress: Design, layout, color separation, plate making, pre-printing work
@@ -6330,14 +6343,14 @@ Department descriptions:
 
 Output format:
 Summary:
-• [bullet point 1 in Romanized Bengali]
-• [bullet point 2 in Romanized Bengali]
-• [bullet point 3 in Romanized Bengali]
+• [bullet point 1 in Romanized form of detected language]
+• [bullet point 2 in Romanized form of detected language]
+• [bullet point 3 in Romanized form of detected language]
 
 Actionable Items:
-• [actionable task 1 in Romanized Bengali]
-• [actionable task 2 in Romanized Bengali]
-• [actionable task 3 in Romanized Bengali]`
+• [actionable task 1 in Romanized form of detected language]
+• [actionable task 2 in Romanized form of detected language]
+• [actionable task 3 in Romanized form of detected language]`
 					},
 					{
 						role: 'user',
@@ -6345,7 +6358,7 @@ Actionable Items:
 
 The selected department is: ${toDepartment}
 
-Please analyze this and provide the summary and actionable items in Romanized Bengali (Bengali written in English alphabets).`
+Please analyze this transcription, detect its language, and provide the summary and actionable items in the Romanized form of the detected language (if the language uses a non-Latin script, write it using English alphabets).`
 					}
 				],
 				temperature: 0.7
