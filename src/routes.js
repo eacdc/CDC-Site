@@ -17,6 +17,7 @@ import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
 import getAudioModel from './models/Audio.js';
 import getVoiceNoteUserModel from './models/VoiceNoteUser.js';
+import getPrepressFMSModel from './models/PrepressFMS.js';
 // Contractor PO System imports
 import Contractor from './models/Contractor.js';
 import Operation from './models/Operation.js';
@@ -6373,6 +6374,225 @@ Please analyze this and provide the summary and actionable items in Romanized Be
 	} catch (error) {
 		console.error('Error analyzing audio:', error);
 		res.status(500).json({ error: 'Error analyzing audio: ' + error.message });
+	}
+});
+
+// ============================================
+// Prepress FMS Routes
+// ============================================
+
+// Create new prepress FMS entry
+router.post('/prepress-fms', async (req, res) => {
+	try {
+		const {
+			type,
+			// Shared fields (same names for both packaging and commercial)
+			clientName,
+			executive,
+			category,
+			remarks,
+			newRevised,
+			prepressPerson,
+			softcopyRequired,
+			hardcopyRequired,
+			// Type-specific fields
+			itemName, // packaging only
+			fileDetails, // commercial only
+			createdBy
+		} = req.body;
+
+		if (!type || !['packaging', 'commercial'].includes(type)) {
+			return res.status(400).json({ error: 'Type is required and must be "packaging" or "commercial"' });
+		}
+
+		// Validate shared required fields
+		if (!clientName || !clientName.trim()) {
+			return res.status(400).json({ error: 'Client name is required' });
+		}
+		if (!executive || !executive.trim()) {
+			return res.status(400).json({ error: 'Executive is required' });
+		}
+		if (!category || !category.trim()) {
+			return res.status(400).json({ error: 'Category is required' });
+		}
+		if (!newRevised || !['new', 'revised'].includes(newRevised)) {
+			return res.status(400).json({ error: 'New/Revised is required and must be "new" or "revised"' });
+		}
+		if (!prepressPerson || !prepressPerson.trim()) {
+			return res.status(400).json({ error: 'Prepress person is required' });
+		}
+
+		// Validate type-specific fields
+		if (type === 'packaging') {
+			if (!itemName || !itemName.trim()) {
+				return res.status(400).json({ error: 'Item name is required for packaging type' });
+			}
+		} else if (type === 'commercial') {
+			if (!fileDetails || !fileDetails.trim()) {
+				return res.status(400).json({ error: 'File Details is required for commercial type' });
+			}
+		}
+
+		const PrepressFMS = await getPrepressFMSModel();
+
+		// Build entry data - shared fields use same names
+		const entryData = {
+			type,
+			clientName: clientName?.trim() || '',
+			executive: executive?.trim() || '',
+			category: category?.trim() || '',
+			remarks: remarks?.trim() || '',
+			newRevised: newRevised || '',
+			prepressPerson: prepressPerson?.trim() || '',
+			softcopyRequired: softcopyRequired === true || softcopyRequired === 'true',
+			hardcopyRequired: hardcopyRequired === true || hardcopyRequired === 'true',
+			createdBy: createdBy?.trim() || 'admin',
+		};
+
+		// Add type-specific fields
+		if (type === 'packaging') {
+			entryData.itemName = itemName?.trim() || '';
+		} else if (type === 'commercial') {
+			entryData.fileDetails = fileDetails?.trim() || '';
+		}
+
+		const prepressEntry = new PrepressFMS(entryData);
+
+		await prepressEntry.save();
+
+		res.status(201).json({
+			message: 'Prepress FMS entry created successfully',
+			id: prepressEntry._id,
+			type: prepressEntry.type,
+			createdAt: prepressEntry.createdAt
+		});
+	} catch (error) {
+		console.error('Error creating prepress FMS entry:', error);
+		res.status(500).json({ error: 'Error creating prepress FMS entry: ' + error.message });
+	}
+});
+
+// Get all prepress FMS entries (with optional filters)
+router.get('/prepress-fms', async (req, res) => {
+	try {
+		const { type, clientName, client, prepressPerson, startDate, endDate } = req.query;
+
+		const PrepressFMS = await getPrepressFMSModel();
+		const query = {};
+
+		if (type && ['packaging', 'commercial'].includes(type)) {
+			query.type = type;
+		}
+
+		// Filter by client name (shared field name)
+		if (clientName) {
+			query.clientName = { $regex: clientName, $options: 'i' };
+		}
+
+		if (prepressPerson) {
+			query.prepressPerson = { $regex: prepressPerson, $options: 'i' };
+		}
+
+		if (startDate || endDate) {
+			query.createdAt = {};
+			if (startDate) {
+				query.createdAt.$gte = new Date(startDate);
+			}
+			if (endDate) {
+				query.createdAt.$lte = new Date(endDate);
+			}
+		}
+
+		const entries = await PrepressFMS.find(query)
+			.sort({ createdAt: -1 })
+			.limit(1000); // Limit to prevent large responses
+
+		res.json({
+			count: entries.length,
+			entries
+		});
+	} catch (error) {
+		console.error('Error fetching prepress FMS entries:', error);
+		res.status(500).json({ error: 'Error fetching prepress FMS entries: ' + error.message });
+	}
+});
+
+// Get single prepress FMS entry by ID
+router.get('/prepress-fms/:id', async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		const PrepressFMS = await getPrepressFMSModel();
+		const entry = await PrepressFMS.findById(id);
+
+		if (!entry) {
+			return res.status(404).json({ error: 'Prepress FMS entry not found' });
+		}
+
+		res.json(entry);
+	} catch (error) {
+		console.error('Error fetching prepress FMS entry:', error);
+		res.status(500).json({ error: 'Error fetching prepress FMS entry: ' + error.message });
+	}
+});
+
+// Update prepress FMS entry
+router.put('/prepress-fms/:id', async (req, res) => {
+	try {
+		const { id } = req.params;
+		const updateData = req.body;
+
+		const PrepressFMS = await getPrepressFMSModel();
+		const entry = await PrepressFMS.findById(id);
+
+		if (!entry) {
+			return res.status(404).json({ error: 'Prepress FMS entry not found' });
+		}
+
+		// Update allowed fields (shared fields use same names)
+		if (updateData.clientName !== undefined) entry.clientName = updateData.clientName?.trim() || '';
+		if (updateData.executive !== undefined) entry.executive = updateData.executive?.trim() || '';
+		if (updateData.category !== undefined) entry.category = updateData.category?.trim() || '';
+		if (updateData.remarks !== undefined) entry.remarks = updateData.remarks?.trim() || '';
+		if (updateData.newRevised !== undefined) entry.newRevised = updateData.newRevised;
+		if (updateData.prepressPerson !== undefined) entry.prepressPerson = updateData.prepressPerson?.trim() || '';
+		if (updateData.softcopyRequired !== undefined) entry.softcopyRequired = updateData.softcopyRequired === true || updateData.softcopyRequired === 'true';
+		if (updateData.hardcopyRequired !== undefined) entry.hardcopyRequired = updateData.hardcopyRequired === true || updateData.hardcopyRequired === 'true';
+		
+		// Update type-specific fields
+		if (updateData.itemName !== undefined) entry.itemName = updateData.itemName?.trim() || '';
+		if (updateData.fileDetails !== undefined) entry.fileDetails = updateData.fileDetails?.trim() || '';
+
+		await entry.save();
+
+		res.json({
+			message: 'Prepress FMS entry updated successfully',
+			entry
+		});
+	} catch (error) {
+		console.error('Error updating prepress FMS entry:', error);
+		res.status(500).json({ error: 'Error updating prepress FMS entry: ' + error.message });
+	}
+});
+
+// Delete prepress FMS entry
+router.delete('/prepress-fms/:id', async (req, res) => {
+	try {
+		const { id } = req.params;
+
+		const PrepressFMS = await getPrepressFMSModel();
+		const entry = await PrepressFMS.findByIdAndDelete(id);
+
+		if (!entry) {
+			return res.status(404).json({ error: 'Prepress FMS entry not found' });
+		}
+
+		res.json({
+			message: 'Prepress FMS entry deleted successfully'
+		});
+	} catch (error) {
+		console.error('Error deleting prepress FMS entry:', error);
+		res.status(500).json({ error: 'Error deleting prepress FMS entry: ' + error.message });
 	}
 });
 
