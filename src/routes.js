@@ -6123,36 +6123,86 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 	try {
 		const { jobNumber } = req.params;
-		const { userId, username } = req.query; // Get userId or username from query parameter
+		const { userId, username } = req.query; // userId is primary, username is fallback
 		
 		const Audio = await getAudioModel();
-		const query = { jobNumber };
-		
-		// Filter by userId if provided (more reliable than username)
+		let audioDoc = null;
+
+		// 1) First priority: search by userId (most reliable)
 		if (userId) {
-			query.userId = userId;
+			audioDoc = await Audio.findOne({ jobNumber, userId })
+				.select('jobNumber createdBy userId recordings')
+				.lean();
+
+			// 2) If no document found for this userId, fallback to username with case-insensitive match
+			if ((!audioDoc || !audioDoc.recordings || audioDoc.recordings.length === 0)) {
+				// Determine username to use for fallback
+				let fallbackUsername = username;
+
+				// If username wasn't provided in query, try to resolve it from VoiceNoteUser using userId
+				if (!fallbackUsername) {
+					try {
+						const VoiceNoteUser = await getVoiceNoteUserModel();
+						const userDoc = await VoiceNoteUser.findById(userId).select('username').lean();
+						if (userDoc && userDoc.username) {
+							fallbackUsername = userDoc.username;
+						}
+					} catch (resolveErr) {
+						console.error('Error resolving username from userId for audio lookup:', resolveErr);
+					}
+				}
+
+				if (fallbackUsername) {
+					const safeUsername = fallbackUsername.trim();
+					audioDoc = await Audio.findOne({
+						jobNumber,
+						createdBy: {
+							$regex: new RegExp(
+								`^${safeUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+								'i'
+							)
+						}
+					})
+						.select('jobNumber createdBy userId recordings')
+						.lean();
+				}
+			}
 		} else if (username) {
-			// Fallback to username for backward compatibility with old documents
-			query.createdBy = username.toLowerCase().trim();
+			// 3) No userId, but username given – use case-insensitive match on createdBy
+			const safeUsername = username.trim();
+			audioDoc = await Audio.findOne({
+				jobNumber,
+				createdBy: {
+					$regex: new RegExp(
+						`^${safeUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`,
+						'i'
+					)
+				}
+			})
+				.select('jobNumber createdBy userId recordings')
+				.lean();
+		} else {
+			// 4) Neither userId nor username provided – no user-specific filter
+			audioDoc = await Audio.findOne({ jobNumber })
+				.select('jobNumber createdBy userId recordings')
+				.lean();
 		}
-		
-		const audioDoc = await Audio.findOne(query)
-			.select('jobNumber createdBy userId recordings')
-			.lean();
 
 		if (!audioDoc || !audioDoc.recordings || audioDoc.recordings.length === 0) {
 			return res.json([]);
 		}
 
 		// Transform recordings into individual audio file objects
-		const audioFiles = audioDoc.recordings.map(recording => ({
-			_id: recording._id,
-			jobNumber: audioDoc.jobNumber,
-			toDepartment: recording.toDepartment,
-			audioMimeType: recording.audioMimeType,
-			createdBy: audioDoc.createdBy,
-			createdAt: recording.createdAt
-		})).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // Sort by newest first
+		const audioFiles = audioDoc.recordings
+			.map(recording => ({
+				_id: recording._id,
+				jobNumber: audioDoc.jobNumber,
+				toDepartment: recording.toDepartment,
+				audioMimeType: recording.audioMimeType,
+				createdBy: audioDoc.createdBy,
+				createdAt: recording.createdAt
+			}))
+			.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)); // Sort by newest first
 
 		res.json(audioFiles);
 	} catch (error) {
@@ -6333,7 +6383,7 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 				messages: [
 					{
 						role: 'system',
-						content: `You are an assistant that analyzes voice notes for a manufacturing company. The company has three departments: prepress, postpress, and printing.
+						content: `You are an assistant that analyzes voice notes for a manufacturing company.
 
 Your task:
 1. Detect the language of the transcription
