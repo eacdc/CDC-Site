@@ -13,6 +13,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
+import { v2 as cloudinary } from 'cloudinary';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
 import getAudioModel from './models/Audio.js';
@@ -35,6 +36,18 @@ const router = Router();
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+
+// Initialize Cloudinary
+if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+  });
+  console.log('✅ Cloudinary configured successfully');
+} else {
+  console.warn('⚠️ Cloudinary credentials not found. Audio URLs will not be stored.');
+}
 
 // Test route to verify routes are loading
 router.get('/test-route', (req, res) => {
@@ -6110,6 +6123,7 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 			jobNumber: audioDoc.jobNumber,
 			toDepartment: lastRecording.toDepartment,
 			audioMimeType: lastRecording.audioMimeType,
+			cloudinaryUrl: lastRecording.cloudinaryUrl || '',
 			createdBy: audioDoc.createdBy,
 			createdAt: lastRecording.createdAt
 		});
@@ -6199,6 +6213,7 @@ router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 				jobNumber: audioDoc.jobNumber,
 				toDepartment: recording.toDepartment,
 				audioMimeType: recording.audioMimeType,
+				cloudinaryUrl: recording.cloudinaryUrl || '',
 				createdBy: audioDoc.createdBy,
 				createdAt: recording.createdAt
 			}))
@@ -6256,6 +6271,7 @@ router.get(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/, async (req, res) => {
 						department: recording.toDepartment, // Alias for clarity
 						audioMimeType: recording.audioMimeType,
 						audioBlob: base64Audio, // Include audio data as base64
+						cloudinaryUrl: recording.cloudinaryUrl || '',
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						createdAt: recording.createdAt
@@ -6329,6 +6345,7 @@ router.post('/voice-note-tool/audio/jobs/batch', async (req, res) => {
 						department: recording.toDepartment, // Alias for clarity
 						audioMimeType: recording.audioMimeType,
 						audioBlob: base64Audio, // Include audio data as base64
+						cloudinaryUrl: recording.cloudinaryUrl || '',
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						userId: audioDoc.userId ? audioDoc.userId.toString() : null,
@@ -6390,6 +6407,7 @@ router.get('/voice-note-tool/audio/:id', async (req, res) => {
 			toDepartment: recording.toDepartment,
 			audioBlob: base64Audio,
 			audioMimeType: recording.audioMimeType,
+			cloudinaryUrl: recording.cloudinaryUrl || '',
 			createdBy: audioDoc.createdBy,
 			createdAt: recording.createdAt
 		});

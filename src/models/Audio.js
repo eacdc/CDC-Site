@@ -10,6 +10,14 @@ const audioRecordingSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  cloudinaryUrl: {
+    type: String,
+    default: '',
+  },
+  cloudinaryPublicId: {
+    type: String,
+    default: '',
+  },
   toDepartment: {
     type: String,
     required: true,
