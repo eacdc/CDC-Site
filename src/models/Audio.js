@@ -37,13 +37,18 @@ const audioSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'VoiceNoteUser',
+    index: true,
+  },
   recordings: [audioRecordingSchema],
 }, {
   timestamps: true
 });
 
-// Compound index for faster queries by jobNumber and user
-audioSchema.index({ jobNumber: 1, createdBy: 1 }, { unique: true });
+// Compound index for faster queries by jobNumber and userId
+audioSchema.index({ jobNumber: 1, userId: 1 }, { unique: true });
 
 // Create model using the voice notes connection
 let Audio = null;

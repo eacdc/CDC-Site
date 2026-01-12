@@ -1053,7 +1053,8 @@ router.post('/auth/login-voice-note', async (req, res) => {
 
 		res.json({
 			token,
-			username: user.username
+			username: user.username, // Return DB username (lowercase)
+			userId: user._id.toString() // Return user ID
 		});
 	} catch (error) {
 		console.error('Voice note login error:', error);
@@ -6050,7 +6051,7 @@ router.get('/voice-notes/department/:department', async (req, res) => {
 // Save audio to audio collection
 router.post('/voice-note-tool/audio', async (req, res) => {
 	try {
-		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy, summary } = req.body;
+		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy, summary, userId } = req.body;
 
 		if (!jobNumber || !toDepartment || !audioBlob || !audioMimeType || !createdBy) {
 			return res.status(400).json({ error: 'Missing required fields (jobNumber, toDepartment, audioBlob, audioMimeType, createdBy)' });
@@ -6058,8 +6059,14 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 
 		const Audio = await getAudioModel();
 
-		// Find existing document for this user and job number
-		let audioDoc = await Audio.findOne({ jobNumber, createdBy });
+		// Find existing document for this user and job number (using userId if provided, otherwise username)
+		let audioDoc = null;
+		if (userId) {
+			audioDoc = await Audio.findOne({ jobNumber, userId });
+		} else {
+			// Fallback to username for backward compatibility
+			audioDoc = await Audio.findOne({ jobNumber, createdBy: createdBy.toLowerCase().trim() });
+		}
 
 		const newRecording = {
 			audioBlob: Buffer.from(audioBlob, 'base64'),
@@ -6071,15 +6078,28 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 
 		if (audioDoc) {
 			// Add recording to existing document
+			// Update userId if it's missing and we have userId
+			if (userId && !audioDoc.userId) {
+				audioDoc.userId = userId;
+			}
+			// Normalize username if different
+			if (audioDoc.createdBy.toLowerCase() !== createdBy.toLowerCase().trim()) {
+				audioDoc.createdBy = createdBy.toLowerCase().trim();
+			}
 			audioDoc.recordings.push(newRecording);
 			await audioDoc.save();
 		} else {
 			// Create new document
-			audioDoc = new Audio({
+			const newDocData = {
 				jobNumber,
-				createdBy,
+				createdBy: createdBy.toLowerCase().trim(), // Store username in lowercase for consistency
 				recordings: [newRecording]
-			});
+			};
+			// Only add userId if provided
+			if (userId) {
+				newDocData.userId = userId;
+			}
+			audioDoc = new Audio(newDocData);
 			await audioDoc.save();
 		}
 
@@ -6103,18 +6123,21 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 	try {
 		const { jobNumber } = req.params;
-		const { username } = req.query; // Get username from query parameter
+		const { userId, username } = req.query; // Get userId or username from query parameter
 		
 		const Audio = await getAudioModel();
 		const query = { jobNumber };
 		
-		// Filter by username if provided
-		if (username) {
-			query.createdBy = username;
+		// Filter by userId if provided (more reliable than username)
+		if (userId) {
+			query.userId = userId;
+		} else if (username) {
+			// Fallback to username for backward compatibility with old documents
+			query.createdBy = username.toLowerCase().trim();
 		}
 		
 		const audioDoc = await Audio.findOne(query)
-			.select('jobNumber createdBy recordings')
+			.select('jobNumber createdBy userId recordings')
 			.lean();
 
 		if (!audioDoc || !audioDoc.recordings || audioDoc.recordings.length === 0) {
