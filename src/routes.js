@@ -6335,17 +6335,13 @@ router.post('/voice-note-tool/audio/jobs/batch', async (req, res) => {
 		audioDocs.forEach(audioDoc => {
 			if (audioDoc.recordings && audioDoc.recordings.length > 0) {
 				audioDoc.recordings.forEach(recording => {
-					// Convert audio buffer to base64 for API response
-					const base64Audio = recording.audioBlob ? recording.audioBlob.toString('base64') : '';
-
 					allRecordings.push({
 						_id: recording._id,
 						jobNumber: audioDoc.jobNumber,
 						toDepartment: recording.toDepartment,
 						department: recording.toDepartment, // Alias for clarity
 						audioMimeType: recording.audioMimeType,
-						audioBlob: base64Audio, // Include audio data as base64
-						cloudinaryUrl: recording.cloudinaryUrl || '',
+						audioUrl: recording.cloudinaryUrl || '', // Return Cloudinary URL instead of blob
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						userId: audioDoc.userId ? audioDoc.userId.toString() : null,
