@@ -5767,9 +5767,9 @@ router.get('/jobs/details-update/:jobNumber', async (req, res) => {
     }
 
     const request = pool.request();
-    request.input('JobNumber', sql.NVarChar(255), jobNumber);
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
 
-    console.log('🔍 [MSSQL] Calling find_similar_jobs_batch_get_job_details_1hr with @JobNumber =', jobNumber);
+    console.log('🔍 [MSSQL] Calling find_similar_jobs_batch_get_job_details_1hr with @JobBookingNo =', jobNumber);
     const queryStartTime = Date.now();
     const result = await request.execute('find_similar_jobs_batch_get_job_details_1hr');
     const queryTime = Date.now() - queryStartTime;
