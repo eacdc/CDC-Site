@@ -6080,7 +6080,7 @@ router.get('/voice-notes/department/:department', async (req, res) => {
 // Save audio to audio collection
 router.post('/voice-note-tool/audio', async (req, res) => {
 	try {
-		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy, summary, userId } = req.body;
+		const { jobNumber, toDepartment, audioBlob, audioMimeType, createdBy, summary, userId, audioId } = req.body;
 
 		if (!jobNumber || !toDepartment || !audioBlob || !audioMimeType || !createdBy) {
 			return res.status(400).json({ error: 'Missing required fields (jobNumber, toDepartment, audioBlob, audioMimeType, createdBy)' });
@@ -6161,6 +6161,7 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 		}
 
 		const newRecording = {
+			audioId: audioId || `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Use provided audioId or generate one
 			audioBlob: Buffer.from(audioBlob, 'base64'),
 			audioMimeType,
 			cloudinaryUrl,

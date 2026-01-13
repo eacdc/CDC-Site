@@ -2,6 +2,11 @@ import mongoose from 'mongoose';
 import { getVoiceNotesConnection } from '../db-voice-notes.js';
 
 const audioRecordingSchema = new mongoose.Schema({
+  audioId: {
+    type: String,
+    required: true,
+    index: true,  // Index for faster lookups
+  },
   audioBlob: {
     type: Buffer,
     required: true,
