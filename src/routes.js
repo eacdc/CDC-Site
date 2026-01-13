@@ -6160,8 +6160,12 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 			console.warn('⚠️ [CLOUDINARY] Cloudinary credentials not configured. Skipping upload.');
 		}
 
+		// Generate audioId if not provided (for backward compatibility)
+		const finalAudioId = audioId || `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+		console.log('🎵 [BACKEND] Using audioId:', finalAudioId, '(provided:', !!audioId, ')');
+		
 		const newRecording = {
-			audioId: audioId || `audio_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`, // Use provided audioId or generate one
+			audioId: finalAudioId,
 			audioBlob: Buffer.from(audioBlob, 'base64'),
 			audioMimeType,
 			cloudinaryUrl,
