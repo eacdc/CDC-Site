@@ -6296,10 +6296,12 @@ router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 		const audioFiles = audioDoc.recordings
 			.map(recording => ({
 				_id: recording._id,
+				audioId: recording.audioId,
 				jobNumber: audioDoc.jobNumber,
 				toDepartment: recording.toDepartment,
 				audioMimeType: recording.audioMimeType,
 				cloudinaryUrl: recording.cloudinaryUrl || '',
+				summary: recording.summary || '',
 				createdBy: audioDoc.createdBy,
 				createdAt: recording.createdAt
 			}))
@@ -6352,6 +6354,7 @@ router.get(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/, async (req, res) => {
 					
 					allRecordings.push({
 						_id: recording._id,
+						audioId: recording.audioId,
 						jobNumber: audioDoc.jobNumber,
 						toDepartment: recording.toDepartment,
 						department: recording.toDepartment, // Alias for clarity
@@ -6423,6 +6426,7 @@ router.post('/voice-note-tool/audio/jobs/batch', async (req, res) => {
 				audioDoc.recordings.forEach(recording => {
 					allRecordings.push({
 						_id: recording._id,
+						audioId: recording.audioId,
 						jobNumber: audioDoc.jobNumber,
 						toDepartment: recording.toDepartment,
 						department: recording.toDepartment, // Alias for clarity
@@ -6485,11 +6489,13 @@ router.get('/voice-note-tool/audio/:id', async (req, res) => {
 
 		res.json({
 			_id: recording._id,
+			audioId: recording.audioId,
 			jobNumber: audioDoc.jobNumber,
 			toDepartment: recording.toDepartment,
 			audioBlob: base64Audio,
 			audioMimeType: recording.audioMimeType,
 			cloudinaryUrl: recording.cloudinaryUrl || '',
+			summary: recording.summary || '',
 			createdBy: audioDoc.createdBy,
 			createdAt: recording.createdAt
 		});
