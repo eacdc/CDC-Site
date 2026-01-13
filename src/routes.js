@@ -5767,47 +5767,48 @@ router.get('/jobs/details-update/:jobNumber', async (req, res) => {
     }
 
     const request = pool.request();
-    
-    // Query for update job card app
-    const query = `
-      SELECT LM.LedgerName as ClientName, j.JobName, j.OrderQuantity, j.PODate 
-      FROM jobbookingjobcard j 
-      INNER JOIN LedgerMaster lm ON lm.ledgerid = j.LedgerID 
-      WHERE j.jobbookingno = @JobBookingNo
-    `;
-    
-    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+    request.input('JobNumber', sql.NVarChar(255), jobNumber);
 
-    console.log('🔍 [MSSQL] Executing query for update job card with @JobBookingNo =', jobNumber);
+    console.log('🔍 [MSSQL] Calling find_similar_jobs_batch_get_job_details_1hr with @JobNumber =', jobNumber);
     const queryStartTime = Date.now();
-    const result = await request.query(query);
+    const result = await request.execute('find_similar_jobs_batch_get_job_details_1hr');
     const queryTime = Date.now() - queryStartTime;
-    console.log(`⏱️ [MSSQL] Query executed in ${queryTime}ms`);
+    console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
+    console.log(`📊 [MSSQL] Returned ${result.recordset.length} job(s)`);
 
     if (result.recordset.length === 0) {
       return res.status(404).json({ error: 'Job not found' });
     }
 
-    const jobDetails = result.recordset[0];
-
-    // Format PODate to show only date (no time)
-    let poDateFormatted = null;
-    if (jobDetails.PODate) {
-      const poDate = new Date(jobDetails.PODate);
-      if (!isNaN(poDate.getTime())) {
-        // Format as YYYY-MM-DD
-        const year = poDate.getFullYear();
-        const month = String(poDate.getMonth() + 1).padStart(2, '0');
-        const day = String(poDate.getDate()).padStart(2, '0');
-        poDateFormatted = `${year}-${month}-${day}`;
+    // Map all jobs from the batch result
+    const jobs = result.recordset.map(job => {
+      // Format JobCreatedOn to show only date (no time)
+      let jobCreatedOnFormatted = null;
+      if (job.JobCreatedOn) {
+        const createdDate = new Date(job.JobCreatedOn);
+        if (!isNaN(createdDate.getTime())) {
+          // Format as YYYY-MM-DD
+          const year = createdDate.getFullYear();
+          const month = String(createdDate.getMonth() + 1).padStart(2, '0');
+          const day = String(createdDate.getDate()).padStart(2, '0');
+          jobCreatedOnFormatted = `${year}-${month}-${day}`;
+        }
       }
-    }
+
+      return {
+        clientName: job.ClientName || '',
+        jobNumber: job.JobBookingNo || '',
+        jobTitle: job.JobTitle || '',
+        orderQuantity: job.OrderQty || 0,
+        productCategory: job.ProductCategory || '',
+        unitPrice: job.UnitPrice || 0,
+        jobCreatedOn: jobCreatedOnFormatted || 'N/A'
+      };
+    });
 
     res.json({
-      clientName: jobDetails.ClientName || jobDetails.clientName || null,
-      jobName: jobDetails.JobName || jobDetails.jobName || null,
-      orderQuantity: jobDetails.OrderQuantity || jobDetails.orderQuantity || 0,
-      poDate: poDateFormatted
+      jobs: jobs,
+      count: jobs.length
     });
   } catch (error) {
     console.error('Error fetching job details for update:', error);
