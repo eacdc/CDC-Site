@@ -6,6 +6,9 @@ import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import routes from './routes.js';
+import pendingRoutes from './routes-pending.js';
+import pendingUpdateRoutes from './routes-pending-update.js';
+import prepressPendingRoutes from './routes-prepress-pending.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
@@ -50,6 +53,9 @@ mongoose.connect(MONGODB_URI)
 	});
 
 app.use('/api', routes);
+app.use('/api', pendingRoutes);
+app.use('/api', pendingUpdateRoutes);
+app.use('/api', prepressPendingRoutes);
 
 // Mount Contractor PO routes at /contractor-po/api (CommonJS module)
 // COMMENTED OUT: contractor-po directory doesn't exist in backend folder
