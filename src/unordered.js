@@ -28,18 +28,67 @@ function bool(v, def = false) {
   return ["true", "1", "yes", "y"].includes(String(v).toLowerCase());
 }
 
+// Helper function to generate next token number (UN-XXXXX)
+async function getNextTokenNumber(db) {
+  const counterCollection = db.collection('TokenCounter');
+  
+  // Find and increment the counter atomically
+  // NOTE: We only $inc the sequence field. We do NOT also set it in $setOnInsert,
+  // otherwise MongoDB throws ConflictingUpdateOperators for the same path.
+  await counterCollection.findOneAndUpdate(
+    { _id: 'unordered_token' },
+    { 
+      $inc: { sequence: 1 },
+      $setOnInsert: { _id: 'unordered_token' }
+    },
+    { 
+      upsert: true
+    }
+  );
+  
+  // After the atomic increment, query the document to get the current sequence value
+  // This ensures we always get the correct incremented value
+  const doc = await counterCollection.findOne({ _id: 'unordered_token' });
+  
+  if (!doc || typeof doc.sequence !== 'number') {
+    // This should not happen, but if the document doesn't exist or sequence is missing,
+    // initialize it to 1
+    await counterCollection.updateOne(
+      { _id: 'unordered_token' },
+      { $set: { sequence: 1 } },
+      { upsert: true }
+    );
+    console.log(`⚠️ [TOKEN] Counter document was missing/invalid, initialized to 1`);
+    const tokenNumber = `UN-000001`;
+    return tokenNumber;
+  }
+  
+  const sequence = doc.sequence;
+  const tokenNumber = `UN-${String(sequence).padStart(6, '0')}`;
+  
+  console.log(`🔢 [TOKEN] Generated token: ${tokenNumber} (sequence: ${sequence})`);
+  
+  return tokenNumber;
+}
+
 export async function insertUnorderedMinimal(input) {
   const uri = process.env.MONGODB_URI_Approval || process.env.MONGODB_URI_APPROVAL;
   if (!uri) throw new Error("Missing MONGODB_URI_Approval");
+
+  // Use the same database name logic as routes-pending.js
+  const MONGO_DB = process.env.MONGO_DB || 'artwork_portal';
 
   const site = String(input.site || "KOLKATA").toUpperCase();
   const createdBy = input.createdBy || "Coordinator";
 
   if (!input.clientName) throw new Error("clientName is required");
   if (!input.jobName) throw new Error("jobName is required");
+  if (!input.reference) throw new Error("reference is required");
 
-  // default operator
-  const prepressUserKey = String(input.userKey || input.prepressUserKey || "biswajit").toLowerCase();
+  // Prepress user key - only use if explicitly provided, otherwise null (don't default)
+  const prepressUserKey = (input.userKey || input.prepressUserKey) 
+    ? String(input.userKey || input.prepressUserKey).toLowerCase() 
+    : null;
   // Only use tooling/plate userKey if explicitly provided, otherwise use null (don't default to prepress)
   const toolingUserKey = (input.toolingUserKey && input.toolingUserKey.trim() !== '') 
     ? String(input.toolingUserKey).toLowerCase() 
@@ -119,19 +168,26 @@ export async function insertUnorderedMinimal(input) {
     status: { isDeleted: false, updatedBy: createdBy, updatedAt: now },
     };
 
-  const client = new MongoClient(uri);
-  await client.connect();
-  try {
-    // Extract database name from URI if present, otherwise use default
-    const dbName = uri.split('/').pop().split('?')[0] || "artwork_portal";
-    const db = client.db(dbName);
-    const col = db.collection(COL_NAME);
+    const client = new MongoClient(uri);
+    await client.connect();
+    try {
+      // Use consistent database name (same as routes-pending.js)
+      const db = client.db(MONGO_DB);
+      const col = db.collection(COL_NAME);
 
-    const result = await col.insertOne(doc);
+      // Generate unique token number before inserting
+      const tokenNumber = await getNextTokenNumber(db);
+      
+      // Add tokenNumber and reference to document
+      doc.tokenNumber = tokenNumber;
+      doc.reference = input.reference;
+
+      const result = await col.insertOne(doc);
 
     console.log({
       ok: true,
       insertedId: result.insertedId.toString(),
+      tokenNumber: tokenNumber,
       site,
       assignedTo: {
         prepressUserKey: prepressUserKey,
@@ -140,7 +196,11 @@ export async function insertUnorderedMinimal(input) {
       },
     });
 
-    return result.insertedId.toString();
+    // Return both insertedId and tokenNumber
+    return {
+      insertedId: result.insertedId.toString(),
+      tokenNumber: tokenNumber
+    };
   } finally {
     await client.close();
   }

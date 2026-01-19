@@ -258,6 +258,11 @@ async function fetchMongoPending(db) {
     __MongoId: d._id.toString(),
     __Site: d.site || 'COMMON',
 
+    // Map MongoDB fields for column mapping
+    SODate: d.createdAt ?? null, // SO Date -> createdAt
+    SONO: d.tokenNumber ?? null, // SO No -> tokenNumber (UN-XXXXX)
+    RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
+
     ClientName: d.client?.name ?? null,
     JobName: d.job?.jobName ?? null,
     CategoryName: d.job?.category ?? null,
@@ -427,6 +432,11 @@ async function fetchMongoCompleted(db) {
     __MongoId: d._id.toString(),
     __Site: d.site || 'COMMON',
 
+    // Map MongoDB fields for column mapping
+    SODate: d.createdAt ?? null, // SO Date -> createdAt
+    SONO: d.tokenNumber ?? null, // SO No -> tokenNumber (UN-XXXXX)
+    RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
+
     ClientName: d.client?.name ?? null,
     JobName: d.job?.jobName ?? null,
     CategoryName: d.job?.category ?? null,
@@ -567,14 +577,19 @@ router.post('/artwork/unordered/insert', async (req, res) => {
     }
 
     // Call the insert function
-    const insertedId = await insertUnorderedMinimal(payload);
+    const result = await insertUnorderedMinimal(payload);
     
-    console.log('✅ [API] New unordered entry inserted:', insertedId);
+    // Handle both old format (string) and new format (object with insertedId and tokenNumber)
+    const insertedId = typeof result === 'string' ? result : result.insertedId;
+    const tokenNumber = typeof result === 'object' && result.tokenNumber ? result.tokenNumber : null;
+    
+    console.log('✅ [API] New unordered entry inserted:', insertedId, 'Token:', tokenNumber);
 
     res.status(201).json({
       ok: true,
       message: 'Entry added successfully',
-      insertedId: insertedId
+      insertedId: insertedId,
+      tokenNumber: tokenNumber
     });
   } catch (e) {
     console.error('❌ Error in /api/artwork/unordered/insert:', e);

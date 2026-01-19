@@ -268,6 +268,11 @@ async function fetchMongoPendingByUser(db, username) {
       __Site: d.site || 'COMMON',
       __MongoId: d._id.toString(),
       
+      // Map MongoDB fields for column mapping
+      SODate: d.createdAt ?? null, // SO Date -> createdAt
+      SONO: d.tokenNumber ?? null, // SO No -> tokenNumber (UN-XXXXX)
+      RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
+      
       // Required output columns - most will be null for MongoDB
       PONumber: null,
       PODate: null,
