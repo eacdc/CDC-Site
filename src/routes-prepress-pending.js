@@ -125,7 +125,8 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
     try {
       const result = await pool.request().query('EXEC GetPendingArtworkWorklist 0');
       const rs = result.recordset || [];
-      console.log(`[FETCH] ${databaseKey} - Total rows from stored procedure (ALL users, not filtered): ${rs.length}`);
+      console.log('********************rs', rs);
+      // console.log(`[FETCH] ${databaseKey} - Total rows from stored procedure (ALL users, not filtered): ${rs.length}`);
       return {
         rows: [],
         totalCount: rs.length,
@@ -145,6 +146,7 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
   // Using raw query since we don't know the parameter name, but value is 0
   const result = await pool.request().query('EXEC GetPendingArtworkWorklist 0');
   const rs = result.recordset || [];
+  console.log('********************rs', rs);
 
   // Log total row count from stored procedure (ALL users, not filtered)
   // console.log(`[FETCH] ${databaseKey} - Database: ${expectedDb} (${site})`);
@@ -179,6 +181,8 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
     __SourceDB: databaseKey === 'KOL' ? 'KOL_SQL' : 'AMD_SQL',
     __Site: databaseKey === 'KOL' ? 'KOLKATA' : 'AHMEDABAD',
     
+
+    
     // Map SQL columns to required output format
     PONumber: r.PONumber ?? null,
     PODate: r.PODate ?? null,
@@ -192,6 +196,7 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
     Remarks: r.Remarks ?? null,
     PlanDate: r.PlanDate ?? null,
     Status: r.Status ?? null,
+    SalesExec: r.SalesExec ??"NA", // Executive name from stored procedure (column is SalesExec for user-wise pending)
     
     // Keep original fields for reference
     ID: r.ID ?? null,
@@ -261,6 +266,9 @@ async function fetchMongoPendingByUser(db, username) {
   // Note: Most fields will be null as they don't exist in MongoDB
   return docs.flatMap((d) => {
     const pendingOperations = [];
+
+
+    console.log('********************d', d);
     
     // Common fields for all rows from this document
     const baseFields = {
@@ -284,6 +292,7 @@ async function fetchMongoPendingByUser(db, username) {
       FileReceivedDate: d.artwork?.fileReceivedDate ?? null,
       Remarks: d.remarks?.artwork ?? null,
       Status: d.finalApproval?.approved ? 'Approved' : 'Pending',
+      Executive: d.executive ?? null, // Executive name from MongoDB
     
       // Keep MongoDB-specific fields for reference
       EmployeeUserKey: d.assignedTo?.prepressUserKey ?? null,
@@ -407,9 +416,9 @@ router.get('/prepress/pending', async (req, res) => {
     // Step 3: Fetch from MongoDB third
     console.log('[FETCH] Step 3/3: Fetching from MongoDB...');
     const mongoRows = await fetchMongoPendingByUser(db, trimmedUsername);
-    console.log('[FETCH] Step 3/3: MongoDB query completed');
+    // console.log('[FETCH] Step 3/3: MongoDB query completed');
     
-    console.log('[FETCH] All database queries completed sequentially');
+    // console.log('[FETCH] All database queries completed sequentially');
     
     // Extract total counts and filtered rows
     const kolTotalCount = kolRows.totalCount || 0;
@@ -418,19 +427,19 @@ router.get('/prepress/pending', async (req, res) => {
     const ahmFilteredRows = ahmRows.rows || [];
     
     // Log summary of TOTAL row counts from both databases (NOT filtered by user)
-    console.log(`[FETCH] ========== DATABASE ROW COUNT SUMMARY (ALL USERS, NOT FILTERED) ==========`);
-    console.log(`[FETCH] KOL (Kolkata) - Total rows in database: ${kolTotalCount}`);
-    console.log(`[FETCH] AHM (Ahmedabad) - Total rows in database: ${ahmTotalCount}`);
-    console.log(`[FETCH] Total across both databases: ${kolTotalCount + ahmTotalCount} rows`);
-    console.log(`[FETCH] ============================================================`);
+    // console.log(`[FETCH] ========== DATABASE ROW COUNT SUMMARY (ALL USERS, NOT FILTERED) ==========`);
+    // console.log(`[FETCH] KOL (Kolkata) - Total rows in database: ${kolTotalCount}`);
+    // console.log(`[FETCH] AHM (Ahmedabad) - Total rows in database: ${ahmTotalCount}`);
+    // console.log(`[FETCH] Total across both databases: ${kolTotalCount + ahmTotalCount} rows`);
+    // console.log(`[FETCH] ============================================================`);
     
-    // Log summary of filtered row counts for the searched user
-    console.log(`[FETCH] ========== FILTERED ROW COUNT SUMMARY for "${trimmedUsername}" ==========`);
-    console.log(`[FETCH] KOL (Kolkata) - Filtered rows: ${kolFilteredRows.length}`);
-    console.log(`[FETCH] AHM (Ahmedabad) - Filtered rows: ${ahmFilteredRows.length}`);
-    console.log(`[FETCH] MongoDB - Filtered rows: ${mongoRows.length}`);
-    console.log(`[FETCH] Total combined (filtered): ${kolFilteredRows.length + ahmFilteredRows.length + mongoRows.length} rows`);
-    console.log(`[FETCH] ============================================================`);
+    // // Log summary of filtered row counts for the searched user
+    // console.log(`[FETCH] ========== FILTERED ROW COUNT SUMMARY for "${trimmedUsername}" ==========`);
+    // console.log(`[FETCH] KOL (Kolkata) - Filtered rows: ${kolFilteredRows.length}`);
+    // console.log(`[FETCH] AHM (Ahmedabad) - Filtered rows: ${ahmFilteredRows.length}`);
+    // console.log(`[FETCH] MongoDB - Filtered rows: ${mongoRows.length}`);
+    // console.log(`[FETCH] Total combined (filtered): ${kolFilteredRows.length + ahmFilteredRows.length + mongoRows.length} rows`);
+    // console.log(`[FETCH] ============================================================`);
     
     // Combine all results
     const combined = [...kolFilteredRows, ...ahmFilteredRows, ...mongoRows];
@@ -444,6 +453,10 @@ router.get('/prepress/pending', async (req, res) => {
       ClientName: row.ClientName,
       RefMISCode: row.RefMISCode,
       JobName: row.JobName,
+      // Executive name:
+      // - For SQL user-wise pending, comes from SalesExec
+      // - For MongoDB user-wise pending, comes from Executive (mapped from d.executive)
+      Executive: row.Executive ?? row.SalesExec ?? null,
       Division: row.Division,
       FileReceivedDate: row.FileReceivedDate,
       Operation: row.Operation,

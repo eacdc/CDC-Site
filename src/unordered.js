@@ -84,6 +84,7 @@ export async function insertUnorderedMinimal(input) {
   if (!input.clientName) throw new Error("clientName is required");
   if (!input.jobName) throw new Error("jobName is required");
   if (!input.reference) throw new Error("reference is required");
+  if (!input.executive) throw new Error("executive is required");
 
   // Prepress user key - only use if explicitly provided, otherwise null (don't default)
   const prepressUserKey = (input.userKey || input.prepressUserKey) 
@@ -178,9 +179,10 @@ export async function insertUnorderedMinimal(input) {
       // Generate unique token number before inserting
       const tokenNumber = await getNextTokenNumber(db);
       
-      // Add tokenNumber and reference to document
+      // Add tokenNumber, reference, and executive to document
       doc.tokenNumber = tokenNumber;
       doc.reference = input.reference;
+      doc.executive = input.executive;
 
       const result = await col.insertOne(doc);
 

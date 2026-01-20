@@ -174,9 +174,10 @@ async function fetchSqlPending(databaseKey, sourceDb) {
   const pool = await getPool(databaseKey); // e.g. 'KOL' or 'AHM'
   const result = await pool.request().execute('GetArtworkApprovalPendingDetails');
   const rs = result.recordset || [];
+  // console.log('********************rs', rs);
   
   // Log summary and check for specific IDs
-  console.log(`[FETCH] ${sourceDb} - Total rows from stored proc:`, rs.length);
+  // console.log(`[FETCH] ${sourceDb} - Total rows from stored proc:`, rs.length);
   if (rs.length > 0) {
     console.log(`[FETCH] ${sourceDb} - First row:`, {
       OrderBookingDetailsID: rs[0].OrderBookingDetailsID,
@@ -262,6 +263,7 @@ async function fetchMongoPending(db) {
     SODate: d.createdAt ?? null, // SO Date -> createdAt
     PWONO: d.tokenNumber ?? null, // PWO No -> tokenNumber (UN-XXXXX)
     RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
+    Executive: d.executive ?? null, // Executive name from ArtworkUnordered.executive
 
     ClientName: d.client?.name ?? null,
     JobName: d.job?.jobName ?? null,
