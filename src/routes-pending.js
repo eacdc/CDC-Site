@@ -260,7 +260,7 @@ async function fetchMongoPending(db) {
 
     // Map MongoDB fields for column mapping
     SODate: d.createdAt ?? null, // SO Date -> createdAt
-    SONO: d.tokenNumber ?? null, // SO No -> tokenNumber (UN-XXXXX)
+    PWONO: d.tokenNumber ?? null, // PWO No -> tokenNumber (UN-XXXXX)
     RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
 
     ClientName: d.client?.name ?? null,
@@ -434,7 +434,7 @@ async function fetchMongoCompleted(db) {
 
     // Map MongoDB fields for column mapping
     SODate: d.createdAt ?? null, // SO Date -> createdAt
-    SONO: d.tokenNumber ?? null, // SO No -> tokenNumber (UN-XXXXX)
+    PWONO: d.tokenNumber ?? null, // PWO No -> tokenNumber (UN-XXXXX)
     RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
 
     ClientName: d.client?.name ?? null,
