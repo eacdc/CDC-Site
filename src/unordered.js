@@ -111,47 +111,65 @@ export async function insertUnorderedMinimal(input) {
     ? null
     : bool(input.machineProofRequired, false);
 
-    const now = new Date();
+  const now = new Date();
+
+  // Derive artwork file status and received date from input
+  const rawFileStatus = (input.file || '').toString().trim();
+  const normalizedFileStatus = rawFileStatus.toLowerCase();
+
+  // Default behaviour: treat blank as "Pending"
+  let artworkFileStatus = rawFileStatus || 'Pending';
+  let artworkFileReceivedDate = null;
+
+  // If status is not blank and not "pending", set received date
+  if (normalizedFileStatus && normalizedFileStatus !== 'pending') {
+    if (input.fileReceivedDate) {
+      const parsed = new Date(input.fileReceivedDate);
+      artworkFileReceivedDate = isNaN(parsed.getTime()) ? now : parsed;
+    } else {
+      artworkFileReceivedDate = now;
+    }
+  }
 
   const doc = {
     site,
     createdBy,
-      createdAt: now,
-      updatedAt: now,
+    createdAt: now,
+    updatedAt: now,
 
     client: { name: input.clientName },
 
-      job: {
+    job: {
       jobName: input.jobName,
       category: input.category || null,
       segment: input.segment || null,
-      },
+    },
 
-      artwork: {
-      fileStatus: "PENDING",
-      fileReceivedDate: null,
-      },
+    artwork: {
+      fileStatus: artworkFileStatus,
+      fileReceivedDate: artworkFileReceivedDate,
+    },
 
-      assignedTo: {
+    assignedTo: {
       prepressUserKey: prepressUserKey,
       toolingUserKey: toolingUserKey,
       plateUserKey: plateUserKey,
-      },
+    },
 
-      approvals: {
-        soft: {
+    approvals: {
+      soft: {
         required: softReq,
         status: softReq === null ? null : (softReq ? "Pending" : "Approved"),
         planDate: null,          // blank because file not received
         actualDate: null,
-        },
-        hard: {
+      },
+      hard: {
         required: hardReq,
         status: hardReq === null ? null : (hardReq ? "Pending" : "Approved"),
         planDate: null,          // blank because file not received
         actualDate: null,
-        },
-        machineProof: {
+      },
+      machineProof: {
         required: mpReq,
         status: mpReq === null ? null : (mpReq ? "Pending" : "Approved"),
         planDate: null,          // blank because file not received
@@ -167,7 +185,7 @@ export async function insertUnorderedMinimal(input) {
     remarks: { artwork: input.artworkRemark || null },
 
     status: { isDeleted: false, updatedBy: createdBy, updatedAt: now },
-    };
+  };
 
     const client = new MongoClient(uri);
     await client.connect();

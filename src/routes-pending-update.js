@@ -779,6 +779,10 @@ async function updateMongoRow(db, mongoId, mergedRow, updatedBy) {
     set['remarks.artwork'] = mergedRow.ArtworkRemark ?? null;
   }
 
+  if (mergedRow.RefPCC !== undefined) {
+    set.reference = mergedRow.RefPCC ?? null;
+  }
+
   // Also handle SoftApprovalLink if provided
   if (mergedRow.LinkofSoftApprovalfile !== undefined || mergedRow.SoftApprovalLink !== undefined) {
     const link = mergedRow.LinkofSoftApprovalfile || mergedRow.SoftApprovalLink;
@@ -835,6 +839,7 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('PlateRemark' in update) incoming.PlateRemark = update.PlateRemark ?? null;
     if ('ToolingRemark' in update) incoming.ToolingRemark = update.ToolingRemark ?? null;
     if ('ArtworkRemark' in update) incoming.ArtworkRemark = update.ArtworkRemark ?? null;
+    if ('RefPCC' in update) incoming.RefPCC = update.RefPCC ?? null;
     
     // user keys (for Mongo OR for mapping to SQL ledger IDs)
     if ('EmployeeUserKey' in update) incoming.EmployeeUserKey = update.EmployeeUserKey ? String(update.EmployeeUserKey) : null;
