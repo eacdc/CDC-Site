@@ -176,8 +176,12 @@ export async function insertUnorderedMinimal(input) {
       const db = client.db(MONGO_DB);
       const col = db.collection(COL_NAME);
 
-      // Generate unique token number before inserting
-      const tokenNumber = await getNextTokenNumber(db);
+      // Use provided tokenNumber if present (already reserved when form opened),
+      // otherwise generate a new one (for CLI or other callers).
+      let tokenNumber = input.tokenNumber;
+      if (!tokenNumber) {
+        tokenNumber = await getNextTokenNumber(db);
+      }
       
       // Add tokenNumber, reference, and executive to document
       doc.tokenNumber = tokenNumber;

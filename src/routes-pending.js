@@ -602,6 +602,44 @@ router.post('/artwork/unordered/insert', async (req, res) => {
   }
 });
 
+// Get next unordered token number (reserves the next sequence)
+// Exposed as: GET /api/artwork/unordered/next-token
+router.get('/artwork/unordered/next-token', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    const counterCollection = db.collection('TokenCounter');
+
+    // Atomically increment sequence (same pattern as getNextTokenNumber in unordered.js)
+    await counterCollection.findOneAndUpdate(
+      { _id: 'unordered_token' },
+      {
+        $inc: { sequence: 1 },
+        $setOnInsert: { _id: 'unordered_token' }
+      },
+      {
+        upsert: true
+      }
+    );
+
+    // Read back the updated document to get the current sequence
+    const doc = await counterCollection.findOne({ _id: 'unordered_token' });
+
+    const sequence = doc && typeof doc.sequence === 'number' ? doc.sequence : 1;
+    const tokenNumber = `UN-${String(sequence).padStart(6, '0')}`;
+
+    res.json({
+      ok: true,
+      tokenNumber
+    });
+  } catch (e) {
+    console.error('❌ Error in /api/artwork/unordered/next-token:', e);
+    res.status(500).json({
+      ok: false,
+      error: e.message || 'Failed to get next token number'
+    });
+  }
+});
+
 // Get users from MongoDB user collection
 // Exposed as: GET /api/artwork/users?site=KOLKATA or ?site=AHMEDABAD
 router.get('/artwork/users', async (req, res) => {
