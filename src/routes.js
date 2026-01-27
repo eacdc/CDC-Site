@@ -5273,6 +5273,7 @@ router.post('/bills', async (req, res) => {
   }
 });
 
+// Generic bill update (kept for compatibility, but does NOT touch JobopsMaster/Contractor_WD)
 router.put('/bills/:billNumber', async (req, res) => {
   try {
     const { billNumber } = req.params;
@@ -5295,80 +5296,15 @@ router.put('/bills/:billNumber', async (req, res) => {
         return res.status(400).json({ error: 'At least one job is required' });
       }
 
-      for (const job of jobs) {
-        if (!job.jobNumber || !job.jobNumber.trim()) {
-          return res.status(400).json({ error: 'Each job must have a job number' });
-        }
-        if (!job.ops || !Array.isArray(job.ops) || job.ops.length === 0) {
-          return res.status(400).json({ error: 'Each job must have at least one operation' });
-        }
-
-        for (const op of job.ops) {
-          if (
-            op.qtyBook === undefined || 
-            op.rate === undefined || 
-            op.qtyCompleted === undefined || 
-            op.totalValue === undefined
-          ) {
-            return res.status(400).json({ 
-              error: 'Each operation must have qtyBook, rate, qtyCompleted, and totalValue' 
-            });
-          }
-        }
-      }
-
-      // Collect all unique opIds from all jobs
-      const allOpIds = [];
-      jobs.forEach(job => {
-        job.ops.forEach(op => {
-          if (op.opId) {
-            allOpIds.push(op.opId);
-          }
-        });
-      });
-
-      // Fetch operation types for all operations
-      const operationTypeMap = {};
-      if (allOpIds.length > 0) {
-        const opObjectIds = allOpIds.map(opId => {
-          try {
-            return new mongoose.Types.ObjectId(opId);
-          } catch (error) {
-            return null;
-          }
-        }).filter(Boolean);
-
-        if (opObjectIds.length > 0) {
-          const operationDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
-          operationDocs.forEach(op => {
-            const idStr = op._id.toString();
-            operationTypeMap[idStr] = op.type;
-          });
-        }
-      }
-
       bill.jobs = jobs.map(job => ({
         jobNumber: job.jobNumber,
-        ops: job.ops.map(op => {
-          // Get operation type
-          const opIdStr = String(op.opId || '');
-          const operationType = operationTypeMap[opIdStr];
-          const actualQtyBook = Number(op.qtyBook);
-          
-          // For 1/x type operations, save qtyBook as 1/actual qtyBook
-          let qtyBookToSave = actualQtyBook;
-          if (operationType === '1/x' && actualQtyBook > 0) {
-            qtyBookToSave = 1 / actualQtyBook;
-          }
-          
-          return {
-            opsName: op.opsName.trim(),
-            qtyBook: qtyBookToSave,
-            rate: Number(op.rate),
-            qtyCompleted: Number(op.qtyCompleted),
-            totalValue: Number(op.totalValue)
-          };
-        })
+        ops: job.ops.map(op => ({
+          opsName: String(op.opsName || '').trim(),
+          qtyBook: Number(op.qtyBook ?? 0),
+          rate: Number(op.rate ?? 0),
+          qtyCompleted: Number(op.qtyCompleted ?? 0),
+          totalValue: Number(op.totalValue ?? 0)
+        }))
       }));
     }
 
@@ -5377,6 +5313,286 @@ router.put('/bills/:billNumber', async (req, res) => {
   } catch (error) {
     console.error('Error updating bill:', error);
     res.status(500).json({ error: 'Error updating bill' });
+  }
+});
+
+// Edit unpaid bill: allow only qtyCompleted changes and row/job deletion.
+// This endpoint also keeps JobopsMaster.pendingOpsQty and Contractor_WD.opsDone in sync.
+router.put('/bills/:billNumber/edit-qty', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { billNumber } = req.params;
+    const { contractorId, changes } = req.body;
+
+    if (!contractorId || !String(contractorId).trim()) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ error: 'contractorId is required' });
+    }
+
+    if (!Array.isArray(changes) || changes.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ error: 'At least one change is required' });
+    }
+
+    // Load existing bill within the transaction
+    const bill = await Bill.findOne({ billNumber }).session(session);
+    if (!bill) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+
+    // Do not allow editing paid bills
+    if (bill.paymentStatus === 'Yes') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ error: 'Paid bills cannot be edited' });
+    }
+
+    // Build quick lookup for existing operations in the bill
+    // key: jobNumber|opsName|rateRounded
+    function buildKey(jobNumber, opsName, rate) {
+      const jn = String(jobNumber || '').trim();
+      const name = String(opsName || '').trim();
+      const r = Number(rate || 0);
+      const roundedRate = Number.isFinite(r) ? r.toFixed(4) : '0.0000';
+      return `${jn}|${name}|${roundedRate}`;
+    }
+
+    const billOpsMap = new Map();
+    bill.jobs.forEach(job => {
+      const jobNumber = job.jobNumber;
+      (job.ops || []).forEach(op => {
+        const key = buildKey(jobNumber, op.opsName, op.rate);
+        billOpsMap.set(key, { job, op });
+      });
+    });
+
+    // Collect deltas per job for JobopsMaster / Contractor_WD updates
+    const deltasByJob = new Map(); // jobNumber -> [{ opsName, rate, deltaQty }]
+
+    // Apply changes to bill in-memory
+    for (const change of changes) {
+      const { jobNumber, opsName, rate, newQtyCompleted } = change || {};
+
+      if (!jobNumber || !String(jobNumber).trim()) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Each change must have a jobNumber' });
+      }
+      if (!opsName || !String(opsName).trim()) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Each change must have an opsName' });
+      }
+      if (newQtyCompleted === undefined || newQtyCompleted === null) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'Each change must have newQtyCompleted' });
+      }
+
+      const key = buildKey(jobNumber, opsName, rate);
+      const entry = billOpsMap.get(key);
+      if (!entry) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: `Operation not found in bill for job ${jobNumber}, operation ${opsName}` });
+      }
+
+      const { job, op } = entry;
+      const oldQty = Number(op.qtyCompleted || 0);
+      const newQty = Number(newQtyCompleted);
+
+      if (!Number.isFinite(newQty) || newQty < 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: 'newQtyCompleted must be a non-negative number' });
+      }
+
+      const delta = newQty - oldQty;
+      if (delta === 0) {
+        continue; // nothing to do for this row
+      }
+
+      // Track delta for backend collections
+      if (!deltasByJob.has(job.jobNumber)) {
+        deltasByJob.set(job.jobNumber, []);
+      }
+      deltasByJob.get(job.jobNumber).push({
+        opsName: String(op.opsName || '').trim(),
+        rate: Number(op.rate || 0),
+        deltaQty: delta
+      });
+
+      // Update bill op
+      op.qtyCompleted = newQty;
+      op.totalValue = Number(op.rate || 0) * newQty;
+    }
+
+    // If no effective changes, just return the existing bill
+    if (deltasByJob.size === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.json(bill);
+    }
+
+    // Helper to round valuePerBook / rate consistently
+    const round2 = (val) => parseFloat(Number(val || 0).toFixed(2));
+
+    // For each job, update JobopsMaster and Contractor_WD using deltas
+    for (const [jobNumber, deltas] of deltasByJob.entries()) {
+      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber }).session(session);
+      if (!jobOpsMaster) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: `JobOpsMaster not found for job ${jobNumber}` });
+      }
+
+      // Fetch operation names for this job's operations
+      const opIds = jobOpsMaster.ops.map(op => op.opId).filter(Boolean);
+      const opObjectIds = opIds.map(opId => {
+        try {
+          return new mongoose.Types.ObjectId(opId);
+        } catch {
+          return null;
+        }
+      }).filter(Boolean);
+
+      const operationDocs = await Operation.find({ _id: { $in: opObjectIds } }).session(session);
+      const operationNameMap = {};
+      operationDocs.forEach(op => {
+        operationNameMap[op._id.toString()] = op.opsName;
+      });
+
+      // Apply each delta to JobopsMaster.ops and prepare Contractor_WD adjustments
+      const contractorWDAdjustments = []; // { opsName, valuePerBook, deltaQty }
+
+      for (const { opsName, rate, deltaQty } of deltas) {
+        const normalizedName = String(opsName || '').trim();
+        const normalizedRate = round2(rate);
+
+        const jobOp = jobOpsMaster.ops.find(jop => {
+          const jopName = operationNameMap[String(jop.opId)] || 'Unknown';
+          const jopValue = round2(jop.valuePerBook);
+          return jopName === normalizedName && jopValue === normalizedRate;
+        });
+
+        if (!jobOp) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ error: `Operation ${normalizedName} (rate ${normalizedRate}) not found in JobopsMaster for job ${jobNumber}` });
+        }
+
+        const currentPending = Number(jobOp.pendingOpsQty || 0);
+        const totalOpsQty = Number(jobOp.totalOpsQty || 0);
+
+        // Apply delta to pendingOpsQty: pending = pending - delta
+        let newPending = currentPending - deltaQty;
+
+        // For increases in completed qty (delta > 0), pending cannot go below 0
+        // For decreases (delta < 0), pending cannot exceed totalOpsQty
+        if (newPending < 0 - 1e-6) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            error: `Insufficient pending quantity for job ${jobNumber}, operation ${normalizedName} to increase completed quantity by ${deltaQty}`
+          });
+        }
+
+        newPending = Math.max(0, Math.min(totalOpsQty, newPending));
+        jobOp.pendingOpsQty = newPending;
+        jobOp.lastUpdatedDate = new Date();
+
+        contractorWDAdjustments.push({
+          opsName: normalizedName,
+          valuePerBook: jobOp.valuePerBook,
+          deltaQty
+        });
+      }
+
+      await jobOpsMaster.save({ session });
+
+      // Apply adjustments to Contractor_WD
+      let contractorWD = await ContractorWD.findOne({
+        contractorId: contractorId,
+        jobId: jobNumber
+      }).session(session);
+
+      if (!contractorWD) {
+        contractorWD = new ContractorWD({
+          contractorId: contractorId,
+          jobId: jobNumber,
+          opsDone: []
+        });
+      }
+
+      for (const adj of contractorWDAdjustments) {
+        const { opsName, valuePerBook, deltaQty } = adj;
+        const adjName = String(opsName || '').trim();
+        const adjValue = round2(valuePerBook);
+
+        const existingOp = contractorWD.opsDone.find(od => {
+          const odName = String(od.opsName || '').trim();
+          const odVal = round2(od.valuePerBook);
+          return odName === adjName && odVal === adjValue;
+        });
+
+        if (deltaQty > 0) {
+          // Increase completed quantity
+          if (existingOp) {
+            existingOp.opsDoneQty += deltaQty;
+            existingOp.completionDate = new Date();
+          } else {
+            contractorWD.opsDone.push({
+              opsId: null, // opsId is not used for matching here
+              opsName: adjName,
+              valuePerBook: adjValue,
+              opsDoneQty: deltaQty,
+              completionDate: new Date()
+            });
+          }
+        } else if (deltaQty < 0 && existingOp) {
+          // Decrease completed quantity
+          const newDone = Number(existingOp.opsDoneQty || 0) + deltaQty; // deltaQty is negative
+          if (newDone <= 0) {
+            // Remove entry if fully reversed
+            contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== existingOp);
+          } else {
+            existingOp.opsDoneQty = newDone;
+            existingOp.completionDate = new Date();
+          }
+        }
+      }
+
+      await contractorWD.save({ session });
+    }
+
+    // After adjustments, clean up bill jobs:
+    // - Remove operations with qtyCompleted === 0
+    // - Remove jobs with no operations
+    bill.jobs = bill.jobs
+      .map(job => {
+        const filteredOps = (job.ops || []).filter(op => Number(op.qtyCompleted || 0) > 0);
+        return { jobNumber: job.jobNumber, ops: filteredOps };
+      })
+      .filter(job => (job.ops || []).length > 0);
+
+    await bill.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json(bill);
+  } catch (error) {
+    console.error('Error editing bill quantities:', error);
+    try {
+      await session.abortTransaction();
+    } catch (_) {}
+    session.endSession();
+    res.status(500).json({ error: 'Error editing bill quantities' });
   }
 });
 
