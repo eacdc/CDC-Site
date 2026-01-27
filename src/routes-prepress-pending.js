@@ -283,7 +283,7 @@ async function fetchMongoPendingByUser(db, username) {
       
       // Required output columns - most will be null for MongoDB
       PONumber: null,
-      PODate: null,
+      PODate: d.createdAt ?? null,
       Jobcardnumber: d.tokenNumber ?? null,
       ClientName: d.client?.name ?? null,
       RefMISCode: null,
