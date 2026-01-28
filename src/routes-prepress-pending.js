@@ -286,7 +286,7 @@ async function fetchMongoPendingByUser(db, username) {
       PODate: d.createdAt ?? null,
       Jobcardnumber: d.tokenNumber ?? null,
       ClientName: d.client?.name ?? null,
-      RefMISCode: null,
+      RefMISCode: d.reference ?? null, // Map MongoDB reference field to Ref MIS Code
       JobName: d.job?.jobName ?? null,
       Division: d.job?.segment ?? null, // Map job.segment to Division
       FileReceivedDate: d.artwork?.fileReceivedDate ?? null,
@@ -469,6 +469,7 @@ router.get('/prepress/pending', async (req, res) => {
       __MongoId: row.__MongoId,        // MongoDB ObjectId as string (for MongoDB items)
       ID: row.ID,                      // SQL ID or MongoDB ID fallback
       ledgerid: row.ledgerid,          // SQL ledger ID (for SQL items)
+      FinalApprovalStatus: row.FinalApprovalStatus ?? null, // SQL-only; undefined for Mongo
       __Site: row.__Site,              // Site information (optional)
       
       // Additional fields for reference
