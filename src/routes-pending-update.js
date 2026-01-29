@@ -918,6 +918,7 @@ router.post('/artwork/pending/update', async (req, res) => {
             assignedTo: 1,
             finalApproval: 1,
             remarks: 1,
+            client: 1, // include client to preserve ClientName when not updating
           },
         }
       );
