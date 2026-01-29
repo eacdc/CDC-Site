@@ -2833,12 +2833,39 @@ router.post('/qc/save-inspection', async (req, res) => {
             .input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspectionJson))
             .execute('SaveProcessInspection');
         
+        // Check SP return value: 0 = success, non-zero = failure (common SQL convention)
+        const returnVal = result.returnValue;
+        if (returnVal !== undefined && returnVal !== null && returnVal !== 0) {
+            console.log('[QC-SAVE] Stored procedure returned failure code:', returnVal);
+            return res.status(400).json({
+                status: false,
+                error: 'Database returned failure (code ' + returnVal + '). Inspection was not saved.'
+            });
+        }
+        
+        // Check first recordset row for Success/Status/ErrorMessage (if SP returns a result set)
+        const recordset = result.recordset || [];
+        const firstRow = recordset[0];
+        if (firstRow && typeof firstRow === 'object') {
+            const success = firstRow.Success ?? firstRow.success;
+            const status = (firstRow.Status ?? firstRow.status ?? '').toString().toLowerCase();
+            const msg = firstRow.ErrorMessage ?? firstRow.Message ?? firstRow.errorMessage ?? firstRow.message ?? firstRow.Error ?? firstRow.error;
+            if (success === 0 || success === false || status === 'failure' || status === 'error' || status === 'failed') {
+                const failureMessage = (msg && String(msg).trim()) || ('Database returned failure (code ' + (returnVal ?? 'N/A') + ').');
+                console.log('[QC-SAVE] Stored procedure indicated failure:', failureMessage);
+                return res.status(400).json({
+                    status: false,
+                    error: failureMessage
+                });
+            }
+        }
+        
         console.log('[QC-SAVE] Inspection saved successfully');
         
         return res.json({
             status: true,
             message: 'Inspection saved successfully',
-            result: result.recordset || []
+            result: recordset
         });
     } catch (error) {
         console.error('[QC-SAVE] Error saving inspection:', error);
