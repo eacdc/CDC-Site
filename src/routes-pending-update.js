@@ -779,6 +779,11 @@ async function updateMongoRow(db, mongoId, mergedRow, updatedBy) {
     set['remarks.artwork'] = mergedRow.ArtworkRemark ?? null;
   }
 
+  // Allow updating client name for Mongo rows
+  if (mergedRow.ClientName !== undefined) {
+    set['client.name'] = mergedRow.ClientName ?? null;
+  }
+
   if (mergedRow.RefPCC !== undefined) {
     set.reference = mergedRow.RefPCC ?? null;
   }
@@ -840,6 +845,7 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('ToolingRemark' in update) incoming.ToolingRemark = update.ToolingRemark ?? null;
     if ('ArtworkRemark' in update) incoming.ArtworkRemark = update.ArtworkRemark ?? null;
     if ('RefPCC' in update) incoming.RefPCC = update.RefPCC ?? null;
+    if ('ClientName' in update) incoming.ClientName = update.ClientName ?? null;
     
     // user keys (for Mongo OR for mapping to SQL ledger IDs)
     if ('EmployeeUserKey' in update) incoming.EmployeeUserKey = update.EmployeeUserKey ? String(update.EmployeeUserKey) : null;
@@ -964,6 +970,9 @@ router.post('/artwork/pending/update', async (req, res) => {
         PlateRemark: cur.plate?.remark ?? null,
         ToolingRemark: cur.tooling?.remark ?? null,
         ArtworkRemark: cur.remarks?.artwork ?? null,
+
+        // Client
+        ClientName: cur.client?.name ?? null,
 
         EmployeeUserKey: cur.assignedTo?.prepressUserKey ?? null,
         ToolingUserKey: cur.assignedTo?.toolingUserKey ?? null,
