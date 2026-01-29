@@ -2860,11 +2860,15 @@ router.post('/qc/save-inspection', async (req, res) => {
             }
         }
         
-        console.log('[QC-SAVE] Inspection saved successfully');
+        // Extract voucher number from SP result (SaveProcessInspection returns column: voucherNo)
+        const voucherNumber = firstRow && (firstRow.voucherNo ?? firstRow.VoucherNo ?? firstRow.VoucherNumber ?? firstRow.VoucherNum ?? firstRow.VoucherCode ?? firstRow.Voucher ?? firstRow.voucherNumber ?? firstRow.voucherNum ?? firstRow.voucherCode ?? firstRow.voucher);
+        
+        console.log('[QC-SAVE] Inspection saved successfully', voucherNumber != null ? ', Voucher: ' + voucherNumber : '');
         
         return res.json({
             status: true,
             message: 'Inspection saved successfully',
+            voucherNumber: voucherNumber != null ? String(voucherNumber) : undefined,
             result: recordset
         });
     } catch (error) {
