@@ -699,21 +699,27 @@ router.get('/artwork/all', async (req, res) => {
     const includeAHM = wantsAll || parts.includes('ahm');
     const includeMongo = wantsAll || parts.includes('mongo');
 
-    const [
-      kolPending,
-      amdPending,
-      mongoPending,
-      kolCompleted,
-      amdCompleted,
-      mongoCompleted,
-    ] = await Promise.all([
-      includeKOL ? fetchSqlPending('KOL', 'KOL_SQL') : Promise.resolve([]),
-      includeAHM ? fetchSqlPending('AHM', 'AMD_SQL') : Promise.resolve([]),
-      includeMongo ? fetchMongoPending(db) : Promise.resolve([]),
-      includeKOL ? fetchSqlCompleted('KOL', 'KOL_SQL') : Promise.resolve([]),
-      includeAHM ? fetchSqlCompleted('AHM', 'AMD_SQL') : Promise.resolve([]),
-      includeMongo ? fetchMongoCompleted(db) : Promise.resolve([]),
-    ]);
+    // Fetch sequentially to avoid connection pool race conditions and fluctuating counts:
+    // 1) Kolkata (indusdatabase), 2) AHM (indusdatabase2), 3) MongoDB
+    let kolPending = [];
+    let kolCompleted = [];
+    let amdPending = [];
+    let amdCompleted = [];
+    let mongoPending = [];
+    let mongoCompleted = [];
+
+    if (includeKOL) {
+      kolPending = await fetchSqlPending('KOL', 'KOL_SQL');
+      kolCompleted = await fetchSqlCompleted('KOL', 'KOL_SQL');
+    }
+    if (includeAHM) {
+      amdPending = await fetchSqlPending('AHM', 'AMD_SQL');
+      amdCompleted = await fetchSqlCompleted('AHM', 'AMD_SQL');
+    }
+    if (includeMongo) {
+      mongoPending = await fetchMongoPending(db);
+      mongoCompleted = await fetchMongoCompleted(db);
+    }
 
     const kolLedgerIds = [
       ...kolPending,
