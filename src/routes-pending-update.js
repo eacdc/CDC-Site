@@ -373,7 +373,8 @@ async function fetchSqlCurrentRow(databaseKey, orderBookingDetailsId) {
       FinallyApproved, FinallyApprovedDate,
       ToolingDie, ToolingBlock, Blanket, ToolingBlanketPlan, ToolingBlanketActual,
       PlateOutput, PlatePlan, PlateActual,
-      PlateRemark, ToolingRemark, ArtworkRemark
+      PlateRemark, ToolingRemark, ArtworkRemark,
+      RefProductMasterCode
     FROM dbo.ArtworkProcessApproval WITH (NOLOCK)
     WHERE OrderBookingDetailsID = @obd;
   `;
@@ -435,6 +436,7 @@ async function upsertSqlRow(databaseKey, mergedRow, ledgerIds) {
   req.input('OrderBookingID', sql.Int, mergedRow.OrderBookingID ?? null);
   req.input('OrderBookingDetailsID', sql.Int, mergedRow.OrderBookingDetailsID); // required
   req.input('JobBookingID', sql.Int, mergedRow.JobBookingID ?? null);
+  req.input('RefProductMasterCode', sql.NVarChar(200), mergedRow.RefPCC ?? mergedRow.RefProductMasterCode ?? null);
 
   // IMPORTANT: your SQL uses FileName column but it is being used as FileStatus.
   // Keep sending FileName = FileStatus.
@@ -534,6 +536,7 @@ async function upsertSqlRow(databaseKey, mergedRow, ledgerIds) {
   console.log('   @OrderBookingID             =', mergedRow.OrderBookingID ?? 'NULL');
   console.log('   @OrderBookingDetailsID      =', mergedRow.OrderBookingDetailsID, '(REQUIRED)');
   console.log('   @JobBookingID               =', mergedRow.JobBookingID ?? 'NULL');
+  console.log('   @RefProductMasterCode       =', (mergedRow.RefPCC ?? mergedRow.RefProductMasterCode) ? `'${String(mergedRow.RefPCC ?? mergedRow.RefProductMasterCode).replace(/'/g, "''")}'` : 'NULL');
   console.log('   @FileName                   =', (mergedRow.FileStatus ?? mergedRow.FileName ?? null) ? `'${mergedRow.FileStatus ?? mergedRow.FileName}'` : 'NULL');
   console.log('   @FileReceivedDate           =', mergedRow.FileReceivedDate ? `'${new Date(mergedRow.FileReceivedDate).toISOString()}'` : 'NULL');
   console.log('   @SoftApprovalReqd           =', mergedRow.SoftApprovalReqd ? `'${mergedRow.SoftApprovalReqd}'` : 'NULL');
@@ -593,6 +596,7 @@ async function upsertSqlRow(databaseKey, mergedRow, ledgerIds) {
   console.log(`    @OrderBookingID = ${mergedRow.OrderBookingID ?? 'NULL'},`);
   console.log(`    @OrderBookingDetailsID = ${mergedRow.OrderBookingDetailsID},`);
   console.log(`    @JobBookingID = ${mergedRow.JobBookingID ?? 'NULL'},`);
+  console.log(`    @RefProductMasterCode = ${formatSqlValue(mergedRow.RefPCC ?? mergedRow.RefProductMasterCode)},`);
   console.log(`    @FileName = ${formatSqlValue(mergedRow.FileStatus ?? mergedRow.FileName)},`);
   console.log(`    @FileReceivedDate = ${formatSqlValue(mergedRow.FileReceivedDate, false, true)},`);
   console.log(`    @SoftApprovalReqd = ${formatSqlValue(mergedRow.SoftApprovalReqd)},`);
@@ -845,6 +849,7 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('ToolingRemark' in update) incoming.ToolingRemark = update.ToolingRemark ?? null;
     if ('ArtworkRemark' in update) incoming.ArtworkRemark = update.ArtworkRemark ?? null;
     if ('RefPCC' in update) incoming.RefPCC = update.RefPCC ?? null;
+    if ('RefProductMasterCode' in update) incoming.RefPCC = incoming.RefPCC ?? (update.RefProductMasterCode ?? null);
     if ('ClientName' in update) incoming.ClientName = update.ClientName ?? null;
     
     // user keys (for Mongo OR for mapping to SQL ledger IDs)
@@ -1111,6 +1116,7 @@ router.post('/artwork/pending/update', async (req, res) => {
     console.log('   ArtworkRemark:', merged.ArtworkRemark ?? 'NULL');
     console.log('   ToolingRemark:', merged.ToolingRemark ?? 'NULL');
     console.log('   PlateRemark:', merged.PlateRemark ?? 'NULL');
+    console.log('   RefPCC/RefProductMasterCode:', merged.RefPCC ?? merged.RefProductMasterCode ?? 'NULL');
     console.log('='.repeat(80) + '\n');
 
     const outId = await upsertSqlRow(databaseKey, merged, {

@@ -52,7 +52,7 @@ router.get('/job-card', async (req, res) => {
 
       // ---- Header ----
       const header = {
-        jobNo: str(get(row, 'JobCardContentNo')) || jobNo,
+        jobNo: str(get(row, 'JobBookingNo')) || jobNo,
         soNo: str(get(row, 'OrderBookingNo')),
         jobDate: str(get(row, 'BookingDate')),
         estNo: '',
@@ -192,7 +192,7 @@ router.get('/job-card', async (req, res) => {
               proQty: str(get(r, 'ReadyQty')) || str(get(r, 'ProductionQuantity')) || '0',
               date: str(get(r, 'FromTime')) || '',
               status: str(get(r, 'Status')) || '-',
-              remark: str(get(r, 'Remark')) || '',
+              remark: str(get(r, 'Remarks')) || '',
               toolCode: tool ? tool.toolCode : '',
               refNo: tool ? tool.refNo : ''
             };
@@ -260,6 +260,7 @@ router.get('/job-card', async (req, res) => {
         type: 'packaging',
         jobNumber: jobNo,
         displayId: str(get(row, 'JobCardContentNo')) || jobNo,
+        qrCode: str(get(row, 'JobCardContentNo')) || jobNo,
         header,
         jobInfo,
         paperDetails,
@@ -388,8 +389,6 @@ router.get('/job-card', async (req, res) => {
             processName: str(get(r, 'OperationName')) || '-',
             itemName: str(get(r, 'Material')) || '-',
             reqQty: str(get(r, 'Qty')) || '0',
-            allocated: '0',
-            issued: '0',
             unit: str(get(r, 'Unit')) || '-'
           }));
         } catch (e) {
@@ -408,6 +407,7 @@ router.get('/job-card', async (req, res) => {
         }
 
         // Component-specific details from procedure row
+        const compJobCardContentNo = str(get(compRow, 'JobCardContentNo')) || '';
         const compCloseSize = str(get(compRow, 'JobCloseSize')) || str(get(compRow, 'CloseSize')) || '-';
         const compColour = str(get(compRow, 'FrontColor')) || str(get(compRow, 'FrontColorName')) || '-';
         const compQuantity = str(get(compRow, 'OrderQuantity')) || str(get(compRow, 'Quantity')) || '-';
@@ -423,12 +423,9 @@ router.get('/job-card', async (req, res) => {
         const compImpressions = str(get(compRow, 'ImpressionsToBeCharged')) || '';
 
         const firstPaper = compPaperRows[0];
-        console.log("#############5",firstPaper);
-        console.log("#############6",compWeight);
-        console.log("#############7",compRow);
         parts.push({
           partName,
-          qrPlaceholder: true,
+          qrCode: compJobCardContentNo,
           closeSize: compCloseSize,
           colour: compColour,
           quantity: compQuantity ? (compQuantity.includes('PCS') ? compQuantity : compQuantity + ' PCS') : '-',
@@ -461,7 +458,7 @@ router.get('/job-card', async (req, res) => {
         const firstPaper = paperDetails && paperDetails[0];
         parts.push({
           partName: jobInfo.contentName || 'Main',
-          qrPlaceholder: true,
+          qrCode: str(get(row, 'JobCardContentNo')) || jobNo,
           closeSize: jobInfo.jobSizeMm || '-',
           colour: printDetails.frontColor || '-',
           quantity: (header.quantity != null && header.quantity !== '') ? header.quantity + ' PCS' : '-',
