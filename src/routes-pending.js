@@ -615,6 +615,16 @@ const ARTWORK_ALL_COLUMNS = [
   'SegmentName',
 ];
 
+function formatDateYYYYMMDD(v) {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(v);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function toArtworkAllRow(row) {
   const r = row || {};
   const get = (...args) => {
@@ -627,21 +637,18 @@ function toArtworkAllRow(row) {
     const v = get(...args);
     return v === null || v === undefined ? null : String(v);
   };
-  const getDate = (...args) => {
+  const getDateStr = (...args) => {
     const v = get(...args);
-    if (v === null || v === undefined) return null;
-    if (v instanceof Date) return v;
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
+    return formatDateYYYYMMDD(v);
   };
 
   return {
     LedgerID: get('LedgerID', 'ledgerid', 'LedgerId') ?? null,
     ClientName: getStr('ClientName', 'clientName') ?? null,
     SONO: getStr('SONO', 'SONo', 'SoNo', 'soNo') ?? null,
-    SODate: getDate('SODate', 'SoDate', 'soDate') ?? null,
+    SODate: getDateStr('SODate', 'SoDate', 'soDate'),
     PONo: getStr('PONo', 'PONumber', 'poNo') ?? null,
-    PODate: getDate('PODate', 'PoDate', 'poDate') ?? null,
+    PODate: getDateStr('PODate', 'PoDate', 'poDate'),
     JobName: getStr('JobName', 'jobName') ?? null,
     CategoryName: getStr('CategoryName', 'categoryName') ?? null,
     CategoryID: get('CategoryID', 'CategoryId', 'categoryID') ?? null,
@@ -649,38 +656,38 @@ function toArtworkAllRow(row) {
     OrderBookingDetailsID: get('OrderBookingDetailsID', 'OrderBookingDetailsId') ?? null,
     PWONO: getStr('PWONO', 'PWONo', 'PwoNo', 'pwoNo') ?? null,
     RefProductMasterCode: getStr('RefProductMasterCode', 'RefPCC', 'RefPcc', 'refPCC') ?? null,
-    PWODate: getDate('PWODate', 'PwoDate', 'pwoDate') ?? null,
+    PWODate: getDateStr('PWODate', 'PwoDate', 'pwoDate'),
     JobBookingID: get('JobBookingID', 'JobBookingId') ?? null,
     PrepressPerson: getStr('PrepressPerson', 'PrepressPersonName', 'prepressPerson') ?? null,
     EmployeeID: get('EmployeeID', 'EmployeeId', 'employeeID') ?? null,
     FileName: getStr('FileStatus', 'FileName', 'fileName') ?? null,
-    FileReceivedDate: getDate('FileReceivedDate', 'FileRcvdDate') ?? null,
+    FileReceivedDate: getDateStr('FileReceivedDate', 'FileRcvdDate'),
     SoftApprovalReqd: getStr('SoftApprovalReqd', 'SoftApprovalRequired') ?? null,
     SoftApprovalStatus: getStr('SoftApprovalStatus') ?? null,
-    SoftApprovalSentPlanDate: getDate('SoftApprovalSentPlanDate', 'SoftApprovalPlanDate') ?? null,
-    SoftApprovalSentActdate: getDate('SoftApprovalSentActdate', 'SoftApprovalSentActDate') ?? null,
+    SoftApprovalSentPlanDate: getDateStr('SoftApprovalSentPlanDate', 'SoftApprovalPlanDate'),
+    SoftApprovalSentActdate: getDateStr('SoftApprovalSentActdate', 'SoftApprovalSentActDate'),
     LinkofSoftApprovalfile: getStr('LinkofSoftApprovalfile', 'SoftApprovalLink') ?? null,
     HardApprovalReqd: getStr('HardApprovalReqd', 'HardApprovalRequired') ?? null,
     HardApprovalStatus: getStr('HardApprovalStatus') ?? null,
-    HardApprovalSentPlanDate: getDate('HardApprovalSentPlanDate', 'HardApprovalPlanDate') ?? null,
-    HardApprovalSentActdate: getDate('HardApprovalSentActdate', 'HardApprovalSentActDate') ?? null,
+    HardApprovalSentPlanDate: getDateStr('HardApprovalSentPlanDate', 'HardApprovalPlanDate'),
+    HardApprovalSentActdate: getDateStr('HardApprovalSentActdate', 'HardApprovalSentActDate'),
     MProofApprovalReqd: getStr('MProofApprovalReqd', 'MProofApprovalRequired') ?? null,
     MProofApprovalStatus: getStr('MProofApprovalStatus') ?? null,
-    MProofApprovalSentPlanDate: getDate('MProofApprovalSentPlanDate', 'MProofApprovalPlanDate') ?? null,
-    MProofApprovalSentActdate: getDate('MProofApprovalSentActdate', 'MProofApprovalSentActDate') ?? null,
+    MProofApprovalSentPlanDate: getDateStr('MProofApprovalSentPlanDate', 'MProofApprovalPlanDate'),
+    MProofApprovalSentActdate: getDateStr('MProofApprovalSentActdate', 'MProofApprovalSentActDate'),
     FinallyApproved: getStr('FinallyApproved') ?? null,
-    FinallyApprovedDate: getDate('FinallyApprovedDate', 'FinalApprovalDate') ?? null,
+    FinallyApprovedDate: getDateStr('FinallyApprovedDate', 'FinalApprovalDate'),
     ArtworkProcessApprovalID: get('ArtworkProcessApprovalID', 'ArtworkProcessApprovalId', 'ID') ?? null,
     PlatePerson: getStr('PlatePerson', 'platePerson') ?? null,
     ToolingPerson: getStr('ToolingPerson', 'toolingPerson') ?? null,
     ToolingDie: getStr('ToolingDie', 'toolingDie') ?? null,
     ToolingBlock: getStr('ToolingBlock', 'toolingBlock') ?? null,
     Blanket: getStr('Blanket', 'blanket') ?? null,
-    ToolingBlanketPlan: getDate('ToolingBlanketPlan', 'ToolingBlanketPlanDate') ?? null,
-    ToolingBlanketActual: getDate('ToolingBlanketActual', 'ToolingBlanketActualDate') ?? null,
+    ToolingBlanketPlan: getDateStr('ToolingBlanketPlan', 'ToolingBlanketPlanDate'),
+    ToolingBlanketActual: getDateStr('ToolingBlanketActual', 'ToolingBlanketActualDate'),
     PlateOutput: getStr('PlateOutput', 'plateOutput') ?? null,
-    PlatePlan: getDate('PlatePlan', 'PlatePlanDate') ?? null,
-    PlateActual: getDate('PlateActual', 'PlateActualDate') ?? null,
+    PlatePlan: getDateStr('PlatePlan', 'PlatePlanDate'),
+    PlateActual: getDateStr('PlateActual', 'PlateActualDate'),
     PlateRemark: getStr('PlateRemark', 'plateRemark') ?? null,
     ToolingRemark: getStr('ToolingRemark', 'toolingRemark') ?? null,
     ArtworkRemark: getStr('ArtworkRemark', 'artworkRemark') ?? null,
