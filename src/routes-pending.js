@@ -561,6 +561,217 @@ router.get('/artwork/completed', async (req, res) => {
   }
 });
 
+// ---------- Combined pending + completed: only specified columns in order ----------
+// Exposed as: GET /api/artwork/all (pending + completed, same columns only)
+const ARTWORK_ALL_COLUMNS = [
+  'LedgerID',
+  'ClientName',
+  'SONO',
+  'SODate',
+  'PONo',
+  'PODate',
+  'JobName',
+  'CategoryName',
+  'CategoryID',
+  'OrderBookingID',
+  'OrderBookingDetailsID',
+  'PWONO',
+  'RefProductMasterCode',
+  'PWODate',
+  'JobBookingID',
+  'PrepressPerson',
+  'EmployeeID',
+  'FileName',
+  'FileReceivedDate',
+  'SoftApprovalReqd',
+  'SoftApprovalStatus',
+  'SoftApprovalSentPlanDate',
+  'SoftApprovalSentActdate',
+  'LinkofSoftApprovalfile',
+  'HardApprovalReqd',
+  'HardApprovalStatus',
+  'HardApprovalSentPlanDate',
+  'HardApprovalSentActdate',
+  'MProofApprovalReqd',
+  'MProofApprovalStatus',
+  'MProofApprovalSentPlanDate',
+  'MProofApprovalSentActdate',
+  'FinallyApproved',
+  'FinallyApprovedDate',
+  'ArtworkProcessApprovalID',
+  'PlatePerson',
+  'ToolingPerson',
+  'ToolingDie',
+  'ToolingBlock',
+  'Blanket',
+  'ToolingBlanketPlan',
+  'ToolingBlanketActual',
+  'PlateOutput',
+  'PlatePlan',
+  'PlateActual',
+  'PlateRemark',
+  'ToolingRemark',
+  'ArtworkRemark',
+  'SegmentName',
+];
+
+function toArtworkAllRow(row) {
+  const r = row || {};
+  const get = (...args) => {
+    for (const k of args) {
+      if (r[k] !== undefined && r[k] !== null) return r[k];
+    }
+    return null;
+  };
+  const getStr = (...args) => {
+    const v = get(...args);
+    return v === null || v === undefined ? null : String(v);
+  };
+  const getDate = (...args) => {
+    const v = get(...args);
+    if (v === null || v === undefined) return null;
+    if (v instanceof Date) return v;
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  return {
+    LedgerID: get('LedgerID', 'ledgerid', 'LedgerId') ?? null,
+    ClientName: getStr('ClientName', 'clientName') ?? null,
+    SONO: getStr('SONO', 'SONo', 'SoNo', 'soNo') ?? null,
+    SODate: getDate('SODate', 'SoDate', 'soDate') ?? null,
+    PONo: getStr('PONo', 'PONumber', 'poNo') ?? null,
+    PODate: getDate('PODate', 'PoDate', 'poDate') ?? null,
+    JobName: getStr('JobName', 'jobName') ?? null,
+    CategoryName: getStr('CategoryName', 'categoryName') ?? null,
+    CategoryID: get('CategoryID', 'CategoryId', 'categoryID') ?? null,
+    OrderBookingID: get('OrderBookingID', 'OrderBookingId') ?? null,
+    OrderBookingDetailsID: get('OrderBookingDetailsID', 'OrderBookingDetailsId') ?? null,
+    PWONO: getStr('PWONO', 'PWONo', 'PwoNo', 'pwoNo') ?? null,
+    RefProductMasterCode: getStr('RefProductMasterCode', 'RefPCC', 'RefPcc', 'refPCC') ?? null,
+    PWODate: getDate('PWODate', 'PwoDate', 'pwoDate') ?? null,
+    JobBookingID: get('JobBookingID', 'JobBookingId') ?? null,
+    PrepressPerson: getStr('PrepressPerson', 'PrepressPersonName', 'prepressPerson') ?? null,
+    EmployeeID: get('EmployeeID', 'EmployeeId', 'employeeID') ?? null,
+    FileName: getStr('FileStatus', 'FileName', 'fileName') ?? null,
+    FileReceivedDate: getDate('FileReceivedDate', 'FileRcvdDate') ?? null,
+    SoftApprovalReqd: getStr('SoftApprovalReqd', 'SoftApprovalRequired') ?? null,
+    SoftApprovalStatus: getStr('SoftApprovalStatus') ?? null,
+    SoftApprovalSentPlanDate: getDate('SoftApprovalSentPlanDate', 'SoftApprovalPlanDate') ?? null,
+    SoftApprovalSentActdate: getDate('SoftApprovalSentActdate', 'SoftApprovalSentActDate') ?? null,
+    LinkofSoftApprovalfile: getStr('LinkofSoftApprovalfile', 'SoftApprovalLink') ?? null,
+    HardApprovalReqd: getStr('HardApprovalReqd', 'HardApprovalRequired') ?? null,
+    HardApprovalStatus: getStr('HardApprovalStatus') ?? null,
+    HardApprovalSentPlanDate: getDate('HardApprovalSentPlanDate', 'HardApprovalPlanDate') ?? null,
+    HardApprovalSentActdate: getDate('HardApprovalSentActdate', 'HardApprovalSentActDate') ?? null,
+    MProofApprovalReqd: getStr('MProofApprovalReqd', 'MProofApprovalRequired') ?? null,
+    MProofApprovalStatus: getStr('MProofApprovalStatus') ?? null,
+    MProofApprovalSentPlanDate: getDate('MProofApprovalSentPlanDate', 'MProofApprovalPlanDate') ?? null,
+    MProofApprovalSentActdate: getDate('MProofApprovalSentActdate', 'MProofApprovalSentActDate') ?? null,
+    FinallyApproved: getStr('FinallyApproved') ?? null,
+    FinallyApprovedDate: getDate('FinallyApprovedDate', 'FinalApprovalDate') ?? null,
+    ArtworkProcessApprovalID: get('ArtworkProcessApprovalID', 'ArtworkProcessApprovalId', 'ID') ?? null,
+    PlatePerson: getStr('PlatePerson', 'platePerson') ?? null,
+    ToolingPerson: getStr('ToolingPerson', 'toolingPerson') ?? null,
+    ToolingDie: getStr('ToolingDie', 'toolingDie') ?? null,
+    ToolingBlock: getStr('ToolingBlock', 'toolingBlock') ?? null,
+    Blanket: getStr('Blanket', 'blanket') ?? null,
+    ToolingBlanketPlan: getDate('ToolingBlanketPlan', 'ToolingBlanketPlanDate') ?? null,
+    ToolingBlanketActual: getDate('ToolingBlanketActual', 'ToolingBlanketActualDate') ?? null,
+    PlateOutput: getStr('PlateOutput', 'plateOutput') ?? null,
+    PlatePlan: getDate('PlatePlan', 'PlatePlanDate') ?? null,
+    PlateActual: getDate('PlateActual', 'PlateActualDate') ?? null,
+    PlateRemark: getStr('PlateRemark', 'plateRemark') ?? null,
+    ToolingRemark: getStr('ToolingRemark', 'toolingRemark') ?? null,
+    ArtworkRemark: getStr('ArtworkRemark', 'artworkRemark') ?? null,
+    SegmentName: getStr('SegmentName', 'segmentName') ?? null,
+  };
+}
+
+router.get('/artwork/all', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+
+    const sourceParam = (req.query.source || 'all').toString().toLowerCase();
+    const parts = sourceParam.split(',').map((s) => s.trim()).filter(Boolean);
+    const wantsAll = parts.length === 0 || parts.includes('all');
+    const includeKOL = wantsAll || parts.includes('kol');
+    const includeAHM = wantsAll || parts.includes('ahm');
+    const includeMongo = wantsAll || parts.includes('mongo');
+
+    const [
+      kolPending,
+      amdPending,
+      mongoPending,
+      kolCompleted,
+      amdCompleted,
+      mongoCompleted,
+    ] = await Promise.all([
+      includeKOL ? fetchSqlPending('KOL', 'KOL_SQL') : Promise.resolve([]),
+      includeAHM ? fetchSqlPending('AHM', 'AMD_SQL') : Promise.resolve([]),
+      includeMongo ? fetchMongoPending(db) : Promise.resolve([]),
+      includeKOL ? fetchSqlCompleted('KOL', 'KOL_SQL') : Promise.resolve([]),
+      includeAHM ? fetchSqlCompleted('AHM', 'AMD_SQL') : Promise.resolve([]),
+      includeMongo ? fetchMongoCompleted(db) : Promise.resolve([]),
+    ]);
+
+    const kolLedgerIds = [
+      ...kolPending,
+      ...kolCompleted,
+    ].flatMap((r) => [r.EmployeeID, r.ToolingPersonID, r.PlatePersonID]);
+    const amdLedgerIds = [
+      ...amdPending,
+      ...amdCompleted,
+    ].flatMap((r) => [r.EmployeeID, r.ToolingPersonID, r.PlatePersonID]);
+
+    const [kolMap, amdMap] = await Promise.all([
+      loadUserMaps(db, 'KOLKATA', kolLedgerIds),
+      loadUserMaps(db, 'AHMEDABAD', amdLedgerIds),
+    ]);
+
+    const kolPendingNorm = kolPending.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
+    const amdPendingNorm = amdPending.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
+    const kolCompletedNorm = kolCompleted.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
+    const amdCompletedNorm = amdCompleted.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
+
+    const mongoUserKeys = [
+      ...mongoPending,
+      ...mongoCompleted,
+    ].flatMap((r) => [r.EmployeeUserKey, r.ToolingUserKey, r.PlateUserKey]).filter(Boolean);
+    const userKeyNameMap = await loadUserKeyNameMap(db, mongoUserKeys);
+    const mongoPendingNorm = mongoPending.map((r) => normalizeMongoRow(r, userKeyNameMap));
+    const mongoCompletedNorm = mongoCompleted.map((r) => normalizeMongoRow(r, userKeyNameMap));
+
+    const combined = [
+      ...kolPendingNorm,
+      ...amdPendingNorm,
+      ...mongoPendingNorm,
+      ...kolCompletedNorm,
+      ...amdCompletedNorm,
+      ...mongoCompletedNorm,
+    ];
+
+    const data = combined.map((row) => {
+      const out = toArtworkAllRow(row);
+      const obj = {};
+      for (const key of ARTWORK_ALL_COLUMNS) {
+        obj[key] = out[key];
+      }
+      return obj;
+    });
+
+    res.json({
+      ok: true,
+      count: data.length,
+      columns: ARTWORK_ALL_COLUMNS,
+      data,
+    });
+  } catch (e) {
+    console.error('Error in /api/artwork/all:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Insert unordered entry (MongoDB only)
 // Exposed as: POST /api/artwork/unordered/insert
 router.post('/artwork/unordered/insert', async (req, res) => {
