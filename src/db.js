@@ -33,7 +33,7 @@ const sqlConfig = {
 		enableArithAbort: true
 	},
 	connectionTimeout: 30000,
-	requestTimeout: 30000
+	requestTimeout: 120000  // 2 minutes - artwork pending/completed procs can be slow
 };
 
 // Store multiple pools for different databases
