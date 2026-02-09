@@ -373,8 +373,7 @@ async function fetchSqlCurrentRow(databaseKey, orderBookingDetailsId) {
       FinallyApproved, FinallyApprovedDate,
       ToolingDie, ToolingBlock, Blanket, ToolingBlanketPlan, ToolingBlanketActual,
       PlateOutput, PlatePlan, PlateActual,
-      PlateRemark, ToolingRemark, ArtworkRemark,
-      RefProductMasterCode
+      PlateRemark, ToolingRemark, ArtworkRemark
     FROM dbo.ArtworkProcessApproval WITH (NOLOCK)
     WHERE OrderBookingDetailsID = @obd;
   `;
@@ -436,7 +435,6 @@ async function upsertSqlRow(databaseKey, mergedRow, ledgerIds) {
   req.input('OrderBookingID', sql.Int, mergedRow.OrderBookingID ?? null);
   req.input('OrderBookingDetailsID', sql.Int, mergedRow.OrderBookingDetailsID); // required
   req.input('JobBookingID', sql.Int, mergedRow.JobBookingID ?? null);
-  req.input('RefProductMasterCode', sql.NVarChar(200), mergedRow.RefPCC ?? mergedRow.RefProductMasterCode ?? null);
 
   // IMPORTANT: your SQL uses FileName column but it is being used as FileStatus.
   // Keep sending FileName = FileStatus.
@@ -536,7 +534,6 @@ async function upsertSqlRow(databaseKey, mergedRow, ledgerIds) {
   console.log('   @OrderBookingID             =', mergedRow.OrderBookingID ?? 'NULL');
   console.log('   @OrderBookingDetailsID      =', mergedRow.OrderBookingDetailsID, '(REQUIRED)');
   console.log('   @JobBookingID               =', mergedRow.JobBookingID ?? 'NULL');
-  console.log('   @RefProductMasterCode       =', (mergedRow.RefPCC ?? mergedRow.RefProductMasterCode) ? `'${String(mergedRow.RefPCC ?? mergedRow.RefProductMasterCode).replace(/'/g, "''")}'` : 'NULL');
   console.log('   @FileName                   =', (mergedRow.FileStatus ?? mergedRow.FileName ?? null) ? `'${mergedRow.FileStatus ?? mergedRow.FileName}'` : 'NULL');
   console.log('   @FileReceivedDate           =', mergedRow.FileReceivedDate ? `'${new Date(mergedRow.FileReceivedDate).toISOString()}'` : 'NULL');
   console.log('   @SoftApprovalReqd           =', mergedRow.SoftApprovalReqd ? `'${mergedRow.SoftApprovalReqd}'` : 'NULL');
@@ -1116,7 +1113,6 @@ router.post('/artwork/pending/update', async (req, res) => {
     console.log('   ArtworkRemark:', merged.ArtworkRemark ?? 'NULL');
     console.log('   ToolingRemark:', merged.ToolingRemark ?? 'NULL');
     console.log('   PlateRemark:', merged.PlateRemark ?? 'NULL');
-    console.log('   RefPCC/RefProductMasterCode:', merged.RefPCC ?? merged.RefProductMasterCode ?? 'NULL');
     console.log('='.repeat(80) + '\n');
 
     const outId = await upsertSqlRow(databaseKey, merged, {
