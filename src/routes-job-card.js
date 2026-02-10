@@ -9,7 +9,10 @@ import {
   OperationDetailsQuery,
   AllocateMaterialDetailsQuery,
   ToolAllocationDetailsQuery,
-  CorrugationDetailsQuery
+  CorrugationDetailsQuery,
+  JobCardSearchQuery,
+  SalesPersonsFilterQuery,
+  ClientNamesFilterQuery
 } from './job-card-queries.js';
 
 const router = Router();
@@ -25,6 +28,85 @@ function get(row, key) {
 function str(val) {
   return val != null && val !== '' ? String(val).trim() : '';
 }
+
+/** GET /api/job-card/filters/sales-persons?database=KOL */
+router.get('/job-card/filters/sales-persons', async (req, res) => {
+  const { database } = req.query || {};
+  const db = (str(database) || 'KOL').toUpperCase();
+  if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
+  try {
+    const pool = await getPool(db);
+    const result = await pool.request().query(SalesPersonsFilterQuery);
+    const rows = (result.recordset || []).map(r => ({
+      ledgerName: str(get(r, 'LedgerName')),
+      ledgerID: get(r, 'LedgerID')
+    }));
+    return res.json(rows);
+  } catch (e) {
+    console.error('[job-card] sales-persons filter failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed' });
+  }
+});
+
+/** GET /api/job-card/filters/client-names?database=KOL */
+router.get('/job-card/filters/client-names', async (req, res) => {
+  const { database } = req.query || {};
+  const db = (str(database) || 'KOL').toUpperCase();
+  if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
+  try {
+    const pool = await getPool(db);
+    const request = pool.request();
+    request.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
+    const result = await request.query(ClientNamesFilterQuery);
+    const rows = (result.recordset || []).map(r => str(get(r, 'ClientName'))).filter(Boolean);
+    return res.json(rows);
+  } catch (e) {
+    console.error('[job-card] client-names filter failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed' });
+  }
+});
+
+/** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&database=KOL */
+router.get('/job-card/search', async (req, res) => {
+  const { jobBookingNo, clientName, salesPersonID, fromJobDate, toJobDate, database } = req.query || {};
+  const db = (str(database) || 'KOL').toUpperCase();
+  if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
+  try {
+    const pool = await getPool(db);
+    const request = pool.request();
+    request.input('JobBookingNo', sql.NVarChar(50), str(jobBookingNo) || null);
+    request.input('ClientName', sql.NVarChar(200), str(clientName) || null);
+    request.input('SalesPersonID', sql.Int, salesPersonID === '' || salesPersonID == null ? null : parseInt(salesPersonID, 10));
+    const fromDate = str(fromJobDate) ? new Date(fromJobDate) : null;
+    const toDate = str(toJobDate) ? new Date(toJobDate) : null;
+    request.input('FromJobDate', sql.Date, fromDate && !isNaN(fromDate.getTime()) ? fromDate : null);
+    request.input('ToJobDate', sql.Date, toDate && !isNaN(toDate.getTime()) ? toDate : null);
+    const result = await request.query(JobCardSearchQuery);
+    const rows = (result.recordset || []).map(r => ({
+      salesOrderNo: get(r, 'SalesOrderNo'),
+      poNo: get(r, 'PONo'),
+      poDate: get(r, 'PODate'),
+      jobBookingNo: get(r, 'JobBookingNo'),
+      jobBookingDate: get(r, 'JobBookingDate'),
+      categoryName: get(r, 'CategoryName'),
+      segmentName: get(r, 'SegmentName'),
+      clientName: get(r, 'ClientName'),
+      salesPersonName: get(r, 'SalesPersonName'),
+      jobName: get(r, 'JobName'),
+      jobType: get(r, 'JobType'),
+      orderQuantity: get(r, 'OrderQuantity'),
+      isCompletePacked: get(r, 'IsCompletePacked'),
+      coordinatorName: get(r, 'CoordinatorName'),
+      deliveryDate: get(r, 'DeliveryDate'),
+      productCode: get(r, 'ProductCode'),
+      refProductMasterCode: get(r, 'RefProductMasterCode')
+    }));
+    return res.json({ results: rows });
+  } catch (e) {
+    console.error('[job-card] search failed:', e);
+    return res.status(500).json({ error: e.message || 'Search failed' });
+  }
+});
 
 router.get('/job-card', async (req, res) => {
   const { jobNumber, type, database } = req.query || {};

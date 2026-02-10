@@ -243,3 +243,57 @@ WHERE JBC.JobBookingID = @JobBookingID
   AND JBC.PlyNo <> 1
 ORDER BY JBC.PlyNo ASC
 `;
+
+/**
+ * Job card search for UI: filter by JobBookingNo, ClientName, SalesPersonID, FromJobDate, ToJobDate.
+ * Returns TOP 10 rows for download selection.
+ */
+export const JobCardSearchQuery = `
+SELECT top 1000
+  JOB.SalesOrderNo,
+  JB.PONo,
+  JB.PODate,
+  JB.JobBookingNo,
+  JB.JobBookingDate,
+  CM.CategoryName,
+  SM.SegmentName,
+  JB.ClientName,
+  LM.LedgerName AS SalesPersonName,
+  JB.JobName,
+  JJC.JobType,
+  JB.OrderQuantity,
+  JB.IsCompletePacked,
+  LM2.LedgerName AS CoordinatorName,
+  JB.DeliveryDate,
+  JB.ProductCode,
+  JB.RefProductMasterCode
+FROM JobBookingJobCard JB
+LEFT JOIN JobOrderBooking JOB ON JB.OrderBookingID = JOB.OrderBookingID
+LEFT JOIN CategoryMaster CM ON JB.CategoryID = CM.CategoryID
+LEFT JOIN SegmentMaster SM ON CM.SegmentID = SM.SegmentID
+LEFT JOIN LedgerMaster LM ON JB.SalesEmployeeID = LM.LedgerID
+LEFT JOIN JobBookingJobCardContents JJC ON JB.JobBookingID = JJC.JobBookingID
+LEFT JOIN LedgerMaster LM2 ON JJC.CoordinatorLedgerID = LM2.LedgerID
+WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo = @JobBookingNo )
+  AND ( @ClientName IS NULL OR @ClientName = '' OR JB.ClientName LIKE '%' + @ClientName + '%' )
+  AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )
+  AND ( @FromJobDate IS NULL OR JB.JobBookingDate >= @FromJobDate )
+  AND ( @ToJobDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) ) order by JB.JobBookingDate desc
+`;
+
+/** Sales person filter: LedgerName, LedgerID for Designation = 'Sales Executive' */
+export const SalesPersonsFilterQuery = `
+SELECT LedgerName, LedgerID
+FROM LedgerMaster
+WHERE Designation = 'Sales Executive'
+ORDER BY LedgerName
+`;
+
+/** Client name filter: distinct ClientName from JobBookingJobCard */
+export const ClientNamesFilterQuery = `
+SELECT DISTINCT ClientName
+FROM JobBookingJobCard
+WHERE CompanyID = @CompanyID
+  AND ISNULL(ClientName, '') <> ''
+ORDER BY ClientName
+`;
