@@ -29,6 +29,22 @@ function str(val) {
   return val != null && val !== '' ? String(val).trim() : '';
 }
 
+/** If size string is repeated twice (e.g. "L:210,H:297,Pages:32,L:210,H:297,Pages:32"), return single occurrence. */
+function dedupeSizeString(s) {
+  if (s == null || typeof s !== 'string') return s;
+  const t = s.replace(/\s+/g, '').trim();
+  if (t.length < 2) return s;
+  const half = Math.floor(t.length / 2);
+  if (t.substring(0, half) === t.substring(half)) return t.substring(0, half).trim();
+  const commaL = t.indexOf(',L:');
+  if (commaL !== -1) {
+    const first = t.substring(0, commaL).trim();
+    const rest = t.substring(commaL + 3).trim();
+    if (rest && (first === 'L:' + rest || first === rest)) return first;
+  }
+  return s;
+}
+
 /** GET /api/job-card/filters/sales-persons?database=KOL */
 router.get('/job-card/filters/sales-persons', async (req, res) => {
   const { database } = req.query || {};
@@ -153,7 +169,7 @@ router.get('/job-card', async (req, res) => {
         coordinator: str(get(row, 'JobCoordinatorName')),
         category: str(get(row, 'CategoryName')) || str(get(row, 'Category')),
         contentName: str(get(row, 'ContentName')),
-        jobSizeMm: str(get(row, 'JobCloseSize')),
+        jobSizeMm: dedupeSizeString(str(get(row, 'JobCloseSize'))),
         salesPerson: str(get(row, 'salespersonname')) || str(get(row, 'Salespersonname')),
         poNo: str(get(row, 'PONo')),
         poDate: str(get(row, 'PODate')),
@@ -512,7 +528,7 @@ router.get('/job-card', async (req, res) => {
 
         // Component-specific details from procedure row
         const compJobCardContentNo = str(get(compRow, 'JobCardContentNo')) || '';
-        const compCloseSize = str(get(compRow, 'JobCloseSize')) || str(get(compRow, 'CloseSize')) || '-';
+        const compCloseSize = dedupeSizeString(str(get(compRow, 'JobCloseSize')) || str(get(compRow, 'CloseSize')) || '-');
         const compColour = str(get(compRow, 'FrontColor')) || str(get(compRow, 'FrontColorName')) || '-';
         const compQuantity = str(get(compRow, 'OrderQuantity')) || str(get(compRow, 'Quantity')) || '-';
         const compPaper = str(get(compRow, 'Paper')) || '-';
