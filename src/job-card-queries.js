@@ -249,36 +249,55 @@ ORDER BY JBC.PlyNo ASC
  * Returns TOP 10 rows for download selection.
  */
 export const JobCardSearchQuery = `
-SELECT top 1000
-  JOB.SalesOrderNo,
-  JB.PONo,
-  JB.PODate,
-  JB.JobBookingNo,
-  JB.JobBookingDate,
-  CM.CategoryName,
-  SM.SegmentName,
-  JB.ClientName,
-  LM.LedgerName AS SalesPersonName,
-  JB.JobName,
-  JJC.JobType,
-  JB.OrderQuantity,
-  JB.IsCompletePacked,
-  LM2.LedgerName AS CoordinatorName,
-  JB.DeliveryDate,
-  JB.ProductCode,
-  JB.RefProductMasterCode
+SELECT TOP 1000
+    JOB.SalesOrderNo,
+    JB.PONo,
+    JB.PODate,
+    JB.JobBookingNo,
+    JB.JobBookingDate,
+    CM.CategoryName,
+    SM.SegmentName,
+    JB.ClientName,
+    LM.LedgerName AS SalesPersonName,
+    JB.JobName,
+    JJC_MAX.JobType,
+    JB.OrderQuantity,
+    JB.IsCompletePacked,
+    LM2.LedgerName AS CoordinatorName,
+    JB.DeliveryDate,
+    JB.ProductCode,
+    JB.RefProductMasterCode
 FROM JobBookingJobCard JB
-LEFT JOIN JobOrderBooking JOB ON JB.OrderBookingID = JOB.OrderBookingID
-LEFT JOIN CategoryMaster CM ON JB.CategoryID = CM.CategoryID
-LEFT JOIN SegmentMaster SM ON CM.SegmentID = SM.SegmentID
-LEFT JOIN LedgerMaster LM ON JB.SalesEmployeeID = LM.LedgerID
-LEFT JOIN JobBookingJobCardContents JJC ON JB.JobBookingID = JJC.JobBookingID
-LEFT JOIN LedgerMaster LM2 ON JJC.CoordinatorLedgerID = LM2.LedgerID
-WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo = @JobBookingNo )
+LEFT JOIN JobOrderBooking JOB 
+    ON JB.OrderBookingID = JOB.OrderBookingID
+LEFT JOIN CategoryMaster CM 
+    ON JB.CategoryID = CM.CategoryID
+LEFT JOIN SegmentMaster SM 
+    ON CM.SegmentID = SM.SegmentID
+LEFT JOIN LedgerMaster LM 
+    ON JB.SalesEmployeeID = LM.LedgerID
+
+-- Aggregate JobBookingJobCardContents FIRST
+LEFT JOIN (
+    SELECT
+        JobBookingID,
+        MAX(JobType) AS JobType,
+        MAX(CoordinatorLedgerID) AS CoordinatorLedgerID
+    FROM JobBookingJobCardContents
+    GROUP BY JobBookingID
+) JJC_MAX
+    ON JB.JobBookingID = JJC_MAX.JobBookingID
+
+LEFT JOIN LedgerMaster LM2 
+    ON JJC_MAX.CoordinatorLedgerID = LM2.LedgerID
+
+WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo LIKE '%' + @JobBookingNo + '%' )
   AND ( @ClientName IS NULL OR @ClientName = '' OR JB.ClientName LIKE '%' + @ClientName + '%' )
   AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )
   AND ( @FromJobDate IS NULL OR JB.JobBookingDate >= @FromJobDate )
-  AND ( @ToJobDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) ) order by JB.JobBookingDate desc
+  AND ( @ToJobDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) )
+ORDER BY JB.JobBookingDate DESC;
+
 `;
 
 /** Sales person filter: LedgerName, LedgerID for Designation = 'Sales Executive' */
