@@ -161,14 +161,14 @@ function applyRules(current, incoming) {
     row.FileReceivedDate = null;
   }
 
-  // 2) FileReceivedDate drives plan dates
+  // 2) FileReceivedDate drives plan dates (recalculate whenever deciding field is set)
   const frd = row.FileReceivedDate ? new Date(row.FileReceivedDate) : null;
   if (frd && !isNaN(frd.getTime())) {
-    if (row.SoftApprovalReqd === 'Yes' && !row.SoftApprovalSentPlanDate)
+    if (row.SoftApprovalReqd === 'Yes')
       row.SoftApprovalSentPlanDate = addDays(frd, 2);
-    if (row.HardApprovalReqd === 'Yes' && !row.HardApprovalSentPlanDate)
+    if (row.HardApprovalReqd === 'Yes')
       row.HardApprovalSentPlanDate = addDays(frd, 4);
-    if (row.MProofApprovalReqd === 'Yes' && !row.MProofApprovalSentPlanDate)
+    if (row.MProofApprovalReqd === 'Yes')
       row.MProofApprovalSentPlanDate = addDays(frd, 4);
   }
 
@@ -191,7 +191,7 @@ function applyRules(current, incoming) {
     if (row.SoftApprovalReqd === 'No') {
       row.SoftApprovalStatus = 'Approved';
       if (!row.SoftApprovalSentActdate) row.SoftApprovalSentActdate = now;
-      if (!row.SoftApprovalSentPlanDate) row.SoftApprovalSentPlanDate = now;
+      row.SoftApprovalSentPlanDate = now;
     } else if (row.SoftApprovalReqd === 'Yes') {
       // If status is not set, default to Pending
       // But if it was just changed from No->Yes and was Approved, we already set it above
@@ -237,7 +237,7 @@ function applyRules(current, incoming) {
     if (row.HardApprovalReqd === 'No') {
       row.HardApprovalStatus = 'Approved';
       if (!row.HardApprovalSentActdate) row.HardApprovalSentActdate = now;
-      if (!row.HardApprovalSentPlanDate) row.HardApprovalSentPlanDate = now;
+      row.HardApprovalSentPlanDate = now;
     } else if (row.HardApprovalReqd === 'Yes') {
       // If status is not set, default to Pending
       // But if it was just changed from No->Yes and was Approved, we already set it above
@@ -282,7 +282,7 @@ function applyRules(current, incoming) {
     if (row.MProofApprovalReqd === 'No') {
       row.MProofApprovalStatus = 'Approved';
       if (!row.MProofApprovalSentActdate) row.MProofApprovalSentActdate = now;
-      if (!row.MProofApprovalSentPlanDate) row.MProofApprovalSentPlanDate = now;
+      row.MProofApprovalSentPlanDate = now;
     } else if (row.MProofApprovalReqd === 'Yes') {
       // If status is not set, default to Pending
       // But if it was just changed from No->Yes and was Approved, we already set it above
@@ -322,24 +322,22 @@ function applyRules(current, incoming) {
     if (!row.FinallyApprovedDate) {
       row.FinallyApprovedDate = now;
       // your rule: ToolingBlanketPlan = FinallyApprovedDate
-      if (!row.ToolingBlanketPlan) row.ToolingBlanketPlan = row.FinallyApprovedDate;
+      row.ToolingBlanketPlan = row.FinallyApprovedDate;
     }
   } else {
     row.FinallyApprovedDate = null;
   }
 
-  // 5) Plate dates (do NOT override once set)
+  // 5) Plate dates (recalculate when deciding field changes)
   if (row.PlateOutput) {
     const po = String(row.PlateOutput).trim().toLowerCase();
 
     if (po === 'pending') {
-      if (!row.PlatePlan) {
-        if (row.FinallyApprovedDate) {
-          const d = new Date(row.FinallyApprovedDate);
-          row.PlatePlan = isNaN(d.getTime()) ? null : addDays(d, 1);
-        } else {
-          row.PlatePlan = null;
-        }
+      if (row.FinallyApprovedDate) {
+        const d = new Date(row.FinallyApprovedDate);
+        row.PlatePlan = isNaN(d.getTime()) ? null : addDays(d, 1);
+      } else {
+        row.PlatePlan = null;
       }
     }
 

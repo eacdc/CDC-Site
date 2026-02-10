@@ -8,7 +8,8 @@ import {
   ItemDetailsQuery,
   OperationDetailsQuery,
   AllocateMaterialDetailsQuery,
-  ToolAllocationDetailsQuery
+  ToolAllocationDetailsQuery,
+  CorrugationDetailsQuery
 } from './job-card-queries.js';
 
 const router = Router();
@@ -157,9 +158,10 @@ router.get('/job-card', async (req, res) => {
         impressions: str(get(row, 'ImpressionsToBeCharged')) || str(get(row, 'totalimpressionsnew')) || str(get(row, 'PrintingImpressions'))
       };
 
-      // ---- Operation Details + Tool allocation + Allocated Materials (packaging: once with null; commercial: per component in loop below) ----
+      // ---- Operation Details + Tool allocation + Allocated Materials + Corrugation (packaging: once with null; commercial: per component in loop below) ----
       let operationDetails = [];
       let allocatedMaterials = [];
+      let corrugationDetails = [];
       if (jobBookingId && cardType === 'packaging') {
         const toolBySeq = {};
         try {
@@ -220,6 +222,25 @@ router.get('/job-card', async (req, res) => {
         } catch (e) {
           console.warn('[job-card] AllocateMaterialDetails query failed:', e.message);
         }
+        try {
+          request = pool.request();
+          request.input('CompanyID', sql.NVarChar(10), companyId);
+          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+          const corrRes = await request.query(CorrugationDetailsQuery);
+          const corrRows = corrRes.recordset || [];
+          corrugationDetails = corrRows.map(r => ({
+            plyNo: str(get(r, 'PlyNo')) ?? '',
+            flute: str(get(r, 'Flute')) || 'None',
+            itemCode: str(get(r, 'ItemCode')) || '',
+            itemDetails: str(get(r, 'ItemDetails')) || '',
+            dechleSize: str(get(r, 'DechleSize')) || '',
+            cutSize: str(get(r, 'CutSize')) || '',
+            weightGm: str(get(r, 'WeightGm')) ?? '',
+            sheets: str(get(r, 'Sheets')) ?? ''
+          }));
+        } catch (e) {
+          console.warn('[job-card] CorrugationDetails query failed:', e.message);
+        }
       }
 
       // ---- Paper Flow: from procedure GetPaperFlowForJob (and header rows from procedure row) ----
@@ -267,6 +288,7 @@ router.get('/job-card', async (req, res) => {
         printDetails,
         operationDetails,
         allocatedMaterials,
+        corrugationDetails,
         paperFlow,
         paperFlowHeaderRows,
         footer

@@ -215,3 +215,31 @@ WHERE ISNULL(TM.ToolCode, '') <> '' AND J.CompanyID = @CompanyID AND JJ.JobBooki
   AND (@JobBookingJobCardContentsID IS NULL OR JJ.JobBookingJobCardContentsID = @JobBookingJobCardContentsID)
 ORDER BY JP.SequenceNo
 `;
+
+/**
+ * Corrugation details for packaging job card (JobBookingJobCardCorrugation + ItemMaster + JobBookingJobCardContents).
+ * Uses Cutting→CutSize, Deckle→DechleSize; excludes PlyNo = 1. Output: PlyNo, Flute, ItemCode, ItemDetails, DechleSize, CutSize, Weight(Gm), Sheets.
+ */
+export const CorrugationDetailsQuery = `
+SELECT
+  JBC.PlyNo,
+  ISNULL(JBC.FluteName, 'None') AS Flute,
+  IM.ItemCode,
+  ISNULL(JBC.ItemDetails, '') AS ItemDetails,
+  JBC.Deckle AS DechleSize,
+  JBC.Cutting AS CutSize,
+  JBC.Weight AS WeightGm,
+  JBC.Sheets
+FROM JobBookingJobCardCorrugation AS JBC
+INNER JOIN ItemMaster AS IM
+  ON JBC.ItemID = IM.ItemID
+ AND JBC.CompanyID = IM.CompanyID
+ AND ISNULL(IM.IsDeletedTransaction, 0) = 0
+INNER JOIN JobBookingJobCardContents AS JJ
+  ON JJ.JobBookingJobCardContentsID = JBC.JobBookingJobCardContentsID
+WHERE JBC.JobBookingID = @JobBookingID
+  AND JBC.CompanyID = @CompanyID
+  AND ISNULL(JBC.IsDeletedTransaction, 0) = 0
+  AND JBC.PlyNo <> 1
+ORDER BY JBC.PlyNo ASC
+`;
