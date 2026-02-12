@@ -2941,6 +2941,186 @@ router.post('/reports/qc-inspector-performance', async (req, res) => {
     }
 });
 
+// QC Inspector Audit Detail (drill-down by date range + UserID)
+const QC_INSPECTOR_AUDIT_DETAIL_QUERY = `
+SELECT
+    CAST(PEP.VoucherDate AS DATE) AS AuditDate,
+    UM.UserName,
+    JC.JobBookingNo,
+    COUNT(*) AS AuditCount,
+    MIN(PEP.CreatedDate) AS FirstEntryAt,
+    MAX(PEP.CreatedDate) AS LastEntryAt
+FROM ProductionEntryProcessInspectionMain PEP
+LEFT JOIN JobBookingJobCard JC
+    ON PEP.JobBookingID = JC.JobBookingID
+LEFT JOIN UserMaster UM
+    ON PEP.UserID = UM.UserID
+WHERE
+    CAST(PEP.VoucherDate AS DATE) BETWEEN @StartDate AND @EndDate
+    AND ISNULL(PEP.IsDeletedTransaction,0) = 0
+    AND UM.UserID = @UserID
+GROUP BY
+    CAST(PEP.VoucherDate AS DATE),
+    UM.UserName,
+    JC.JobBookingNo
+ORDER BY
+    AuditDate,
+    UM.UserName,
+    JC.JobBookingNo;
+`;
+
+router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
+    try {
+        const { startDate, endDate, database, userId } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid or missing database (must be KOL or AHM)'
+            });
+        }
+
+        if (!startDate || !endDate) {
+            return res.status(400).json({
+                status: false,
+                error: 'Start date and end date are required'
+            });
+        }
+
+        const userIdNum = userId != null && userId !== '' ? parseInt(userId, 10) : NaN;
+        if (!Number.isInteger(userIdNum) || userIdNum < 0) {
+            return res.status(400).json({
+                status: false,
+                error: 'Valid user ID is required'
+            });
+        }
+
+        const parsedStart = new Date(startDate);
+        const parsedEnd = new Date(endDate);
+
+        if (Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid date format. Use YYYY-MM-DD.'
+            });
+        }
+
+        if (parsedStart.getTime() > parsedEnd.getTime()) {
+            return res.status(400).json({
+                status: false,
+                error: 'Start date cannot be after end date'
+            });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('StartDate', sql.Date, parsedStart)
+            .input('EndDate', sql.Date, parsedEnd)
+            .input('UserID', sql.Int, userIdNum)
+            .query(QC_INSPECTOR_AUDIT_DETAIL_QUERY);
+
+        const rows = result.recordset || [];
+        return res.json({
+            status: true,
+            data: rows,
+            message: 'Audit detail retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[QC-REPORT] Audit detail error:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to fetch audit detail'
+        });
+    }
+});
+
+// QC Job Card Entries by Job Booking Number (for QC Tool home page search)
+const QC_JOB_CARD_ENTRIES_QUERY = `
+;WITH Base AS
+(
+    SELECT
+        UM.UserName,
+        CAST(PEP.VoucherDate AS DATE) AS EntryDate,
+        MIN(PEP.CreatedDate) AS FirstEntryAt,
+        MAX(PEP.CreatedDate) AS LastEntryAt,
+        COUNT(*) AS EntryCount,
+        DATEDIFF(SECOND, MIN(PEP.CreatedDate), MAX(PEP.CreatedDate)) AS SpanSeconds
+    FROM ProductionEntryProcessInspectionMain PEP
+    LEFT JOIN JobBookingJobCard JC
+        ON PEP.JobBookingID = JC.JobBookingID
+    LEFT JOIN UserMaster UM
+        ON PEP.UserID = UM.UserID
+    WHERE
+        JC.JobBookingNo = @JobBookingNo
+        AND ISNULL(PEP.IsDeletedTransaction,0) = 0
+    GROUP BY
+        UM.UserName,
+        CAST(PEP.VoucherDate AS DATE)
+)
+SELECT
+    UserName,
+    EntryDate,
+    EntryCount,
+    FirstEntryAt,
+    LastEntryAt,
+    CASE
+        WHEN EntryCount = 1 THEN 1
+        WHEN SpanSeconds <= 0 THEN NULL
+        ELSE
+            CAST(EntryCount AS DECIMAL(18,4)) /
+            (CAST(SpanSeconds AS DECIMAL(18,4)) / 3600.0)
+    END AS EntriesPerHour
+FROM Base
+ORDER BY
+    EntryDate,
+    UserName;
+`;
+
+router.post('/reports/qc-job-card-entries', async (req, res) => {
+    try {
+        const { database, jobBookingNo } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({
+                status: false,
+                error: 'Invalid or missing database (must be KOL or AHM)'
+            });
+        }
+
+        const trimmedJobNo = typeof jobBookingNo === 'string' ? jobBookingNo.trim() : '';
+        if (!trimmedJobNo) {
+            return res.status(400).json({
+                status: false,
+                error: 'Job card number (JobBookingNo) is required'
+            });
+        }
+
+        console.log(`[QC-JOB-CARD] Fetching entries for JobBookingNo: ${trimmedJobNo}, database: ${selectedDatabase}`);
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('JobBookingNo', sql.NVarChar(50), trimmedJobNo)
+            .query(QC_JOB_CARD_ENTRIES_QUERY);
+
+        const rows = result.recordset || [];
+        console.log(`[QC-JOB-CARD] Records returned: ${rows.length}`);
+
+        return res.json({
+            status: true,
+            data: rows,
+            message: 'Job card entries retrieved successfully'
+        });
+    } catch (error) {
+        console.error('[QC-JOB-CARD] Error:', error);
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to fetch job card entries'
+        });
+    }
+});
+
 // ============================================
 // WhatsApp Messaging Routes
 // ============================================
