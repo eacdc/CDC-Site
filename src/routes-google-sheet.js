@@ -102,7 +102,7 @@ router.get('/google-sheet/process-otif2', async (req, res) => {
     const request = pool.request();
     // request.input('StartDate', sql.VarChar(20), startDateStr);
     // request.input('EndDate', sql.VarChar(20), endDateStr);
-    const result = await request.execute('dbo.GetProcessOTIF3');
+    const result = await request.execute('dbo.GetProcessOTIFv3');
     const recordset = result.recordset ?? [];
     const data = recordsetTo2DArray(recordset);
     return res.json({ data });
