@@ -75,4 +75,41 @@ router.get('/google-sheet/process-otif', async (req, res) => {
   }
 });
 
+
+
+router.get('/google-sheet/process-otif2', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  // const endDate = new Date();
+  // endDate.setDate(endDate.getDate() - 1); // yesterday
+  // const startDate = new Date(endDate);
+  // startDate.setMonth(startDate.getMonth() - 6); // 6 months before yesterday
+
+  // const formatDate = (d) => {
+  //   const y = d.getFullYear();
+  //   const m = String(d.getMonth() + 1).padStart(2, '0');
+  //   const day = String(d.getDate()).padStart(2, '0');
+  //   return `${y}-${m}-${day}`;
+  // };
+  // const startDateStr = formatDate(startDate);
+  // const endDateStr = formatDate(endDate);
+
+  try {
+    const pool = await getPool(db);
+    const request = pool.request();
+    // request.input('StartDate', sql.VarChar(20), startDateStr);
+    // request.input('EndDate', sql.VarChar(20), endDateStr);
+    const result = await request.execute('dbo.GetProcessOTIF3');
+    const recordset = result.recordset ?? [];
+    const data = recordsetTo2DArray(recordset);
+    return res.json({ data });
+  } catch (e) {
+    console.error('[google-sheet] process-otif failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to fetch Process OTIF' });
+  }
+});
+
 export default router;
