@@ -46,26 +46,26 @@ router.get('/google-sheet/process-otif', async (req, res) => {
     return res.status(400).json({ error: 'database must be KOL or AHM' });
   }
 
-  const endDate = new Date();
-  endDate.setDate(endDate.getDate() - 1); // yesterday
-  const startDate = new Date(endDate);
-  startDate.setMonth(startDate.getMonth() - 6); // 6 months before yesterday
+  // const endDate = new Date();
+  // endDate.setDate(endDate.getDate() - 1); // yesterday
+  // const startDate = new Date(endDate);
+  // startDate.setMonth(startDate.getMonth() - 6); // 6 months before yesterday
 
-  const formatDate = (d) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-  };
-  const startDateStr = formatDate(startDate);
-  const endDateStr = formatDate(endDate);
+  // const formatDate = (d) => {
+  //   const y = d.getFullYear();
+  //   const m = String(d.getMonth() + 1).padStart(2, '0');
+  //   const day = String(d.getDate()).padStart(2, '0');
+  //   return `${y}-${m}-${day}`;
+  // };
+  // const startDateStr = formatDate(startDate);
+  // const endDateStr = formatDate(endDate);
 
   try {
     const pool = await getPool(db);
     const request = pool.request();
-    request.input('StartDate', sql.VarChar(20), startDateStr);
-    request.input('EndDate', sql.VarChar(20), endDateStr);
-    const result = await request.execute('dbo.GetProcessOTIF');
+    // request.input('StartDate', sql.VarChar(20), startDateStr);
+    // request.input('EndDate', sql.VarChar(20), endDateStr);
+    const result = await request.execute('dbo.GetProcessOTIFv3');
     const recordset = result.recordset ?? [];
     const data = recordsetTo2DArray(recordset);
     return res.json({ data });
@@ -102,7 +102,7 @@ router.get('/google-sheet/process-otif2', async (req, res) => {
     const request = pool.request();
     // request.input('StartDate', sql.VarChar(20), startDateStr);
     // request.input('EndDate', sql.VarChar(20), endDateStr);
-    const result = await request.execute('dbo.GetProcessOTIFv3');
+    const result = await request.execute('dbo.GetProcessOTIFv2');
     const recordset = result.recordset ?? [];
     const data = recordsetTo2DArray(recordset);
     return res.json({ data });
