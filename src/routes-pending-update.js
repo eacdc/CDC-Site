@@ -165,11 +165,11 @@ function applyRules(current, incoming) {
   const frd = row.FileReceivedDate ? new Date(row.FileReceivedDate) : null;
   if (frd && !isNaN(frd.getTime())) {
     if (row.SoftApprovalReqd === 'Yes')
-      row.SoftApprovalSentPlanDate = addDays(frd, 2);
+      row.SoftApprovalSentPlanDate = addDays(frd, 1);
     if (row.HardApprovalReqd === 'Yes')
-      row.HardApprovalSentPlanDate = addDays(frd, 4);
+      row.HardApprovalSentPlanDate = addDays(frd, 2);
     if (row.MProofApprovalReqd === 'Yes')
-      row.MProofApprovalSentPlanDate = addDays(frd, 4);
+      row.MProofApprovalSentPlanDate = addDays(frd, 2);
   }
 
   // 3) Approval status logic
