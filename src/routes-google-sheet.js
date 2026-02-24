@@ -112,4 +112,41 @@ router.get('/google-sheet/process-otif2', async (req, res) => {
   }
 });
 
+
+/**
+ * GET /api/google-sheet/machine-schedule?database=KOL&machineId=123
+ * Runs dbo.GetMachineScheduleData with @MachineID.
+ * Returns 2D array (headers + rows) for Google Sheets.
+ */
+router.get('/google-sheet/machine-schedule', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+  const machineId = req.query?.machineId;
+  if (machineId === undefined || machineId === null || String(machineId).trim() === '') {
+    return res.status(400).json({ error: 'machineId is required' });
+  }
+  const machineIdStr = String(machineId).trim();
+  const machineIdNum = parseInt(machineIdStr, 10);
+  const isNumeric = !Number.isNaN(machineIdNum) && String(machineIdNum) === machineIdStr;
+
+  try {
+    const pool = await getPool(db);
+    const request = pool.request();
+    if (isNumeric) {
+      request.input('MachineID', sql.Int, machineIdNum);
+    } else {
+      request.input('MachineID', sql.NVarChar(50), machineIdStr);
+    }
+    const result = await request.execute('dbo.GetMachineScheduleData');
+    const recordset = result.recordset ?? [];
+    const data = recordsetTo2DArray(recordset);
+    return res.json({ data });
+  } catch (e) {
+    console.error('[google-sheet] machine-schedule failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to fetch Machine Schedule Data' });
+  }
+});
+
 export default router;
