@@ -49,29 +49,8 @@ router.get('/schedule/machines', async (req, res) => {
 /**
  * GET /api/schedule/machine/:machineId?database=KOL
  * Returns schedule rows for the machine (GetMachineScheduleData).
- * Response is trimmed to allowed columns only (see ALLOWED_SCHEDULE_KEYS).
+ * All columns from the stored procedure are returned; the frontend controls which to display.
  */
-const ALLOWED_SCHEDULE_KEYS = new Set([
-  'JobBookingJobCardContentsID', 'JobBookingJobcardContentsID', // required for reorder/change-machine
-  'ContentName', 'NoOfPages', 'JCQty', 'Forms', 'TotalColors', 'TotalUps', 'OnlineCoating',
-  'PrintingImpressions', 'ProductionQty', 'EndDateTime', 'ETotTime', 'DeliveryDate', 'ExpectedComplDate',
-  'BookedQuantity', 'PickedQuantity', 'IssueQuantity', 'MaterialStatus', 'ExpReceiptDateMaterial',
-  'ItemName', 'CutSize', 'PaperByClient', 'ArtworkStatus', 'PlateOutput', 'LinkofSoftApprovalfile',
-  'ToolingDie', 'ToolingBlock', 'Blanket', 'ProcessName', 'ProcessID', 'SalesOrderNo', 'SalesType',
-  'PlateQty', 'StartDateTime', 'PendingToPick', 'JobType', 'ProcessNames',
-]);
-
-function pickAllowedScheduleRow(row) {
-  if (!row || typeof row !== 'object') return row;
-  const out = {};
-  for (const key of Object.keys(row)) {
-    if (ALLOWED_SCHEDULE_KEYS.has(key)) {
-      out[key] = row[key];
-    }
-  }
-  return out;
-}
-
 router.get('/schedule/machine/:machineId', async (req, res) => {
   const db = getDbFromQuery(req);
   if (!db) {
@@ -85,8 +64,15 @@ router.get('/schedule/machine/:machineId', async (req, res) => {
   try {
     const pool = await getPool(db);
     const result = await pool.request().input('MachineID', sql.Int, machineId).execute('dbo.GetMachineScheduleData');
-    const rows = (result.recordset || []).map(pickAllowedScheduleRow);
+    const rows = result.recordset || [];
     console.log('[schedule] GetMachineScheduleData', { database: db, machineId, rowCount: rows.length });
+    if (rows.length > 0) {
+      console.log('[schedule] FIRST 3 ROWS (keys + values):');
+      rows.slice(0, 3).forEach(function (row, i) {
+        console.log('[schedule] row[' + i + '] keys:', Object.keys(row));
+        console.log('[schedule] row[' + i + '] data:', JSON.stringify(row));
+      });
+    }
     return res.json(rows);
   } catch (e) {
     console.error('[schedule] GetMachineScheduleData failed:', e);
