@@ -11,6 +11,7 @@ import pendingUpdateRoutes from './routes-pending-update.js';
 import prepressPendingRoutes from './routes-prepress-pending.js';
 import jobCardRoutes from './routes-job-card.js';
 import googleSheetRoutes from './routes-google-sheet.js';
+import scheduleRoutes from './routes-schedule.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
@@ -60,6 +61,7 @@ app.use('/api', pendingUpdateRoutes);
 app.use('/api', prepressPendingRoutes);
 app.use('/api', jobCardRoutes);
 app.use('/api', googleSheetRoutes);
+app.use('/api', scheduleRoutes);
 
 // Mount Contractor PO routes at /contractor-po/api (CommonJS module)
 // COMMENTED OUT: contractor-po directory doesn't exist in backend folder
