@@ -32,7 +32,7 @@ router.get('/schedule/machines', async (req, res) => {
     const result = await pool.request().query(`
       SELECT MachineID AS machineId, MachineName AS machineName
       FROM dbo.MachineMaster
-      WHERE IsDeletedTransaction = 0
+      WHERE IsDeletedTransaction = 0 and MachineType in ('Sheetfed Offset','Web Offset')
       ORDER BY MachineName
     `);
     const list = (result.recordset || []).map((r) => ({
