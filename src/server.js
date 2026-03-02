@@ -13,6 +13,7 @@ import jobCardRoutes from './routes-job-card.js';
 import googleSheetRoutes from './routes-google-sheet.js';
 import scheduleRoutes from './routes-schedule.js';
 import rawQcRoutes from './routes-raw-qc.js';
+import shipmentEtaRoutes from './routes-shipment-eta.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
@@ -64,6 +65,7 @@ app.use('/api', jobCardRoutes);
 app.use('/api', googleSheetRoutes);
 app.use('/api', scheduleRoutes);
 app.use('/api', rawQcRoutes);
+app.use('/api', shipmentEtaRoutes);
 
 // Mount Contractor PO routes at /contractor-po/api (CommonJS module)
 // COMMENTED OUT: contractor-po directory doesn't exist in backend folder

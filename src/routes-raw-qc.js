@@ -80,7 +80,7 @@ function computeValidationStatus(paramType, paramToleranceValue, actualValue, st
  * POST /api/raw-qc/grn-pending
  * Body: { database: 'KOL'|'AHM' }
  * Returns one row per item (per ItemTransactionDetail) for pending GRNs.
- * Each row: TransactionID, TransactionDetailID, Manufacturer (LedgerName), VoucherNo, VoucherDate, ItemType.
+ * Each row: TransactionID, TransactionDetailID, VoucherDate, VoucherNo, Vendor (LedgerName), ItemName, ItemType, ReceiptQuantity.
  */
 router.post('/raw-qc/grn-pending', async (req, res) => {
   const db = getDb(req.body || {});
@@ -96,21 +96,26 @@ router.post('/raw-qc/grn-pending', async (req, res) => {
         SELECT
           m.TransactionID,
           d.TransactionDetailID,
-          lm.LedgerName AS Manufacturer,
-          m.VoucherNo,
           m.VoucherDate,
-          im.ItemType
+          m.VoucherNo,
+          lm.LedgerName AS Vendor,
+          COALESCE(im.ItemName, im.ItemDescription) AS ItemName,
+          im.ItemType,
+          d.ReceiptQuantity
         FROM ItemTransactionMain m
         INNER JOIN ItemTransactionDetail d ON d.TransactionID = m.TransactionID
           AND (d.IsDeleted = 0 OR d.IsDeleted IS NULL)
           AND (d.IsDeletedTransaction = 0 OR d.IsDeletedTransaction IS NULL)
           AND d.ItemGroupID IN (2, 14)
+          AND d.ChallanWeight > 200
+        LEFT JOIN WarehouseMaster wm ON d.WarehouseID = wm.WarehouseID
         LEFT JOIN ItemMaster im ON d.ItemID = im.ItemID
         LEFT JOIN LedgerMaster lm ON m.LedgerID = lm.LedgerID
         WHERE m.VoucherID = @VoucherIdGrn
           AND CAST(m.VoucherDate AS DATE) >= @CutoffDate
           AND (m.IsDeleted = 0 OR m.IsDeleted IS NULL)
           AND (m.IsDeletedTransaction = 0 OR m.IsDeletedTransaction IS NULL)
+          AND (wm.WarehouseName IS NULL OR wm.WarehouseName NOT LIKE '%tangra%')
           AND NOT EXISTS (
             SELECT 1 FROM RawMaterialQCMain qc
             WHERE qc.TransactionID = d.TransactionID
@@ -370,6 +375,16 @@ router.post('/raw-qc/inspection-parameters', async (req, res) => {
     }
     const itemGroupId = detailRow.ItemGroupID ?? detailRow.itemgroupid;
     const itemId = detailRow.ItemID ?? detailRow.itemid;
+
+    let itemDescription = null;
+    if (itemId != null) {
+      const itemRow = await pool.request()
+        .input('ItemID', sql.Int, itemId)
+        .query(`SELECT ItemDescription FROM ItemMaster WHERE ItemID = @ItemID`);
+      const itemRec = itemRow.recordset && itemRow.recordset[0];
+      itemDescription = itemRec && (itemRec.ItemDescription ?? itemRec.itemdescription);
+    }
+
     const paramResult = await pool.request()
       .input('ItemGroupID', sql.Int, itemGroupId)
       .query(`
@@ -379,15 +394,20 @@ router.post('/raw-qc/inspection-parameters', async (req, res) => {
           AND (IsDeleted = 0 OR IsDeleted IS NULL)
         ORDER BY ID
       `);
-    const params = (paramResult.recordset || []).map((r, idx) => ({
-      id: r.ID ?? r.id,
-      itemGroupId: r.ItemGroupID ?? r.itemgroupid,
-      parameter: r.Parameter ?? r.parameter ?? '',
-      type: r.Type ?? r.type ?? 'Text',
-      value: r.Value ?? r.value ?? null,
-      parameterOrder: idx + 1,
-      standardValue: (r.Value ?? r.value) != null ? String(r.Value ?? r.value) : null,
-    }));
+    const params = (paramResult.recordset || []).map((r, idx) => {
+      const paramName = (r.Parameter ?? r.parameter ?? '').toString().trim();
+      const targetValue = paramName ? parseStandardFromItemDescription(itemDescription, paramName) : null;
+      return {
+        id: r.ID ?? r.id,
+        itemGroupId: r.ItemGroupID ?? r.itemgroupid,
+        parameter: paramName,
+        type: r.Type ?? r.type ?? 'Text',
+        value: r.Value ?? r.value ?? null,
+        parameterOrder: idx + 1,
+        standardValue: (r.Value ?? r.value) != null ? String(r.Value ?? r.value) : null,
+        targetValue: targetValue != null && targetValue !== '' ? String(targetValue) : null,
+      };
+    });
     return res.json({
       status: true,
       data: params,
@@ -589,8 +609,8 @@ router.post('/raw-qc/reports/inspector-performance', async (req, res) => {
 /**
  * POST /api/raw-qc/reports/grn-entries
  * Body: { database, voucherNo } or { database, transactionId }
- * Returns QC entries for the given GRN (from RawMaterialQCMain + RawMaterialQCDetail).
- * Joins UserMaster for UserName. Returns AuditedDate as date-only (server local) to avoid timezone offset.
+ * Returns QC entries for the given GRN: one row per RawMaterialQCDetail, joined with RawMaterialQCMain.
+ * Columns: VoucherNo, TransactionDetailID, AuditDateTime, VoucherDate, ParameterName, StandardValue, ActualValue, ValidationStatus.
  */
 router.post('/raw-qc/reports/grn-entries', async (req, res) => {
   const { database, voucherNo, transactionId } = req.body || {};
@@ -605,48 +625,53 @@ router.post('/raw-qc/reports/grn-entries', async (req, res) => {
   }
   try {
     const pool = await getPool(db);
-    const selectMain = `
-      SELECT q.Id, q.TransactionID, q.VoucherNo, q.VoucherDate, q.UserId, q.CreatedAt, q.Remarks,
-        um.UserName,
-        CONVERT(VARCHAR(10), q.CreatedAt, 120) AS AuditedDate
-      FROM RawMaterialQCMain q
-      LEFT JOIN UserMaster um ON q.UserId = um.UserID
-    `;
-    let mainRows;
+    let result;
     if (byTid) {
       const tid = parseInt(transactionId, 10);
       if (Number.isNaN(tid)) {
         return res.status(400).json({ status: false, error: 'Valid transactionId is required' });
       }
-      const r = await pool.request()
+      result = await pool.request()
         .input('TransactionID', sql.Int, tid)
-        .query(selectMain + ` WHERE q.TransactionID = @TransactionID ORDER BY q.CreatedAt DESC`);
-      mainRows = r.recordset || [];
+        .query(`
+          SELECT
+            q.VoucherNo,
+            q.TransactionDetailID,
+            q.CreatedAt AS AuditDateTime,
+            q.VoucherDate,
+            d.ParameterName,
+            d.StandardValue,
+            d.ActualValue,
+            d.ValidationStatus
+          FROM RawMaterialQCMain q
+          INNER JOIN RawMaterialQCDetail d ON d.RawMaterialQCMainId = q.Id
+          WHERE q.TransactionID = @TransactionID
+          ORDER BY q.CreatedAt DESC, d.ParameterOrder, d.ParameterName
+        `);
     } else {
       const v = String(voucherNo).trim();
-      const r = await pool.request()
+      result = await pool.request()
         .input('VoucherNo', sql.NVarChar(100), v)
-        .query(selectMain + ` WHERE q.VoucherNo = @VoucherNo ORDER BY q.CreatedAt DESC`);
-      mainRows = r.recordset || [];
+        .query(`
+          SELECT
+            q.VoucherNo,
+            q.TransactionDetailID,
+            q.CreatedAt AS AuditDateTime,
+            q.VoucherDate,
+            d.ParameterName,
+            d.StandardValue,
+            d.ActualValue,
+            d.ValidationStatus
+          FROM RawMaterialQCMain q
+          INNER JOIN RawMaterialQCDetail d ON d.RawMaterialQCMainId = q.Id
+          WHERE q.VoucherNo = @VoucherNo
+          ORDER BY q.CreatedAt DESC, d.ParameterOrder, d.ParameterName
+        `);
     }
-    if (mainRows.length === 0) {
-      return res.json({ status: true, data: [], details: [] });
-    }
-    const mainIds = mainRows.map((m) => m.Id ?? m.id);
-    const placeholders = mainIds.map((_, i) => `@id${i}`).join(',');
-    const detailReq = pool.request();
-    mainIds.forEach((id, i) => { detailReq.input(`id${i}`, sql.Int, id); });
-    const detailResult = await detailReq.query(`
-      SELECT RawMaterialQCMainId, ParameterName, StandardValue, ActualValue, Unit, ParameterOrder, ValidationStatus, CreatedOn
-      FROM RawMaterialQCDetail
-      WHERE RawMaterialQCMainId IN (${placeholders})
-      ORDER BY RawMaterialQCMainId, ParameterOrder, ParameterName
-    `);
-    const details = detailResult.recordset || [];
+    const rows = result.recordset || [];
     return res.json({
       status: true,
-      data: mainRows,
-      details,
+      data: rows,
     });
   } catch (err) {
     console.error('[raw-qc] grn-entries error:', err);
