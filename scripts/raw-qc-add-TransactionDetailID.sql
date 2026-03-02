@@ -1,0 +1,26 @@
+-- Add TransactionDetailID to RawMaterialQCMain (run in KOL and AHM)
+-- Pending GRNs are then per line: a GRN is complete only when every TransactionDetailID has been audited.
+-- IF NOT EXISTS (
+--   SELECT 1 FROM sys.columns
+--   WHERE object_id = OBJECT_ID('RawMaterialQCMain') AND name = 'TransactionDetailID'
+-- )
+-- BEGIN
+--   ALTER TABLE RawMaterialQCMain ADD TransactionDetailID INT NULL;
+--
+--   -- Drop existing UNIQUE on TransactionID so we can have multiple rows per TransactionID (one per TransactionDetailID)
+--   IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID('RawMaterialQCMain') AND name = 'UQ_RawMaterialQCMain_TransactionID')
+--     DROP INDEX UQ_RawMaterialQCMain_TransactionID ON RawMaterialQCMain;
+--   IF EXISTS (SELECT 1 FROM sys.key_constraints WHERE parent_object_id = OBJECT_ID('RawMaterialQCMain') AND type = 'UQ')
+--   BEGIN
+--     DECLARE @uq nvarchar(200);
+--     SELECT @uq = name FROM sys.key_constraints WHERE parent_object_id = OBJECT_ID('RawMaterialQCMain') AND type = 'UQ';
+--     IF @uq IS NOT NULL
+--       EXEC('ALTER TABLE RawMaterialQCMain DROP CONSTRAINT ' + @uq);
+--   END
+--
+--   -- One QC per (TransactionID, TransactionDetailID) when TransactionDetailID is set
+--   CREATE UNIQUE NONCLUSTERED INDEX UQ_RawMaterialQCMain_TransactionID_TransactionDetailID
+--   ON RawMaterialQCMain(TransactionID, TransactionDetailID)
+--   WHERE TransactionDetailID IS NOT NULL;
+-- END
+-- GO
