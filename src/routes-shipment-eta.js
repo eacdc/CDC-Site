@@ -76,6 +76,7 @@ router.post('/shipment-eta/upload', upload.single('file'), async (req, res) => {
   if (!req.file || !req.file.buffer) {
     return res.status(400).json({ error: 'No Excel file uploaded. Use field name "file".' });
   }
+  console.log('[shipment-eta] POST /upload database=', db, 'file=', req.file?.originalname);
   try {
     const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
     const firstSheetName = workbook.SheetNames[0];
@@ -115,6 +116,14 @@ router.post('/shipment-eta/upload', upload.single('file'), async (req, res) => {
         `);
       inserted++;
     }
+    // Update Status: 1 if ContainerNumber exists in FinishGoodsTransactionMain.ContainerNo, else 0 (EXISTS avoids join quirks)
+    await pool.request().query(`
+      UPDATE dbo.ShipmentETA
+      SET Status = CASE
+        WHEN EXISTS (SELECT 1 FROM dbo.FinishGoodsTransactionMain f WHERE f.ContainerNo = ShipmentETA.ContainerNumber) THEN 1
+        ELSE 0
+      END
+    `);
     return res.json({ success: true, inserted, message: `Inserted ${inserted} row(s) into ShipmentETA.` });
   } catch (e) {
     if (e.code === 'EREQUEST' && e.message && e.message.includes('Invalid object name')) {
@@ -135,31 +144,42 @@ router.get('/shipment-eta/list', async (req, res) => {
   if (!db) {
     return res.status(400).json({ error: 'database must be KOL or AHM' });
   }
+  console.log('[shipment-eta] GET /list database=', db);
   try {
     const pool = await getPool(db);
     const result = await pool.request().query(`
-      SELECT Id, ContainerNumber, DestinationPort,
-             DestinationArrivalOriginalPlannedDate, DestinationArrivalPlannedDate, Link, CreatedAt
-      FROM dbo.ShipmentETA
-      ORDER BY Id DESC
+      SELECT s.Id, s.ContainerNumber, s.DestinationPort,
+             s.DestinationArrivalOriginalPlannedDate, s.DestinationArrivalPlannedDate, s.Link, s.CreatedAt,
+             CASE WHEN EXISTS (SELECT 1 FROM dbo.FinishGoodsTransactionMain f WHERE f.ContainerNo = s.ContainerNumber) THEN 1 ELSE 0 END AS Status
+      FROM dbo.ShipmentETA s
+      ORDER BY s.Id DESC
     `);
-    const rows = (result.recordset || []).map(r => ({
-      id: r.Id,
-      containerNumber: r.ContainerNumber,
-      destinationPort: r.DestinationPort,
-      destinationArrivalOriginalPlannedDate: r.DestinationArrivalOriginalPlannedDate,
-      destinationArrivalPlannedDate: r.DestinationArrivalPlannedDate,
-      link: r.Link,
-      createdAt: r.CreatedAt ? new Date(r.CreatedAt).toISOString() : null
-    }));
+
+    console.log('result####################', JSON.stringify(result, null, 2) );
+    // mssql driver may return column names as Status or status depending on server/driver; read both
+    const rows = (result.recordset || []).map(r => {
+      const statusVal = r.Status !== undefined && r.Status !== null ? r.Status : r.status;
+      return {
+        id: r.Id,
+        containerNumber: r.ContainerNumber,
+        destinationPort: r.DestinationPort,
+        destinationArrivalOriginalPlannedDate: r.DestinationArrivalOriginalPlannedDate,
+        destinationArrivalPlannedDate: r.DestinationArrivalPlannedDate,
+        link: r.Link,
+        status: statusVal != null ? Number(statusVal) : 0,
+        createdAt: r.CreatedAt ? new Date(r.CreatedAt).toISOString() : null
+      };
+    });
+    console.log('[shipment-eta] list ok rows=', rows.length);
     return res.json(rows);
   } catch (e) {
+    console.error('[shipment-eta] list failed:', e);
+    console.error('[shipment-eta] list failed:', e);
     if (e.code === 'EREQUEST' && e.message && e.message.includes('Invalid object name')) {
       return res.status(500).json({
         error: 'Table ShipmentETA does not exist. Run backend/scripts/shipment-eta-create-table.sql on your database first.'
       });
     }
-    console.error('[shipment-eta] list failed:', e);
     return res.status(500).json({ error: e.message || 'List failed' });
   }
 });

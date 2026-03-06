@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 // Bills collection
 //  - Bill Number (billNumber) - 8 digit starting from 00000001
@@ -96,4 +96,4 @@ const billSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-export default mongoose.model('Bill', billSchema);
+module.exports = mongoose.models['Bill'] || mongoose.model('Bill', billSchema);

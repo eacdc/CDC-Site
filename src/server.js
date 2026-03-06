@@ -38,10 +38,10 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Simple console request logger for visibility
 app.use((req, res, next) => {
 	const start = Date.now();
-	//console.log(`[REQ] ${req.method} ${req.originalUrl}`);
+	console.log(`[REQ] ${req.method} ${req.originalUrl}`);
 	res.on('finish', () => {
 		const ms = Date.now() - start;
-		//console.log(`[RES] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
+		console.log(`[RES] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
 	});
 	next();
 });
@@ -67,11 +67,14 @@ app.use('/api', scheduleRoutes);
 app.use('/api', rawQcRoutes);
 app.use('/api', shipmentEtaRoutes);
 
-// Mount Contractor PO routes at /contractor-po/api (CommonJS module)
-// COMMENTED OUT: contractor-po directory doesn't exist in backend folder
-// If you need this, create the directory structure or fix the path
-// const contractorPORoutes = require(join(__dirname, '../contractor-po/routes/index.js'));
-// app.use('/contractor-po/api', contractorPORoutes);
+// Contractor PO System routes (loaded as CommonJS via createRequire)
+app.use('/api/auth',        require('./contractor-po/routes/auth.js'));
+app.use('/api/jobs',        require('./contractor-po/routes/jobs.js'));
+app.use('/api/operations',  require('./contractor-po/routes/operations.js'));
+app.use('/api/work',        require('./contractor-po/routes/work.js'));
+app.use('/api/contractors', require('./contractor-po/routes/contractors.js'));
+app.use('/api/bills',       require('./contractor-po/routes/bills.js'));
+app.use('/api/series',      require('./contractor-po/routes/series.js'));
 
 app.get('/health', (req, res) => {
 	res.json({ status: 'ok' });

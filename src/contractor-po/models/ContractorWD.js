@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 // Contractor_WD collection
 //  - Contractor id (contractorId)
@@ -51,4 +51,4 @@ const contractorWDSchema = new mongoose.Schema({
   collection: 'Contractor_WD',
 });
 
-export default mongoose.model('Contractor_WD', contractorWDSchema);
+module.exports = mongoose.models['Contractor_WD'] || mongoose.model('Contractor_WD', contractorWDSchema);

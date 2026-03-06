@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 // Contractor collection
 // Fields:
@@ -35,4 +35,4 @@ const contractorSchema = new mongoose.Schema({
   collection: 'Contractor',
 });
 
-export default mongoose.model('Contractor', contractorSchema);
+module.exports = mongoose.models['Contractor'] || mongoose.model('Contractor', contractorSchema);

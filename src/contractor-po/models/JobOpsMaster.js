@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 // JobopsMaster collection
 //  - JobID (jobId)
@@ -79,4 +79,4 @@ const jobOpsMasterSchema = new mongoose.Schema({
   collection: 'JobopsMaster',
 });
 
-export default mongoose.model('JobopsMaster', jobOpsMasterSchema);
+module.exports = mongoose.models['JobopsMaster'] || mongoose.model('JobopsMaster', jobOpsMasterSchema);

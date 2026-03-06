@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const seriesSchema = new mongoose.Schema({
   jobNumbers: [{
@@ -14,4 +14,5 @@ const seriesSchema = new mongoose.Schema({
   timestamps: true
 });
 
-export default mongoose.model('Series', seriesSchema);
+module.exports = mongoose.models['Series'] || mongoose.model('Series', seriesSchema);
+

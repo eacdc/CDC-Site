@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+const mongoose = require('mongoose');
 
 const operationSchema = new mongoose.Schema({
   opsName: {
@@ -20,6 +20,7 @@ const operationSchema = new mongoose.Schema({
   categories: {
     type: [String],
     default: [],
+    trim: true
   },
   isdeleted: {
     type: Number,
@@ -30,4 +31,4 @@ const operationSchema = new mongoose.Schema({
   timestamps: true
 });
 
-export default mongoose.model('Operation', operationSchema);
+module.exports = mongoose.models['Operation'] || mongoose.model('Operation', operationSchema);
