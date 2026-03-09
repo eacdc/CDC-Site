@@ -1,5 +1,6 @@
 /**
- * Job Card API: packaging job card from ProductionWorkOrderPrint + ItemDetails, OperationDetails, AllocateMaterial, ToolAllocation, PaperFlow.
+ * Job Card API: packaging job card from ProductionWorkOrderPrint + ItemDetails, OperationDetails, AllocateMaterial, ToolAllocation, PaperFlow, RawMaterialQC.
+ * rawMaterialQCDetails: array from GetRawMaterialQC_ByJobBooking; each row has transactionDetailId, itemName, voucherNo, auditDate, remarks, overallStatus, qaStatus (OK if all OK/NA per transactionDetailId else Not OK), qaDate. Render below Paper Flow on print.
  */
 import { Router } from 'express';
 import { getPool } from './db.js';
@@ -366,6 +367,60 @@ router.get('/job-card', async (req, res) => {
         console.warn('[job-card] GetPaperFlowForJob failed:', e.message);
       }
 
+      // ---- Raw Material QC Details: from procedure GetRawMaterialQC_ByJobBooking ----
+      let rawMaterialQCDetails = [];
+      const jbIdInt = jobBookingId ? parseInt(String(jobBookingId).replace(/,.*/, ''), 10) : null;
+      if (jbIdInt != null && !Number.isNaN(jbIdInt)) {
+        try {
+          request = pool.request();
+          request.input('JobBookingID', sql.Int, jbIdInt);
+          const qcResult = await request.query('EXEC dbo.GetRawMaterialQC_ByJobBooking @JobBookingID');
+          const qcRows = qcResult.recordset || [];
+          // Procedure may return two columns named TransactionDetailID → driver gives array; use first element
+          const toTdId = (v) => {
+            if (v == null) return null;
+            if (Array.isArray(v)) return v.length > 0 ? v[0] : null;
+            return v;
+          };
+          // Per TransactionDetailID: if all OverallStatus are OK or NA then QA status OK, else Not OK
+          const statusByTdId = {};
+          for (const r of qcRows) {
+            const tdId = toTdId(get(r, 'TransactionDetailID'));
+            if (tdId == null) continue;
+            const key = String(tdId);
+            if (!statusByTdId[key]) statusByTdId[key] = [];
+            const os = (get(r, 'OverallStatus') != null ? String(get(r, 'OverallStatus')).trim().toUpperCase() : '');
+            statusByTdId[key].push(os === 'OK' || os === 'NA');
+          }
+          const qaStatusByTdId = {};
+          for (const [key, arr] of Object.entries(statusByTdId)) {
+            qaStatusByTdId[key] = arr.every(Boolean) ? 'OK' : 'Not OK';
+          }
+          const fmtDate = (v) => {
+            if (v == null) return '';
+            const d = typeof v === 'string' ? new Date(v) : v;
+            return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 19).replace('T', ' ');
+          };
+          rawMaterialQCDetails = qcRows.map(r => {
+            const tdId = toTdId(get(r, 'TransactionDetailID'));
+            const key = tdId != null ? String(tdId) : '';
+            const createdAt = get(r, 'CreatedAt');
+            return {
+              transactionDetailId: tdId,
+              itemName: str(get(r, 'ItemName')) || '-',
+              voucherNo: str(get(r, 'VoucherNo')) || '-',
+              auditDate: fmtDate(createdAt),
+              remarks: str(get(r, 'Remarks')) || '',
+              overallStatus: str(get(r, 'OverallStatus')) || '-',
+              qaStatus: qaStatusByTdId[key] || '-',
+              qaDate: fmtDate(createdAt)
+            };
+          });
+        } catch (e) {
+          console.warn('[job-card] GetRawMaterialQC_ByJobBooking failed:', e.message);
+        }
+      }
+
       // ---- Footer from procedure ----
       const footer = {
         preparedBy: str(get(row, 'UserName')) || str(get(row, 'PrintedBy')),
@@ -389,6 +444,7 @@ router.get('/job-card', async (req, res) => {
         corrugationDetails,
         paperFlow,
         paperFlowHeaderRows,
+        rawMaterialQCDetails,
         footer
       };
 
@@ -604,6 +660,7 @@ router.get('/job-card', async (req, res) => {
         generalInfo,
         parts,
         paperFlow: paperFlow || [],
+        rawMaterialQCDetails,
         footer
       };
       return res.json(commercial);
