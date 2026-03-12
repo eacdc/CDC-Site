@@ -4543,9 +4543,9 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
     const request = pool.request();
     request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
 
-    console.log('🔍 [MSSQL] Calling dbo.contractor_get_job_details with @JobBookingNo =', jobNumber);
+    console.log('🔍 [MSSQL] Calling dbo.contractor_get_job_details2 with @JobBookingNo =', jobNumber);
     const queryStartTime = Date.now();
-    const result = await request.execute('dbo.contractor_get_job_details');
+    const result = await request.execute('dbo.contractor_get_job_details2');
     const queryTime = Date.now() - queryStartTime;
     console.log(`⏱️ [MSSQL] Stored procedure executed in ${queryTime}ms`);
 
@@ -4560,7 +4560,8 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
       jobTitle: jobDetails['Job Title'] || jobDetails.JobTitle || jobDetails.jobTitle || '',
       qty: jobDetails.OrderQty || jobDetails.orderQty || jobDetails.Qty || jobDetails.qty || 0,
       productCat: jobDetails.ProductCategory || jobDetails.productCategory || jobDetails.ProductCat || jobDetails.productCat || '',
-      unitPrice: jobDetails.UnitPrice || jobDetails.unitPrice || jobDetails.unit_price || 0
+      unitPrice: jobDetails.UnitPrice || jobDetails.unitPrice || jobDetails.unit_price || 0,
+      segmentName: jobDetails.SegmentName || jobDetails.segmentName || ''
     });
   } catch (error) {
     console.error('Error fetching job details:', error);
@@ -4758,13 +4759,30 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
 });
 
 // Operations routes
+router.get('/operations/categories', async (req, res) => {
+  try {
+    const pool = await getPool('KOL');
+    const result = await pool.request().query('SELECT DISTINCT categoryname FROM categorymaster ORDER BY categoryname');
+    const rows = result.recordset || [];
+    const nameKey = rows[0] ? Object.keys(rows[0]).find(k => k.toLowerCase() === 'categoryname') : 'categoryname';
+    const list = rows.map(r => (r[nameKey] != null ? String(r[nameKey]).trim() : '')).filter(Boolean);
+    res.json(list);
+  } catch (error) {
+    console.error('Error fetching categories from categorymaster:', error);
+    res.status(500).json({ error: 'Error fetching categories' });
+  }
+});
+
 router.get('/operations', async (req, res) => {
   try {
-    const { search } = req.query;
+    const { search, category } = req.query;
     let query = { isdeleted: 0 };
 
     if (search) {
       query.opsName = { $regex: search, $options: 'i' };
+    }
+    if (category != null && String(category).trim() !== '') {
+      query.categories = String(category).trim();
     }
 
     const operations = await Operation.find(query).sort({ opsName: 1 });
@@ -4790,7 +4808,7 @@ router.get('/operations/:id', async (req, res) => {
 
 router.post('/operations', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody } = req.body;
 
     if (!opsName || !type) {
       return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
@@ -4800,7 +4818,7 @@ router.post('/operations', async (req, res) => {
       return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
     }
 
-    const ratePerUnitNum = Number(ratePerUnit);
+    const ratePerUnitNum = parseFloat(Number(ratePerUnit).toFixed(4));
     if (isNaN(ratePerUnitNum) || ratePerUnitNum < 0) {
       return res.status(400).json({ error: 'Rate/unit must be a valid number greater than or equal to 0' });
     }
@@ -4810,10 +4828,17 @@ router.post('/operations', async (req, res) => {
       return res.status(400).json({ error: 'Operation already exists' });
     }
 
+    const categories = Array.isArray(categoriesBody)
+      ? categoriesBody.map(c => String(c).trim()).filter(Boolean)
+      : categoriesBody != null && categoriesBody !== ''
+        ? [String(categoriesBody).trim()]
+        : [];
+
     const operation = new Operation({
       opsName,
       type,
       ratePerUnit: ratePerUnitNum,
+      categories,
       isdeleted: 0
     });
 
@@ -4827,7 +4852,7 @@ router.post('/operations', async (req, res) => {
 
 router.put('/operations/:id', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody } = req.body;
     
     if (!opsName || !type) {
       return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
@@ -4837,14 +4862,23 @@ router.put('/operations/:id', async (req, res) => {
       return res.status(400).json({ error: 'Operation name, type, and rate/unit are required' });
     }
 
-    const ratePerUnitNum = Number(ratePerUnit);
+    const ratePerUnitNum = parseFloat(Number(ratePerUnit).toFixed(4));
     if (isNaN(ratePerUnitNum) || ratePerUnitNum < 0) {
       return res.status(400).json({ error: 'Rate/unit must be a valid number greater than or equal to 0' });
+    }
+
+    const updateFields = { opsName, type, ratePerUnit: ratePerUnitNum };
+    if (categoriesBody !== undefined) {
+      updateFields.categories = Array.isArray(categoriesBody)
+        ? categoriesBody.map(c => String(c).trim()).filter(Boolean)
+        : categoriesBody != null && categoriesBody !== ''
+          ? [String(categoriesBody).trim()]
+          : [];
     }
     
     const operation = await Operation.findByIdAndUpdate(
       req.params.id,
-      { opsName, type, ratePerUnit: ratePerUnitNum },
+      updateFields,
       { new: true, runValidators: true }
     );
 
@@ -4941,6 +4975,8 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
 
     res.json({
       jobNumber,
+      clientName: jobOpsMaster.clientName || '',
+      jobTitle: jobOpsMaster.jobTitle || '',
       operations: operationsWithNames
     });
   } catch (error) {
@@ -5326,7 +5362,12 @@ async function generateNextBillNumber() {
 
 router.get('/bills', async (req, res) => {
   try {
-    const bills = await Bill.find().sort({ billNumber: -1 });
+    const bills = await Bill.find({
+      $or: [
+        { isDeleted: { $ne: 1 } },
+        { isDeleted: { $exists: false } }
+      ]
+    }).sort({ billNumber: -1 });
     res.json(bills);
   } catch (error) {
     console.error('Error fetching bills:', error);
@@ -5810,6 +5851,8 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
 router.patch('/bills/:billNumber/pay', async (req, res) => {
   try {
     const { billNumber } = req.params;
+    const { roomRent } = req.body;
+
     const bill = await Bill.findOne({ billNumber });
     
     if (!bill) {
@@ -5818,6 +5861,16 @@ router.patch('/bills/:billNumber/pay', async (req, res) => {
     
     bill.paymentStatus = 'Yes';
     bill.paymentDate = new Date();
+
+    if (roomRent !== undefined && roomRent !== null) {
+      const rentValue = Number(roomRent);
+      if (isNaN(rentValue) || rentValue < 0) {
+        return res.status(400).json({ error: 'roomRent must be a non-negative number' });
+      }
+      bill.roomRent = rentValue;
+    } else {
+      bill.roomRent = 0;
+    }
     
     await bill.save();
     res.json(bill);
@@ -5830,16 +5883,112 @@ router.patch('/bills/:billNumber/pay', async (req, res) => {
 router.delete('/bills/:billNumber', async (req, res) => {
   try {
     const { billNumber } = req.params;
-    const bill = await Bill.findOneAndDelete({ billNumber });
-    
+    const bill = await Bill.findOne({
+      billNumber,
+      $or: [
+        { isDeleted: { $ne: 1 } },
+        { isDeleted: { $exists: false } }
+      ]
+    });
+
     if (!bill) {
-      return res.status(404).json({ error: 'Bill not found' });
+      return res.status(404).json({ error: 'Bill not found or already deleted' });
     }
-    
+
+    // Find the non-deleted contractor by name
+    const contractorName = bill.contractorName.trim();
+    const contractor = await Contractor.findOne({
+      name: contractorName,
+      $or: [ { isdeleted: 0 }, { isdeleted: { $exists: false } } ]
+    });
+    if (!contractor) {
+      return res.status(404).json({ error: `Contractor not found for name: ${bill.contractorName}` });
+    }
+    const contractorId = contractor.contractorId;
+
+    // Reverse all work from this bill: restore JobopsMaster pending and reduce Contractor_WD opsDone
+    for (const job of bill.jobs) {
+      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber });
+
+      if (jobOpsMaster) {
+        const isPackaging = (jobOpsMaster.segmentName || '').trim() === 'Packaging';
+        const jobTotalQty = Number(jobOpsMaster.totalQty) || 0;
+
+        // Total completed qty per op for this job (all contractors)
+        const contractorWDDocsForJob = await ContractorWD.find({ jobId: job.jobNumber }).lean();
+        const totalCompletedByOp = {};
+        (contractorWDDocsForJob || []).forEach(doc => {
+          (doc.opsDone || []).forEach(od => {
+            if (od.opsId == null || od.opsDoneQty == null) return;
+            const opKey = String(od.opsId);
+            totalCompletedByOp[opKey] = (totalCompletedByOp[opKey] || 0) + od.opsDoneQty;
+          });
+        });
+
+        for (const op of job.ops) {
+          const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+          if (operation) {
+            const opIdStr = operation._id.toString();
+            const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
+            if (jobOp) {
+              const qtyCompleted = Number(op.qtyCompleted || 0);
+              const totalOpsQty = Number(jobOp.totalOpsQty) || 0;
+              const totalCompletedForOp = totalCompletedByOp[opIdStr] || 0;
+              const usePackagingRule = isPackaging && totalCompletedForOp > totalOpsQty;
+              let restored;
+              if (usePackagingRule) {
+                const addBack = Math.max(0, qtyCompleted - jobTotalQty * 0.05);
+                restored = jobOp.pendingOpsQty + addBack;
+              } else {
+                restored = jobOp.pendingOpsQty + qtyCompleted;
+              }
+              jobOp.pendingOpsQty = Math.min(totalOpsQty, Math.max(0, restored));
+              jobOp.lastUpdatedDate = new Date();
+            }
+          }
+        }
+        jobOpsMaster.markModified('ops');
+        await jobOpsMaster.save();
+      }
+
+      // Reverse Contractor_WD: subtract each op's qtyCompleted from opsDone
+      const contractorWD = await ContractorWD.findOne({
+        contractorId: contractorId,
+        jobId: job.jobNumber
+      });
+
+      if (contractorWD) {
+        for (const op of job.ops) {
+          const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+          if (operation) {
+            const opIdStr = operation._id.toString();
+            const wdOp = contractorWD.opsDone.find(od => String(od.opsId) === opIdStr);
+            if (wdOp) {
+              const qtyCompleted = Number(op.qtyCompleted || 0);
+              wdOp.opsDoneQty = Math.max(0, wdOp.opsDoneQty - qtyCompleted);
+              if (wdOp.opsDoneQty <= 0) {
+                contractorWD.opsDone = contractorWD.opsDone.filter(od => String(od.opsId) !== opIdStr);
+              }
+            }
+          }
+        }
+        contractorWD.markModified('opsDone');
+        if (contractorWD.opsDone.length > 0) {
+          await contractorWD.save();
+        } else {
+          await ContractorWD.deleteOne({ _id: contractorWD._id });
+        }
+      }
+    }
+
+    // Soft delete the bill
+    bill.isDeleted = 1;
+    await bill.save();
+
     res.json({ message: 'Bill deleted successfully' });
   } catch (error) {
     console.error('Error deleting bill:', error);
-    res.status(500).json({ error: 'Error deleting bill' });
+    res.status(500).json({ error: 'Error deleting bill', details: error.message });
   }
 });
 
