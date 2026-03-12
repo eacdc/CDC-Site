@@ -4384,7 +4384,10 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
     const {
       jobNumber,
       operations,
-      qty
+      qty,
+      clientName,
+      jobTitle,
+      segmentName
     } = req.body;
 
     if (!jobNumber || !operations || !Array.isArray(operations) || operations.length === 0) {
@@ -4463,10 +4466,22 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
       jobOpsMaster = new JobOpsMaster({
         jobId: jobNumber,
         totalQty,
+        clientName: clientName || '',
+        jobTitle: jobTitle || '',
+        segmentName: segmentName || '',
         ops
       });
     } else {
       jobOpsMaster.totalQty = totalQty;
+      if (clientName !== undefined) {
+        jobOpsMaster.clientName = clientName || '';
+      }
+      if (jobTitle !== undefined) {
+        jobOpsMaster.jobTitle = jobTitle || '';
+      }
+      if (segmentName !== undefined) {
+        jobOpsMaster.segmentName = segmentName || '';
+      }
 
       // Fetch operation names for existing operations in JobOpsMaster
       const existingOpIds = jobOpsMaster.ops.map(existingOp => existingOp.opId).filter(Boolean);
