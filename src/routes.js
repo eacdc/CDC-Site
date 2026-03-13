@@ -5507,12 +5507,14 @@ router.post('/bills', async (req, res) => {
       }
     }
 
-    // Create bill
+    // Create bill (include clientName and jobTitle per job for display/print)
     const bill = new Bill({
       billNumber,
       contractorName: contractorName.trim(),
       jobs: jobs.map(job => ({
         jobNumber: job.jobNumber,
+        clientName: (job.clientName != null && String(job.clientName).trim()) ? String(job.clientName).trim() : '',
+        jobTitle: (job.jobTitle != null && String(job.jobTitle).trim()) ? String(job.jobTitle).trim() : '',
         ops: job.ops.map(op => {
           // Get operation type
           const opIdStr = String(op.opId || '');
