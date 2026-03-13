@@ -4770,6 +4770,69 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
   }
 });
 
+// Reopen job - set isclose = 0 and clear close fields in jobbookingjobcard table
+router.post('/jobs/reopen/:jobNumber', async (req, res) => {
+  try {
+    const { jobNumber } = req.params;
+
+    if (!jobNumber) {
+      return res.status(400).json({ error: 'Job number is required' });
+    }
+
+    const connectionStartTime = Date.now();
+    const pool = await getConnection();
+    const connectionTime = Date.now() - connectionStartTime;
+    console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
+
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const request = pool.request();
+
+    const updateQuery = `
+      UPDATE jobbookingjobcard
+      SET isclose = 0,
+          jobclosedby = 2,
+          jobcloseddate = NULL,
+          jobcloseremark = ''
+      WHERE jobbookingno = @JobBookingNo
+    `;
+
+    request.input('JobBookingNo', sql.NVarChar(255), jobNumber);
+
+    console.log('✅ [MSSQL] Executing job reopen update for:', jobNumber);
+    const queryStartTime = Date.now();
+    const result = await request.query(updateQuery);
+    const queryTime = Date.now() - queryStartTime;
+    console.log(`⏱️ [MSSQL] Reopen update executed in ${queryTime}ms`);
+    console.log(`✅ [MSSQL] Rows affected: ${result.rowsAffected[0]}`);
+
+    if (result.rowsAffected[0] === 0) {
+      return res.status(404).json({ error: 'Job not found or already open' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Job reopened successfully',
+      jobNumber: jobNumber,
+      rowsAffected: result.rowsAffected[0]
+    });
+  } catch (error) {
+    console.error('Error reopening job:', error);
+    res.status(500).json({ error: 'Error reopening job: ' + error.message });
+  }
+});
+
 // Operations routes
 router.get('/operations/categories', async (req, res) => {
   try {
