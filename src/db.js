@@ -3,7 +3,9 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const serverEnv = process.env.DB_SERVER || 'localhost';
+// MSSQL connection env: DB_SERVER, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME_KOL (and DB_NAME_AHM for AHM).
+// Optional previous fallbacks: DB_HOST (for server), DB_NAME (for database when DB_NAME_KOL not set).
+const serverEnv = process.env.DB_SERVER || process.env.DB_HOST || 'localhost';
 let serverHost = serverEnv;
 let serverPort = Number(process.env.DB_PORT || '');
 
@@ -19,7 +21,7 @@ if (!serverPort && serverEnv.includes(',')) {
 const sqlConfig = {
 	user: process.env.DB_USER,
 	password: process.env.DB_PASSWORD,
-	database: process.env.DB_NAME,
+	database: process.env.DB_NAME || process.env.DB_NAME_KOL,
 	server: serverHost,
 	...(serverPort ? { port: serverPort } : {}),
 	pool: {
@@ -133,25 +135,17 @@ export function getPool(database) {
 		});
 	}
 	
-	// Determine the database name based on selection - NO FALLBACKS
+	// Determine the database name: use DB_NAME_KOL / DB_NAME_AHM (new backend) or fall back to DB_NAME (previous) for KOL
 	let dbName;
 	if (database === 'KOL') {
-		dbName = process.env.DB_NAME_KOL;
+		dbName = process.env.DB_NAME_KOL || process.env.DB_NAME;
 	} else if (database === 'AHM') {
-		dbName = process.env.DB_NAME_AHM;
+		dbName = process.env.DB_NAME_AHM || process.env.DB_NAME;
 	}
 	
 	// Validate that we have a database name
 	if (!dbName) {
-		throw new Error(`No database name configured for ${database}`);
-	}
-	
-	// Strict validation - require explicit database names, no fallbacks
-	if (database === 'KOL' && !process.env.DB_NAME_KOL) {
-		throw new Error(`DB_NAME_KOL environment variable is required for KOL database selection`);
-	}
-	if (database === 'AHM' && !process.env.DB_NAME_AHM) {
-		throw new Error(`DB_NAME_AHM environment variable is required for AHM database selection`);
+		throw new Error(`No database name configured for ${database}. Set DB_NAME_KOL (or DB_NAME for KOL) in .env`);
 	}
 
 	// Validate that KOL and AHM databases are different (prevent accidental same-DB config)

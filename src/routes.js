@@ -3782,8 +3782,7 @@ ${senderPhone}`;
 // ============================================
 
 // Helper function to get MSSQL connection for contractor routes
-// ALWAYS uses IndusEnterprise database
-// Contractor PO MSSQL Connection (matching Contractor PO backend exactly)
+// Uses env vars (DB_SERVER, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME_KOL) when set; otherwise previous hardcoded config
 let contractorPool = null;
 let contractorConnectionPromise = null;
 
@@ -3800,25 +3799,33 @@ async function getConnection() {
       return await contractorConnectionPromise;
     }
 
-    // Start new connection
+    // Start new connection: prefer new backend env vars, fall back to previous hardcoded values
     console.log('🔌 [MSSQL] Establishing connection...');
     const startTime = Date.now();
-    
+    const serverEnv = process.env.DB_SERVER || 'cdcindas.24mycloud.com';
+    let serverHost = serverEnv;
+    let serverPort = Number(process.env.DB_PORT) || 51175;
+    if (!serverPort && serverEnv.includes(',')) {
+      const parts = serverEnv.split(',');
+      serverHost = parts[0];
+      const parsed = parseInt(parts[1], 10);
+      if (!Number.isNaN(parsed)) serverPort = parsed;
+    }
     const config = {
-      server: 'cdcindas.24mycloud.com',
-      port: 51175,
-      database: 'IndusEnterprise',
-      user: 'indus',
-      password: 'Param@99811',
-      connectionTimeout: 10000, // 10 seconds to establish connection
-      requestTimeout: 30000, // 30 seconds for queries to complete
+      server: serverHost,
+      port: serverPort,
+      database: process.env.DB_NAME_KOL || process.env.DB_NAME || 'IndusEnterprise',
+      user: process.env.DB_USER || 'indus',
+      password: process.env.DB_PASSWORD || 'Param@99811',
+      connectionTimeout: 10000,
+      requestTimeout: 30000,
       pool: {
         max: 10,
         min: 0,
         idleTimeoutMillis: 30000
       },
       options: {
-        encrypt: false, // Use true if connecting to Azure
+        encrypt: false,
         trustServerCertificate: true,
         enableArithAbort: true
       }

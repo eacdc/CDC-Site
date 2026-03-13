@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "backfill-job-details": "node scripts/backfill-job-details.js",
+    "backfill-job-details:dry-run": "node scripts/backfill-job-details.js --dry-run"
   },
   "keywords": [],
   "author": "",
