@@ -257,7 +257,9 @@ SELECT TOP 1000
     JB.JobBookingDate,
     CM.CategoryName,
     SM.SegmentName,
-    JB.ClientName,
+
+    ISNULL(JB.ClientName, LM_CLIENT.LedgerName) AS ClientName,
+
     LM.LedgerName AS SalesPersonName,
     JB.JobName,
     JJC_MAX.JobType,
@@ -267,15 +269,24 @@ SELECT TOP 1000
     JB.DeliveryDate,
     JB.ProductCode,
     JB.RefProductMasterCode
+
 FROM JobBookingJobCard JB
+
 LEFT JOIN JobOrderBooking JOB 
     ON JB.OrderBookingID = JOB.OrderBookingID
+
 LEFT JOIN CategoryMaster CM 
     ON JB.CategoryID = CM.CategoryID
+
 LEFT JOIN SegmentMaster SM 
     ON CM.SegmentID = SM.SegmentID
+
 LEFT JOIN LedgerMaster LM 
     ON JB.SalesEmployeeID = LM.LedgerID
+
+-- Client Ledger Join
+LEFT JOIN LedgerMaster LM_CLIENT
+    ON JOB.LedgerID = LM_CLIENT.LedgerID
 
 -- Aggregate JobBookingJobCardContents FIRST
 LEFT JOIN (
@@ -292,10 +303,12 @@ LEFT JOIN LedgerMaster LM2
     ON JJC_MAX.CoordinatorLedgerID = LM2.LedgerID
 
 WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo LIKE '%' + @JobBookingNo + '%' )
-  AND ( @ClientName IS NULL OR @ClientName = '' OR JB.ClientName LIKE '%' + @ClientName + '%' )
+  AND ( @ClientName IS NULL OR @ClientName = '' 
+        OR ISNULL(JB.ClientName, LM_CLIENT.LedgerName) LIKE '%' + @ClientName + '%' )
   AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )
   AND ( @FromJobDate IS NULL OR JB.JobBookingDate >= @FromJobDate )
   AND ( @ToJobDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) )
+
 ORDER BY JB.JobBookingDate DESC;
 
 `;
