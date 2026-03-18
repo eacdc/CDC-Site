@@ -249,6 +249,117 @@ ORDER BY JBC.PlyNo ASC
  * Returns TOP 10 rows for download selection.
  */
 export const JobCardSearchQuery = `
+-- ============================================================
+-- Supporting CTEs for PrintStatus & PrintEnd
+-- ============================================================
+WITH PrintingProcs AS (
+    SELECT PM.ProcessID
+    FROM dbo.ProcessMaster PM
+    WHERE PM.ProcessName LIKE '%Printing%'
+),
+
+PrintingAgg AS (
+    SELECT
+        JSR.JobBookingJobCardContentsID,
+        SUM(ISNULL(JSR.ScheduleQty, 0)) AS PrintPlanQty,
+        ISNULL((
+            SELECT SUM(ISNULL(PE.ProductionQuantity, 0))
+            FROM dbo.ProductionEntry PE
+            WHERE PE.JobBookingJobCardContentsID = JSR.JobBookingJobCardContentsID
+              AND PE.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+        ), 0) AS PrintDoneQty,
+        (
+            SELECT MAX(JSS.PlannedEndTime)
+            FROM dbo.JobScheduleRelease JSS
+            WHERE JSS.JobBookingJobCardContentsID = JSR.JobBookingJobCardContentsID
+              AND JSS.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+        ) AS LastPrintPlanEnd,
+        (
+            SELECT MAX(TRY_CONVERT(datetime, PE.ToTime))
+            FROM dbo.ProductionEntry PE
+            WHERE PE.JobBookingJobCardContentsID = JSR.JobBookingJobCardContentsID
+              AND PE.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+        ) AS LastPrintActualEnd
+    FROM dbo.JobScheduleRelease JSR
+    WHERE JSR.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+      AND ISNULL(JSR.IsDeletedTransaction, 0) = 0
+    GROUP BY JSR.JobBookingJobCardContentsID
+),
+
+PrintingByJob AS (
+    SELECT
+        JEJC.JobBookingID,
+        SUM(ISNULL(PA.PrintPlanQty, 0))  AS JobPrintPlanQty,
+        SUM(ISNULL(PA.PrintDoneQty, 0))  AS JobPrintDoneQty,
+        MAX(PA.LastPrintPlanEnd)          AS JobLastPrintPlanEnd,
+        MAX(PA.LastPrintActualEnd)        AS JobLastPrintActualEnd
+    FROM dbo.JobBookingJobCardContents JEJC
+    LEFT JOIN PrintingAgg PA
+           ON PA.JobBookingJobCardContentsID = JEJC.JobBookingJobCardContentsID
+    GROUP BY JEJC.JobBookingID
+),
+
+-- ============================================================
+-- NEW: Binding Production Qty
+-- (Perfect Binding / Stitch / Pasting processes)
+-- ============================================================
+BindingAgg AS (
+    SELECT
+        PE.JobBookingID,
+        SUM(ISNULL(PE.ProductionQuantity, 0)) AS BindingQty
+    FROM dbo.ProductionEntry PE
+    WHERE PE.ProcessID IN (
+        SELECT ProcessID
+        FROM dbo.ProcessMaster
+        WHERE ProcessName LIKE '%perfect%'
+           OR ProcessName LIKE '%stitch%'
+           OR ProcessName LIKE '%past%'
+    )
+    GROUP BY PE.JobBookingID
+),
+
+-- ============================================================
+-- GPN Qty (voucherid = -50)
+-- ============================================================
+GPNAgg AS (
+    SELECT
+        fgd.JobBookingID,
+        SUM(
+            ISNULL(fgd.outercarton, 0)
+            * ISNULL(fgd.innercarton, 0)
+            * ISNULL(fgd.quantityperpack, 0)
+        ) AS GpnUnits
+    FROM dbo.FinishGoodsTransactionMain fgm
+    JOIN dbo.FinishGoodsTransactionDetail fgd
+        ON fgd.FGTransactionID = fgm.FGtransactionID
+    WHERE fgm.voucherid = -50
+      AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
+      AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
+    GROUP BY fgd.JobBookingID
+),
+
+-- ============================================================
+-- Dispatch / Delivered Qty (voucherid = -51)
+-- ============================================================
+DispatchAgg AS (
+    SELECT
+        fgd.JobBookingID,
+        SUM(
+            ISNULL(fgd.innercarton, 0)
+            * ISNULL(fgd.quantityperpack, 0)
+        ) AS DispatchQty
+    FROM dbo.FinishGoodsTransactionMain fgm
+    JOIN dbo.FinishGoodsTransactionDetail fgd
+        ON fgd.FGTransactionID = fgm.FGtransactionID
+    WHERE fgm.voucherid = -51
+      AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
+      AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
+    GROUP BY fgd.JobBookingID
+)
+
+-- ============================================================
+-- Main Query
+-- ============================================================
 SELECT TOP 1000
     JOB.SalesOrderNo,
     JB.PONo,
@@ -258,56 +369,108 @@ SELECT TOP 1000
     CM.CategoryName,
     SM.SegmentName,
 
-    ISNULL(JB.ClientName, LM_CLIENT.LedgerName) AS ClientName,
-
-    LM.LedgerName AS SalesPersonName,
+    ISNULL(JB.ClientName, LM_CLIENT.LedgerName)        AS ClientName,
+    LM.LedgerName                                       AS SalesPersonName,
     JB.JobName,
     JJC_MAX.JobType,
     JB.OrderQuantity,
+	    -- GPN & Delivered Qty
+    ISNULL(GPN.GpnUnits, 0)                            AS GpnQty,
+    ISNULL(DISP.DispatchQty, 0)                        AS DeliveredQty,
+
+    -- Binding Production Qty
+    ISNULL(BA.BindingQty, 0)                           AS BindingProdQty,
+
+    -- Print Status
+    CASE
+        WHEN ISNULL(PBJ.JobPrintPlanQty, 0) = 0
+         AND ISNULL(PBJ.JobPrintDoneQty, 0) = 0
+            THEN 'Not Planned'
+        WHEN (
+                (   ISNULL(PBJ.JobPrintDoneQty, 0) * 10
+                    >= ISNULL(PBJ.JobPrintPlanQty, 0) * 9
+                    AND ISNULL(PBJ.JobPrintPlanQty, 0) > 0
+                )
+             OR (   ISNULL(PBJ.JobPrintDoneQty, 0) > 0
+                    AND ABS(ISNULL(PBJ.JobPrintPlanQty, 0)
+                            - ISNULL(PBJ.JobPrintDoneQty, 0)) < 250
+                )
+             )
+            THEN 'Complete'
+        WHEN ISNULL(PBJ.JobPrintDoneQty, 0) = 0
+         AND ISNULL(PBJ.JobPrintPlanQty, 0) > 0
+            THEN 'Pending'
+        ELSE 'Incomplete'
+    END                                                 AS PrintStatus,
+
+    -- Print End
+    CASE
+        WHEN ISNULL(PBJ.JobPrintDoneQty, 0)
+             >= ISNULL(PBJ.JobPrintPlanQty, 0) * 0.5
+          AND ISNULL(PBJ.JobPrintPlanQty, 0) > 0
+            THEN PBJ.JobLastPrintActualEnd
+        ELSE PBJ.JobLastPrintPlanEnd
+    END                                                 AS PrintEnd,
     JB.IsCompletePacked,
-    LM2.LedgerName AS CoordinatorName,
+    LM2.LedgerName                                      AS CoordinatorName,
     JB.DeliveryDate,
     JB.ProductCode,
     JB.RefProductMasterCode
 
+
+
 FROM JobBookingJobCard JB
 
-LEFT JOIN JobOrderBooking JOB 
+LEFT JOIN JobOrderBooking JOB
     ON JB.OrderBookingID = JOB.OrderBookingID
 
-LEFT JOIN CategoryMaster CM 
+LEFT JOIN CategoryMaster CM
     ON JB.CategoryID = CM.CategoryID
 
-LEFT JOIN SegmentMaster SM 
+LEFT JOIN SegmentMaster SM
     ON CM.SegmentID = SM.SegmentID
 
-LEFT JOIN LedgerMaster LM 
+LEFT JOIN LedgerMaster LM
     ON JB.SalesEmployeeID = LM.LedgerID
 
--- Client Ledger Join
 LEFT JOIN LedgerMaster LM_CLIENT
     ON JOB.LedgerID = LM_CLIENT.LedgerID
 
--- Aggregate JobBookingJobCardContents FIRST
 LEFT JOIN (
     SELECT
         JobBookingID,
-        MAX(JobType) AS JobType,
-        MAX(CoordinatorLedgerID) AS CoordinatorLedgerID
+        MAX(JobType)              AS JobType,
+        MAX(CoordinatorLedgerID)  AS CoordinatorLedgerID
     FROM JobBookingJobCardContents
     GROUP BY JobBookingID
 ) JJC_MAX
     ON JB.JobBookingID = JJC_MAX.JobBookingID
 
-LEFT JOIN LedgerMaster LM2 
+LEFT JOIN LedgerMaster LM2
     ON JJC_MAX.CoordinatorLedgerID = LM2.LedgerID
 
+-- GPN Qty
+LEFT JOIN GPNAgg GPN
+    ON GPN.JobBookingID = JB.JobBookingID
+
+-- Delivered Qty
+LEFT JOIN DispatchAgg DISP
+    ON DISP.JobBookingID = JB.JobBookingID
+
+-- Binding Pr. Qty
+LEFT JOIN BindingAgg BA
+    ON BA.JobBookingID = JB.JobBookingID
+
+-- Print Status & Print End
+LEFT JOIN PrintingByJob PBJ
+    ON PBJ.JobBookingID = JB.JobBookingID
+
 WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo LIKE '%' + @JobBookingNo + '%' )
-  AND ( @ClientName IS NULL OR @ClientName = '' 
+  AND ( @ClientName IS NULL OR @ClientName = ''
         OR ISNULL(JB.ClientName, LM_CLIENT.LedgerName) LIKE '%' + @ClientName + '%' )
   AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )
   AND ( @FromJobDate IS NULL OR JB.JobBookingDate >= @FromJobDate )
-  AND ( @ToJobDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) )
+  AND ( @ToJobDate   IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) )
 
 ORDER BY JB.JobBookingDate DESC;
 
