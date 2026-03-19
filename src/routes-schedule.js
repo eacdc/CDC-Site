@@ -20,7 +20,7 @@ function getDbFromQuery(req) {
 
 /**
  * GET /api/schedule/machines?database=KOL
- * Returns list of machines: [{ machineId, machineName }, ...]
+ * Returns list of machines: [{ machineId, machineName, machineType }, ...]
  */
 router.get('/schedule/machines', async (req, res) => {
   const db = getDbFromQuery(req);
@@ -30,15 +30,26 @@ router.get('/schedule/machines', async (req, res) => {
   try {
     const pool = await getPool(db);
     const result = await pool.request().query(`
-      SELECT MachineID AS machineId, MachineName AS machineName
+      SELECT MachineID AS machineId, MachineName AS machineName, MachineType AS machineType
       FROM dbo.MachineMaster
-      WHERE IsDeletedTransaction = 0 and MachineType in ('Sheetfed Offset','Web Offset')
+      WHERE IsDeletedTransaction = 0
       ORDER BY MachineName
     `);
-    const list = (result.recordset || []).map((r) => ({
-      machineId: r.machineId,
-      machineName: (r.machineName != null ? String(r.machineName) : '') || (r.MachineName != null ? String(r.MachineName) : ''),
-    }));
+    console.log('[schedule] machines result:', JSON.stringify(result.recordset));
+    const list = (result.recordset || []).map((r) => {
+      const keys = Object.keys(r);
+      const findVal = (name) => {
+        const k = keys.find((x) => x.toLowerCase() === name.toLowerCase());
+        const v = k != null ? r[k] : undefined;
+        return v != null ? String(v) : '';
+      };
+      return {
+        machineId: findVal('machineid'),
+        machineName: findVal('machinename'),
+        machineType: findVal('machinetype'),
+      };
+    });
+    console.log('[schedule] machines sample:', JSON.stringify(list.slice(0, 2)));
     return res.json(list);
   } catch (e) {
     console.error('[schedule] machines list failed:', e);
