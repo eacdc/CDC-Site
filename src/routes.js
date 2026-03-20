@@ -4297,9 +4297,24 @@ router.get('/jobs/items-for-color', async (req, res) => {
   }
 });
 
-router.get('/jobs/:id', async (req, res) => {
+// Restrict :id to valid Mongo ObjectId strings to prevent route conflicts
+// with other /jobs/* endpoints (e.g. /jobs/possible-completed-jobs).
+router.get('/jobs/:id', async (req, res, next) => {
   try {
-    const job = await Job.findById(req.params.id);
+    // Avoid route conflict: allow later route `/jobs/possible-completed-jobs`
+    // to handle this request instead of attempting `Job.findById()`.
+    const { id } = req.params || {};
+    if (id === 'possible-completed-jobs') {
+      return next();
+    }
+
+    // Prevent Mongoose CastError for non-ObjectId values.
+    // (Only our /jobs/:id routes are Mongo-backed.)
+    if (typeof id !== 'string' || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = await Job.findById(id);
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
@@ -4614,9 +4629,14 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
     
     // Direct SQL query for job completion app
     const query = `
-      select lm.LedgerName as ClientName,j.JobName,j.OrderQuantity,j.isclose 
-      from jobbookingjobcard 
-      j inner join LedgerMaster lm on lm.ledgerid=j.LedgerID 
+      select
+        lm.LedgerName as ClientName,
+        j.JobName,
+        j.OrderQuantity,
+        j.isclose,
+        j.jobcloseddate
+      from jobbookingjobcard
+      j inner join LedgerMaster lm on lm.ledgerid=j.LedgerID
       where j.jobbookingno = @JobBookingNo
     `;
     
@@ -4643,6 +4663,111 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
   } catch (error) {
     console.error('Error fetching job details for completion:', error);
     res.status(500).json({ error: 'Error fetching job details: ' + error.message });
+  }
+});
+
+// Possible completed jobs - used by Job Completion UI table
+router.get('/jobs/possible-completed-jobs', async (req, res) => {
+  try {
+    const pool = await getConnection();
+
+    // Ensure we run against the expected DB for this app.
+    const expectedDb = 'IndusEnterprise';
+    try {
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const currentDb = dbCheck.recordset[0]?.currentDb;
+      if (currentDb !== expectedDb) {
+        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
+        await pool.request().query(`USE [${expectedDb}]`);
+      }
+    } catch (dbErr) {
+      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
+      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    }
+
+    const query = `
+      ;WITH GPNAgg AS
+      (
+          SELECT
+              fgd.JobBookingID,
+              SUM(ISNULL(fgd.outercarton,0)
+                  * ISNULL(fgd.innercarton,0)
+                  * ISNULL(fgd.quantityperpack,0)
+              ) AS GpnUnits
+          FROM FinishGoodsTransactionMain fgm
+          JOIN FinishGoodsTransactionDetail fgd
+              ON fgd.FGTransactionID = fgm.FGtransactionID
+          WHERE
+              fgm.voucherid = -50
+              AND ISNULL(fgm.IsDeletedTransaction,0)=0
+              AND ISNULL(fgd.IsDeletedTransaction,0)=0
+          GROUP BY fgd.JobBookingID
+      ),
+
+      DispatchAgg AS
+      (
+          SELECT
+              fgd.JobBookingID,
+              SUM(ISNULL(fgd.innercarton,0)
+                  * ISNULL(fgd.quantityperpack,0)
+              ) AS DispatchQty
+          FROM FinishGoodsTransactionMain fgm
+          JOIN FinishGoodsTransactionDetail fgd
+              ON fgd.FGTransactionID = fgm.FGtransactionID
+          WHERE
+              fgm.voucherid = -51
+              AND ISNULL(fgm.IsDeletedTransaction,0)=0
+              AND ISNULL(fgd.IsDeletedTransaction,0)=0
+          GROUP BY fgd.JobBookingID
+      )
+
+      SELECT DISTINCT
+          JEJ.JobBookingID,
+          JEJ.JobBookingNo,
+          JEJ.OrderQuantity,
+          ISNULL(GPN.GpnUnits,0) AS GpnQty,
+          ISNULL(DSP.DispatchQty,0) AS DispatchQty,
+          (JEJ.OrderQuantity * 0.8) AS ThresholdQty,
+          CASE
+              WHEN ISNULL(GPN.GpnUnits,0) < (JEJ.OrderQuantity * 0.8)
+                   AND ISNULL(DSP.DispatchQty,0) < (JEJ.OrderQuantity * 0.8)
+              THEN 'PENDING'
+              ELSE 'COMPLETED'
+          END AS Status
+
+      FROM JobScheduleRelease JSR
+
+      INNER JOIN JobBookingJobCardContents JEJC
+          ON JEJC.JobBookingJobCardContentsID = JSR.JobBookingJobCardContentsID
+
+      INNER JOIN JobBookingJobCard JEJ
+          ON JEJ.JobBookingID = JEJC.JobBookingID
+
+      LEFT JOIN GPNAgg GPN
+          ON GPN.JobBookingID = JEJ.JobBookingID
+
+      LEFT JOIN DispatchAgg DSP
+          ON DSP.JobBookingID = JEJ.JobBookingID
+
+      WHERE
+          JSR.ProcessID in (279,10773)
+          AND ISNULL(JSR.IsOnlineProcess, 0) = 0
+          AND JSR.Status IN ('In Queue', 'Part Complete', 'Running')
+          AND ISNULL(JSR.IsDeletedTransaction,0)=0
+          AND ISNULL(JEJ.IsCancel,0)=0
+          AND ISNULL(JEJ.IsClose,0)=0
+
+      ORDER BY JEJ.JobBookingNo;
+    `;
+
+    const result = await pool.request().query(query);
+    return res.json({
+      status: true,
+      rows: result.recordset || []
+    });
+  } catch (error) {
+    console.error('Error fetching possible completed jobs:', error);
+    return res.status(500).json({ error: 'Error fetching possible completed jobs: ' + error.message });
   }
 });
 
