@@ -412,6 +412,8 @@ SELECT TOP 1000
         ELSE PBJ.JobLastPrintPlanEnd
     END                                                 AS PrintEnd,
     JB.IsCompletePacked,
+    ISNULL(JB.IsClose, 0)                              AS IsClose,
+    ISNULL(JB.IsCancel, 0)                             AS IsCancel,
     LM2.LedgerName                                      AS CoordinatorName,
     JB.DeliveryDate,
     JB.ProductCode,

@@ -30,6 +30,14 @@ function str(val) {
   return val != null && val !== '' ? String(val).trim() : '';
 }
 
+function getJobStatusFromFlags(isClose, isCancel) {
+  const closeVal = Number(isClose) === 1;
+  const cancelVal = Number(isCancel) === 1;
+  if (cancelVal) return 'Cancelled';
+  if (closeVal) return 'Completed';
+  return 'Pending';
+}
+
 /** If size string is repeated twice (e.g. "L:210,H:297,Pages:32,L:210,H:297,Pages:32"), return single occurrence. */
 function dedupeSizeString(s) {
   if (s == null || typeof s !== 'string') return s;
@@ -85,8 +93,12 @@ router.get('/job-card/filters/client-names', async (req, res) => {
 
 /** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&database=KOL */
 router.get('/job-card/search', async (req, res) => {
-  const { jobBookingNo, clientName, salesPersonID, fromJobDate, toJobDate, database } = req.query || {};
+  const { jobBookingNo, clientName, salesPersonID, fromJobDate, toJobDate, jobStatus, database } = req.query || {};
   const db = (str(database) || 'KOL').toUpperCase();
+  const normalizedJobStatus = str(jobStatus).toLowerCase();
+  if (normalizedJobStatus && !['pending', 'completed', 'cancelled'].includes(normalizedJobStatus)) {
+    return res.status(400).json({ error: 'jobStatus must be pending, completed, or cancelled' });
+  }
   if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
   try {
     const pool = await getPool(db);
@@ -118,12 +130,18 @@ router.get('/job-card/search', async (req, res) => {
       printStatus: get(r, 'PrintStatus'),
       printEnd: get(r, 'PrintEnd'),
       isCompletePacked: get(r, 'IsCompletePacked'),
+      isClose: get(r, 'IsClose'),
+      isCancel: get(r, 'IsCancel'),
+      jobStatus: getJobStatusFromFlags(get(r, 'IsClose'), get(r, 'IsCancel')),
       coordinatorName: get(r, 'CoordinatorName'),
       deliveryDate: get(r, 'DeliveryDate'),
       productCode: get(r, 'ProductCode'),
       refProductMasterCode: get(r, 'RefProductMasterCode')
     }));
-    return res.json({ results: rows });
+    const filteredRows = normalizedJobStatus
+      ? rows.filter(r => (str(r.jobStatus).toLowerCase() === normalizedJobStatus))
+      : rows;
+    return res.json({ results: filteredRows });
   } catch (e) {
     console.error('[job-card] search failed:', e);
     return res.status(500).json({ error: e.message || 'Search failed' });
