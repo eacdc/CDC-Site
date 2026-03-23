@@ -168,6 +168,38 @@ function normalizeMongoRow(docRow, userKeyNameMap) {
   };
 }
 
+// Build map: tagged job number -> unordered token number
+// Used to prefill Tag Jobs value for SQL rows from MongoDB linkage.
+async function loadTaggedJobsMap(db) {
+  const docs = await db
+    .collection('ArtworkUnordered')
+    .find(
+      {
+        tagedJobNo: { $exists: true, $ne: null },
+        tokenNumber: { $exists: true, $ne: null },
+        'status.isDeleted': { $ne: true },
+      },
+      { projection: { tagedJobNo: 1, tokenNumber: 1 } }
+    )
+    .toArray();
+
+  const map = new Map();
+  for (const d of docs) {
+    const jobNo = String(d.tagedJobNo || '').trim();
+    const token = String(d.tokenNumber || '').trim();
+    if (!jobNo || !token) continue;
+    map.set(jobNo.toLowerCase(), token);
+  }
+  return map;
+}
+
+function attachTagJobsValue(row, taggedJobsMap) {
+  const pwo = String(row.PWONO || row.PWONo || row.PwoNo || row.pwoNo || '').trim();
+  if (!pwo) return { ...row, TagJobs: null };
+  const token = taggedJobsMap.get(pwo.toLowerCase()) || null;
+  return { ...row, TagJobs: token };
+}
+
 // ---------- ers ----------
 // Use existing pooled connections from db.js
 async function fetchSqlPending(databaseKey, sourceDb) {
@@ -237,6 +269,7 @@ async function fetchMongoPending(db) {
   const docs = await db
     .collection('ArtworkUnordered')
     .find({
+      iscancelled: { $ne: 1 },
       'status.isDeleted': { $ne: true },
       $or: [
         // not finally approved
@@ -258,6 +291,7 @@ async function fetchMongoPending(db) {
     __SourceDB: 'MONGO_UNORDERED',
     __MongoId: d._id.toString(),
     __Site: d.site || 'COMMON',
+    TagJobs: d.tagedJobNo ?? null,
 
     // Map MongoDB fields for column mapping
     SODate: d.createdAt ?? null, // SO Date -> createdAt
@@ -326,6 +360,7 @@ async function fetchMongoPending(db) {
 router.get('/artwork/pending', async (req, res) => {
   try {
     const db = await getMongoDb();
+    const taggedJobsMap = await loadTaggedJobsMap(db);
 
     // Optional source filter:
     //   ?source=kol       -> only Kolkata SQL
@@ -359,8 +394,12 @@ router.get('/artwork/pending', async (req, res) => {
     ]);
 
     // Attach mapping to SQL rows
-    const kolNorm = kolRows.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
-    const amdNorm = amdRows.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
+    const kolNorm = kolRows
+      .map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
+    const amdNorm = amdRows
+      .map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
 
     // Mongo userKey -> displayName mapping
     const mongoUserKeys = mongoRows
@@ -408,20 +447,26 @@ async function fetchMongoCompleted(db) {
     .collection('ArtworkUnordered')
     .find({
       'status.isDeleted': { $ne: true },
-      // Finally approved
-      'finalApproval.approved': true,
-      // AND NOT (any tooling/plate pending)
-      $nor: [
-        // Tooling pending conditions (reversed)
-        { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-        { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-        { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-        // Plate pending (reversed) - exists and is not DONE/Done
-        { 
-          $and: [
-            { 'plate.output': { $exists: true } },
-            { 'plate.output': { $nin: [null, 'DONE', 'Done'] } }
-          ]
+      $or: [
+        // Include cancelled unordered approvals in Completed page
+        { iscancelled: 1 },
+        {
+          // Finally approved
+          'finalApproval.approved': true,
+          // AND NOT (any tooling/plate pending)
+          $nor: [
+            // Tooling pending conditions (reversed)
+            { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
+            { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
+            { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
+            // Plate pending (reversed) - exists and is not DONE/Done
+            {
+              $and: [
+                { 'plate.output': { $exists: true } },
+                { 'plate.output': { $nin: [null, 'DONE', 'Done'] } }
+              ]
+            },
+          ],
         },
       ],
     })
@@ -433,6 +478,7 @@ async function fetchMongoCompleted(db) {
     __SourceDB: 'MONGO_UNORDERED',
     __MongoId: d._id.toString(),
     __Site: d.site || 'COMMON',
+    TagJobs: d.tagedJobNo ?? null,
 
     // Map MongoDB fields for column mapping
     SODate: d.createdAt ?? null, // SO Date -> createdAt
@@ -500,6 +546,7 @@ async function fetchMongoCompleted(db) {
 router.get('/artwork/completed', async (req, res) => {
   try {
     const db = await getMongoDb();
+    const taggedJobsMap = await loadTaggedJobsMap(db);
 
     // Optional source filter (same as pending endpoint):
     //   ?source=kol       -> only Kolkata SQL
@@ -533,8 +580,12 @@ router.get('/artwork/completed', async (req, res) => {
     ]);
 
     // Attach mapping to SQL rows
-    const kolNorm = kolRows.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
-    const amdNorm = amdRows.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
+    const kolNorm = kolRows
+      .map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
+    const amdNorm = amdRows
+      .map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
 
     // Mongo userKey -> displayName mapping
     const mongoUserKeys = mongoRows
@@ -742,10 +793,19 @@ router.get('/artwork/all', async (req, res) => {
       loadUserMaps(db, 'AHMEDABAD', amdLedgerIds),
     ]);
 
-    const kolPendingNorm = kolPending.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
-    const amdPendingNorm = amdPending.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
-    const kolCompletedNorm = kolCompleted.map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap));
-    const amdCompletedNorm = amdCompleted.map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap));
+    const taggedJobsMap = await loadTaggedJobsMap(db);
+    const kolPendingNorm = kolPending
+      .map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
+    const amdPendingNorm = amdPending
+      .map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
+    const kolCompletedNorm = kolCompleted
+      .map((r) => attachSqlUserMapping(r, 'KOLKATA', kolMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
+    const amdCompletedNorm = amdCompleted
+      .map((r) => attachSqlUserMapping(r, 'AHMEDABAD', amdMap))
+      .map((r) => attachTagJobsValue(r, taggedJobsMap));
 
     const mongoUserKeys = [
       ...mongoPending,

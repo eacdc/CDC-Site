@@ -801,6 +801,227 @@ async function updateMongoRow(db, mongoId, mergedRow, updatedBy) {
   return r.modifiedCount;
 }
 
+// ---------- GET /artwork/unordered/pending-ids (for MSSQL rows dropdown) ----------
+router.get('/artwork/unordered/pending-ids', async (req, res) => {
+  try {
+    const db = await getMongoDb();
+    const docs = await db
+      .collection('ArtworkUnordered')
+      .find({
+        iscancelled: { $ne: 1 },
+        'status.isDeleted': { $ne: true },
+        $or: [
+          { 'finalApproval.approved': { $ne: true } },
+          { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
+          { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
+          { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
+          { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done'] } },
+        ],
+      })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .project({ _id: 1, tokenNumber: 1, reference: 1, 'client.name': 1, 'job.jobName': 1 })
+      .toArray();
+
+    const data = docs.map((d) => ({
+      _id: d._id.toString(),
+      tokenNumber: d.tokenNumber ?? '',
+      reference: d.reference ?? '',
+      clientName: d.client?.name ?? '',
+      jobName: d.job?.jobName ?? '',
+    }));
+
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error('Error in GET /api/artwork/unordered/pending-ids:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---------- GET /artwork/link-dropdown-data (for MongoDB rows: writable dropdown values) ----------
+router.get('/artwork/link-dropdown-data', async (req, res) => {
+  try {
+    // Query requested by user:
+    //   select jobbookingno from JobBookingJobCard
+    const query = `
+      SELECT DISTINCT JobBookingNo
+      FROM JobBookingJobCard WITH (NOLOCK)
+      WHERE JobBookingNo IS NOT NULL
+      ORDER BY JobBookingNo DESC
+    `;
+
+    const [kolResult, ahmResult] = await Promise.allSettled([
+      getPool('KOL').then((pool) => pool.request().query(query)),
+      getPool('AHM').then((pool) => pool.request().query(query)),
+    ]);
+
+    const allRows = [];
+    if (kolResult.status === 'fulfilled') {
+      allRows.push(...(kolResult.value?.recordset || []));
+    }
+    if (ahmResult.status === 'fulfilled') {
+      allRows.push(...(ahmResult.value?.recordset || []));
+    }
+
+    const seen = new Set();
+    const data = [];
+    for (const row of allRows) {
+      const raw = row?.JobBookingNo;
+      if (raw === null || raw === undefined) continue;
+      const jobNo = String(raw).trim();
+      if (!jobNo) continue;
+      const key = jobNo.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      data.push({ value: jobNo, label: jobNo });
+    }
+
+    res.json({ ok: true, data });
+  } catch (e) {
+    console.error('Error in GET /api/artwork/link-dropdown-data:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---------- POST /artwork/unordered/cancel (cancel unordered when linked to MSSQL row) ----------
+router.post('/artwork/unordered/cancel', async (req, res) => {
+  try {
+    const { mongoId, tagedJobNo } = req.body || {};
+    if (!mongoId || typeof mongoId !== 'string') {
+      return res.status(400).json({ ok: false, error: 'mongoId is required' });
+    }
+    const db = await getMongoDb();
+    const _id = new ObjectId(mongoId);
+    const r = await db.collection('ArtworkUnordered').updateOne(
+      { _id },
+      {
+        $set: {
+          iscancelled: 1,
+          tagedJobNo: tagedJobNo ? String(tagedJobNo) : null,
+          updatedAt: new Date(),
+        },
+      }
+    );
+    if (r.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: 'Unordered entry not found' });
+    }
+    res.json({ ok: true, message: 'Unordered approval cancelled' });
+  } catch (e) {
+    console.error('Error in POST /api/artwork/unordered/cancel:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---------- POST /artwork/unordered/tag-batch (batch tag from ordered rows — used by Prepress FMS Tag button) ----------
+router.post('/artwork/unordered/tag-batch', async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: 'items must be a non-empty array' });
+    }
+    const db = await getMongoDb();
+    let success = 0;
+    const errors = [];
+
+    for (const item of items) {
+      const mongoId = item?.mongoId;
+      const tagedJobNo = item?.tagedJobNo != null && item.tagedJobNo !== '' ? String(item.tagedJobNo) : null;
+      if (!mongoId || typeof mongoId !== 'string') {
+        errors.push({ mongoId, error: 'missing mongoId' });
+        continue;
+      }
+      try {
+        const _id = new ObjectId(mongoId);
+        const r = await db.collection('ArtworkUnordered').updateOne(
+          { _id },
+          {
+            $set: {
+              iscancelled: 1,
+              tagedJobNo,
+              updatedAt: new Date(),
+            },
+          }
+        );
+        if (r.matchedCount === 0) {
+          errors.push({ mongoId, error: 'not found' });
+        } else {
+          success += 1;
+        }
+      } catch (err) {
+        errors.push({ mongoId, error: err.message || String(err) });
+      }
+    }
+
+    res.json({
+      ok: true,
+      success,
+      failed: errors.length,
+      errors: errors.length ? errors : undefined,
+    });
+  } catch (e) {
+    console.error('Error in POST /api/artwork/unordered/tag-batch:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ---------- POST /artwork/unordered/untag-batch (batch untag + reopen unordered approvals) ----------
+router.post('/artwork/unordered/untag-batch', async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: 'items must be a non-empty array' });
+    }
+
+    const db = await getMongoDb();
+    let success = 0;
+    const errors = [];
+
+    for (const item of items) {
+      const mongoId = item?.mongoId;
+      const taggedJobNo = item?.tagedJobNo != null && item.tagedJobNo !== '' ? String(item.tagedJobNo) : null;
+      try {
+        let filter = null;
+        if (mongoId && typeof mongoId === 'string') {
+          filter = { _id: new ObjectId(mongoId) };
+        } else if (taggedJobNo) {
+          filter = { tagedJobNo: taggedJobNo };
+        } else {
+          errors.push({ item, error: 'missing mongoId or tagedJobNo' });
+          continue;
+        }
+
+        const r = await db.collection('ArtworkUnordered').updateMany(
+          filter,
+          {
+            $set: {
+              iscancelled: 0,
+              tagedJobNo: null,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        if (r.matchedCount === 0) {
+          errors.push({ item, error: 'not found' });
+        } else {
+          success += r.modifiedCount || 0;
+        }
+      } catch (err) {
+        errors.push({ item, error: err.message || String(err) });
+      }
+    }
+
+    res.json({
+      ok: true,
+      success,
+      failed: errors.length,
+      errors: errors.length ? errors : undefined,
+    });
+  } catch (e) {
+    console.error('Error in POST /api/artwork/unordered/untag-batch:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ---------- endpoint ----------
 router.post('/artwork/pending/update', async (req, res) => {
   try {

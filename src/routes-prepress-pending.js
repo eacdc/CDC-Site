@@ -228,6 +228,7 @@ async function fetchMongoPendingByUser(db, username) {
   // - not finally approved OR tooling/blanket/plate pending
   // Filter by prepressUserKey, toolingUserKey, or plateUserKey (derived from displayName lookup)
   const query = {
+    iscancelled: { $ne: 1 },
     'status.isDeleted': { $ne: true },
     $and: [
       {
