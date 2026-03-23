@@ -74,6 +74,11 @@ const jobOpsMasterSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  unitPrice: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
   ops: [jobOpSubSchema],
 }, {
   collection: 'JobopsMaster',
