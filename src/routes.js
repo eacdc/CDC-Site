@@ -4652,62 +4652,71 @@ router.get('/summary', async (req, res) => {
 
 router.get('/summary/chart', async (req, res) => {
   try {
-    const granularity = String(req.query.granularity || 'month').toLowerCase();
-    const allowed = new Set(['date', 'week', 'month', 'quarter', 'year']);
-    if (!allowed.has(granularity)) {
-      return res.status(400).json({ error: 'Invalid granularity' });
+    const filterType = String(req.query.filterType || 'year').toLowerCase();
+    const allowed = new Set(['month', 'quarter', 'year']);
+    if (!allowed.has(filterType)) {
+      return res.status(400).json({ error: 'Invalid filterType. Use month, quarter, or year.' });
     }
 
-    const contractorJobIds = await ContractorWD.distinct('jobId');
-    const contractorJobIdSet = new Set((contractorJobIds || []).map(j => String(j).trim()).filter(Boolean));
+    const now = new Date();
+    const selectedYear = Number(req.query.year || now.getUTCFullYear());
+    const selectedMonth = Number(req.query.month || (now.getUTCMonth() + 1));
+    const selectedQuarter = Number(req.query.quarter || (Math.floor(now.getUTCMonth() / 3) + 1));
 
-    const jobOpsDocs = await JobOpsMaster.find(
-      { jobId: { $in: [...contractorJobIdSet] } },
-      { jobId: 1, totalQty: 1, unitPrice: 1 }
-    ).lean();
-    const priceByJobId = {};
-    jobOpsDocs.forEach(doc => {
-      const jobId = String(doc.jobId || '').trim();
-      const jobPrice = Number(doc.unitPrice || 0) * Number(doc.totalQty || 0);
-      priceByJobId[jobId] = Number.isFinite(jobPrice) ? jobPrice : 0;
+    const start = new Date(Date.UTC(selectedYear, 0, 1));
+    const end = new Date(Date.UTC(selectedYear + 1, 0, 1));
+    if (filterType === 'month') {
+      const safeMonth = Math.min(12, Math.max(1, selectedMonth));
+      start.setUTCMonth(safeMonth - 1, 1);
+      end.setUTCFullYear(selectedYear, safeMonth, 1);
+    } else if (filterType === 'quarter') {
+      const safeQuarter = Math.min(4, Math.max(1, selectedQuarter));
+      const startMonth = (safeQuarter - 1) * 3;
+      start.setUTCMonth(startMonth, 1);
+      end.setUTCFullYear(selectedYear, startMonth + 3, 1);
+    }
+
+    const contractorRows = await Bill.aggregate([
+      {
+        $match: {
+          $and: [
+            { $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }] },
+            { createdAt: { $gte: start, $lt: end } },
+          ],
+        },
+      },
+      { $unwind: '$jobs' },
+      { $unwind: '$jobs.ops' },
+      {
+        $group: {
+          _id: '$contractorName',
+          totalValue: { $sum: { $ifNull: ['$jobs.ops.totalValue', 0] } },
+          billNumbers: { $addToSet: '$billNumber' },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          totalValue: 1,
+          billCount: { $size: '$billNumbers' },
+        },
+      },
+      { $sort: { totalValue: -1 } },
+    ]);
+
+    const labels = contractorRows.map(row => String(row._id || 'Unknown'));
+    const totalValues = contractorRows.map(row => Number(row.totalValue || 0));
+    const billCounts = contractorRows.map(row => Number(row.billCount || 0));
+
+    res.json({
+      labels,
+      totalValues,
+      billCounts,
+      filterType,
+      year: selectedYear,
+      month: selectedMonth,
+      quarter: selectedQuarter,
     });
-
-    const bills = await Bill.find(
-      { $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }] },
-      { jobs: 1, createdAt: 1 }
-    ).lean();
-
-    const periods = {};
-    bills.forEach(bill => {
-      const billDate = bill.createdAt ? new Date(bill.createdAt) : null;
-      if (!billDate || Number.isNaN(billDate.getTime())) return;
-      const period = getPeriodLabel(billDate, granularity);
-      if (!periods[period]) {
-        periods[period] = { totalCost: 0, jobIds: new Set() };
-      }
-
-      (bill.jobs || []).forEach(job => {
-        const jobId = String(job.jobNumber || '').trim();
-        if (!jobId) return;
-        periods[period].jobIds.add(jobId);
-        (job.ops || []).forEach(op => {
-          periods[period].totalCost += Number(op.totalValue || 0);
-        });
-      });
-    });
-
-    const labels = Object.keys(periods).sort();
-    const gpPercentValues = labels.map(label => {
-      const periodData = periods[label];
-      let periodTotalPrice = 0;
-      periodData.jobIds.forEach(jobId => {
-        if (!contractorJobIdSet.has(jobId)) return;
-        periodTotalPrice += Number(priceByJobId[jobId] || 0);
-      });
-      return getGPPct(periodTotalPrice, Number(periodData.totalCost || 0));
-    });
-
-    res.json({ labels, gpPercentValues });
   } catch (error) {
     console.error('Error building summary chart:', error);
     res.status(500).json({ error: 'Error building summary chart' });
