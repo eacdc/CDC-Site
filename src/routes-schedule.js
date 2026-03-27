@@ -129,6 +129,26 @@ router.post('/schedule/reorder', async (req, res) => {
 });
 
 /**
+ * POST /api/schedule/refresh
+ * Body: { database?: 'KOL'|'AHM' }
+ * Runs Auto_Schedule_Refresh.
+ */
+router.post('/schedule/refresh', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+  try {
+    const pool = await getPool(db);
+    await pool.request().execute('dbo.Auto_Schedule_Refresh');
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[schedule] refresh failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to refresh schedule' });
+  }
+});
+
+/**
  * POST /api/schedule/change-machine
  * Body: { database?: 'KOL'|'AHM', sourceMachineId: number, targetMachineId: number, jobIds: number[] }
  * Moves jobs from one machine to another and runs Auto_Schedule_Refresh.
