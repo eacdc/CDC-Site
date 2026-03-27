@@ -1122,6 +1122,7 @@ router.get('/processes/pending', async (req, res) => {
 			const jobCardSearchResult = await pool.request()
 				.input('NumberPart', sql.NVarChar(255), trimmedJobCardContentNo)
 				.execute('dbo.FindJobCardsByPartialNumber');
+      console.log('[PENDING] jobCardSearchResult:', JSON.stringify(jobCardSearchResult.recordset));
 			
 			if (jobCardSearchResult.recordset.length === 0) {
 				return res.json({ status: false, error: 'No job cards found matching the partial number' });
@@ -1147,7 +1148,8 @@ router.get('/processes/pending', async (req, res) => {
 							.input('MachineID', sql.Int, machineIdNum)
 							.input('JobCardContentNo', sql.NVarChar(255), jobCardNumber.toString())
 							.execute('dbo.GetPendingProcesses_ForMachineAndContent');
-						
+						console.log('[PENDING2] processResult:', JSON.stringify(processResult.recordset));
+            console.log('[PENDING2] machineIdNum, jobCardNumber:', machineIdNum, jobCardNumber);
 						// Add processes from this job card to our collection
 						if (processResult.recordset && processResult.recordset.length > 0) {
 							allProcesses = allProcesses.concat(processResult.recordset);
@@ -1168,6 +1170,8 @@ router.get('/processes/pending', async (req, res) => {
 				.input('MachineID', sql.Int, machineIdNum)
 				.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
 				.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+        console.log('[PENDING3] result:', JSON.stringify(result.recordset));
+
 		}
 
 		// Debug: Log the first row to see available columns
