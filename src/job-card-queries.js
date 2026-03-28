@@ -403,6 +403,40 @@ SELECT TOP 1000
         ELSE 'Incomplete'
     END                                                 AS PrintStatus,
 
+    /* Unique bracketed aliases — avoids duplicate colName collisions in mssql driver */
+    CASE
+        WHEN ISNULL(JB.IsCancel, 0) = 1                                         THEN 'Cancelled'
+        WHEN ISNULL(JB.IsClose, 0) = 1                                          THEN 'Closed'
+        WHEN ISNULL(DISP.DispatchQty, 0) >= 0.9 * ISNULL(JB.OrderQuantity, 0)
+             AND ISNULL(JB.OrderQuantity, 0) > 0                              THEN 'Closed'
+        ELSE 'Pending'
+    END                                                                      AS [JC_Search_Status],
+
+    CASE
+        WHEN ISNULL(JB.IsCancel, 0) = 1
+            THEN 'Cancelled'
+        WHEN ISNULL(JB.IsClose, 0) = 1
+            THEN 'Manually Closed'
+        WHEN ISNULL(DISP.DispatchQty, 0) >= 0.9 * ISNULL(JB.OrderQuantity, 0)
+             AND ISNULL(JB.OrderQuantity, 0) > 0
+            THEN 'Delivered >= 90% of Order Qty'
+        WHEN ISNULL(DISP.DispatchQty, 0) > 0
+            THEN 'Partially Delivered ('
+                 + CAST(ISNULL(DISP.DispatchQty, 0) AS VARCHAR(50))
+                 + ' of '
+                 + CAST(ISNULL(JB.OrderQuantity, 0) AS VARCHAR(50))
+                 + ')'
+        WHEN ISNULL(GPN.GpnUnits, 0) > 0
+            THEN 'Packed, Awaiting Dispatch'
+        WHEN ISNULL(BA.BindingQty, 0) > 0
+            THEN 'In Binding / Finishing'
+        WHEN ISNULL(PBJ.JobPrintDoneQty, 0) > 0
+            THEN 'Printing In Progress'
+        WHEN ISNULL(PBJ.JobPrintPlanQty, 0) > 0
+            THEN 'Planned, Not Yet Started'
+        ELSE 'Not Planned'
+    END                                                                      AS [JC_Search_StatusReason],
+
     -- Print End
     CASE
         WHEN ISNULL(PBJ.JobPrintDoneQty, 0)

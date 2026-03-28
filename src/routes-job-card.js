@@ -19,23 +19,71 @@ import {
 const router = Router();
 const COMPANY_ID = '2';
 
+/** Tedious merges duplicate column names into arrays; normalize to a scalar. */
+function normalizeCell(val) {
+  if (val == null) return val;
+  if (Array.isArray(val)) return val.length ? normalizeCell(val[0]) : undefined;
+  if (Buffer.isBuffer(val)) return val.toString('utf8');
+  return val;
+}
+
 function get(row, key) {
-  if (row == null) return undefined;
+  if (row == null || typeof row !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(row, key)) return normalizeCell(row[key]);
   const lower = key.toLowerCase();
-  const found = Object.keys(row).find(k => k.toLowerCase() === lower);
-  return found != null ? row[found] : undefined;
+  const keys = Object.keys(row);
+  for (let i = 0; i < keys.length; i++) {
+    if (keys[i].toLowerCase() === lower) return normalizeCell(row[keys[i]]);
+  }
+  const own = Object.getOwnPropertyNames(row);
+  for (let j = 0; j < own.length; j++) {
+    if (own[j].toLowerCase() === lower) return normalizeCell(row[own[j]]);
+  }
+  return undefined;
+}
+
+/** First non-empty string match (after normalize). */
+function pickCol(row, ...keys) {
+  for (const key of keys) {
+    const v = get(row, key);
+    if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+  }
+  return undefined;
+}
+
+/** Prefer first recordset that has rows (multi-statement batches). */
+function rowsFromQueryResult(result) {
+  const sets = result?.recordsets;
+  if (Array.isArray(sets) && sets.length) {
+    for (let i = 0; i < sets.length; i++) {
+      const rs = sets[i];
+      if (Array.isArray(rs) && rs.length) return rs;
+    }
+    const last = sets[sets.length - 1];
+    if (Array.isArray(last)) return last;
+  }
+  const rs = result?.recordset;
+  return Array.isArray(rs) ? rs : [];
+}
+
+function deriveBookingStatusFromFlags(isClose, isCancel) {
+  if (Number(isCancel) === 1) return 'Cancelled';
+  if (Number(isClose) === 1) return 'Closed';
+  return 'Pending';
 }
 
 function str(val) {
   return val != null && val !== '' ? String(val).trim() : '';
 }
 
-function getJobStatusFromFlags(isClose, isCancel) {
-  const closeVal = Number(isClose) === 1;
-  const cancelVal = Number(isCancel) === 1;
-  if (cancelVal) return 'Cancelled';
-  if (closeVal) return 'Completed';
-  return 'Pending';
+/** Query param jobStatus=pending|completed|cancelled vs SQL Status Pending|Closed|Cancelled */
+function matchesJobStatusFilter(sqlStatus, filterLower) {
+  if (!filterLower) return true;
+  const s = str(sqlStatus).toLowerCase();
+  if (filterLower === 'cancelled') return s === 'cancelled';
+  if (filterLower === 'completed') return s === 'closed';
+  if (filterLower === 'pending') return s === 'pending';
+  return false;
 }
 
 /** If size string is repeated twice (e.g. "L:210,H:297,Pages:32,L:210,H:297,Pages:32"), return single occurrence. */
@@ -91,13 +139,14 @@ router.get('/job-card/filters/client-names', async (req, res) => {
   }
 });
 
-/** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&database=KOL */
+/** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&jobStatus=&database=KOL
+ *  jobStatus filter: pending | completed | cancelled — matches SQL status Pending | Closed | Cancelled */
 router.get('/job-card/search', async (req, res) => {
   const { jobBookingNo, clientName, salesPersonID, fromJobDate, toJobDate, jobStatus, database } = req.query || {};
   const db = (str(database) || 'KOL').toUpperCase();
   const normalizedJobStatus = str(jobStatus).toLowerCase();
   if (normalizedJobStatus && !['pending', 'completed', 'cancelled'].includes(normalizedJobStatus)) {
-    return res.status(400).json({ error: 'jobStatus must be pending, completed, or cancelled' });
+    return res.status(400).json({ error: 'jobStatus must be pending, completed (Closed), or cancelled' });
   }
   if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
   try {
@@ -111,35 +160,53 @@ router.get('/job-card/search', async (req, res) => {
     request.input('FromJobDate', sql.Date, fromDate && !isNaN(fromDate.getTime()) ? fromDate : null);
     request.input('ToJobDate', sql.Date, toDate && !isNaN(toDate.getTime()) ? toDate : null);
     const result = await request.query(JobCardSearchQuery);
-    const rows = (result.recordset || []).map(r => ({
-      salesOrderNo: get(r, 'SalesOrderNo'),
-      poNo: get(r, 'PONo'),
-      poDate: get(r, 'PODate'),
-      jobBookingNo: get(r, 'JobBookingNo'),
-      jobBookingDate: get(r, 'JobBookingDate'),
-      categoryName: get(r, 'CategoryName'),
-      segmentName: get(r, 'SegmentName'),
-      clientName: get(r, 'ClientName'),
-      salesPersonName: get(r, 'SalesPersonName'),
-      jobName: get(r, 'JobName'),
-      jobType: get(r, 'JobType'),
-      orderQuantity: get(r, 'OrderQuantity'),
-      gpnQty: get(r, 'GpnQty'),
-      deliveredQty: get(r, 'DeliveredQty'),
-      bindingProdQty: get(r, 'BindingProdQty'),
-      printStatus: get(r, 'PrintStatus'),
-      printEnd: get(r, 'PrintEnd'),
-      isCompletePacked: get(r, 'IsCompletePacked'),
-      isClose: get(r, 'IsClose'),
-      isCancel: get(r, 'IsCancel'),
-      jobStatus: getJobStatusFromFlags(get(r, 'IsClose'), get(r, 'IsCancel')),
-      coordinatorName: get(r, 'CoordinatorName'),
-      deliveryDate: get(r, 'DeliveryDate'),
-      productCode: get(r, 'ProductCode'),
-      refProductMasterCode: get(r, 'RefProductMasterCode')
-    }));
+    console.log('[PENDING] result:', JSON.stringify(result.recordset));
+    const rawRows = rowsFromQueryResult(result);
+    const rows = rawRows.map((r) => {
+      const statusFromSql = pickCol(
+        r,
+        'JC_Search_Status'
+      );
+      const reasonFromSql = pickCol(
+        r,
+        'JC_Search_StatusReason'
+      );
+      const status =
+        str(statusFromSql) ||
+        deriveBookingStatusFromFlags(get(r, 'IsClose'), get(r, 'IsCancel'));
+      const statusReason = str(reasonFromSql);
+      console.log('[PENDING] status, statusReason:', status, statusReason);
+      return {
+        salesOrderNo: get(r, 'SalesOrderNo'),
+        poNo: get(r, 'PONo'),
+        poDate: get(r, 'PODate'),
+        jobBookingNo: get(r, 'JobBookingNo'),
+        jobBookingDate: get(r, 'JobBookingDate'),
+        categoryName: get(r, 'CategoryName'),
+        segmentName: get(r, 'SegmentName'),
+        clientName: get(r, 'ClientName'),
+        salesPersonName: get(r, 'SalesPersonName'),
+        jobName: get(r, 'JobName'),
+        jobType: get(r, 'JobType'),
+        orderQuantity: get(r, 'OrderQuantity'),
+        gpnQty: get(r, 'GpnQty'),
+        deliveredQty: get(r, 'DeliveredQty'),
+        bindingProdQty: get(r, 'BindingProdQty'),
+        printStatus: get(r, 'PrintStatus'),
+        printEnd: get(r, 'PrintEnd'),
+        isCompletePacked: get(r, 'IsCompletePacked'),
+        isClose: get(r, 'IsClose'),
+        isCancel: get(r, 'IsCancel'),
+        status,
+        statusReason,
+        coordinatorName: get(r, 'CoordinatorName'),
+        deliveryDate: get(r, 'DeliveryDate'),
+        productCode: get(r, 'ProductCode'),
+        refProductMasterCode: get(r, 'RefProductMasterCode')
+      };
+    });
     const filteredRows = normalizedJobStatus
-      ? rows.filter(r => (str(r.jobStatus).toLowerCase() === normalizedJobStatus))
+      ? rows.filter((r) => matchesJobStatusFilter(r.status, normalizedJobStatus))
       : rows;
     return res.json({ results: filteredRows });
   } catch (e) {
