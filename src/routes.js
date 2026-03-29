@@ -974,6 +974,24 @@ router.get('/auth/login', async (req, res) => {
 	}
 });
 
+/** Hardcoded app PIN for CDC Web admin username (case-insensitive "admin"). */
+const CDC_WEB_ADMIN_APP_PIN = '020796';
+
+router.post('/auth/admin-pin', async (req, res) => {
+	try {
+		const pin = req.body?.pin != null ? String(req.body.pin).trim() : '';
+		if (pin === CDC_WEB_ADMIN_APP_PIN) {
+			logAuth('Admin PIN verified', { route: '/auth/admin-pin', ip: req.ip });
+			return res.json({ status: true });
+		}
+		logAuth('Admin PIN rejected', { route: '/auth/admin-pin', ip: req.ip });
+		return res.json({ status: false, error: 'Invalid PIN. Login denied.' });
+	} catch (err) {
+		console.error('Admin PIN error:', err);
+		return res.status(500).json({ status: false, error: 'Internal server error' });
+	}
+});
+
 // Logout endpoint to clear session/cookies AND database pool cache
 router.post('/auth/logout', async (req, res) => {
 	try {
@@ -1725,6 +1743,93 @@ router.post('/processes/cancel', async (req, res) => {
         logProcessStart('Cancel process failed', { route: '/processes/cancel', ip: req.ip, error: String(err) });
         return res.status(500).json({ status: false, error: 'Internal server error' });
     }
+});
+
+// Production history search by job card content (partial text, min 4 chars in UI; API enforces min 1 non-empty)
+router.get('/production/search-by-job-card', async (req, res) => {
+	try {
+		const { searchText, database, companyId, branchId } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const text = (searchText != null ? String(searchText) : '').trim();
+		if (text.length < 4) {
+			return res.status(400).json({ status: false, error: 'Search text must be at least 4 characters' });
+		}
+
+		const companyParsed = Number(companyId);
+		const branchParsed = Number(branchId);
+		const companyIdNum = Number.isInteger(companyParsed) ? companyParsed : 2;
+		const branchIdNum = Number.isInteger(branchParsed) ? branchParsed : 0;
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('SearchText', sql.NVarChar(100), text.slice(0, 100))
+			.input('CompanyID', sql.Int, companyIdNum)
+			.input('BranchID', sql.Int, branchIdNum)
+			.execute('dbo.Production_Search_By_JobCardContentNo');
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Production search by job card error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
+const PRODUCTION_REVERSE_SUCCESS = 'Success: Reversed';
+
+router.post('/production/reverse', async (req, res) => {
+	try {
+		const { UserID, ProductionID, database, companyId, branchId } = req.body || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const userIdNum = Number(UserID);
+		const productionIdNum = Number(ProductionID);
+		if (!Number.isInteger(userIdNum)) {
+			return res.status(400).json({ status: false, error: 'UserID must be an integer' });
+		}
+		if (!Number.isInteger(productionIdNum)) {
+			return res.status(400).json({ status: false, error: 'ProductionID must be an integer' });
+		}
+
+		const companyParsed = Number(companyId);
+		const branchParsed = Number(branchId);
+		const companyIdNum = Number.isInteger(companyParsed) ? companyParsed : 2;
+		const branchIdNum = Number.isInteger(branchParsed) ? branchParsed : 0;
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('UserID', sql.Int, userIdNum)
+			.input('ProductionID', sql.Int, productionIdNum)
+			.input('CompanyID', sql.Int, companyIdNum)
+			.input('BranchID', sql.Int, branchIdNum)
+			.execute('dbo.Production_Reverse_Manu_v2');
+
+		const rows = result.recordset || [];
+		const first = rows[0] || {};
+		const statusText =
+			first.Status != null
+				? String(first.Status).trim()
+				: first.status != null
+					? String(first.status).trim()
+					: '';
+
+		const reversed = statusText === PRODUCTION_REVERSE_SUCCESS;
+
+		return res.json({
+			status: true,
+			reversed,
+			spStatus: statusText || 'No status returned from procedure',
+		});
+	} catch (err) {
+		console.error('Production reverse error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
 });
 
 // ============================================
