@@ -340,7 +340,7 @@ router.get('/job-card', async (req, res) => {
           const gangRows = gangRes.recordset || [];
           gangJobs = gangRows.map(r => ({
             jobBookingNo: str(get(r, 'JobBookingNo')) || '-',
-            quantity: str(get(r, 'Quantity')) || '-',
+            quantity: str(get(r, 'OrderQty')) || '-',
             gangUps: str(get(r, 'GangUps')) || '-',
             jobCardContentNo: str(get(r, 'JobCardContentNo')) || '-',
             primaryjobbookingno: str(get(r, 'primaryjobbookingno')) || ''

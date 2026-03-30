@@ -541,7 +541,7 @@ ORDER BY ClientName
 export const GangJobsQuery = `
 SELECT
   JJG.JobBookingNo,
-  JJG.Quantity,
+  JJG.OrderQty,
   JJG.GangUps,
   JJC.JobCardContentNo,
   JJG.primaryjobbookingno
