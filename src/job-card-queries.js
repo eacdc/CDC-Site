@@ -541,7 +541,7 @@ ORDER BY ClientName
 export const GangJobsQuery = `
 SELECT
   JJG.JobBookingNo,
-  JJG.OrderQty,
+  JJG.OrderOty,
   JJG.GangUps,
   JJC.JobCardContentNo,
   JJG.primaryjobbookingno
@@ -549,4 +549,201 @@ FROM jobbookingjobcardgang JJG
 LEFT JOIN JobBookingJobCardContents JJC
   ON JJG.JobBookingJobCardContentsID = JJC.JobBookingJobCardContentsID
 WHERE JJG.primaryjobbookingno = @PrimaryJobBookingNo;
+`;
+
+/**
+ * Gang Job Paper Details (supplementary section).
+ *
+ * Returns rows ONLY when the job is part of a gang (as primary).
+ * Parameters: @JobBookingID, @CompanyID
+ */
+export const GangJobPaperDetailsQuery = `
+/* ============================================================
+   Gang Job Paper Details — supplementary section
+   ============================================================ */
+
+;WITH MyGang AS
+(
+    SELECT
+        GV.GangWorkOrderNo,
+        GV.GangJobType,
+        GV.JobBookingID
+    FROM dbo.JobBookingJobcardGangView GV
+    WHERE GV.JobBookingID = @JobBookingID
+),
+
+/* Find the primary's content row for this gang */
+GangPrimary AS
+(
+    SELECT
+        GVP.JobBookingJobCardContentsID,
+        GVP.JobBookingID,
+        GVP.GangWorkOrderNo,
+        GVP.GangWorkOrderID
+    FROM MyGang MG
+    JOIN dbo.JobBookingJobcardGangView GVP
+      ON GVP.GangWorkOrderNo = MG.GangWorkOrderNo
+     AND GVP.GangJobType = 'Primary'
+),
+
+/* All members of this gang */
+GangAllMembers AS
+(
+    SELECT GV.JobBookingJobCardContentsID, GV.JobBookingNo, GV.GangJobType
+    FROM MyGang MG
+    JOIN dbo.JobBookingJobcardGangView GV
+      ON GV.GangWorkOrderNo = MG.GangWorkOrderNo
+),
+
+/* Primary's MakeReadyWastageSheet (taken once) */
+PrimaryMakeReady AS
+(
+    SELECT
+        GP.GangWorkOrderNo,
+        ISNULL(JC.MakeReadyWastageSheet, 0) AS MakeReadySheets
+    FROM GangPrimary GP
+    JOIN dbo.JobBookingJobCardContents JC
+      ON JC.JobBookingJobCardContentsID = GP.JobBookingJobCardContentsID
+     AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+),
+
+/* Sum of ALL members' WastageSheets */
+AllWastage AS
+(
+    SELECT
+        SUM(ISNULL(JC.WastageSheets, 0)) AS TotalWastageSheets
+    FROM GangAllMembers GAM
+    JOIN dbo.JobBookingJobCardContents JC
+      ON JC.JobBookingJobCardContentsID = GAM.JobBookingJobCardContentsID
+     AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+),
+
+/* RequiredSheets from gang table */
+GangSheets AS
+(
+    SELECT
+        MAX(GT.TotalRequiredCutSheets) AS RequiredSheets
+    FROM GangPrimary GP
+    JOIN dbo.JobBookingJobCardGang GT
+      ON GT.GangWorkOrderID = GP.GangWorkOrderID
+     AND ISNULL(GT.IsDeletedTransaction, 0) = 0
+),
+
+/* Combined total sheets */
+GangTotalSheets AS
+(
+    SELECT
+        GS.RequiredSheets
+        + PMR.MakeReadySheets
+        + AW.TotalWastageSheets AS TotalSheets
+    FROM GangSheets GS
+    CROSS JOIN PrimaryMakeReady PMR
+    CROSS JOIN AllWastage AW
+),
+
+/* Gang member list for display */
+GangJobList AS
+(
+    SELECT
+        STRING_AGG(GAM.JobBookingNo + ' (' + GAM.GangJobType + ')', ', ')
+            WITHIN GROUP (ORDER BY CASE GAM.GangJobType WHEN 'Primary' THEN 0 ELSE 1 END)
+        AS GangJobsDescription
+    FROM GangAllMembers GAM
+)
+
+SELECT
+    IM.ItemCode                                                            AS [Item Code],
+    CONCAT(NULLIF(IM.ItemName,''), '-', NULLIF(IM.ManufecturerItemCode,'')) AS [Item Name],
+    ISNULL(IM.ItemSize, IM.SizeW)                                          AS [Paper Size],
+    GTS.TotalSheets                                                        AS [Total Sheets],
+    JC.CutSize                                                             AS [Cut Size],
+    (ISNULL(JC.CutL,0) * ISNULL(JC.CutW,0)
+     + ISNULL(JC.CutLH,0) * ISNULL(JC.CutHL,0))                          AS [Cuts],
+    CASE
+        WHEN (ISNULL(JC.CutL,0) * ISNULL(JC.CutW,0)
+              + ISNULL(JC.CutLH,0) * ISNULL(JC.CutHL,0)) > 0
+        THEN GTS.TotalSheets
+             / (ISNULL(JC.CutL,0) * ISNULL(JC.CutW,0)
+                + ISNULL(JC.CutLH,0) * ISNULL(JC.CutHL,0))
+        ELSE 0
+    END                                                                    AS [Final Qty],
+    /* Item Weight: FullSheets × PaperSizeW × PaperSizeL × GSM / 10^9
+       For sheets: PaperSizeW and PaperSizeL from ItemMasterDetails
+       For reels: PaperSizeW from ItemMasterDetails, length from CutSize */
+    CASE
+        WHEN (ISNULL(JC.CutL,0) * ISNULL(JC.CutW,0)
+              + ISNULL(JC.CutLH,0) * ISNULL(JC.CutHL,0)) > 0
+             AND CHARINDEX('x', JC.CutSize) > 0
+        THEN
+            ROUND(
+                /* FullSheets = TotalSheets / TotalCuts */
+                (CAST(GTS.TotalSheets AS float)
+                 / (ISNULL(JC.CutL,0) * ISNULL(JC.CutW,0)
+                    + ISNULL(JC.CutLH,0) * ISNULL(JC.CutHL,0)))
+                * ISNULL(IMD_SW.PaperSizeW, 0)
+                * CASE
+                    WHEN ISNULL(JC.PlanType, 'Sheet Planning') = 'Sheet Planning'
+                        THEN ISNULL(IMD_SL.PaperSizeL, 0)
+                    ELSE CAST(RIGHT(JC.CutSize, LEN(JC.CutSize) - CHARINDEX('x', JC.CutSize)) AS float)
+                  END
+                * ISNULL(IMD_GSM.GSMValue, 0)
+                / 1000000000.0
+            , 3)
+        ELSE 0
+    END                                                                    AS [Item Weight],
+    GJL.GangJobsDescription                                                AS [Gang Jobs]
+
+FROM GangPrimary GP
+
+/* Primary's content row for paper details */
+JOIN dbo.JobBookingJobCardContents JC
+  ON JC.JobBookingJobCardContentsID = GP.JobBookingJobCardContentsID
+ AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+
+/* Paper items from MR (on primary) */
+JOIN dbo.JobBookingJobCardProcessMaterialRequirement JM
+  ON JM.JobBookingJobCardContentsID = JC.JobBookingJobCardContentsID
+ AND JM.CompanyID = JC.CompanyID
+ AND ISNULL(JM.IsDeletedTransaction, 0) = 0
+
+JOIN dbo.ItemMaster IM
+  ON IM.ItemID = JM.ItemID
+ AND IM.CompanyID = JC.CompanyID
+
+JOIN dbo.ItemGroupMaster IGM
+  ON IGM.ItemGroupID = IM.ItemGroupID
+ AND IGM.CompanyID = IM.CompanyID
+ AND IGM.ItemGroupNameID IN (-1, -2, -14)
+
+CROSS JOIN GangTotalSheets GTS
+CROSS JOIN GangJobList GJL
+
+/* GSM, SizeW, SizeL from ItemMasterDetails for the planning paper */
+LEFT JOIN (
+    SELECT IMD.ItemID, CAST(IMD.FieldValue AS float) AS GSMValue
+    FROM dbo.ItemMasterDetails IMD
+    WHERE IMD.FieldName = 'GSM'
+      AND ISNULL(IMD.FieldValue, '') <> ''
+) IMD_GSM ON IMD_GSM.ItemID = JC.PaperID
+
+LEFT JOIN (
+    SELECT IMD.ItemID, CAST(IMD.FieldValue AS float) AS PaperSizeW
+    FROM dbo.ItemMasterDetails IMD
+    WHERE IMD.FieldName = 'SizeW'
+      AND ISNULL(IMD.FieldValue, '') <> ''
+) IMD_SW ON IMD_SW.ItemID = JC.PaperID
+
+LEFT JOIN (
+    SELECT IMD.ItemID, CAST(IMD.FieldValue AS float) AS PaperSizeL
+    FROM dbo.ItemMasterDetails IMD
+    WHERE IMD.FieldName = 'SizeL'
+      AND ISNULL(IMD.FieldValue, '') <> ''
+) IMD_SL ON IMD_SL.ItemID = JC.PaperID
+
+GROUP BY IM.ItemCode, IM.ItemName, IM.ManufecturerItemCode, IM.ItemSize, IM.SizeW,
+         JC.CutSize, JC.CutL, JC.CutW, JC.CutLH, JC.CutHL,
+         JM.SequenceNo, GTS.TotalSheets, IMD_GSM.GSMValue, JC.PaperID,
+         GJL.GangJobsDescription, IMD_SW.PaperSizeW, IMD_SL.PaperSizeL,
+         JC.PlanType
+ORDER BY JM.SequenceNo;
 `;

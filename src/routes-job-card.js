@@ -12,6 +12,7 @@ import {
   ToolAllocationDetailsQuery,
   CorrugationDetailsQuery,
   GangJobsQuery,
+  GangJobPaperDetailsQuery,
   JobCardSearchQuery,
   SalesPersonsFilterQuery,
   ClientNamesFilterQuery
@@ -329,6 +330,32 @@ router.get('/job-card', async (req, res) => {
         }
       }
 
+      // ---- Gang Jobs Paper Details: supplementary section (only for packaging cards) ----
+      let gangPaperDetails = [];
+      if (cardType === 'packaging' && jobBookingId) {
+        try {
+          request = pool.request();
+          request.input('CompanyID', sql.NVarChar(10), companyId);
+          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+          const gpRes = await request.query(GangJobPaperDetailsQuery);
+          const gpRows = gpRes.recordset || [];
+          if (gpRows.length > 0) {
+            gangPaperDetails = gpRows.map(r => ({
+              itemCode: str(pickCol(r, 'ItemCode', 'Item Code')) ,
+              itemName: str(pickCol(r, 'ItemName', 'Item Name')) ,
+              paperSize: str(pickCol(r, 'PaperSize', 'Paper Size')) ,
+              totalSheets: str(pickCol(r, 'TotalSheets', 'Total Sheets')) ,
+              cutSize: str(pickCol(r, 'CutSize', 'Cut Size')) ,
+              cuts: str(get(r, 'Cuts')) ?? '-',
+              finalQty: str(pickCol(r, 'Final_Quantity', 'FinalQty', 'Final Qty')) || str(pickCol(r, 'TotalSheets', 'Total Sheets')) ,
+              itemWeight: str(pickCol(r, 'ItemWeight', 'Item Weight')) 
+            }));
+          }
+        } catch (e) {
+          console.warn('[job-card] GangJobPaperDetailsQuery failed:', e.message);
+        }
+      }
+
       // ---- Gang Jobs: for the "GANG JOBS" QR table (only for packaging cards) ----
       let gangJobs = [];
       if (jobBookingId) {
@@ -340,7 +367,7 @@ router.get('/job-card', async (req, res) => {
           const gangRows = gangRes.recordset || [];
           gangJobs = gangRows.map(r => ({
             jobBookingNo: str(get(r, 'JobBookingNo')) || '-',
-            quantity: str(get(r, 'OrderQty')) || '-',
+            quantity: str(get(r, 'OrderOty')) || '-',
             gangUps: str(get(r, 'GangUps')) || '-',
             jobCardContentNo: str(get(r, 'JobCardContentNo')) || '-',
             primaryjobbookingno: str(get(r, 'primaryjobbookingno')) || ''
@@ -552,6 +579,7 @@ router.get('/job-card', async (req, res) => {
         jobInfo,
         paperDetails,
         gangJobs,
+        gangPaperDetails,
         printDetails,
         operationDetails,
         allocatedMaterials,
