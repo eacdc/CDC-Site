@@ -78,6 +78,22 @@ function str(val) {
   return val != null && val !== '' ? String(val).trim() : '';
 }
 
+function formatIndianDateTime(val) {
+  if (val == null || val === '') return '';
+  const d = val instanceof Date ? val : new Date(val);
+  if (Number.isNaN(d.getTime())) return str(val);
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  }).format(d);
+}
+
 /** Query param jobStatus=pending|completed|cancelled vs SQL Status Pending|Closed|Cancelled */
 function matchesJobStatusFilter(sqlStatus, filterLower) {
   if (!filterLower) return true;
@@ -507,6 +523,35 @@ router.get('/job-card', async (req, res) => {
         console.warn('[job-card] GetPaperFlowForJob failed:', e.message);
       }
 
+      // ---- Delivery Details: shown below Paper Flow in packaging PDF ----
+      let deliveryDetails = {
+        orderQty: str(pickCol(row, 'OrderQuantity', 'orderqty')) || '-',
+        gpnQty: str(pickCol(row, 'GpnQty', 'gpnqty')) || '-',
+        deliveredQty: str(pickCol(row, 'DeliveredQty', 'deliveredqty')) || '-',
+        deliveryDate: formatIndianDateTime(pickCol(row, 'DeliveryDate', 'deliverydate')) || '-'
+      };
+      try {
+        request = pool.request();
+        request.input('JobBookingNo', sql.NVarChar(50), jobNo);
+        request.input('ClientName', sql.NVarChar(200), null);
+        request.input('SalesPersonID', sql.Int, null);
+        request.input('FromJobDate', sql.Date, null);
+        request.input('ToJobDate', sql.Date, null);
+        const searchRes = await request.query(JobCardSearchQuery);
+        const searchRows = rowsFromQueryResult(searchRes);
+        const searchRow = searchRows.find(r => str(get(r, 'JobBookingNo')) === jobNo) || searchRows[0];
+        if (searchRow) {
+          deliveryDetails = {
+            orderQty: str(pickCol(searchRow, 'OrderQuantity')) || deliveryDetails.orderQty,
+            gpnQty: str(pickCol(searchRow, 'GpnQty')) || deliveryDetails.gpnQty,
+            deliveredQty: str(pickCol(searchRow, 'DeliveredQty')) || deliveryDetails.deliveredQty,
+            deliveryDate: formatIndianDateTime(pickCol(searchRow, 'DeliveryDate')) || deliveryDetails.deliveryDate
+          };
+        }
+      } catch (e) {
+        console.warn('[job-card] DeliveryDetails via JobCardSearchQuery failed:', e.message);
+      }
+
       // ---- Raw Material QC Details: from procedure GetRawMaterialQC_ByJobBooking ----
       let rawMaterialQCDetails = [];
       const jbIdInt = jobBookingId ? parseInt(String(jobBookingId).replace(/,.*/, ''), 10) : null;
@@ -585,6 +630,7 @@ router.get('/job-card', async (req, res) => {
         allocatedMaterials,
         corrugationDetails,
         paperFlow,
+        deliveryDetails,
         paperFlowHeaderRows,
         rawMaterialQCDetails,
         footer
