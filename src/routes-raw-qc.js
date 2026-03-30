@@ -15,7 +15,7 @@ import sql from 'mssql';
 
 const router = Router();
 const GRN_VOUCHER_ID = -14;
-const PENDING_GRN_CUTOFF_DATE = '2026-02-22';
+const PENDING_GRN_CUTOFF_DATE = '2026-03-23';
 
 function getDb(body = {}) {
   const db = (body.database || '').toString().trim().toUpperCase();
