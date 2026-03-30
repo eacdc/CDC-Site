@@ -11,6 +11,7 @@ import {
   AllocateMaterialDetailsQuery,
   ToolAllocationDetailsQuery,
   CorrugationDetailsQuery,
+  GangJobsQuery,
   JobCardSearchQuery,
   SalesPersonsFilterQuery,
   ClientNamesFilterQuery
@@ -309,6 +310,7 @@ router.get('/job-card', async (req, res) => {
           request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
           request.input('JobBookingJobCardContentsID', sql.BigInt, null);
           const itemRes = await request.query(ItemDetailsQuery);
+          console.log('[PENDING] itemRes:', itemRes);
           const itemRows = itemRes.recordset || [];
           if (itemRows.length > 0) {
             paperDetails = itemRows.map(r => ({
@@ -324,6 +326,27 @@ router.get('/job-card', async (req, res) => {
           }
         } catch (e) {
           console.warn('[job-card] ItemDetails query failed:', e.message);
+        }
+      }
+
+      // ---- Gang Jobs: for the "GANG JOBS" QR table (only for packaging cards) ----
+      let gangJobs = [];
+      if (jobBookingId) {
+        try {
+          request = pool.request();
+          request.input('PrimaryJobBookingNo', sql.NVarChar(100), header.jobNo || jobNo);
+          console.log('[PENDING] primaryjobbookingno:', header.jobNo);
+          const gangRes = await request.query(GangJobsQuery);
+          const gangRows = gangRes.recordset || [];
+          gangJobs = gangRows.map(r => ({
+            jobBookingNo: str(get(r, 'JobBookingNo')) || '-',
+            quantity: str(get(r, 'Quantity')) || '-',
+            gangUps: str(get(r, 'GangUps')) || '-',
+            jobCardContentNo: str(get(r, 'JobCardContentNo')) || '-',
+            primaryjobbookingno: str(get(r, 'primaryjobbookingno')) || ''
+          }));
+        } catch (e) {
+          console.warn('[job-card] GangJobs query failed:', e.message);
         }
       }
 
@@ -528,6 +551,7 @@ router.get('/job-card', async (req, res) => {
         header,
         jobInfo,
         paperDetails,
+        gangJobs,
         printDetails,
         operationDetails,
         allocatedMaterials,

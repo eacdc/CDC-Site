@@ -528,3 +528,25 @@ WHERE CompanyID = @CompanyID
   AND ISNULL(ClientName, '') <> ''
 ORDER BY ClientName
 `;
+
+/**
+ * Gang Jobs for a given primary job booking/card number (JJG.primaryjobbookingno).
+ * Columns returned (note: caller can hide JobBookingNo and primaryjobbookingno):
+ * - JobBookingNo
+ * - Quantity
+ * - GangUps
+ * - JobCardContentNo
+ * - primaryjobbookingno
+ */
+export const GangJobsQuery = `
+SELECT
+  JJG.JobBookingNo,
+  JJG.Quantity,
+  JJG.GangUps,
+  JJC.JobCardContentNo,
+  JJG.primaryjobbookingno
+FROM jobbookingjobcardgang JJG
+LEFT JOIN JobBookingJobCardContents JJC
+  ON JJG.JobBookingJobCardContentsID = JJC.JobBookingJobCardContentsID
+WHERE JJG.primaryjobbookingno = @PrimaryJobBookingNo;
+`;
