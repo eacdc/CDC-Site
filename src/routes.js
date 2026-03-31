@@ -2427,6 +2427,287 @@ router.get('/grn/transporters', async (req, res) => {
     }
 });
 
+// GRN: Pending vouchers for delivery amount entry
+router.get('/grn/pending-delivery-amount', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const columnCheck = await pool.request().query(`
+            SELECT
+                CASE WHEN COL_LENGTH('FinishGoodsTransactionMain', 'SealNo') IS NULL THEN 0 ELSE 1 END AS hasSealNo,
+                CASE WHEN COL_LENGTH('FinishGoodsTransactionMain', 'NetAmount') IS NULL THEN 0 ELSE 1 END AS hasNetAmount;
+        `);
+        const hasSealNo = Number(columnCheck.recordset?.[0]?.hasSealNo) === 1;
+        const hasNetAmount = Number(columnCheck.recordset?.[0]?.hasNetAmount) === 1;
+        const transportTypeSelect = hasSealNo ? 'FGM.SealNo AS TransportType' : "CAST('local' AS NVARCHAR(200)) AS TransportType";
+        const deliveryAmountSelect = hasNetAmount ? 'FGM.NetAmount AS DeliveryAmount' : 'CAST(NULL AS DECIMAL(18,2)) AS DeliveryAmount';
+
+        const query = `
+            SELECT
+                FGM.FGTransactionID,
+                FGM.VoucherNo,
+                FGM.VoucherDate,
+                FGM.VehicleNo,
+                FGM.TransporterName,
+                LM.ledgername AS Clientname,
+                ${transportTypeSelect},
+                ${deliveryAmountSelect}
+            FROM FinishGoodsTransactionMain FGM
+            JOIN LedgerMaster LM ON FGM.LedgerID = LM.LedgerID
+            WHERE FGM.voucherid = -51
+              AND FGM.VoucherDate > '2026-03-10'
+              AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
+              AND LOWER(LTRIM(RTRIM(ISNULL(FGM.SealNo, '')))) <> 'local'
+              AND ISNULL(FGM.NetAmount, 0) = 0
+              and isnull(FGM.IsDeletedTransaction, 0) = 0
+            ORDER BY FGM.VoucherDate DESC;
+        `;
+
+        const result = await pool.request().query(query);
+        const records = (result.recordset || []).map((row) => ({
+            fgTransactionId: row.FGTransactionID ?? row.fgtransactionid,
+            voucherNo: row.VoucherNo ?? row.voucherno ?? null,
+            voucherDate: row.VoucherDate ?? row.voucherdate ?? null,
+            vehicleNo: row.VehicleNo ?? row.vehicleno ?? null,
+            transporterName: row.TransporterName ?? row.transportername ?? null,
+            clientName: row.Clientname ?? row.clientname ?? null,
+            transportType: String(row.TransportType || row.transporttype || '').trim().toLowerCase() === 'non local' ? 'non local' : 'local',
+            deliveryAmount: row.DeliveryAmount ?? row.deliveryamount ?? null
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN pending delivery amount error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch pending delivery amount records' });
+    }
+});
+
+// GRN: Completed vouchers for delivery amount view
+router.get('/grn/completed-delivery-amount', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const query = `
+            SELECT
+                FGM.FGTransactionID,
+                FGM.VoucherNo,
+                FGM.VoucherDate,
+                FGM.VehicleNo,
+                FGM.TransporterName,
+                LM.ledgername AS Clientname,
+                FGM.SealNo AS TransportType,
+                FGM.NetAmount AS DeliveryAmount
+            FROM FinishGoodsTransactionMain FGM
+            JOIN LedgerMaster LM ON FGM.LedgerID = LM.LedgerID
+            WHERE FGM.voucherid = -51
+              AND FGM.VoucherDate > '2026-03-10'
+              AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
+              AND (
+                    LOWER(LTRIM(RTRIM(ISNULL(FGM.SealNo, '')))) = 'local'
+                    OR ISNULL(FGM.NetAmount, 0) > 0
+              )
+            ORDER BY FGM.VoucherDate DESC;
+        `;
+
+        const result = await pool.request().query(query);
+        const records = (result.recordset || []).map((row) => ({
+            fgTransactionId: row.FGTransactionID ?? row.fgtransactionid,
+            voucherNo: row.VoucherNo ?? row.voucherno ?? null,
+            voucherDate: row.VoucherDate ?? row.voucherdate ?? null,
+            vehicleNo: row.VehicleNo ?? row.vehicleno ?? null,
+            transporterName: row.TransporterName ?? row.transportername ?? null,
+            clientName: row.Clientname ?? row.clientname ?? null,
+            transportType: String(row.TransportType || row.transporttype || '').trim().toLowerCase() === 'non local' ? 'non local' : 'local',
+            deliveryAmount: row.DeliveryAmount ?? row.deliveryamount ?? null
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN completed delivery amount error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch completed delivery amount records' });
+    }
+});
+
+// GRN: Save delivery amount entries
+router.post('/grn/save-delivery-amount', async (req, res) => {
+    let transaction = null;
+    try {
+        const { database, userId, entries } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        if (!Array.isArray(entries) || entries.length === 0) {
+            return res.status(400).json({ status: false, error: 'No entries provided' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const columnCheck = await pool.request().query(`
+            SELECT
+                CASE WHEN COL_LENGTH('FinishGoodsTransactionMain', 'SealNo') IS NULL THEN 0 ELSE 1 END AS hasSealNo,
+                CASE WHEN COL_LENGTH('FinishGoodsTransactionMain', 'NetAmount') IS NULL THEN 0 ELSE 1 END AS hasNetAmount;
+        `);
+        const hasSealNo = Number(columnCheck.recordset?.[0]?.hasSealNo) === 1;
+        const hasNetAmount = Number(columnCheck.recordset?.[0]?.hasNetAmount) === 1;
+        if (!hasSealNo && !hasNetAmount) {
+            return res.status(400).json({
+                status: false,
+                error: 'FinishGoodsTransactionMain does not contain SealNo/NetAmount columns in this database.'
+            });
+        }
+
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        let updatedCount = 0;
+
+        for (const item of entries) {
+            const fgTransactionId = Number(item?.fgTransactionId);
+            const transportTypeRaw = String(item?.transportType || '').trim().toLowerCase();
+            const transportType = transportTypeRaw === 'non local' ? 'non local' : 'local';
+            const deliveryAmount = transportType === 'non local'
+                ? Number(item?.deliveryAmount)
+                : null;
+
+            if (!Number.isInteger(fgTransactionId) || fgTransactionId <= 0) {
+                continue;
+            }
+            if (transportType === 'non local' && !Number.isFinite(deliveryAmount)) {
+                throw new Error(`Delivery amount is required for FGTransactionID ${fgTransactionId}`);
+            }
+
+            const request = new sql.Request(transaction);
+            request.input('FGTransactionID', sql.Int, fgTransactionId);
+            const setClauses = [];
+            if (hasSealNo && transportType === 'local') {
+                request.input('SealNo', sql.NVarChar(200), transportType);
+                setClauses.push('SealNo = @SealNo');
+            }
+            if (hasNetAmount) {
+                request.input('NetAmount', sql.Decimal(18, 2), transportType === 'non local' ? deliveryAmount : 0);
+                setClauses.push('NetAmount = @NetAmount');
+            }
+            if (setClauses.length === 0) {
+                continue;
+            }
+            await request.query(`
+                UPDATE FinishGoodsTransactionMain
+                SET
+                    ${setClauses.join(',\n                    ')}
+                WHERE FGTransactionID = @FGTransactionID
+                  AND ISNULL(IsDeletedTransaction, 0) = 0;
+            `);
+
+            const deliveryCostForDetail = transportType === 'non local' ? deliveryAmount : 0;
+            const detailRequest = new sql.Request(transaction);
+            detailRequest.input('FGTransactionID', sql.Int, fgTransactionId);
+            detailRequest.input('DeliveryCost', sql.Decimal(18, 2), Number.isFinite(deliveryCostForDetail) ? deliveryCostForDetail : 0);
+            await detailRequest.query(`
+                WITH CTE AS (
+                    SELECT
+                        fgtd.FGTransactionDetailID,
+                        fgtd.FGTransactionID,
+                        fgtd.jobbookingid,
+                        fgtd.quantityperpack,
+                        (fgtd.quantityperpack * jobd.ChangeCost)
+                        / NULLIF(SUM(fgtd.quantityperpack * jobd.ChangeCost) OVER (PARTITION BY fgtd.FGTransactionID), 0)
+                        * @DeliveryCost AS totalcft
+                    FROM FinishGoodsTransactionDetail fgtd
+                    INNER JOIN JobBookingJobCard jbjc
+                        ON fgtd.jobbookingid = jbjc.jobbookingid
+                    INNER JOIN JobOrderBookingDetails jobd
+                        ON jbjc.orderbookingid = jobd.orderbookingid
+                    WHERE fgtd.FGTransactionID = @FGTransactionID
+                      AND (fgtd.IsDeletedTransaction IS NULL OR fgtd.IsDeletedTransaction = 0)
+                      AND (fgtd.IsDeleted IS NULL OR fgtd.IsDeleted = 0)
+                )
+                UPDATE fgtd
+                SET
+                    totalcft = cte.totalcft,
+                    cft = cte.totalcft / NULLIF(cte.quantityperpack, 0)
+                FROM FinishGoodsTransactionDetail fgtd
+                INNER JOIN CTE cte
+                    ON fgtd.FGTransactionDetailID = cte.FGTransactionDetailID
+                WHERE fgtd.FGTransactionID = @FGTransactionID
+                  AND (fgtd.IsDeletedTransaction IS NULL OR fgtd.IsDeletedTransaction = 0)
+                  AND (fgtd.IsDeleted IS NULL OR fgtd.IsDeleted = 0);
+            `);
+            updatedCount += 1;
+        }
+
+        // Bulk fallback update on save click:
+        // 1) Set NetAmount = 20000 for non-SEA rows where NetAmount is 0
+        // 2) Recompute detail-level cft/totalcft for the same FGTransactionIDs with DeliveryCost = 20000
+        const bulkRequest = new sql.Request(transaction);
+        await bulkRequest.query(`
+            DECLARE @Target TABLE (
+                FGTransactionID INT PRIMARY KEY
+            );
+
+            UPDATE fgm
+            SET fgm.NetAmount = 20000
+            OUTPUT INSERTED.FGTransactionID INTO @Target(FGTransactionID)
+            FROM FinishGoodsTransactionMain fgm
+            WHERE ISNULL(fgm.IsDeletedTransaction, 0) = 0
+              AND ISNULL(fgm.NetAmount, 0) = 0
+              AND ISNULL(fgm.ModeOfTransport, '') LIKE '%SEA%';
+
+            ;WITH CTE AS (
+                SELECT
+                    fgtd.FGTransactionDetailID,
+                    fgtd.FGTransactionID,
+                    fgtd.jobbookingid,
+                    fgtd.quantityperpack,
+                    (fgtd.quantityperpack * jobd.ChangeCost)
+                    / NULLIF(SUM(fgtd.quantityperpack * jobd.ChangeCost) OVER (PARTITION BY fgtd.FGTransactionID), 0)
+                    * 20000 AS totalcft
+                FROM FinishGoodsTransactionDetail fgtd
+                INNER JOIN JobBookingJobCard jbjc
+                    ON fgtd.jobbookingid = jbjc.jobbookingid
+                INNER JOIN JobOrderBookingDetails jobd
+                    ON jbjc.orderbookingid = jobd.orderbookingid
+                INNER JOIN @Target t
+                    ON t.FGTransactionID = fgtd.FGTransactionID
+                WHERE (fgtd.IsDeletedTransaction IS NULL OR fgtd.IsDeletedTransaction = 0)
+                  AND (fgtd.IsDeleted IS NULL OR fgtd.IsDeleted = 0)
+            )
+            UPDATE fgtd
+            SET
+                totalcft = cte.totalcft,
+                cft = cte.totalcft / NULLIF(cte.quantityperpack, 0)
+            FROM FinishGoodsTransactionDetail fgtd
+            INNER JOIN CTE cte
+                ON fgtd.FGTransactionDetailID = cte.FGTransactionDetailID
+            WHERE (fgtd.IsDeletedTransaction IS NULL OR fgtd.IsDeletedTransaction = 0)
+              AND (fgtd.IsDeleted IS NULL OR fgtd.IsDeleted = 0);
+        `);
+
+        await transaction.commit();
+        return res.json({ status: true, updatedCount });
+    } catch (err) {
+        if (transaction) {
+            try { await transaction.rollback(); } catch (_) {}
+        }
+        console.error('GRN save delivery amount error:', err);
+        return res.status(500).json({ status: false, error: err?.message || 'Failed to save delivery amount entries' });
+    }
+});
+
 // GRN: Barcode status lookup across Packing Slip, GPN, and Delivery Note
 router.post('/grn/barcode-status', async (req, res) => {
     try {
