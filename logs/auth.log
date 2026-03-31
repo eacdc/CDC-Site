@@ -86,3 +86,12 @@
 {"ts":"2026-03-29T07:17:44.481Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
 {"ts":"2026-03-29T07:17:48.026Z","message":"Admin PIN rejected","route":"/auth/admin-pin","ip":"::1"}
 {"ts":"2026-03-29T07:17:52.165Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-03-31T11:23:20.988Z","message":"Logout request received","route":"/auth/logout","ip":"::1"}
+{"ts":"2026-03-31T11:23:20.999Z","message":"Logout successful - session, cookies, and DB pools cleared","route":"/auth/logout","ip":"::1"}
+{"ts":"2026-03-31T11:23:21.018Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"admin","database":"KOL","_t":"1774956201003"}}
+{"ts":"2026-03-31T11:23:21.020Z","message":"Login params normalized","username":"admin","databaseParam":"KOL","selectedDatabase":"KOL"}
+{"ts":"2026-03-31T11:23:21.022Z","message":"Attempting to get DB pool","selectedDatabase":"KOL"}
+{"ts":"2026-03-31T11:23:21.920Z","message":"DB pool acquired","selectedDatabase":"KOL"}
+{"ts":"2026-03-31T11:23:22.194Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
+{"ts":"2026-03-31T11:23:22.303Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-03-31T11:23:22.303Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}

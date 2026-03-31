@@ -2464,6 +2464,30 @@ router.get('/grn/pending-delivery-amount', async (req, res) => {
               AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
               AND LOWER(LTRIM(RTRIM(ISNULL(FGM.SealNo, '')))) <> 'local'
               AND ISNULL(FGM.NetAmount, 0) = 0
+              AND NOT (
+                    ISNULL(FGM.VehicleNo, '') LIKE '%3703%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%8123%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%3931%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%3212%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%1667%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%0549%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%2332%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%8600%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%9844%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%5034%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%9362%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%4695%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%2196%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%6354%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%5327%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%4614%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%2906%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%7585%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%6362%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%0342%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%7500%'
+                 OR ISNULL(FGM.VehicleNo, '') LIKE '%6313%'
+              )
               and isnull(FGM.IsDeletedTransaction, 0) = 0
             ORDER BY FGM.VoucherDate DESC;
         `;
@@ -2535,6 +2559,53 @@ router.get('/grn/completed-delivery-amount', async (req, res) => {
     } catch (err) {
         console.error('GRN completed delivery amount error:', err);
         return res.status(500).json({ status: false, error: 'Failed to fetch completed delivery amount records' });
+    }
+});
+
+// Inventory Summary Tool: itemwise by item group
+router.get('/inventory-summary/group', async (req, res) => {
+    try {
+        const { database, fromDate, toDate } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('StartDate', sql.Date, safeFromDate)
+            .input('EndDate', sql.Date, safeToDate)
+            .execute('dbo.GetInventorySummaryByGroup');
+
+        const records = (result.recordset || []).map((row) => ({
+            itemGroup: row.ItemGroup ?? row.itemgroup ?? '',
+            itemId: row.ItemID ?? row.itemid ?? null,
+            itemName: row.ItemName ?? row.itemname ?? '',
+            quality: row.Quality ?? row.quality ?? '',
+            gsm: row.GSM ?? row.gsm ?? 0,
+            sizeW: row.SizeW ?? row.sizew ?? 0,
+            sizeL: row.SizeL ?? row.sizel ?? 0,
+            stockUnit: row.StockUnit ?? row.stockunit ?? '',
+            openingKg: row.Opening_KG ?? row.opening_kg ?? 0,
+            stockInKg: row.StockIn_KG ?? row.stockin_kg ?? 0,
+            stockOutKg: row.StockOut_KG ?? row.stockout_kg ?? 0,
+            closingKg: row.Closing_KG ?? row.closing_kg ?? 0
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('Inventory summary group error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch inventory summary' });
     }
 });
 
