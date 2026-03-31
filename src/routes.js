@@ -2460,7 +2460,7 @@ router.get('/grn/pending-delivery-amount', async (req, res) => {
             FROM FinishGoodsTransactionMain FGM
             JOIN LedgerMaster LM ON FGM.LedgerID = LM.LedgerID
             WHERE FGM.voucherid = -51
-              AND FGM.VoucherDate > '2026-03-10'
+              AND FGM.VoucherDate > '2026-03-24'
               AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
               AND LOWER(LTRIM(RTRIM(ISNULL(FGM.SealNo, '')))) <> 'local'
               AND ISNULL(FGM.NetAmount, 0) = 0
@@ -2510,7 +2510,7 @@ router.get('/grn/completed-delivery-amount', async (req, res) => {
             FROM FinishGoodsTransactionMain FGM
             JOIN LedgerMaster LM ON FGM.LedgerID = LM.LedgerID
             WHERE FGM.voucherid = -51
-              AND FGM.VoucherDate > '2026-03-10'
+              AND FGM.VoucherDate > '2026-03-24'
               AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
               AND (
                     LOWER(LTRIM(RTRIM(ISNULL(FGM.SealNo, '')))) = 'local'
