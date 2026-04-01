@@ -2609,6 +2609,56 @@ router.get('/inventory-summary/group', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: clientwise stock movement
+router.get('/inventory-summary/clientwise', async (req, res) => {
+    try {
+        const { database, fromDate, toDate, companyId } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        const companyIdNum = Number(companyId || 2);
+        if (!Number.isInteger(companyIdNum) || companyIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid companyId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('StartDate', sql.Date, safeFromDate)
+            .input('EndDate', sql.Date, safeToDate)
+            .input('CompanyId', sql.Int, companyIdNum)
+            .execute('dbo.GetClientWiseStockMovement');
+
+        const records = (result.recordset || []).map((row) => ({
+            clientName: row.ClientName ?? row.clientname ?? '',
+            clientId: row.ClientID ?? row.clientid ?? null,
+            itemGroupId: row.ItemGroupID ?? row.itemgroupid ?? null,
+            itemId: row.ItemID ?? row.itemid ?? null,
+            itemName: row.ItemName ?? row.itemname ?? '',
+            openingStockKg: row.OpeningStockKG ?? row.openingstockkg ?? 0,
+            receiptKg: row.ReceiptKG ?? row.receiptkg ?? 0,
+            issueKg: row.IssueKG ?? row.issuekg ?? 0,
+            closingStockKg: row.ClosingStockKG ?? row.closingstockkg ?? 0
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('Inventory summary clientwise error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch clientwise stock movement' });
+    }
+});
+
 // GRN: Save delivery amount entries
 router.post('/grn/save-delivery-amount', async (req, res) => {
     let transaction = null;
