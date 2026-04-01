@@ -248,6 +248,7 @@ router.get('/job-card', async (req, res) => {
       const pool = await getPool(db);
       let request = pool.request();
       request.input('JobNumber', sql.NVarChar(100), jobNo);
+      console.log('########[PENDING] jobNo:', jobNo);
       const procResult = await request.query("EXEC dbo.ProductionWorkOrderPrint 1, @JobNumber, '2'");
       const row = (procResult.recordset && procResult.recordset[0]) || null;
       if (!row) return res.status(404).json({ error: 'Job not found' });
@@ -380,6 +381,7 @@ router.get('/job-card', async (req, res) => {
           request.input('PrimaryJobBookingNo', sql.NVarChar(100), header.jobNo || jobNo);
           console.log('[PENDING] primaryjobbookingno:', header.jobNo);
           const gangRes = await request.query(GangJobsQuery);
+          console.log('[PENDING] gangRes:', gangRes);
           const gangRows = gangRes.recordset || [];
           gangJobs = gangRows.map(r => ({
             jobBookingNo: str(get(r, 'JobBookingNo')) || '-',
@@ -671,7 +673,7 @@ router.get('/job-card', async (req, res) => {
       const seenIds = new Set();
       const components = recordset
         .map((r, idx) => ({
-          JobBookingJobCardContentsID: get(r, 'JobBookingJobCardContentsID')[0],
+          JobBookingJobCardContentsID: get(r, 'JobBookingJobCardContentsID'),
           PlanContName: str(get(r, 'PlanContName')) || str(get(r, 'ContentName')) || str(get(r, 'JobCardContentNo')) || ('Component ' + (idx + 1))
         }))
         .filter(c => {
@@ -691,7 +693,7 @@ router.get('/job-card', async (req, res) => {
         const partName = comp.PlanContName ;
 
         // Find the component-specific row(s) from procedure output
-        const compRows = recordset.filter(r => get(r, 'JobBookingJobCardContentsID')[0] === contentsId);
+        const compRows = recordset.filter(r => get(r, 'JobBookingJobCardContentsID') === contentsId);
         // console.log("#############3",compRows);
         const compRow = compRows[0] || row; // fallback to first row if not found
 
@@ -846,8 +848,10 @@ router.get('/job-card', async (req, res) => {
         displayId: str(get(row, 'JobCardContentNo')) || jobNo,
         header: bookHeader,
         generalInfo,
+        gangJobs,
         parts,
         paperFlow: paperFlow || [],
+        deliveryDetails,
         rawMaterialQCDetails,
         footer
       };
