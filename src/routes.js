@@ -2659,6 +2659,77 @@ router.get('/inventory-summary/clientwise', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: Top 200 PO records where ClientID is null/0
+router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().query(`
+            SELECT TOP 200
+                m.VoucherNo                     AS PONO,
+                m.VoucherDate                   AS PODate,
+                lm.LedgerName                   AS ClientName,
+                d.ItemID,
+                im.ItemName,
+                SUM(d.PurchaseOrderQuantity)  AS PurchaseOrderQuantity,
+                d.PurchaseUnit,
+                d.PurchaseRate,
+                SUM(d.GrossAmount)            AS GrossAmount
+            FROM dbo.ItemTransactionDetail d WITH (NOLOCK)
+            INNER JOIN dbo.ItemTransactionMain m WITH (NOLOCK)
+                ON m.TransactionID = d.TransactionID
+            INNER JOIN dbo.ItemMaster im WITH (NOLOCK)
+                ON im.ItemID = d.ItemID
+            LEFT JOIN dbo.LedgerMaster lm WITH (NOLOCK)
+                ON lm.LedgerID = d.ClientID
+            WHERE d.PurchaseOrderQuantity > 0
+              AND d.ItemGroupID IN (2, 14)
+              AND ISNULL(d.IsDeletedTransaction, 0) = 0
+              AND ISNULL(m.IsDeletedTransaction, 0) = 0
+              AND (
+                    d.ClientID = 0
+                    OR d.ClientID IS NULL
+                    OR lm.LedgerName LIKE '%cdc printer%'
+                  )
+              AND d.BasicAmount > 75000
+              AND d.PurchaseRate > 45
+              AND m.VoucherID = -11
+              AND ISNULL(im.FloorStock, 0) > 0
+            GROUP BY
+                m.VoucherNo,
+                m.VoucherDate,
+                lm.LedgerName,
+                d.ItemID,
+                im.ItemName,
+                d.PurchaseUnit,
+                d.PurchaseRate
+            ORDER BY SUM(d.GrossAmount) DESC;
+        `);
+
+        const records = (result.recordset || []).map((row) => ({
+            pono: row.PONO ?? row.pono ?? '',
+            poDate: row.PODate ?? row.podate ?? null,
+            clientName: row.ClientName ?? row.clientname ?? '',
+            itemId: row.ItemID ?? row.itemid ?? null,
+            itemName: row.ItemName ?? row.itemname ?? '',
+            purchaseOrderQuantity: row.PurchaseOrderQuantity ?? row.purchaseorderquantity ?? 0,
+            purchaseUnit: row.PurchaseUnit ?? row.purchaseunit ?? '',
+            purchaseRate: row.PurchaseRate ?? row.purchaserate ?? 0,
+            grossAmount: row.GrossAmount ?? row.grossamount ?? 0
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('Inventory Summary PO no-client error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch top 200 PO (no client)' });
+    }
+});
+
 // GRN: Save delivery amount entries
 router.post('/grn/save-delivery-amount', async (req, res) => {
     let transaction = null;
