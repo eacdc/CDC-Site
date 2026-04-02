@@ -2669,64 +2669,110 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
         }
 
         const pool = await getPool(selectedDatabase);
-        const result = await pool.request().query(`
-            SELECT TOP 200
-                m.VoucherNo                     AS PONO,
-                m.VoucherDate                   AS PODate,
-                lm.LedgerName                   AS ClientName,
-                d.ItemID,
-                im.ItemName,
-                SUM(d.PurchaseOrderQuantity)  AS PurchaseOrderQuantity,
-                d.PurchaseUnit,
-                d.PurchaseRate,
-                SUM(d.GrossAmount)            AS GrossAmount
-            FROM dbo.ItemTransactionDetail d WITH (NOLOCK)
-            INNER JOIN dbo.ItemTransactionMain m WITH (NOLOCK)
-                ON m.TransactionID = d.TransactionID
-            INNER JOIN dbo.ItemMaster im WITH (NOLOCK)
-                ON im.ItemID = d.ItemID
-            LEFT JOIN dbo.LedgerMaster lm WITH (NOLOCK)
-                ON lm.LedgerID = d.ClientID
-            WHERE d.PurchaseOrderQuantity > 0
-              AND d.ItemGroupID IN (2, 14)
-              AND ISNULL(d.IsDeletedTransaction, 0) = 0
-              AND ISNULL(m.IsDeletedTransaction, 0) = 0
-              AND (
-                    d.ClientID = 0
-                    OR d.ClientID IS NULL
-                    OR lm.LedgerName LIKE '%cdc printer%'
-                  )
-              AND d.BasicAmount > 75000
-              AND d.PurchaseRate > 45
-              AND m.VoucherID = -11
-              AND ISNULL(im.FloorStock, 0) > 0
-            GROUP BY
-                m.VoucherNo,
-                m.VoucherDate,
-                lm.LedgerName,
-                d.ItemID,
-                im.ItemName,
-                d.PurchaseUnit,
-                d.PurchaseRate
-            ORDER BY SUM(d.GrossAmount) DESC;
-        `);
+        const result = await pool.request().execute('dbo.GetUntaggedClientStock');
 
-        const records = (result.recordset || []).map((row) => ({
-            pono: row.PONO ?? row.pono ?? '',
-            poDate: row.PODate ?? row.podate ?? null,
-            clientName: row.ClientName ?? row.clientname ?? '',
-            itemId: row.ItemID ?? row.itemid ?? null,
-            itemName: row.ItemName ?? row.itemname ?? '',
-            purchaseOrderQuantity: row.PurchaseOrderQuantity ?? row.purchaseorderquantity ?? 0,
-            purchaseUnit: row.PurchaseUnit ?? row.purchaseunit ?? '',
-            purchaseRate: row.PurchaseRate ?? row.purchaserate ?? 0,
-            grossAmount: row.GrossAmount ?? row.grossamount ?? 0
-        }));
+        const records = (result.recordset || [])
+            .map((row) => ({
+                poTransactionId: row.POTransactionID ?? row.potransactionid ?? null,
+                pono: row.PONumber ?? row.ponumber ?? '',
+                poDate: row.PODate ?? row.podate ?? null,
+                clientName: row.CurrentClientName ?? row.currentclientname ?? '',
+                itemId: row.ItemID ?? row.itemid ?? null,
+                itemName: row.ItemName ?? row.itemname ?? '',
+                stockKg: row.StockKG ?? row.stockkg ?? 0
+            }))
+            .filter((row) => Number(row.stockKg) > 1000);
 
         return res.json({ status: true, records });
     } catch (err) {
         console.error('Inventory Summary PO no-client error:', err);
         return res.status(500).json({ status: false, error: 'Failed to fetch top 200 PO (no client)' });
+    }
+});
+
+// Inventory Summary Tool: client list for dropdown
+router.get('/inventory-summary/client-names', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().query(`
+            SELECT DISTINCT
+                ledgername AS LedgerName,
+                ledgerid   AS LedgerID
+            FROM ledgermaster
+            WHERE ledgertype = 'Clients'
+              AND ISNULL(IsDeletedTransaction, 0) = 0
+            ORDER BY ledgername;
+        `);
+
+        const clients = (result.recordset || []).map((row) => ({
+            ledgerId: row.LedgerID ?? row.ledgerid ?? null,
+            ledgerName: row.LedgerName ?? row.ledgername ?? ''
+        }));
+
+        return res.json({ status: true, clients });
+    } catch (err) {
+        console.error('Inventory summary client-names error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch client names' });
+    }
+});
+
+// Inventory Summary Tool: update PO detail ClientID from UI
+router.post('/inventory-summary/po-noclient-update-client', async (req, res) => {
+    try {
+        const {
+            database,
+            poTransactionId,
+            itemId,
+            newClientId
+        } = req.body || {};
+
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const poTransactionIdNum = Number(poTransactionId);
+        if (!Number.isInteger(poTransactionIdNum) || poTransactionIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid poTransactionId' });
+        }
+
+        const itemIdNum = Number(itemId);
+        if (!Number.isInteger(itemIdNum) || itemIdNum <= 0) return res.status(400).json({ status: false, error: 'Invalid itemId' });
+
+        const newClientIdNum = Number(newClientId);
+        if (!Number.isInteger(newClientIdNum) || newClientIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid newClientId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+
+        const updateResult = await pool.request()
+            .input('POTransactionID', sql.Int, poTransactionIdNum)
+            .input('ItemID', sql.Int, itemIdNum)
+            .input('NewClientID', sql.Int, newClientIdNum)
+            .query(`
+                UPDATE d
+                SET d.ClientID = @NewClientID
+                FROM dbo.ItemTransactionDetail d
+                WHERE d.TransactionID = @POTransactionID
+                  AND d.ItemID = @ItemID
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                  AND (d.ClientID = 0 OR d.ClientID IS NULL OR d.ClientID <> @NewClientID);
+            `);
+
+        return res.json({
+            status: true,
+            rowsAffected: updateResult?.rowsAffected?.[0] ?? updateResult?.rowsAffected ?? null
+        });
+    } catch (err) {
+        console.error('PO no-client update error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to update PO client' });
     }
 });
 
