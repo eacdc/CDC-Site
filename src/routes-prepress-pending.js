@@ -268,6 +268,9 @@ async function fetchMongoPendingByUser(db, username) {
   return docs.flatMap((d) => {
     const pendingOperations = [];
 
+    const isPrepress = d.assignedTo?.prepressUserKey === userKey;
+    const isTooling = d.assignedTo?.toolingUserKey === userKey;
+    const isPlate = d.assignedTo?.plateUserKey === userKey;
 
     console.log('********************d', d);
     
@@ -301,9 +304,9 @@ async function fetchMongoPendingByUser(db, username) {
       PlateUserKey: d.assignedTo?.plateUserKey ?? null,
     };
     
-    // Check for plate output pending
+    // Check for plate output pending (only for plate assignee)
     const plateOutput = d.plate?.output;
-    if (plateOutput && plateOutput !== 'DONE' && plateOutput !== 'Done') {
+    if (isPlate && plateOutput && plateOutput !== 'DONE' && plateOutput !== 'Done') {
       pendingOperations.push({
         ...baseFields,
         Operation: 'Plate Output',
@@ -311,9 +314,9 @@ async function fetchMongoPendingByUser(db, username) {
       });
     }
     
-    // Check for tooling die pending
+    // Check for tooling die pending (only for tooling assignee)
     const toolingDie = d.tooling?.die;
-    if (toolingDie && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingDie)) {
+    if (isTooling && toolingDie && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingDie)) {
       pendingOperations.push({
         ...baseFields,
         Operation: 'Tooling Die',
@@ -321,9 +324,9 @@ async function fetchMongoPendingByUser(db, username) {
       });
     }
     
-    // Check for tooling block pending
+    // Check for tooling block pending (only for tooling assignee)
     const toolingBlock = d.tooling?.block;
-    if (toolingBlock && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingBlock)) {
+    if (isTooling && toolingBlock && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingBlock)) {
       pendingOperations.push({
         ...baseFields,
         Operation: 'Tooling Block',
@@ -331,9 +334,9 @@ async function fetchMongoPendingByUser(db, username) {
       });
     }
     
-    // Check for tooling blanket pending
+    // Check for tooling blanket pending (only for tooling assignee)
     const toolingBlanket = d.tooling?.blanket;
-    if (toolingBlanket && ['REQUIRED', 'Required'].includes(toolingBlanket)) {
+    if (isTooling && toolingBlanket && ['REQUIRED', 'Required'].includes(toolingBlanket)) {
       pendingOperations.push({
         ...baseFields,
         Operation: 'Tooling Blanket',
@@ -341,9 +344,9 @@ async function fetchMongoPendingByUser(db, username) {
       });
     }
     
-    // Check for approval pending (only if not finally approved)
+    // Approvals follow prepress assignment only (not tooling/plate-only users)
     // Exclude approvals that are 'Sent' or 'Approved' - they are no longer pending
-    if (!d.finalApproval?.approved) {
+    if (isPrepress && !d.finalApproval?.approved) {
       // Soft Copy Approval pending - exclude if status is 'Sent' or 'Approved'
       const softStatus = d.approvals?.soft?.status;
       const softIsPending = softStatus !== 'Approved' && softStatus !== 'Sent';
