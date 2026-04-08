@@ -149,7 +149,7 @@ router.get('/job-card/filters/client-names', async (req, res) => {
     const request = pool.request();
     request.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
     const result = await request.query(ClientNamesFilterQuery);
-    const rows = (result.recordset || []).map(r => str(get(r, 'ClientName'))).filter(Boolean);
+    const rows = (result.recordset || []).map(r => str(get(r, 'LedgerName'))).filter(Boolean);
     return res.json(rows);
   } catch (e) {
     console.error('[job-card] client-names filter failed:', e);
