@@ -2678,7 +2678,8 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
                 poDate: row.PODate ?? row.podate ?? null,
                 clientName: row.CurrentClientName ?? row.currentclientname ?? '',
                 itemId: row.ItemID ?? row.itemid ?? null,
-                itemName: row.ItemName ?? row.itemname ?? '',
+                itemName: row.ItemCode ?? row.itemcode ?? '',
+                itemCode: row.ItemName ?? row.itemname ?? '',
                 stockKg: row.StockKG ?? row.stockkg ?? 0
             }))
             .filter((row) => Number(row.stockKg) > 1000);
