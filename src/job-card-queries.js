@@ -522,11 +522,13 @@ ORDER BY LedgerName
 
 /** Client name filter: distinct ClientName from JobBookingJobCard */
 export const ClientNamesFilterQuery = `
-SELECT DISTINCT ClientName
-FROM JobBookingJobCard
-WHERE CompanyID = @CompanyID
-  AND ISNULL(ClientName, '') <> ''
-ORDER BY ClientName
+SELECT DISTINCT 
+    j.LedgerID,
+    lm.LedgerName as LedgerName
+FROM JobBookingJobCard j
+LEFT JOIN LedgerMaster lm 
+    ON j.LedgerID = lm.LedgerID
+ORDER BY lm.LedgerName;
 `;
 
 /**
