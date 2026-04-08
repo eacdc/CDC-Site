@@ -13,105 +13,23 @@ const router = Router();
 const DEFAULT_DATABASE = 'KOL';
 const ALLOWED_DATABASES = ['KOL', 'AHM'];
 
-const IST_OFFSET = '+05:30';
-const IST_TZ = 'Asia/Kolkata';
-
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
+/** IST for schedule display; India has no DST (fixed +05:30). */
+const IST_TIMEZONE = 'Asia/Kolkata';
 
 /**
- * @typedef {object} ScheduleDateOptions
- * @property {number} shiftMs — added to the JS instant before formatting (tune if UI is still off)
- * @property {'utc'|'local'} components — which getters to use for label mode
- * @property {'label'|'kolkata'|'sql'} mode — label = clock digits + +05:30; kolkata = Intl in IST; sql = SQL CONVERT (best match to SSMS)
+ * JSON.stringify / res.json turn Date into UTC ISO strings (Z). Clients then
+ * show that instant in the browser's local zone, which mismatches IST.
+ * Emit RFC 3339 with explicit +05:30 so values match GetMachineScheduleData intent.
+ *
+ * If times still look wrong, the Node process may be interpreting SQL datetime
+ * differently than the DB — set TZ=Asia/Kolkata on the server or align SQL/driver.
  */
-
-function parseDateLike(v) {
-  if (v == null) return null;
-  if (v instanceof Date && !Number.isNaN(v.getTime())) return v;
-  if (Object.prototype.toString.call(v) === '[object Date]' && typeof v.getTime === 'function') {
-    const t = v.getTime();
-    if (!Number.isNaN(t)) return v;
+function formatDateAsIstRfc3339(value) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return value;
   }
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(s) || /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(s)) {
-      const d = new Date(s);
-      if (!Number.isNaN(d.getTime())) return d;
-    }
-  }
-  return null;
-}
-
-function resolveScheduleDateOptions(req) {
-  const q = req.query || {};
-  const env = process.env;
-  const shiftRaw = q.dateShiftMs ?? env.SCHEDULE_DATETIME_SHIFT_MS ?? '0';
-  const shiftParsed = parseInt(String(shiftRaw), 10);
-  const shiftMs = Number.isNaN(shiftParsed) ? 0 : shiftParsed;
-
-  let mode = (q.dateMode || env.SCHEDULE_DATETIME_MODE || 'sql').toLowerCase();
-  if (mode !== 'label' && mode !== 'kolkata' && mode !== 'sql') {
-    mode = 'sql';
-  }
-
-  let components = (q.dateComponents || env.SCHEDULE_DATETIME_COMPONENTS || 'auto').toLowerCase();
-  if (components !== 'utc' && components !== 'local' && components !== 'auto') {
-    components = 'auto';
-  }
-  if (components === 'auto') {
-    const off = new Date().getTimezoneOffset();
-    if (off === -330) components = 'local';
-    else components = 'utc';
-  }
-
-  const useSql =
-    mode === 'sql' ||
-    q.dateSqlFormat === '1' ||
-    env.SCHEDULE_DATETIME_SQL_FORMAT === '1';
-
-  return { shiftMs, mode: useSql ? 'sql' : mode, components, useSqlFormat: useSql };
-}
-
-/** Clock digits + +05:30 (no second timezone conversion). */
-function formatLabelMode(value, components) {
-  const useLocal = components === 'local';
-  let y;
-  let mo;
-  let d;
-  let h;
-  let mi;
-  let s;
-  let ms;
-  if (useLocal) {
-    y = value.getFullYear();
-    mo = pad2(value.getMonth() + 1);
-    d = pad2(value.getDate());
-    h = pad2(value.getHours());
-    mi = pad2(value.getMinutes());
-    s = pad2(value.getSeconds());
-    ms = value.getMilliseconds();
-  } else {
-    y = value.getUTCFullYear();
-    mo = pad2(value.getUTCMonth() + 1);
-    d = pad2(value.getUTCDate());
-    h = pad2(value.getUTCHours());
-    mi = pad2(value.getUTCMinutes());
-    s = pad2(value.getUTCSeconds());
-    ms = value.getUTCMilliseconds();
-  }
-  const base = `${y}-${mo}-${d}T${h}:${mi}:${s}`;
-  if (ms > 0) {
-    return `${base}.${String(ms).padStart(3, '0')}${IST_OFFSET}`;
-  }
-  return `${base}${IST_OFFSET}`;
-}
-
-/** Wall clock in Asia/Kolkata for this instant (use when driver encodes correct UTC instant). */
-function formatKolkataMode(value) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: IST_TZ,
+    timeZone: IST_TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -122,80 +40,18 @@ function formatKolkataMode(value) {
   });
   const parts = fmt.formatToParts(value);
   const g = (t) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${g('year')}-${g('month')}-${g('day')}T${g('hour')}:${g('minute')}:${g('second')}${IST_OFFSET}`;
+  return `${g('year')}-${g('month')}-${g('day')}T${g('hour')}:${g('minute')}:${g('second')}+05:30`;
 }
 
-function rfc3339ToDisplay(rfc) {
-  if (typeof rfc !== 'string') return rfc;
-  let s = rfc.replace(/\+05:30$/, '');
-  s = s.replace(/\.\d{3}$/, '');
-  return s.replace('T', ' ');
-}
-
-function formatScheduleDateValue(date, options) {
-  let d = date;
-  if (options.shiftMs) {
-    d = new Date(date.getTime() + options.shiftMs);
-  }
-  if (options.mode === 'kolkata') {
-    return formatKolkataMode(d);
-  }
-  return formatLabelMode(d, options.components);
-}
-
-/** Sync mapping when not using SQL FORMAT. Adds KeyDisplay (plain text) for each date field. */
-function mapScheduleRowDates(row, options) {
+function mapScheduleRowDatesToIstStrings(row) {
   const out = { ...row };
   for (const key of Object.keys(out)) {
     const v = out[key];
-    const parsed = parseDateLike(v);
-    if (!parsed) continue;
-    const formatted = formatScheduleDateValue(parsed, options);
-    out[key] = formatted;
-    out[`${key}Display`] = rfc3339ToDisplay(formatted);
+    if (v instanceof Date) {
+      out[key] = formatDateAsIstRfc3339(v);
+    }
   }
   return out;
-}
-
-const sqlFormatCache = new Map();
-
-/**
- * SQL Server CONVERT matches how the DB engine sees the same instant — avoids
- * Node/driver timezone quirks. Cached by epoch ms.
- */
-async function formatWithSqlConvert(pool, value) {
-  const t = value.getTime();
-  if (sqlFormatCache.has(t)) {
-    return sqlFormatCache.get(t);
-  }
-  const r = await pool.request().input('d', sql.DateTime2, value).query(`
-    SELECT CONVERT(VARCHAR(23), @d, 121) AS s
-  `);
-  const s = (r.recordset[0] && r.recordset[0].s) || '';
-  sqlFormatCache.set(t, s);
-  return s;
-}
-
-async function mapScheduleRowDatesWithSql(pool, rows, options) {
-  sqlFormatCache.clear();
-  const outRows = [];
-  for (const row of rows) {
-    const o = { ...row };
-    for (const key of Object.keys(o)) {
-      const v = o[key];
-      const parsed = parseDateLike(v);
-      if (!parsed) continue;
-      let d = parsed;
-      if (options.shiftMs) {
-        d = new Date(parsed.getTime() + options.shiftMs);
-      }
-      const sqlStr = await formatWithSqlConvert(pool, d);
-      o[key] = sqlStr;
-      o[`${key}Display`] = sqlStr;
-    }
-    outRows.push(o);
-  }
-  return outRows;
 }
 
 function getDbFromQuery(req) {
@@ -245,16 +101,8 @@ router.get('/schedule/machines', async (req, res) => {
 /**
  * GET /api/schedule/machine/:machineId?database=KOL
  * Returns schedule rows for the machine (GetMachineScheduleData).
- *
- * Date/datetime handling (defaults to SQL CONVERT so values match SSMS):
- * - dateMode=sql|label|kolkata — sql (default) uses SQL Server CONVERT; label = clock digits + +05:30;
- *   kolkata = Intl in Asia/Kolkata (correct when JS Date is the true UTC instant).
- * - dateComponents=utc|local|auto — for label mode only (auto: local if host offset is IST).
- * - dateShiftMs=N — milliseconds added to each instant before formatting (fine-tuning).
- * - dateSqlFormat=1 — force SQL CONVERT even if dateMode is label.
- * Env: SCHEDULE_DATETIME_MODE, SCHEDULE_DATETIME_COMPONENTS, SCHEDULE_DATETIME_SHIFT_MS, SCHEDULE_DATETIME_SQL_FORMAT.
- *
- * Each date column also gets KeyDisplay (e.g. StartDateTimeDisplay) as plain "YYYY-MM-DD HH:mm:ss" for text-only UI.
+ * All columns from the stored procedure are returned; the frontend controls which to display.
+ * Date/datetime columns are returned as strings (RFC 3339 with +05:30 IST), not UTC Z.
  */
 router.get('/schedule/machine/:machineId', async (req, res) => {
   const db = getDbFromQuery(req);
@@ -270,21 +118,10 @@ router.get('/schedule/machine/:machineId', async (req, res) => {
     const pool = await getPool(db);
     const result = await pool.request().input('MachineID', sql.Int, machineId).execute('dbo.GetMachineScheduleData');
     const rows = result.recordset || [];
-    const dateOpts = resolveScheduleDateOptions(req);
-    console.log('[schedule] GetMachineScheduleData', {
-      database: db,
-      machineId,
-      rowCount: rows.length,
-      dateOpts
-    });
-    let payload;
-    if (dateOpts.useSqlFormat) {
-      payload = await mapScheduleRowDatesWithSql(pool, rows, dateOpts);
-    } else {
-      payload = rows.map((r) => mapScheduleRowDates(r, dateOpts));
-    }
+    console.log('[schedule] GetMachineScheduleData', { database: db, machineId, rowCount: rows.length });
+    const payload = rows.map(mapScheduleRowDatesToIstStrings);
     if (payload.length > 0) {
-      console.log('[schedule] FIRST 3 ROWS (keys + values):');
+      console.log('[schedule] FIRST 3 ROWS (keys + values, IST strings):');
       payload.slice(0, 3).forEach(function (row, i) {
         console.log('[schedule] row[' + i + '] keys:', Object.keys(row));
         console.log('[schedule] row[' + i + '] data:', JSON.stringify(row));
