@@ -13,34 +13,27 @@ const router = Router();
 const DEFAULT_DATABASE = 'KOL';
 const ALLOWED_DATABASES = ['KOL', 'AHM'];
 
-/** IST for schedule display; India has no DST (fixed +05:30). */
-const IST_TIMEZONE = 'Asia/Kolkata';
-
 /**
- * JSON.stringify / res.json turn Date into UTC ISO strings (Z). Clients then
- * show that instant in the browser's local zone, which mismatches IST.
- * Emit RFC 3339 with explicit +05:30 so values match GetMachineScheduleData intent.
+ * SQL Server `datetime` columns carry no timezone. GetMachineScheduleData stores
+ * times in IST. The mssql/tedious driver on a UTC server constructs the JS Date
+ * using local time (UTC), so e.g. SQL "10:00:00 IST" becomes Date epoch 10:00 UTC.
+ * Calling Intl.DateTimeFormat(Asia/Kolkata) would then add +5:30 and show 15:30 —
+ * 5.5 h too late.
  *
- * If times still look wrong, the Node process may be interpreting SQL datetime
- * differently than the DB — set TZ=Asia/Kolkata on the server or align SQL/driver.
+ * Fix: read the raw UTC parts back out of the Date (which equal the original SQL
+ * digits) and stamp them directly as +05:30.  This is correct when the Node process
+ * runs in UTC (default on Render / Linux).  If the server TZ is later changed to
+ * Asia/Kolkata, remove this function and use toISOString() with a +05:30 substitution.
  */
 function formatDateAsIstRfc3339(value) {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
     return value;
   }
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: IST_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false
-  });
-  const parts = fmt.formatToParts(value);
-  const g = (t) => parts.find((p) => p.type === t)?.value ?? '';
-  return `${g('year')}-${g('month')}-${g('day')}T${g('hour')}:${g('minute')}:${g('second')}+05:30`;
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    `${value.getUTCFullYear()}-${pad(value.getUTCMonth() + 1)}-${pad(value.getUTCDate())}` +
+    `T${pad(value.getUTCHours())}:${pad(value.getUTCMinutes())}:${pad(value.getUTCSeconds())}+05:30`
+  );
 }
 
 function mapScheduleRowDatesToIstStrings(row) {
