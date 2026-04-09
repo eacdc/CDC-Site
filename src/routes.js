@@ -3664,8 +3664,80 @@ router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
     }
 });
 
-// QC Job Card Entries by Job Booking Number (for QC Tool home page search)
+// QC Job Card parameter-wise summary by Job Card Number (for QC Tool home page search)
 const QC_JOB_CARD_ENTRIES_QUERY = `
+;WITH InspectionBase AS
+(
+    SELECT
+        m.TransactionID,
+        m.ProcessID
+    FROM dbo.ProductionEntryProcessInspectionMain m
+    LEFT JOIN dbo.JobBookingJobCard jc
+        ON m.JobBookingID = jc.JobBookingID
+    WHERE
+        jc.JobBookingNo LIKE N'%' + @JobBookingNo + N'%'
+        AND ISNULL(m.IsDeletedTransaction, 0) = 0
+),
+DetailResults AS
+(
+    SELECT
+        ib.ProcessID,
+        d.ParameterName,
+        MIN(d.ModifiedDate) AS InspectionStartAt,
+        MAX(d.ModifiedDate) AS InspectionEndAt,
+        SUM(CASE
+                WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('OK','PASS') THEN 1
+                ELSE 0
+            END) AS OKCount,
+        SUM(CASE
+                WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
+                WHEN d.Result IS NULL THEN 1
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NOT OK','FAIL','NG') THEN 1
+                ELSE 0
+            END) AS NotOKCount
+    FROM InspectionBase ib
+    JOIN dbo.ProductionEntryProcessInspectionDetail d
+        ON d.TransactionID = ib.TransactionID
+        AND ISNULL(d.IsDeletedTransaction, 0) = 0
+        AND d.InputFieldType <> 'Text Field'
+    GROUP BY
+        ib.ProcessID,
+        d.ParameterName
+    HAVING
+        SUM(CASE
+                WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('OK','PASS') THEN 1
+                ELSE 0
+            END) > 0
+        OR
+        SUM(CASE
+                WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
+                WHEN d.Result IS NULL THEN 1
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NOT OK','FAIL','NG') THEN 1
+                ELSE 0
+            END) > 0
+)
+SELECT
+    pm.ProcessName,
+    dr.ParameterName,
+    dr.OKCount AS [Number of OK],
+    dr.NotOKCount AS [Number of Not OK],
+    CONVERT(VARCHAR(19), CAST((dr.InspectionStartAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS [Inspection Start At],
+    CONVERT(VARCHAR(19), CAST((dr.InspectionEndAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS [Inspection End At]
+FROM DetailResults dr
+LEFT JOIN dbo.ProcessMaster pm
+    ON pm.ProcessID = dr.ProcessID
+ORDER BY
+    pm.ProcessName,
+    dr.ParameterName;
+`;
+
+const QC_JOB_CARD_USERWISE_QUERY = `
 ;WITH Base AS
 (
     SELECT
@@ -3681,7 +3753,7 @@ const QC_JOB_CARD_ENTRIES_QUERY = `
     LEFT JOIN UserMaster UM
         ON PEP.UserID = UM.UserID
     WHERE
-        JC.JobBookingNo = @JobBookingNo
+        jc.JobBookingNo LIKE N'%' + @JobBookingNo + N'%'
         AND ISNULL(PEP.IsDeletedTransaction,0) = 0
     GROUP BY
         UM.UserName,
@@ -3691,8 +3763,8 @@ SELECT
     UserName,
     EntryDate,
     EntryCount,
-    FirstEntryAt,
-    LastEntryAt,
+    CONVERT(VARCHAR(19), CAST((FirstEntryAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS FirstEntryAt,
+    CONVERT(VARCHAR(19), CAST((LastEntryAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS LastEntryAt,
     CASE
         WHEN EntryCount = 1 THEN 1
         WHEN SpanSeconds <= 0 THEN NULL
@@ -3708,7 +3780,7 @@ ORDER BY
 
 router.post('/reports/qc-job-card-entries', async (req, res) => {
     try {
-        const { database, jobBookingNo } = req.body || {};
+        const { database, jobBookingNo, viewMode } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
 
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -3725,13 +3797,22 @@ router.post('/reports/qc-job-card-entries', async (req, res) => {
                 error: 'Job card number (JobBookingNo) is required'
             });
         }
+        if (!/^\d{4}$/.test(trimmedJobNo)) {
+            return res.status(400).json({
+                status: false,
+                error: 'Job card number must be exactly 4 digits'
+            });
+        }
 
-        console.log(`[QC-JOB-CARD] Fetching entries for JobBookingNo: ${trimmedJobNo}, database: ${selectedDatabase}`);
+        const selectedViewMode = String(viewMode || 'process').toLowerCase() === 'user' ? 'user' : 'process';
+
+        console.log(`[QC-JOB-CARD] Fetching ${selectedViewMode} entries for JobBookingNo: ${trimmedJobNo}, database: ${selectedDatabase}`);
 
         const pool = await getPool(selectedDatabase);
+        const queryToRun = selectedViewMode === 'user' ? QC_JOB_CARD_USERWISE_QUERY : QC_JOB_CARD_ENTRIES_QUERY;
         const result = await pool.request()
             .input('JobBookingNo', sql.NVarChar(50), trimmedJobNo)
-            .query(QC_JOB_CARD_ENTRIES_QUERY);
+            .query(queryToRun);
 
         const rows = result.recordset || [];
         console.log(`[QC-JOB-CARD] Records returned: ${rows.length}`);
