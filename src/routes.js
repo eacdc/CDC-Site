@@ -2691,6 +2691,60 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: all tab summary
+router.get('/inventory-summary/all-tab-summary', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().query(`
+            SELECT
+                ItemID,
+                ItemCode,
+                ItemGroup,
+                SubGroup,
+                ItemName,
+                PhysicalStockInPU,
+                PurchaseUnit,
+                PhysicalStockSU,
+                StockUnit,
+                ClientRef,
+                IncomingStock,
+                allocatedstock,
+                FreeStock,
+                Manufecturer,
+                SizeL,
+                SizeW,
+                GSM,
+                Quality,
+                CertificationType,
+                LastPONO,
+                LastPODate,
+                StockStatus,
+                LastGRNNO,
+                LastGRNDate,
+                CASE
+                    WHEN LastGRNDate IS NULL THEN NULL
+                    ELSE DATEDIFF(DAY, CAST(LastGRNDate AS DATE), CAST(GETDATE() AS DATE))
+                END AS Aging
+            FROM NewStockReportView_MS
+            WHERE physicalstocksu > 0
+              AND ItemGroupID IN (2, 14)
+            ORDER BY PhysicalStockInPU DESC;
+        `);
+
+        const records = result.recordset || [];
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('Inventory summary all-tab-summary error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch all tab summary' });
+    }
+});
+
 // Inventory Summary Tool: client list for dropdown
 router.get('/inventory-summary/client-names', async (req, res) => {
     try {
