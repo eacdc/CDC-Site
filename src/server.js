@@ -16,6 +16,7 @@ import googleSheetRoutes from './routes-google-sheet.js';
 import scheduleRoutes from './routes-schedule.js';
 import rawQcRoutes from './routes-raw-qc.js';
 import shipmentEtaRoutes from './routes-shipment-eta.js';
+import concernPersonRoutes from './routes-concern-person.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
@@ -70,6 +71,7 @@ app.use('/api', googleSheetRoutes);
 app.use('/api', scheduleRoutes);
 app.use('/api', rawQcRoutes);
 app.use('/api', shipmentEtaRoutes);
+app.use('/api', concernPersonRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 app.use('/api/auth',        require('./contractor-po/routes/auth.js'));
