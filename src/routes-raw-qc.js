@@ -93,35 +93,99 @@ router.post('/raw-qc/grn-pending', async (req, res) => {
       .input('VoucherIdGrn', sql.Int, GRN_VOUCHER_ID)
       .input('CutoffDate', sql.Date, PENDING_GRN_CUTOFF_DATE)
       .query(`
+        ;WITH PendingBase AS (
+          SELECT
+            m.TransactionID,
+            d.TransactionDetailID,
+            m.VoucherDate,
+            m.VoucherNo,
+            lm.LedgerName AS Vendor,
+            COALESCE(im.ItemName, im.ItemDescription) AS ItemName,
+            im.ItemType,
+            d.ReceiptQuantity,
+            d.ItemGroupID,
+            ISNULL(im.Quality, '') AS Quality,
+            ISNULL(im.GSM, 0) AS GSM
+          FROM ItemTransactionMain m
+          INNER JOIN ItemTransactionDetail d ON d.TransactionID = m.TransactionID
+            AND (d.IsDeleted = 0 OR d.IsDeleted IS NULL)
+            AND (d.IsDeletedTransaction = 0 OR d.IsDeletedTransaction IS NULL)
+            AND d.ItemGroupID IN (2, 14)
+            AND d.ChallanWeight > 200
+          LEFT JOIN WarehouseMaster wm ON d.WarehouseID = wm.WarehouseID
+          LEFT JOIN ItemMaster im ON d.ItemID = im.ItemID
+          LEFT JOIN LedgerMaster lm ON m.LedgerID = lm.LedgerID
+          WHERE m.VoucherID = @VoucherIdGrn
+            AND CAST(m.VoucherDate AS DATE) >= @CutoffDate
+            AND (m.IsDeleted = 0 OR m.IsDeleted IS NULL)
+            AND (m.IsDeletedTransaction = 0 OR m.IsDeletedTransaction IS NULL)
+            AND (wm.WarehouseName IS NULL OR wm.WarehouseName NOT LIKE '%tangra%')
+            AND NOT EXISTS (
+              SELECT 1 FROM RawMaterialQCMain qc
+              WHERE qc.TransactionID = d.TransactionID
+                AND (qc.TransactionDetailID = d.TransactionDetailID OR qc.TransactionDetailID IS NULL)
+            )
+        ),
+        Classified AS (
+          SELECT
+            pb.*,
+            CASE
+              WHEN pb.ItemGroupID = 14
+                AND (
+                  (pb.Quality LIKE '%binding%' AND pb.Quality LIKE '%board%')
+                  OR (pb.Quality LIKE '%hard%' AND pb.Quality LIKE '%board%')
+                  OR (pb.ItemName LIKE '%mill%' AND pb.ItemName LIKE '%board%')
+                  OR (pb.ItemName LIKE '%hard%' AND pb.ItemName LIKE '%board%')
+                ) THEN 'Paper - Binding Board'
+              WHEN pb.ItemGroupID = 14 AND pb.GSM > 0 AND pb.GSM <= 42 THEN 'Paper - Bible'
+              WHEN pb.ItemGroupID = 14
+                AND (pb.Quality LIKE '%gumm%' OR pb.Quality LIKE '%sticker%' OR pb.Quality LIKE '%adhesive%')
+                THEN 'Paper - Sticker Sheet'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%grey%' AND pb.Quality LIKE '%back%' THEN 'Paper - Grey Back'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%white%' AND pb.Quality LIKE '%back%' THEN 'Paper - White Back'
+              WHEN pb.ItemGroupID = 14
+                AND (pb.Quality LIKE '%map%' OR pb.Quality LIKE '%news%' OR pb.Quality LIKE '%ssp%')
+                THEN 'Paper - Map'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%fbb%' THEN 'Paper - FBB'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%cbb%' THEN 'Paper - CBB'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%gloss%' THEN 'Paper - Gloss'
+              WHEN pb.ItemGroupID = 14 AND pb.Quality LIKE '%matte%' THEN 'Paper - MAT'
+              WHEN pb.ItemGroupID = 14 THEN 'Paper - Other'
+
+              WHEN pb.ItemGroupID = 2
+                AND (
+                  (pb.Quality LIKE '%binding%' AND pb.Quality LIKE '%board%')
+                  OR (pb.Quality LIKE '%hard%' AND pb.Quality LIKE '%board%')
+                  OR (pb.ItemName LIKE '%mill%' AND pb.ItemName LIKE '%board%')
+                  OR (pb.ItemName LIKE '%hard%' AND pb.ItemName LIKE '%board%')
+                ) THEN 'Reel - Binding Board'
+              WHEN pb.ItemGroupID = 2 AND pb.GSM > 0 AND pb.GSM <= 42 THEN 'Reel - Bible'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%grey%' AND pb.Quality LIKE '%back%' THEN 'Reel - Grey Back'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%white%' AND pb.Quality LIKE '%back%' THEN 'Reel - White Back'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%kraft%' THEN 'Reel - Kraft'
+              WHEN pb.ItemGroupID = 2
+                AND (pb.Quality LIKE '%map%' OR pb.Quality LIKE '%news%' OR pb.Quality LIKE '%ssp%')
+                THEN 'Reel - Map'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%fbb%' THEN 'Reel - FBB'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%cbb%' THEN 'Reel - CBB'
+              WHEN pb.ItemGroupID = 2 AND pb.Quality LIKE '%gloss%' THEN 'Reel - Gloss'
+              WHEN pb.ItemGroupID = 2 THEN 'Reel - Other'
+              ELSE 'Other'
+            END AS ClassifiedGroup
+          FROM PendingBase pb
+        )
         SELECT
-          m.TransactionID,
-          d.TransactionDetailID,
-          m.VoucherDate,
-          m.VoucherNo,
-          lm.LedgerName AS Vendor,
-          COALESCE(im.ItemName, im.ItemDescription) AS ItemName,
-          im.ItemType,
-          d.ReceiptQuantity
-        FROM ItemTransactionMain m
-        INNER JOIN ItemTransactionDetail d ON d.TransactionID = m.TransactionID
-          AND (d.IsDeleted = 0 OR d.IsDeleted IS NULL)
-          AND (d.IsDeletedTransaction = 0 OR d.IsDeletedTransaction IS NULL)
-          AND d.ItemGroupID IN (2, 14)
-          AND d.ChallanWeight > 200
-        LEFT JOIN WarehouseMaster wm ON d.WarehouseID = wm.WarehouseID
-        LEFT JOIN ItemMaster im ON d.ItemID = im.ItemID
-        LEFT JOIN LedgerMaster lm ON m.LedgerID = lm.LedgerID
-        WHERE m.VoucherID = @VoucherIdGrn
-          AND CAST(m.VoucherDate AS DATE) >= @CutoffDate
-          AND (m.IsDeleted = 0 OR m.IsDeleted IS NULL)
-          AND (m.IsDeletedTransaction = 0 OR m.IsDeletedTransaction IS NULL)
-          AND (wm.WarehouseName IS NULL OR wm.WarehouseName NOT LIKE '%tangra%')
-          AND NOT EXISTS (
-            SELECT 1 FROM RawMaterialQCMain qc
-            WHERE qc.TransactionID = d.TransactionID
-              AND (qc.TransactionDetailID = d.TransactionDetailID OR qc.TransactionDetailID IS NULL)
-          )
-        ORDER BY m.VoucherDate DESC, m.TransactionID DESC, d.TransactionDetailID
+          TransactionID,
+          TransactionDetailID,
+          VoucherDate,
+          VoucherNo,
+          Vendor,
+          ItemName,
+          ItemType,
+          ReceiptQuantity
+        FROM Classified
+        WHERE ClassifiedGroup NOT IN ('Paper - Other', 'Reel - Other')
+        ORDER BY VoucherDate DESC, TransactionID DESC, TransactionDetailID
       `);
     const rows = result.recordset || [];
     return res.json({ status: true, data: rows });
