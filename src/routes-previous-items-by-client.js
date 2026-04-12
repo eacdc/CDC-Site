@@ -2,7 +2,9 @@
  * Previous Items By Client Tool API
  * - POST /previousitemsbyclient/search
  *   Body: { database: 'KOL'|'AHM', ledgerIds: number[], basis: 'O'|'D', topFilter: 'top50'|'top100'|'all6months' }
- *   Executes GetPackagingClientConsumption_withpaper_check; returns last 2 result sets side-by-side ready data.
+ *   Executes GetPackagingClientConsumption_withpaper_check.
+ *   Expects: RS1 = period labels (Month6Label…Month1Label), RS(n-1) = SKU qty table, RS(n) = category table.
+ *   SKU table includes columnDisplayNames mapping QtyMonth* → "Qty {Month label}" from RS1.
  *
  * Client list: reuse GET /api/inventory-summary/client-names (same database query param).
  */
@@ -53,10 +55,48 @@ function recordsetToTable(rows, limit) {
 	return { columns, rows: sliced };
 }
 
+/**
+ * First result set row: Month6Label … Month1Label → month index → display text.
+ * Works for any Month{N}Label keys the procedure returns.
+ */
+function buildMonthIndexToLabelMap(labelRow) {
+	if (!labelRow || typeof labelRow !== 'object') return {};
+	const map = {};
+	for (const key of Object.keys(labelRow)) {
+		const m = /^month(\d+)label$/i.exec(String(key).trim());
+		if (!m) continue;
+		const raw = labelRow[key];
+		if (raw == null) continue;
+		const text = String(raw).trim();
+		if (!text) continue;
+		map[m[1]] = text;
+	}
+	return map;
+}
+
+/**
+ * For each SKU column matching QtyMonth{N} (any casing), set header "Qty {label}".
+ */
+function buildSkuQtyColumnDisplayNames(columns, monthIndexToLabel) {
+	const out = {};
+	if (!columns || !monthIndexToLabel || typeof monthIndexToLabel !== 'object') return out;
+	for (const col of columns) {
+		const m = /^qtymonth(\d+)$/i.exec(String(col).trim());
+		if (!m) continue;
+		const label = monthIndexToLabel[m[1]];
+		if (label) out[col] = `Qty ${label}`;
+	}
+	return out;
+}
+
 function normalizeTableInput(table = {}) {
 	const columns = Array.isArray(table.columns) ? table.columns.map((c) => String(c)) : [];
 	const rows = Array.isArray(table.rows) ? table.rows : [];
-	return { columns, rows };
+	const out = { columns, rows };
+	if (table.columnDisplayNames && typeof table.columnDisplayNames === 'object') {
+		out.columnDisplayNames = table.columnDisplayNames;
+	}
+	return out;
 }
 
 /**
@@ -109,10 +149,22 @@ router.post('/previousitemsbyclient/search', async (req, res) => {
 		}
 
 		const rs = recordsets;
+		const labelRows = rs[0];
+		const labelRow =
+			Array.isArray(labelRows) && labelRows.length > 0 && labelRows[0] && typeof labelRows[0] === 'object'
+				? labelRows[0]
+				: null;
+		const monthIndexToLabel = buildMonthIndexToLabelMap(labelRow);
+
 		const table2 = rs[rs.length - 2];
 		const table3 = rs[rs.length - 1];
 
 		const leftTable = recordsetToTable(table2, limit);
+		const columnDisplayNames = buildSkuQtyColumnDisplayNames(leftTable.columns, monthIndexToLabel);
+		if (Object.keys(columnDisplayNames).length > 0) {
+			leftTable.columnDisplayNames = columnDisplayNames;
+		}
+
 		const rightTable = recordsetToTable(table3, limit);
 
 		return res.json({
