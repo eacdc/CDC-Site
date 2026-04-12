@@ -2760,7 +2760,7 @@ router.get('/inventory-summary/client-names', async (req, res) => {
                 ledgername AS LedgerName,
                 ledgerid   AS LedgerID
             FROM ledgermaster
-            WHERE ledgertype = 'Clients'
+            WHERE (ledgertype = 'Sundry Debtors' OR ledgertype = 'Clients' or ledgertype = 'Consignee')
               AND ISNULL(IsDeletedTransaction, 0) = 0
             ORDER BY ledgername;
         `);
