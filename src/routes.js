@@ -2674,12 +2674,14 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
         const records = (result.recordset || [])
             .map((row) => ({
                 poTransactionId: row.POTransactionID ?? row.potransactionid ?? null,
+                sourceType: row.SourceType ?? row.sourcetype ?? '',
+                sourceTransactionId: row.SourceTransactionID ?? row.sourcetransactionid ?? null,
                 pono: row.PONumber ?? row.ponumber ?? '',
                 poDate: row.PODate ?? row.podate ?? null,
                 clientName: row.CurrentClientName ?? row.currentclientname ?? '',
                 itemId: row.ItemID ?? row.itemid ?? null,
-                itemName: row.ItemCode ?? row.itemcode ?? '',
-                itemCode: row.ItemName ?? row.itemname ?? '',
+                itemName: row.ItemName ?? row.itemname ?? '',
+                itemCode: row.ItemCode ?? row.itemcode ?? '',
                 stockKg: row.StockKG ?? row.stockkg ?? 0
             }))
             .filter((row) => Number(row.stockKg) > 1000);
@@ -2784,7 +2786,9 @@ router.post('/inventory-summary/po-noclient-update-client', async (req, res) => 
             database,
             poTransactionId,
             itemId,
-            newClientId
+            newClientId,
+            sourceType,
+            sourceTransactionId
         } = req.body || {};
 
         const selectedDatabase = String(database || '').trim().toUpperCase();
@@ -2792,8 +2796,11 @@ router.post('/inventory-summary/po-noclient-update-client', async (req, res) => 
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
         }
 
+        const normalizedSourceType = String(sourceType || 'PO').trim().toUpperCase();
+        const isPoSource = normalizedSourceType === 'PO';
+
         const poTransactionIdNum = Number(poTransactionId);
-        if (!Number.isInteger(poTransactionIdNum) || poTransactionIdNum <= 0) {
+        if (isPoSource && (!Number.isInteger(poTransactionIdNum) || poTransactionIdNum <= 0)) {
             return res.status(400).json({ status: false, error: 'Invalid poTransactionId' });
         }
 
@@ -2805,21 +2812,49 @@ router.post('/inventory-summary/po-noclient-update-client', async (req, res) => 
             return res.status(400).json({ status: false, error: 'Invalid newClientId' });
         }
 
+        const sourceTransactionIdNum = Number(sourceTransactionId);
+        if (!isPoSource && (!Number.isInteger(sourceTransactionIdNum) || sourceTransactionIdNum <= 0)) {
+            return res.status(400).json({ status: false, error: 'Invalid sourceTransactionId' });
+        }
+
         const pool = await getPool(selectedDatabase);
+
+        console.log('potractionid', poTransactionIdNum);
+        console.log('itemid', itemIdNum);
+        console.log('newclientid', newClientIdNum);
+        console.log('sourceTransactionId', sourceTransactionIdNum);
+        console.log('sourceType', normalizedSourceType);
 
         const updateResult = await pool.request()
             .input('POTransactionID', sql.Int, poTransactionIdNum)
+            .input('SourceType', sql.VarChar(20), normalizedSourceType)
+            .input('SourceTransactionID', sql.Int, isPoSource ? poTransactionIdNum : sourceTransactionIdNum)
             .input('ItemID', sql.Int, itemIdNum)
             .input('NewClientID', sql.Int, newClientIdNum)
             .query(`
-                UPDATE d
-                SET d.ClientID = @NewClientID
-                FROM dbo.ItemTransactionDetail d
-                WHERE d.TransactionID = @POTransactionID
-                  AND d.ItemID = @ItemID
-                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
-                  AND (d.ClientID = 0 OR d.ClientID IS NULL OR d.ClientID <> @NewClientID);
+                IF @SourceType = 'PO'
+                BEGIN
+                    UPDATE d
+                    SET d.ClientID = @NewClientID
+                    FROM dbo.ItemTransactionDetail d
+                    WHERE d.TransactionID = @POTransactionID
+                      AND d.ItemID = @ItemID
+                      AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                      AND (d.ClientID = 0 OR d.ClientID IS NULL OR d.ClientID <> @NewClientID);
+                END
+                ELSE
+                BEGIN
+                    UPDATE d
+                    SET d.ClientID = @NewClientID
+                    FROM dbo.ItemTransactionDetail d
+                    WHERE d.TransactionID = @SourceTransactionID
+                      AND d.ItemID = @ItemID
+                      AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                      AND (d.ClientID = 0 OR d.ClientID IS NULL OR d.ClientID <> @NewClientID);
+                END
             `);
+
+        
 
         return res.json({
             status: true,
@@ -5540,34 +5575,36 @@ router.get('/jobs/details/:jobNumber', async (req, res) => {
   }
 });
 
+function getCompletionSelectedDatabase(req, { allowBody = false } = {}) {
+  const rawValue = allowBody
+    ? (req.body?.database ?? req.query?.database)
+    : req.query?.database;
+
+  const selectedDatabase = String(rawValue || 'KOL').trim().toUpperCase();
+  if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+    return null;
+  }
+  return selectedDatabase;
+}
+
 // Get job details for completion app (with isclose and jobcloseddate)
 // Uses direct SQL query instead of stored procedure
 router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req);
 
     if (!jobNumber) {
       return res.status(400).json({ error: 'Job number is required' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing query
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     
@@ -5613,21 +5650,11 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
 // Possible completed jobs - used by Job Completion UI table
 router.get('/jobs/possible-completed-jobs', async (req, res) => {
   try {
-    const pool = await getConnection();
-
-    // Ensure we run against the expected DB for this app.
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
+    const selectedDatabase = getCompletionSelectedDatabase(req);
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
     }
+    const pool = await getPool(selectedDatabase);
 
     const query = `
       ;WITH GPNAgg AS
@@ -5719,30 +5746,20 @@ router.get('/jobs/possible-completed-jobs', async (req, res) => {
 router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) => {
   try {
     const { jobNumberPart } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req);
     console.log('🔍 [BACKEND] /jobs/search-numbers-completion called with jobNumberPart:', jobNumberPart);
 
     if (!jobNumberPart || jobNumberPart.length < 4) {
       return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing stored procedure
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
@@ -5778,29 +5795,19 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
 router.post('/jobs/complete/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req, { allowBody: true });
 
     if (!jobNumber) {
       return res.status(400).json({ error: 'Job number is required' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing query
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
 
@@ -5843,28 +5850,19 @@ router.post('/jobs/complete/:jobNumber', async (req, res) => {
 router.post('/jobs/reopen/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req, { allowBody: true });
 
     if (!jobNumber) {
       return res.status(400).json({ error: 'Job number is required' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
 
@@ -7543,29 +7541,19 @@ router.get('/jobs/details-update/:jobNumber', async (req, res) => {
 router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req);
 
     if (!jobNumber) {
       return res.status(400).json({ error: 'Job number is required' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing query
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     
@@ -7606,30 +7594,20 @@ router.get('/jobs/details-completion/:jobNumber', async (req, res) => {
 router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) => {
   try {
     const { jobNumberPart } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req);
     console.log('🔍 [BACKEND] /jobs/search-numbers-completion called with jobNumberPart:', jobNumberPart);
 
     if (!jobNumberPart || jobNumberPart.length < 4) {
       return res.status(400).json({ error: 'Job number part must be at least 4 characters' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing stored procedure
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
     request.input('JobNumberPart', sql.NVarChar(255), String(jobNumberPart));
@@ -7665,29 +7643,19 @@ router.get('/jobs/search-numbers-completion/:jobNumberPart', async (req, res) =>
 router.post('/jobs/complete/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
+    const selectedDatabase = getCompletionSelectedDatabase(req, { allowBody: true });
 
     if (!jobNumber) {
       return res.status(400).json({ error: 'Job number is required' });
     }
+    if (!selectedDatabase) {
+      return res.status(400).json({ error: 'Invalid or missing database (must be KOL or AHM)' });
+    }
 
     const connectionStartTime = Date.now();
-    const pool = await getConnection();
+    const pool = await getPool(selectedDatabase);
     const connectionTime = Date.now() - connectionStartTime;
     console.log(`⏱️ [MSSQL] Connection obtained in ${connectionTime}ms`);
-
-    // Verify database context before executing query
-    const expectedDb = 'IndusEnterprise';
-    try {
-      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
-      const currentDb = dbCheck.recordset[0]?.currentDb;
-      if (currentDb !== expectedDb) {
-        console.warn(`⚠️ [MSSQL] Database context mismatch. Switching to ${expectedDb}...`);
-        await pool.request().query(`USE [${expectedDb}]`);
-      }
-    } catch (dbErr) {
-      console.error('❌ [MSSQL] Database context verification failed:', dbErr);
-      return res.status(500).json({ error: 'Database connection error. Please try again.' });
-    }
 
     const request = pool.request();
 
