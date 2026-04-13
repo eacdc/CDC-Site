@@ -214,6 +214,198 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
   };
 }
 
+function parseIsoDateOrNull(value) {
+  if (!value || typeof value !== 'string') return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const dt = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function isDateInRange(dateValue, fromDate, toDate) {
+  if (!dateValue) return false;
+  const dt = new Date(dateValue);
+  if (Number.isNaN(dt.getTime())) return false;
+  return dt >= fromDate && dt <= toDate;
+}
+
+async function fetchSqlCompletedByUser(databaseKey, username, fromDate, toDate, db) {
+  const pool = await getPool(databaseKey);
+  const site = databaseKey === 'KOL' ? 'KOLKATA' : 'AHMEDABAD';
+  const ledgerId = await displayNameToLedgerId(db, site, username);
+
+  if (!ledgerId) {
+    return [];
+  }
+
+  const request = pool.request();
+  request.input('ledgerid', sql.Int, Number(ledgerId));
+  request.input('FromDate', sql.Date, fromDate);
+  request.input('ToDate', sql.Date, toDate);
+
+  const result = await request.execute('dbo.GetCompletedArtworkWorklist');
+  const rs = result.recordset || [];
+
+  return rs.map((r) => ({
+    __SourceDB: databaseKey === 'KOL' ? 'KOL_SQL' : 'AMD_SQL',
+    __Site: site,
+    __MongoId: null,
+    PONumber: r.PONumber ?? null,
+    PODate: r.PODate ?? null,
+    Jobcardnumber: r.Jobcardnumber ?? r.JobCardNumber ?? null,
+    ClientName: r.ClientName ?? null,
+    RefMISCode: r.RefMISCode ?? null,
+    JobName: r.JobName ?? null,
+    Executive: r.Executive ?? r.SalesExec ?? r.EmployeeName ?? null,
+    Division: r.Division ?? site,
+    FileReceivedDate: r.FileReceivedDate ?? null,
+    Operation: r.Operation ?? null,
+    Remarks: r.Remarks ?? r.Remark ?? null,
+    PlanDate: r.PlanDate ?? null,
+    ActualDate: r.ActualDate ?? r.CompletedDate ?? r.PlanDate ?? null,
+    Status: r.Status ?? 'Completed',
+    ID: r.ID ?? null,
+    ledgerid: r.ledgerid ?? ledgerId,
+    FinalApprovalStatus: r.FinalApprovalStatus ?? 'Yes',
+    Link: r.Link ?? null,
+  }));
+}
+
+function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
+  const rows = [];
+  const isPrepress = doc.assignedTo?.prepressUserKey === userKey;
+  const isPlate = doc.assignedTo?.plateUserKey === userKey;
+  const isCancelled = Number(doc.iscancelled || 0) === 1;
+  const baseFields = {
+    __SourceDB: 'MONGO_UNORDERED',
+    __Site: doc.site || 'COMMON',
+    __MongoId: doc._id.toString(),
+    PONumber: null,
+    PODate: doc.createdAt ?? null,
+    Jobcardnumber: doc.tokenNumber ?? null,
+    ClientName: doc.client?.name ?? null,
+    RefMISCode: doc.reference ?? null,
+    JobName: doc.job?.jobName ?? null,
+    Executive: doc.executive ?? null,
+    Division: doc.job?.segment ?? null,
+    FileReceivedDate: doc.artwork?.fileReceivedDate ?? null,
+    Remarks: doc.remarks?.artwork ?? null,
+    ID: null,
+    ledgerid: null,
+    Link: doc.approvals?.soft?.link ?? null,
+  };
+
+  const approvalRows = [
+    {
+      op: 'Soft Copy Approval',
+      required: Boolean(doc.approvals?.soft?.required),
+      status: (doc.approvals?.soft?.status || '').toString().toLowerCase(),
+      actualDate: doc.approvals?.soft?.actualDate ?? null,
+    },
+    {
+      op: 'Hard Copy Approval',
+      required: Boolean(doc.approvals?.hard?.required),
+      status: (doc.approvals?.hard?.status || '').toString().toLowerCase(),
+      actualDate: doc.approvals?.hard?.actualDate ?? null,
+    },
+    {
+      op: 'Machine Proof Approval',
+      required: Boolean(doc.approvals?.machineProof?.required),
+      status: (doc.approvals?.machineProof?.status || '').toString().toLowerCase(),
+      actualDate: doc.approvals?.machineProof?.actualDate ?? null,
+    },
+  ];
+
+  if (isPrepress) {
+    for (const item of approvalRows) {
+      const isCompletedStatus = item.status === 'sent' || item.status === 'approved';
+      if (!item.required || !isCompletedStatus || !isDateInRange(item.actualDate, fromDate, toDate)) {
+        continue;
+      }
+
+      rows.push({
+        ...baseFields,
+        Operation: item.op,
+        Status: item.status === 'approved' ? 'Approved' : 'Completed',
+        PlanDate: item.actualDate,
+        ActualDate: item.actualDate,
+        FinalApprovalStatus: doc.finalApproval?.approved ? 'Yes' : 'No',
+      });
+    }
+  }
+
+  const plateOutput = (doc.plate?.output || '').toString().toLowerCase();
+  const plateDate = doc.plate?.actualDate ?? null;
+  if (isPlate && plateOutput === 'done' && isDateInRange(plateDate, fromDate, toDate)) {
+    rows.push({
+      ...baseFields,
+      Operation: 'Plate Output',
+      Status: 'Completed',
+      PlanDate: plateDate,
+      ActualDate: plateDate,
+      FinalApprovalStatus: doc.finalApproval?.approved ? 'Yes' : 'No',
+    });
+  }
+
+  const finalDate = doc.finalApproval?.approvedDate ?? doc.updatedAt ?? null;
+  if (isPrepress && doc.finalApproval?.approved && isDateInRange(finalDate, fromDate, toDate)) {
+    rows.push({
+      ...baseFields,
+      Operation: 'Final Approval',
+      Status: 'Approved',
+      PlanDate: finalDate,
+      ActualDate: finalDate,
+      FinalApprovalStatus: 'Yes',
+    });
+  }
+
+  const cancelDate = doc.status?.cancelledAt ?? doc.updatedAt ?? null;
+  if (isCancelled && (isPrepress || isPlate) && isDateInRange(cancelDate, fromDate, toDate)) {
+    rows.push({
+      ...baseFields,
+      Operation: 'Cancelled',
+      Status: 'Cancelled',
+      PlanDate: cancelDate,
+      ActualDate: cancelDate,
+      FinalApprovalStatus: 'No',
+    });
+  }
+
+  return rows;
+}
+
+async function fetchMongoCompletedByUser(db, username, fromDate, toDate) {
+  const userKey = await usernameToUserKey(db, username);
+  if (!userKey) return [];
+
+  const docs = await db
+    .collection('ArtworkUnordered')
+    .find({
+      'status.isDeleted': { $ne: true },
+      $and: [
+        {
+          $or: [
+            { iscancelled: 1 },
+            { 'finalApproval.approved': true },
+            { 'approvals.soft.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
+            { 'approvals.hard.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
+            { 'approvals.machineProof.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
+            { 'plate.output': { $in: ['DONE', 'Done', 'done'] } },
+          ],
+        },
+        {
+          $or: [
+            { 'assignedTo.prepressUserKey': userKey },
+            { 'assignedTo.plateUserKey': userKey },
+          ],
+        },
+      ],
+    })
+    .sort({ updatedAt: -1, createdAt: -1 })
+    .toArray();
+
+  return docs.flatMap((d) => mapMongoCompletedOperations(d, userKey, fromDate, toDate));
+}
+
 // ---------- Fetch MongoDB pending data filtered by user ----------
 async function fetchMongoPendingByUser(db, username) {
   // Filter by displayName field: Look up user by displayName to get userKey
@@ -513,6 +705,84 @@ router.get('/prepress/pending', async (req, res) => {
     });
   } catch (e) {
     console.error('Error in /api/prepress/pending:', e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+router.get('/prepress/completed', async (req, res) => {
+  try {
+    const username = (req.query.username || '').toString().trim();
+    const fromDateRaw = (req.query.fromDate || '').toString().trim();
+    const toDateRaw = (req.query.toDate || '').toString().trim();
+
+    if (!username || !fromDateRaw || !toDateRaw) {
+      return res.status(400).json({
+        ok: false,
+        error: 'username, fromDate and toDate query parameters are required',
+      });
+    }
+
+    const fromDateStart = parseIsoDateOrNull(fromDateRaw);
+    const toDateStart = parseIsoDateOrNull(toDateRaw);
+    if (!fromDateStart || !toDateStart) {
+      return res.status(400).json({
+        ok: false,
+        error: 'fromDate and toDate must be in YYYY-MM-DD format',
+      });
+    }
+
+    const fromDate = new Date(fromDateStart);
+    fromDate.setHours(0, 0, 0, 0);
+    const toDate = new Date(toDateStart);
+    toDate.setHours(23, 59, 59, 999);
+
+    if (fromDate > toDate) {
+      return res.status(400).json({
+        ok: false,
+        error: 'fromDate cannot be greater than toDate',
+      });
+    }
+
+    const db = await getMongoDb();
+    const kolRows = await fetchSqlCompletedByUser('KOL', username, fromDateStart, toDateStart, db);
+    const ahmRows = await fetchSqlCompletedByUser('AHM', username, fromDateStart, toDateStart, db);
+    const mongoRows = await fetchMongoCompletedByUser(db, username, fromDate, toDate);
+
+    const combined = [...kolRows, ...ahmRows, ...mongoRows];
+    const formattedData = combined.map((row) => ({
+      PONumber: row.PONumber ?? null,
+      PODate: row.PODate ?? null,
+      Jobcardnumber: row.Jobcardnumber ?? null,
+      ClientName: row.ClientName ?? null,
+      RefMISCode: row.RefMISCode ?? null,
+      JobName: row.JobName ?? null,
+      Executive: row.Executive ?? null,
+      Division: row.Division ?? null,
+      FileReceivedDate: row.FileReceivedDate ?? null,
+      Operation: row.Operation ?? null,
+      Remarks: row.Remarks ?? null,
+      PlanDate: row.PlanDate ?? null,
+      ActualDate: row.ActualDate ?? row.PlanDate ?? null,
+      Status: row.Status ?? 'Completed',
+      __SourceDB: row.__SourceDB ?? null,
+      __MongoId: row.__MongoId ?? null,
+      ID: row.ID ?? null,
+      ledgerid: row.ledgerid ?? null,
+      FinalApprovalStatus: row.FinalApprovalStatus ?? null,
+      __Site: row.__Site ?? null,
+      Link: row.Link ?? null,
+    }));
+
+    res.json({
+      ok: true,
+      count: formattedData.length,
+      data: formattedData,
+      username,
+      fromDate: fromDateRaw,
+      toDate: toDateRaw,
+    });
+  } catch (e) {
+    console.error('Error in /api/prepress/completed:', e);
     res.status(500).json({ ok: false, error: e.message });
   }
 });
