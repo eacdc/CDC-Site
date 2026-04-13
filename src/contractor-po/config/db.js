@@ -1,9 +1,12 @@
 const sql = require('mssql');
+const CONTRACTOR_PO_DATABASE = 'IndusEnterprise';
 
 const config = {
   server: process.env.MSSQL_SERVER || 'cdcindas.24mycloud.com',
   port: parseInt(process.env.MSSQL_PORT || '51175'),
-  database: process.env.MSSQL_DATABASE || 'IndusEnterprise',
+  // Contractor PO must always use IndusEnterprise.
+  // Keep this isolated from shared backend DB env vars.
+  database: CONTRACTOR_PO_DATABASE,
   user: process.env.MSSQL_USER || 'indus',
   password: process.env.MSSQL_PASSWORD || 'Param@99811',
   connectionTimeout: 10000, // 10 seconds to establish connection
