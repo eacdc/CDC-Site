@@ -508,6 +508,7 @@ WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo LIKE '%' + @JobBookingNo + '%' 
   AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )
   AND ( @FromJobDate IS NULL OR JB.JobBookingDate >= @FromJobDate )
   AND ( @ToJobDate   IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @ToJobDate) )
+  and isnull(jb.isdeletedtransaction, 0) = 0
 
 ORDER BY JB.JobBookingDate DESC;
 
