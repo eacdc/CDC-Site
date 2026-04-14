@@ -389,7 +389,7 @@ SELECT TOP 1000
             THEN 'Not Planned'
         WHEN (
                 (   ISNULL(PBJ.JobPrintDoneQty, 0) 
-                    >= ISNULL(PBJ.JobPrintPlanQty, 0) * .55
+                    >= ISNULL(PBJ.JobPrintPlanQty, 0) * 0.55
                     AND ISNULL(PBJ.JobPrintPlanQty, 0) > 0
                 )
              OR (   ISNULL(PBJ.JobPrintDoneQty, 0) > 0
