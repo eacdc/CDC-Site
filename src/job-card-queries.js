@@ -110,6 +110,7 @@ LEFT JOIN (
        AND JSR.ProcessID = JP.ProcessID
        AND JSR.CompanyID = JP.CompanyID
        AND ISNULL(JSR.IsDeletedTransaction, 0) = 0
+       AND ISNULL(JSR.IsOnlineProcess, 0) = 0
 
     LEFT JOIN ProductionEntry PE
         ON PE.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
