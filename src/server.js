@@ -76,6 +76,16 @@ app.use('/api', concernPersonRoutes);
 app.use('/api', previousItemsByClientRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)
+// Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
+app.use('/api/contractor-po/auth',        require('./contractor-po/routes/auth.js'));
+app.use('/api/contractor-po/jobs',        require('./contractor-po/routes/jobs.js'));
+app.use('/api/contractor-po/operations',  require('./contractor-po/routes/operations.js'));
+app.use('/api/contractor-po/work',        require('./contractor-po/routes/work.js'));
+app.use('/api/contractor-po/contractors', require('./contractor-po/routes/contractors.js'));
+app.use('/api/contractor-po/bills',       require('./contractor-po/routes/bills.js'));
+app.use('/api/contractor-po/series',      require('./contractor-po/routes/series.js'));
+
+// Legacy mounts retained for backward compatibility.
 app.use('/api/auth',        require('./contractor-po/routes/auth.js'));
 app.use('/api/jobs',        require('./contractor-po/routes/jobs.js'));
 app.use('/api/operations',  require('./contractor-po/routes/operations.js'));
