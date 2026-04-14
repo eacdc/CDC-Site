@@ -283,6 +283,7 @@ PrintingAgg AS (
     FROM dbo.JobScheduleRelease JSR
     WHERE JSR.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
       AND ISNULL(JSR.IsDeletedTransaction, 0) = 0
+      AND ISNULL(JSR.IsOnlineProcess, 0) = 0
     GROUP BY JSR.JobBookingJobCardContentsID
 ),
 
