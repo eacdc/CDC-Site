@@ -23,44 +23,46 @@ const config = {
   }
 };
 
+// Use an explicit ConnectionPool (NOT sql.connect) so this pool is fully isolated
+// from the global mssql singleton pool used by the shared backend routes.
+// sql.connect() writes to the mssql global pool and can be overwritten by any other
+// caller (e.g. routes.js getConnection / getPool('AHM')), causing wrong-DB queries.
 let pool = null;
 let connectionPromise = null;
 
 async function getConnection() {
   try {
-    // If already connected, return existing pool
     if (pool && pool.connected) {
       return pool;
     }
 
-    // If connection is in progress, wait for it
     if (connectionPromise) {
-      console.log('⏳ [MSSQL] Connection already in progress, waiting...');
+      console.log('⏳ [Contractor-PO MSSQL] Connection already in progress, waiting...');
       return await connectionPromise;
     }
 
-    // Start new connection
-    console.log('🔌 [MSSQL] Establishing connection...');
+    console.log('🔌 [Contractor-PO MSSQL] Establishing isolated connection pool...');
     const startTime = Date.now();
-    
-    connectionPromise = sql.connect(config);
+
+    // new sql.ConnectionPool() creates an isolated pool — never touches the global pool.
+    const newPool = new sql.ConnectionPool(config);
+    connectionPromise = newPool.connect();
     pool = await connectionPromise;
-    
+
     const connectionTime = Date.now() - startTime;
-    console.log(`✅ [MSSQL] Connected to MSSQL Server in ${connectionTime}ms`);
-    
+    console.log(`✅ [Contractor-PO MSSQL] Connected to ${CONTRACTOR_PO_DATABASE} in ${connectionTime}ms`);
+
     connectionPromise = null;
-    
-    // Handle connection errors
+
     pool.on('error', (err) => {
-      console.error('❌ [MSSQL] Connection pool error:', err);
+      console.error('❌ [Contractor-PO MSSQL] Pool error:', err);
       pool = null;
       connectionPromise = null;
     });
 
     return pool;
   } catch (error) {
-    console.error('❌ [MSSQL] Connection error:', error);
+    console.error('❌ [Contractor-PO MSSQL] Connection error:', error);
     pool = null;
     connectionPromise = null;
     throw error;
