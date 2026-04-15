@@ -27,6 +27,10 @@ ORDER BY JM.SequenceNo
 `;
 
 export const OperationDetailsQuery = `
+// DECLARE @JobBookingID                    INT = 615;
+// DECLARE @CompanyID                       INT = 2;
+// DECLARE @JobBookingJobCardContentsID     INT = 1205;
+
 SELECT DISTINCT
     JP.SequenceNo,
     JP.Remarks,
@@ -47,117 +51,126 @@ SELECT DISTINCT
     END AS ScheduledMachineName,
 
     /* ===============================
-       Production Machine (from ProductionEntry)
+       Production Machine
        =============================== */
-    ISNULL(MCH_PROD.MachineName, '-') AS ProductionMachineName,
+    ISNULL(MCH_PROD.MachineName, '-')           AS ProductionMachineName,
 
     /* ===============================
        Quantities
        =============================== */
     ISNULL(OPS.ScheduledQty, JP.ToBeProduceQty) AS ToBeProduceQty,
-    ISNULL(OPS.ProducedQty, 0) AS ReadyQty,
-    ISNULL(OPS.ProducedQty, 0) AS ProductionQuantity,
+    ISNULL(OPS.ProducedQty, 0)                  AS ReadyQty,
+    ISNULL(OPS.ProducedQty, 0)                  AS ProductionQuantity,
 
     /* ===============================
        Operator + Time
        =============================== */
-    ISNULL(UM.UserName, '-') AS EmployeeName,
-    FORMAT(OPS.LastToTime, 'dd-MMM-yyyy') AS FromTime,
+    ISNULL(UM.UserName, '-')                    AS EmployeeName,
+    FORMAT(OPS.LastToTime, 'dd-MMM-yyyy')       AS FromTime,
 
     JP.Status,
-    ISNULL(NULLIF(PE.Remark, ''), '-') AS Remark
+    ISNULL(NULLIF(PE.Remark, ''), '-')          AS Remark
 
 FROM JobBookingJobCard J
 
 INNER JOIN JobBookingJobCardContents JJ
-    ON J.JobBookingID = JJ.JobBookingID
-   AND J.CompanyID = JJ.CompanyID
+    ON J.JobBookingID   = JJ.JobBookingID
+   AND J.CompanyID      = JJ.CompanyID
+
+LEFT JOIN (
+    SELECT DISTINCT JobBookingJobCardContentsID
+    FROM   JobScheduleRelease
+    WHERE  JobBookingID                     = @JobBookingID
+      AND  CompanyID                        = @CompanyID
+      AND  ISNULL(IsDeletedTransaction, 0)  = 0
+      AND  ISNULL(IsOnlineProcess, 0)       = 0
+) JSR_EXISTS
+    ON JSR_EXISTS.JobBookingJobCardContentsID = JJ.JobBookingJobCardContentsID
 
 INNER JOIN JobBookingJobCardProcess JP
-    ON JJ.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
-   AND JJ.CompanyID = JP.CompanyID
-   AND ISNULL(JP.IsDeletedTransaction, 0) = 0
+    ON JJ.JobBookingJobCardContentsID       = JP.JobBookingJobCardContentsID
+   AND JJ.CompanyID                         = JP.CompanyID
+   AND ISNULL(JP.IsDeletedTransaction, 0)   = 0
 
 INNER JOIN ProcessMaster PM
-    ON PM.ProcessID = JP.ProcessID
-   AND PM.CompanyID = JP.CompanyID
+    ON PM.ProcessID  = JP.ProcessID
+   AND PM.CompanyID  = JP.CompanyID
 
-/* =========================================================
-   Aggregated Scheduled + Production data
-   ========================================================= */
 LEFT JOIN (
     SELECT
-        JP.JobBookingJobCardContentsID,
-        JP.ProcessID,
-
+        JP2.JobBookingJobCardContentsID,
+        JP2.ProcessID,
         CASE 
-            WHEN SUM(ISNULL(JSR.ScheduleQty, 0)) > 0
-                 THEN SUM(ISNULL(JSR.ScheduleQty, 0))
-            ELSE ISNULL(JP.ToBeProduceQty, 0)
-        END AS ScheduledQty,
-
-        SUM(ISNULL(PE.ProductionQuantity, 0)) AS ProducedQty,
-
-        MAX(JSR.MachineID) AS ScheduledMachineID,
-        MAX(PE.MachineID)  AS ProductionMachineID,
-        MAX(PE.ToTime)     AS LastToTime
-
-    FROM JobBookingJobCardProcess JP
-
-    LEFT JOIN JobScheduleRelease JSR
-        ON JSR.JobBookingID = JP.JobBookingID
-       AND JSR.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
-       AND JSR.ProcessID = JP.ProcessID
-       AND JSR.CompanyID = JP.CompanyID
-       AND ISNULL(JSR.IsDeletedTransaction, 0) = 0
-       AND ISNULL(JSR.IsOnlineProcess, 0) = 0
-
-    LEFT JOIN ProductionEntry PE
-        ON PE.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
-       AND PE.ProcessID = JP.ProcessID
-
-    WHERE JP.JobBookingID = @JobBookingID
-      AND JP.CompanyID = @CompanyID
-
+            WHEN SUM(ISNULL(JSR2.ScheduleQty, 0)) > 0
+                THEN SUM(ISNULL(JSR2.ScheduleQty, 0))
+            ELSE ISNULL(JP2.ToBeProduceQty, 0)
+        END                                     AS ScheduledQty,
+        SUM(ISNULL(PE2.ProductionQuantity, 0))  AS ProducedQty,
+        MAX(JSR2.MachineID)                     AS ScheduledMachineID,
+        MAX(PE2.MachineID)                      AS ProductionMachineID,
+        MAX(PE2.ToTime)                         AS LastToTime
+    FROM JobBookingJobCardProcess JP2
+    LEFT JOIN JobScheduleRelease JSR2
+        ON JSR2.JobBookingID                    = JP2.JobBookingID
+       AND JSR2.JobBookingJobCardContentsID      = JP2.JobBookingJobCardContentsID
+       AND JSR2.ProcessID                        = JP2.ProcessID
+       AND JSR2.CompanyID                        = JP2.CompanyID
+       AND ISNULL(JSR2.IsDeletedTransaction, 0)  = 0
+       AND ISNULL(JSR2.IsOnlineProcess, 0)       = 0
+    LEFT JOIN ProductionEntry PE2
+        ON PE2.JobBookingJobCardContentsID       = JP2.JobBookingJobCardContentsID
+       AND PE2.ProcessID                         = JP2.ProcessID
+    WHERE JP2.JobBookingID  = @JobBookingID
+      AND JP2.CompanyID     = @CompanyID
     GROUP BY
-        JP.JobBookingJobCardContentsID,
-        JP.ProcessID,
-        JP.ToBeProduceQty
+        JP2.JobBookingJobCardContentsID,
+        JP2.ProcessID,
+        JP2.ToBeProduceQty
 ) OPS
     ON OPS.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
-   AND OPS.ProcessID = JP.ProcessID
+   AND OPS.ProcessID                   = JP.ProcessID
 
-/* =========================================================
-   Machine joins
-   ========================================================= */
 LEFT JOIN MachineMaster MCH_JSR
     ON MCH_JSR.MachineId = OPS.ScheduledMachineID
-   AND MCH_JSR.CompanyID = JP.CompanyID
+   AND MCH_JSR.CompanyID  = JP.CompanyID
 
 LEFT JOIN MachineMaster MCH_JP
-    ON MCH_JP.MachineId = JP.MachineID
-   AND MCH_JP.CompanyID = JP.CompanyID
+    ON MCH_JP.MachineId  = JP.MachineID
+   AND MCH_JP.CompanyID   = JP.CompanyID
 
 LEFT JOIN MachineMaster MCH_PROD
     ON MCH_PROD.MachineId = OPS.ProductionMachineID
-   AND MCH_PROD.CompanyID = JP.CompanyID
+   AND MCH_PROD.CompanyID  = JP.CompanyID
 
-/* =========================================================
-   Latest production entry → operator & remark
-   ========================================================= */
 LEFT JOIN ProductionEntry PE
     ON PE.JobBookingJobCardContentsID = OPS.JobBookingJobCardContentsID
-   AND PE.ProcessID = OPS.ProcessID
-   AND PE.ToTime = OPS.LastToTime
+   AND PE.ProcessID                   = OPS.ProcessID
+   AND PE.ToTime                      = OPS.LastToTime
 
 LEFT JOIN UserMaster UM
     ON UM.UserID = PE.EmployeeID
 
-WHERE J.CompanyID = @CompanyID
+WHERE J.CompanyID    = @CompanyID
   AND J.JobBookingID = @JobBookingID
   AND (
         @JobBookingJobCardContentsID IS NULL
         OR JJ.JobBookingJobCardContentsID = @JobBookingJobCardContentsID
+      )
+  AND (
+        JSR_EXISTS.JobBookingJobCardContentsID IS NULL
+        OR
+        OPS.ScheduledMachineID IS NOT NULL
+        OR
+        EXISTS (
+            SELECT 1
+            FROM   JobScheduleRelease JSR_CHK
+            WHERE  JSR_CHK.JobBookingJobCardContentsID    = JP.JobBookingJobCardContentsID
+              AND  JSR_CHK.ProcessID                      = JP.ProcessID
+              AND  JSR_CHK.JobBookingID                   = @JobBookingID
+              AND  JSR_CHK.CompanyID                      = @CompanyID
+              AND  ISNULL(JSR_CHK.IsDeletedTransaction,0) = 0
+              AND  ISNULL(JSR_CHK.IsOnlineProcess,0)      = 0
+        )
       )
 
 ORDER BY JP.SequenceNo;
