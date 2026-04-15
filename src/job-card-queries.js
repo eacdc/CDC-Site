@@ -27,9 +27,8 @@ ORDER BY JM.SequenceNo
 `;
 
 export const OperationDetailsQuery = `
-// DECLARE @JobBookingID                    INT = 615;
-// DECLARE @CompanyID                       INT = 2;
-// DECLARE @JobBookingJobCardContentsID     INT = 1205;
+
+
 
 SELECT DISTINCT
     JP.SequenceNo,
@@ -64,9 +63,10 @@ SELECT DISTINCT
 
     /* ===============================
        Operator + Time
+       UserMaster first, LedgerMaster fallback
        =============================== */
-    ISNULL(UM.UserName, '-')                    AS EmployeeName,
-    FORMAT(OPS.LastToTime, 'dd-MMM-yyyy')       AS FromTime,
+    ISNULL(UM.UserName, ISNULL(LM.LedgerName, '-')) AS EmployeeName,
+    FORMAT(OPS.LastToTime, 'dd-MMM-yyyy')            AS FromTime,
 
     JP.Status,
     ISNULL(NULLIF(PE.Remark, ''), '-')          AS Remark
@@ -148,7 +148,12 @@ LEFT JOIN ProductionEntry PE
    AND PE.ToTime                      = OPS.LastToTime
 
 LEFT JOIN UserMaster UM
-    ON UM.UserID = PE.EmployeeID
+    ON UM.UserID   = PE.EmployeeID
+
+LEFT JOIN LedgerMaster LM
+    ON LM.LedgerID  = PE.EmployeeID
+   AND LM.CompanyID = JP.CompanyID
+   AND UM.UserID IS NULL
 
 WHERE J.CompanyID    = @CompanyID
   AND J.JobBookingID = @JobBookingID
