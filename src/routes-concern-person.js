@@ -5,6 +5,26 @@ import mongoose from 'mongoose';
 const router = Router();
 let concernMongoConnPromise = null;
 
+function resolveEnvValue(candidates) {
+  for (const key of candidates) {
+    const raw = process.env[key];
+    if (raw !== undefined) {
+      const value = String(raw).trim().replace(/^['"]|['"]$/g, '');
+      if (value) return { value, key };
+    }
+  }
+
+  const normalizedCandidates = candidates.map((k) => String(k).trim().toLowerCase());
+  for (const [envKey, envValue] of Object.entries(process.env)) {
+    const normalizedEnvKey = String(envKey).trim().toLowerCase();
+    if (!normalizedCandidates.includes(normalizedEnvKey)) continue;
+    const value = String(envValue ?? '').trim().replace(/^['"]|['"]$/g, '');
+    if (value) return { value, key: envKey };
+  }
+
+  return { value: '', key: null };
+}
+
 function normalizeDatabase(value) {
   return String(value || '').trim().toUpperCase();
 }
@@ -36,12 +56,55 @@ function resolveFinancialYear(now = new Date()) {
 
 async function getConcernMongoConnection() {
   if (!concernMongoConnPromise) {
-    const uri = String(process.env.mongodb_uri_concern || '').trim();
-    const dbName = String(process.env.mongo_db_concern || '').trim();
+    const uriResolved = resolveEnvValue([
+      'mongodb_uri_concern',
+      'MONGODB_URI_CONCERN',
+      'mongodb_uri_concern ',
+      'MONGODB_URI_CONCERN '
+    ]);
+    const dbNameResolved = resolveEnvValue([
+      'mongo_db_concern',
+      'MONGO_DB_CONCERN',
+      'mongo_db_concern ',
+      'MONGO_DB_CONCERN '
+    ]);
+    const uri = uriResolved.value;
+    const dbName = dbNameResolved.value;
     if (!uri || !dbName) {
       throw new Error('Concern MongoDB config missing (mongodb_uri_concern/mongo_db_concern).');
     }
-    concernMongoConnPromise = mongoose.createConnection(uri, { dbName }).asPromise();
+    let uriHost = 'unknown-host';
+    try {
+      uriHost = new URL(uri).host;
+    } catch (_) {
+      uriHost = 'invalid-uri-format';
+    }
+
+    console.log('[concern-person] Mongo connect start', {
+      dbName,
+      uriHost,
+      uriEnvKey: uriResolved.key,
+      dbEnvKey: dbNameResolved.key
+    });
+    concernMongoConnPromise = mongoose.createConnection(uri, { dbName }).asPromise()
+      .then((conn) => {
+        console.log('[concern-person] Mongo connect success', {
+          dbName: conn?.name || dbName,
+          readyState: conn?.readyState
+        });
+        return conn;
+      })
+      .catch((error) => {
+        console.error('[concern-person] Mongo connect failed', {
+          dbName,
+          uriHost,
+          error: error?.message || error
+        });
+        concernMongoConnPromise = null;
+        throw error;
+      });
+  } else {
+    console.log('[concern-person] Mongo connection reuse');
   }
   return concernMongoConnPromise;
 }
@@ -146,6 +209,28 @@ async function softDeleteConcernPerson(pool, payload) {
         AND ISNULL(IsDeletedTransaction, 0) = 0
     `);
   return (result.rowsAffected?.[0] || 0) > 0;
+}
+
+async function softDeleteConcernPersonByEmail(pool, payload) {
+  await ensurePoolOnDb(pool, payload.expectedDbName);
+  const result = await pool.request()
+    .input('LedgerID', sql.Int, payload.ledgerId)
+    .input('Email', sql.NVarChar(200), payload.email)
+    .query(`
+      UPDATE ConcernPersonMaster
+      SET
+        IsDeleted = 1,
+        IsDeletedTransaction = 1,
+        DeletedDate = GETDATE(),
+        ModifiedDate = GETDATE(),
+        ModifiedBy = 2,
+        DeletedBy = 2
+      WHERE LedgerID = @LedgerID
+        AND LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(@Email)))
+        AND ISNULL(IsDeleted, 0) = 0
+        AND ISNULL(IsDeletedTransaction, 0) = 0
+    `);
+  return result.rowsAffected?.[0] || 0;
 }
 
 async function hasDuplicateEmail(pool, ledgerId, email, expectedDbName) {
@@ -504,6 +589,10 @@ router.delete('/concern-person/:concernPersonId', async (req, res) => {
 
     const pool = await getPool(database);
     const expectedDbName = getExpectedDbName(database);
+    const mirrorDatabase = getMirrorDatabase(database);
+    const mirrorPool = await getPool(mirrorDatabase);
+    const mirrorExpectedDbName = getExpectedDbName(mirrorDatabase);
+
     const sqlDelete = await softDeleteConcernPerson(pool, { concernPersonId, ledgerId, expectedDbName });
     if (!sqlDelete) {
       return res.status(404).json({
@@ -512,11 +601,40 @@ router.delete('/concern-person/:concernPersonId', async (req, res) => {
       });
     }
 
+    let mirrorDelete = {
+      db: mirrorDatabase,
+      foundClient: false,
+      deletedCount: 0
+    };
+
+    const mirrorLedger = await getLedgerByCode(mirrorPool, ledgerCodeString, mirrorExpectedDbName);
+    if (mirrorLedger?.LedgerID) {
+      const mirrorDeletedCount = await softDeleteConcernPersonByEmail(mirrorPool, {
+        ledgerId: mirrorLedger.LedgerID,
+        email,
+        expectedDbName: mirrorExpectedDbName
+      });
+      mirrorDelete = {
+        db: mirrorDatabase,
+        foundClient: true,
+        ledgerId: mirrorLedger.LedgerID,
+        deletedCount: mirrorDeletedCount
+      };
+    }
+
     const concernMongo = await getConcernMongoConnection();
+    console.log('[concern-person] Mongo delete start', {
+      email,
+      customer_key: ledgerCodeString
+    });
     const usersDeleteResult = await concernMongo.collection('users').deleteMany({ email });
     const tenantsDeleteResult = await concernMongo.collection('tenants').deleteMany({
       email,
       customer_key: ledgerCodeString
+    });
+    console.log('[concern-person] Mongo delete result', {
+      usersDeleted: usersDeleteResult?.deletedCount || 0,
+      tenantsDeleted: tenantsDeleteResult?.deletedCount || 0
     });
 
     return res.json({
@@ -527,6 +645,7 @@ router.delete('/concern-person/:concernPersonId', async (req, res) => {
         ledgerId,
         deleted: true
       },
+      mirrorDelete,
       mongoDeleteUsersCount: usersDeleteResult?.deletedCount || 0,
       mongoDeleteTenantsCount: tenantsDeleteResult?.deletedCount || 0
     });
