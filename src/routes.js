@@ -2562,6 +2562,248 @@ router.get('/grn/completed-delivery-amount', async (req, res) => {
     }
 });
 
+// GRN: Pending purchase orders where GRN is not fully delivered
+router.get('/grn/pending-po-not-fully-delivered', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const query = `
+            SELECT
+                ITM_PO.TransactionID                                    AS POTransactionID,
+                ITD_PO.ItemID                                           AS ItemID,
+                ITM_PO.VoucherNo                                        AS PONumber,
+                ITM_PO.VoucherDate                                      AS PODate,
+                ITD_PO.ExpectedDeliveryDate,
+                IM.ItemCode,
+                IM.ItemName,
+                IM.Quality,
+                IM.GSM,
+                IM.SizeW,
+                IM.SizeL,
+                IM.StockUnit,
+                LM.LedgerName                                           AS Supplier,
+                CASE
+                    WHEN UPPER(IM.StockUnit) = 'KG'
+                    THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                    ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+                END                                                     AS POQty,
+                ISNULL(GRN.ReceivedQty, 0)                              AS ReceivedQty,
+                CASE
+                    WHEN UPPER(IM.StockUnit) = 'KG'
+                    THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                    ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+                END - ISNULL(GRN.ReceivedQty, 0)                        AS PendingQty,
+                ITD_PO.RefJobBookingJobCardContentsID                   AS JBJCC_ID,
+                JEJ.JobBookingNo,
+                JEJ.JobName
+            FROM dbo.ItemTransactionMain  ITM_PO
+            JOIN dbo.ItemTransactionDetail ITD_PO
+                ON  ITD_PO.TransactionID         = ITM_PO.TransactionID
+            JOIN dbo.ItemMaster IM
+                ON  IM.ItemID                    = ITD_PO.ItemID
+            LEFT JOIN dbo.LedgerMaster LM
+                ON  LM.LedgerID                  = ITM_PO.LedgerID
+            LEFT JOIN (
+                SELECT
+                    ITD_GRN.PurchaseTransactionID,
+                    ITD_GRN.ItemID,
+                    SUM(ISNULL(ITD_GRN.ReceiptQuantity, 0)) AS ReceivedQty
+                FROM dbo.ItemTransactionDetail  ITD_GRN
+                JOIN dbo.ItemTransactionMain    ITM_GRN
+                    ON  ITM_GRN.TransactionID             = ITD_GRN.TransactionID
+                WHERE ITM_GRN.VoucherID                   = -14
+                  AND ISNULL(ITD_GRN.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(ITM_GRN.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(ITD_GRN.IsCancelled, 0)          = 0
+                GROUP BY ITD_GRN.PurchaseTransactionID, ITD_GRN.ItemID
+            ) GRN
+                ON  GRN.PurchaseTransactionID    = ITM_PO.TransactionID
+                AND GRN.ItemID                   = ITD_PO.ItemID
+            LEFT JOIN dbo.JobBookingJobCard JEJ
+                ON  JEJ.JobBookingID = (
+                        SELECT TOP 1 JEJC.JobBookingID
+                        FROM dbo.JobBookingJobCardContents JEJC
+                        WHERE JEJC.JobBookingJobCardContentsID = ITD_PO.RefJobBookingJobCardContentsID
+                    )
+            WHERE ITM_PO.VoucherID                          = -11
+              AND ISNULL(ITD_PO.IsDeletedTransaction, 0)    = 0
+              AND ISNULL(ITM_PO.IsDeletedTransaction, 0)    = 0
+              AND ISNULL(ITD_PO.IsCancelled, 0)             = 0
+              AND (
+                    CASE
+                        WHEN UPPER(IM.StockUnit) = 'KG'
+                        THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                        ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+                    END - ISNULL(GRN.ReceivedQty, 0)
+                  ) > 0
+              AND ISNULL(IM.Quality, '') NOT LIKE '%Kraft%'
+            ORDER BY ITD_PO.ExpectedDeliveryDate, ITM_PO.VoucherDate;
+        `;
+
+        const result = await pool.request().query(query);
+        const records = (result.recordset || []).map((row) => ({
+            poTransactionId: row.POTransactionID ?? row.potransactionid ?? null,
+            itemId: row.ItemID ?? row.itemid ?? null,
+            poNumber: row.PONumber ?? row.ponumber ?? null,
+            poDate: row.PODate ?? row.podate ?? null,
+            expectedDeliveryDate: row.ExpectedDeliveryDate ?? row.expecteddeliverydate ?? null,
+            itemCode: row.ItemCode ?? row.itemcode ?? '',
+            itemName: row.ItemName ?? row.itemname ?? '',
+            quality: row.Quality ?? row.quality ?? '',
+            gsm: Number(row.GSM ?? row.gsm ?? 0),
+            sizeW: Number(row.SizeW ?? row.sizew ?? 0),
+            sizeL: Number(row.SizeL ?? row.sizel ?? 0),
+            stockUnit: row.StockUnit ?? row.stockunit ?? '',
+            supplier: row.Supplier ?? row.supplier ?? '',
+            poQty: Number(row.POQty ?? row.poqty ?? 0),
+            receivedQty: Number(row.ReceivedQty ?? row.receivedqty ?? 0),
+            pendingQty: Number(row.PendingQty ?? row.pendingqty ?? 0),
+            jbjccId: row.JBJCC_ID ?? row.jbjcc_id ?? null,
+            jobBookingNo: row.JobBookingNo ?? row.jobbookingno ?? '',
+            jobName: row.JobName ?? row.jobname ?? ''
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN pending PO not fully delivered error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch pending PO records' });
+    }
+});
+
+// GRN: Update expected delivery date for pending PO row
+router.post('/grn/pending-po-expected-delivery-date', async (req, res) => {
+    try {
+        const { database, poTransactionId, itemId, itemCode, newExpectedDeliveryDate } = req.body || {};
+        const selectedDatabase = String(database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeExpectedDate = String(newExpectedDeliveryDate || '').trim();
+        if (!dateRegex.test(safeExpectedDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid newExpectedDeliveryDate. Expected YYYY-MM-DD.' });
+        }
+
+        const txId = Number(poTransactionId || 0);
+        const itmId = Number(itemId || 0);
+        const safeItemCode = String(itemCode || '').trim();
+
+        if (!(Number.isInteger(txId) && txId > 0) || !(Number.isInteger(itmId) && itmId > 0)) {
+            return res.status(400).json({ status: false, error: 'Missing row identifiers. Provide poTransactionId and itemId.' });
+        }
+        if (!safeItemCode) {
+            return res.status(400).json({ status: false, error: 'Missing itemCode.' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+
+        const verifyRequest = pool.request()
+            .input('POTransactionID', sql.Int, txId)
+            .input('ItemID', sql.Int, itmId)
+            .input('ItemCode', sql.NVarChar(100), safeItemCode);
+
+        const verifyResult = await verifyRequest.query(`
+            SELECT TOP 1
+                ITM_PO.TransactionID AS POTransactionID,
+                ITD_PO.ItemID AS ItemID,
+                IM.ItemCode AS ItemCode,
+                ITM_PO.VoucherNo AS PONumber,
+                ITD_PO.ExpectedDeliveryDate,
+                CASE
+                    WHEN UPPER(IM.StockUnit) = 'KG'
+                    THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                    ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+                END - ISNULL(GRN.ReceivedQty, 0) AS PendingQty
+            FROM dbo.ItemTransactionMain ITM_PO
+            JOIN dbo.ItemTransactionDetail ITD_PO
+                ON ITD_PO.TransactionID = ITM_PO.TransactionID
+            JOIN dbo.ItemMaster IM
+                ON IM.ItemID = ITD_PO.ItemID
+            LEFT JOIN (
+                SELECT
+                    ITD_GRN.PurchaseTransactionID,
+                    ITD_GRN.ItemID,
+                    SUM(ISNULL(ITD_GRN.ReceiptQuantity, 0)) AS ReceivedQty
+                FROM dbo.ItemTransactionDetail ITD_GRN
+                JOIN dbo.ItemTransactionMain ITM_GRN
+                    ON ITM_GRN.TransactionID = ITD_GRN.TransactionID
+                WHERE ITM_GRN.VoucherID = -14
+                  AND ISNULL(ITD_GRN.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(ITM_GRN.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(ITD_GRN.IsCancelled, 0) = 0
+                GROUP BY ITD_GRN.PurchaseTransactionID, ITD_GRN.ItemID
+            ) GRN
+                ON GRN.PurchaseTransactionID = ITM_PO.TransactionID
+                AND GRN.ItemID = ITD_PO.ItemID
+            WHERE ITM_PO.TransactionID = @POTransactionID
+              AND ITD_PO.ItemID = @ItemID
+              AND LTRIM(RTRIM(ISNULL(IM.ItemCode, ''))) = LTRIM(RTRIM(@ItemCode))
+              AND ITM_PO.VoucherID = -11
+              AND ISNULL(ITD_PO.IsDeletedTransaction, 0) = 0
+              AND ISNULL(ITM_PO.IsDeletedTransaction, 0) = 0
+              AND ISNULL(ITD_PO.IsCancelled, 0) = 0;
+        `);
+
+        if (!(verifyResult.recordset || []).length) {
+            return res.status(404).json({ status: false, error: 'Target PO row not found or inactive.' });
+        }
+
+        const targetRow = verifyResult.recordset[0];
+        const pendingQty = Number(targetRow.PendingQty || 0);
+        if (!(pendingQty > 0)) {
+            return res.status(400).json({ status: false, error: 'Expected delivery date can only be updated for rows with pending quantity.' });
+        }
+
+        const updateRequest = pool.request()
+            .input('POTransactionID', sql.Int, txId)
+            .input('ItemID', sql.Int, itmId)
+            .input('ItemCode', sql.NVarChar(100), safeItemCode)
+            .input('NewExpectedDeliveryDate', sql.Date, safeExpectedDate);
+
+        const updateResult = await updateRequest.query(`
+            UPDATE ITD_PO
+            SET ITD_PO.ExpectedDeliveryDate = @NewExpectedDeliveryDate
+            FROM dbo.ItemTransactionDetail ITD_PO
+            JOIN dbo.ItemTransactionMain ITM_PO
+                ON ITM_PO.TransactionID = ITD_PO.TransactionID
+            JOIN dbo.ItemMaster IM
+                ON IM.ItemID = ITD_PO.ItemID
+            WHERE ITM_PO.TransactionID = @POTransactionID
+              AND ITD_PO.ItemID = @ItemID
+              AND LTRIM(RTRIM(ISNULL(IM.ItemCode, ''))) = LTRIM(RTRIM(@ItemCode))
+              AND ITM_PO.VoucherID = -11
+              AND ISNULL(ITD_PO.IsDeletedTransaction, 0) = 0
+              AND ISNULL(ITM_PO.IsDeletedTransaction, 0) = 0
+              AND ISNULL(ITD_PO.IsCancelled, 0) = 0;
+        `);
+
+        if (!(updateResult.rowsAffected || []).some((count) => count > 0)) {
+            return res.status(400).json({ status: false, error: 'No rows updated. Please refresh and try again.' });
+        }
+
+        return res.json({
+            status: true,
+            message: 'Expected delivery date updated successfully.',
+            record: {
+                poNumber: targetRow.PONumber ?? null,
+                poTransactionId: targetRow.POTransactionID ?? null,
+                itemId: targetRow.ItemID ?? null,
+                itemCode: targetRow.ItemCode ?? null,
+                expectedDeliveryDate: safeExpectedDate
+            }
+        });
+    } catch (err) {
+        console.error('GRN pending PO expected delivery date update error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to update expected delivery date' });
+    }
+});
+
 // Inventory Summary Tool: itemwise by item group
 router.get('/inventory-summary/group', async (req, res) => {
     try {
