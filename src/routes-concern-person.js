@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import { getPool, sql } from './db.js';
+import mongoose from 'mongoose';
 
 const router = Router();
+let concernMongoConnPromise = null;
 
 function normalizeDatabase(value) {
   return String(value || '').trim().toUpperCase();
@@ -30,6 +32,18 @@ function resolveFinancialYear(now = new Date()) {
   const month = now.getMonth();
   const startYear = month >= 3 ? year : year - 1;
   return `${startYear}-${startYear + 1}`;
+}
+
+async function getConcernMongoConnection() {
+  if (!concernMongoConnPromise) {
+    const uri = String(process.env.mongodb_uri_concern || '').trim();
+    const dbName = String(process.env.mongo_db_concern || '').trim();
+    if (!uri || !dbName) {
+      throw new Error('Concern MongoDB config missing (mongodb_uri_concern/mongo_db_concern).');
+    }
+    concernMongoConnPromise = mongoose.createConnection(uri, { dbName }).asPromise();
+  }
+  return concernMongoConnPromise;
 }
 
 async function getLedgerById(pool, ledgerId) {
@@ -96,6 +110,7 @@ async function getConcernPersonsByLedger(pool, ledgerId, expectedDbName) {
     .query(`
       SELECT
         ConcernPersonID,
+        LedgerID,
         Name,
         Mobile,
         Email,
@@ -109,6 +124,28 @@ async function getConcernPersonsByLedger(pool, ledgerId, expectedDbName) {
       ORDER BY ModifiedDate DESC, ConcernPersonID DESC
     `);
   return result.recordset || [];
+}
+
+async function softDeleteConcernPerson(pool, payload) {
+  await ensurePoolOnDb(pool, payload.expectedDbName);
+  const result = await pool.request()
+    .input('ConcernPersonID', sql.Int, payload.concernPersonId)
+    .input('LedgerID', sql.Int, payload.ledgerId)
+    .query(`
+      UPDATE ConcernPersonMaster
+      SET
+        IsDeleted = 1,
+        IsDeletedTransaction = 1,
+        DeletedDate = GETDATE(),
+        ModifiedDate = GETDATE(),
+        ModifiedBy = 2,
+        DeletedBy = 2
+      WHERE ConcernPersonID = @ConcernPersonID
+        AND LedgerID = @LedgerID
+        AND ISNULL(IsDeleted, 0) = 0
+        AND ISNULL(IsDeletedTransaction, 0) = 0
+    `);
+  return (result.rowsAffected?.[0] || 0) > 0;
 }
 
 async function hasDuplicateEmail(pool, ledgerId, email, expectedDbName) {
@@ -441,6 +478,63 @@ router.post('/concern-person', async (req, res) => {
     return res.status(500).json({
       status: false,
       error: error?.message || 'Failed to create concerned person.'
+    });
+  }
+});
+
+router.delete('/concern-person/:concernPersonId', async (req, res) => {
+  try {
+    const concernPersonId = Number.parseInt(String(req.params.concernPersonId ?? ''), 10);
+    if (Number.isNaN(concernPersonId) || concernPersonId <= 0) {
+      return res.status(400).json({ status: false, error: 'concernPersonId must be a positive integer.' });
+    }
+
+    const database = normalizeDatabase(req.body?.database);
+    if (database !== 'KOL' && database !== 'AHM') {
+      return res.status(400).json({ status: false, error: 'database must be KOL or AHM.' });
+    }
+
+    const ledgerId = Number.parseInt(String(req.body?.ledgerId ?? ''), 10);
+    if (Number.isNaN(ledgerId) || ledgerId <= 0) {
+      return res.status(400).json({ status: false, error: 'ledgerId is required and must be a positive integer.' });
+    }
+
+    const email = asRequiredString(req.body?.email, 'email', 200).toLowerCase();
+    const ledgerCodeString = asRequiredString(req.body?.ledgerCodeString, 'ledgerCodeString', 100);
+
+    const pool = await getPool(database);
+    const expectedDbName = getExpectedDbName(database);
+    const sqlDelete = await softDeleteConcernPerson(pool, { concernPersonId, ledgerId, expectedDbName });
+    if (!sqlDelete) {
+      return res.status(404).json({
+        status: false,
+        error: 'Concerned person not found or already deleted.'
+      });
+    }
+
+    const concernMongo = await getConcernMongoConnection();
+    const usersDeleteResult = await concernMongo.collection('users').deleteMany({ email });
+    const tenantsDeleteResult = await concernMongo.collection('tenants').deleteMany({
+      email,
+      customer_key: ledgerCodeString
+    });
+
+    return res.json({
+      status: true,
+      sqlDelete: {
+        db: database,
+        concernPersonId,
+        ledgerId,
+        deleted: true
+      },
+      mongoDeleteUsersCount: usersDeleteResult?.deletedCount || 0,
+      mongoDeleteTenantsCount: tenantsDeleteResult?.deletedCount || 0
+    });
+  } catch (error) {
+    console.error('[concern-person] delete failed:', error);
+    return res.status(500).json({
+      status: false,
+      error: error?.message || 'Failed to delete concerned person.'
     });
   }
 });
