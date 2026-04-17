@@ -531,7 +531,7 @@ router.post('/jobopsmaster', async (req, res) => {
 
         const qtyPerBookNum = Number(qtyPerBook);
 
-        const valuePerBookNum = parseFloat(Number(ratePerBook).toFixed(4));
+        const valuePerBookNum = parseFloat(Number(ratePerBook).toFixed(10));
 
 
 
