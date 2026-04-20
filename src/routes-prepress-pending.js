@@ -261,7 +261,7 @@ async function fetchSqlCompletedByUser(databaseKey, username, fromDate, toDate, 
     Operation: r.Operation ?? null,
     Remarks: r.Remarks ?? r.Remark ?? null,
     PlanDate: r.PlanDate ?? null,
-    ActualDate: r.ActualDate ?? r.CompletedDate ?? r.PlanDate ?? null,
+    ActualDate: r.CompletionDate ?? null,
     Status: r.Status ?? 'Completed',
     ID: r.ID ?? null,
     ledgerid: r.ledgerid ?? ledgerId,
@@ -333,6 +333,22 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
     }
   }
 
+  const isTooling = doc.assignedTo?.toolingUserKey === userKey;
+  const toolingActualDate = doc.tooling?.actualDate ?? null;
+  const hasDie = doc.tooling?.die && doc.tooling.die !== 'NA';
+  const hasBlock = doc.tooling?.block && doc.tooling.block !== 'NA';
+  const hasBlanket = doc.tooling?.blanket && doc.tooling.blanket !== 'NA';
+  if (isTooling && (hasDie || hasBlock || hasBlanket) && isDateInRange(toolingActualDate, fromDate, toDate)) {
+    rows.push({
+      ...baseFields,
+      Operation: 'Tooling',
+      Status: 'Completed',
+      PlanDate: doc.tooling?.planDate ?? null,
+      ActualDate: toolingActualDate,
+      FinalApprovalStatus: doc.finalApproval?.approved ? 'Yes' : 'No',
+    });
+  }
+
   const plateOutput = (doc.plate?.output || '').toString().toLowerCase();
   const plateDate = doc.plate?.actualDate ?? null;
   if (isPlate && plateOutput === 'done' && isDateInRange(plateDate, fromDate, toDate)) {
@@ -346,7 +362,7 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
     });
   }
 
-  const finalDate = doc.finalApproval?.approvedDate ?? doc.updatedAt ?? null;
+  const finalDate = doc.finalApproval?.approvedDate ?? null;
   if (isPrepress && doc.finalApproval?.approved && isDateInRange(finalDate, fromDate, toDate)) {
     rows.push({
       ...baseFields,
@@ -358,7 +374,7 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
     });
   }
 
-  const cancelDate = doc.status?.cancelledAt ?? doc.updatedAt ?? null;
+  const cancelDate = doc.status?.cancelledAt ?? null;
   if (isCancelled && (isPrepress || isPlate) && isDateInRange(cancelDate, fromDate, toDate)) {
     rows.push({
       ...baseFields,
@@ -396,6 +412,7 @@ async function fetchMongoCompletedByUser(db, username, fromDate, toDate) {
           $or: [
             { 'assignedTo.prepressUserKey': userKey },
             { 'assignedTo.plateUserKey': userKey },
+            { 'assignedTo.toolingUserKey': userKey },
           ],
         },
       ],
@@ -762,7 +779,7 @@ router.get('/prepress/completed', async (req, res) => {
       Operation: row.Operation ?? null,
       Remarks: row.Remarks ?? null,
       PlanDate: row.PlanDate ?? null,
-      ActualDate: row.ActualDate ?? row.PlanDate ?? null,
+      ActualDate: row.ActualDate ?? null,
       Status: row.Status ?? 'Completed',
       __SourceDB: row.__SourceDB ?? null,
       __MongoId: row.__MongoId ?? null,

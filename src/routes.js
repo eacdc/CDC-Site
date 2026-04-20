@@ -488,6 +488,7 @@ router.post("/comm/first-intimation/send", async (req, res) => {
       const detReq = pool.request();
       detReq.input("Ids", tvp);
       const detRes = await detReq.execute("dbo.comm_first_intimation_details_by_ids");
+      console.log(detRes,'----------------------------------detRes');
   
       const rows = detRes.recordset || [];
       if (!rows.length) {
@@ -548,6 +549,8 @@ ${senderPhone}`;
   
         let sentEmail = false;
         let sentWhatsapp = false;
+        let whatsappError = null;
+        let emailError = null;
   
         if (mobileList.length) {
           for (const to of mobileList) {
@@ -561,8 +564,11 @@ ${senderPhone}`;
               });
               sentWhatsapp = true;
             } catch (waErr) {
-              console.error('[WHATSAPP ERROR]', waErr.message);
-              throw waErr;
+              const detail = waErr.response?.data
+                ? JSON.stringify(waErr.response.data)
+                : waErr.message;
+              console.error('[WHATSAPP ERROR]', detail);
+              whatsappError = detail;
             }
           }
         }
@@ -583,21 +589,88 @@ ${senderPhone}`;
             sentEmail = true;
           } catch (emailErr) {
             console.error('[EMAIL ERROR]', emailErr.message);
-            throw emailErr;
+            emailError = emailErr.message;
           }
         }
   
+        let markError = null;
         if (sentEmail || sentWhatsapp) {
-          const tvpClient = new sql.Table("dbo.IdList");
-          tvpClient.columns.add("Id", sql.Int, { nullable: false });
-          clientRows.forEach(r => tvpClient.rows.add(r.OrderBookingDetailsID));
-  
-          const markReq = pool.request();
-          markReq.input("OrderBookingDetailsIds", tvpClient);
-          markReq.input("SentEmail", sql.Bit, sentEmail ? 1 : 0);
-          markReq.input("SentWhatsapp", sql.Bit, sentWhatsapp ? 1 : 0);
-          markReq.input("SentByUser", sql.NVarChar(100), username);
-          await markReq.execute("dbo.comm_mark_first_intimation_sent");
+          const idsToMark = clientRows
+            .map(r => Number(r.OrderBookingDetailsID))
+            .filter(id => Number.isInteger(id) && id > 0);
+
+          if (!idsToMark.length) {
+            markError = 'No valid OrderBookingDetailsID values to mark';
+            console.error('[FIRST-INTIMATION MARK ERROR]', {
+              reason: markError,
+              sampleRow: clientRows[0] || null
+            });
+          } else {
+            try {
+              // Before marking first intimation as sent, ensure no duplicate job cards exist
+              // for the selected OrderBookingDetailsID rows.
+              const tvpForDuplicateCheck = new sql.Table("dbo.IdList");
+              tvpForDuplicateCheck.columns.add("Id", sql.Int, { nullable: false });
+              idsToMark.forEach(id => tvpForDuplicateCheck.rows.add(id));
+
+              const duplicateCheckReq = pool.request();
+              duplicateCheckReq.input("Ids", tvpForDuplicateCheck);
+              const duplicateCheckRes = await duplicateCheckReq.query(`
+                SELECT
+                  jb.OrderBookingDetailsID,
+                  COUNT(*) AS JobCardCount
+                FROM dbo.JobBookingJobCard jb
+                INNER JOIN @Ids ids ON ids.Id = jb.OrderBookingDetailsID
+                WHERE ISNULL(jb.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(jb.IsCancel, 0) = 0
+                GROUP BY jb.OrderBookingDetailsID
+                HAVING COUNT(*) > 1
+              `);
+
+              const duplicateRows = duplicateCheckRes.recordset || [];
+              if (duplicateRows.length > 0) {
+                const duplicateIds = duplicateRows.map(r => Number(r.OrderBookingDetailsID));
+                const duplicateError = new Error(
+                  `Duplicate job number exists for OrderBookingDetailsID: ${duplicateIds.join(", ")}`
+                );
+                duplicateError.statusCode = 409;
+                duplicateError.duplicateOrderBookingDetailsIds = duplicateIds;
+                throw duplicateError;
+              }
+
+              const tvpClient = new sql.Table("dbo.IdList");
+              tvpClient.columns.add("Id", sql.Int, { nullable: false });
+              idsToMark.forEach(id => tvpClient.rows.add(id));
+
+              const markReq = pool.request();
+              markReq.input("OrderBookingDetailsIds", tvpClient);
+              markReq.input("SentEmail", sql.Bit, sentEmail ? 1 : 0);
+              markReq.input("SentWhatsapp", sql.Bit, sentWhatsapp ? 1 : 0);
+              markReq.input("SentByUser", sql.NVarChar(100), username);
+              await markReq.execute("dbo.comm_mark_first_intimation_sent");
+            } catch (markErr) {
+              markError =
+                markErr?.message ||
+                markErr?.originalError?.info?.message ||
+                markErr?.precedingErrors?.[0]?.message ||
+                'Failed to mark first intimation as sent';
+
+              console.error('[FIRST-INTIMATION MARK ERROR]', {
+                message: markErr?.message,
+                code: markErr?.code,
+                number: markErr?.number,
+                state: markErr?.state,
+                class: markErr?.class,
+                lineNumber: markErr?.lineNumber,
+                serverName: markErr?.serverName,
+                procName: markErr?.procName,
+                originalError: markErr?.originalError,
+                precedingErrors: markErr?.precedingErrors,
+                idsToMarkSample: idsToMark.slice(0, 10),
+                idsToMarkCount: idsToMark.length
+              });
+            }
+          }
         }
   
         // Add per-job details to results
@@ -610,15 +683,43 @@ ${senderPhone}`;
             jobName: row["Job Name"] || row["JobName"] || '',
             finalDeliveryDate: row["Final Delivery Date"] || row["FinalDeliveryDate"] || '',
             contactPerson: row["Contact Person"] || row["ContactPerson"] || '',
-            mailSent: sentEmail ? 'Yes' : 'No',
-            whatsappSent: sentWhatsapp ? 'Yes' : 'No'
+            mailSent: sentEmail ? 'Yes' : (emailError ? `Failed: ${emailError}` : 'No'),
+            whatsappSent: sentWhatsapp ? 'Yes' : (whatsappError ? `Failed: ${whatsappError}` : 'No'),
+            markStatus: markError ? `Failed: ${markError}` : 'Marked'
           });
         });
       }
   
       res.json({ ok: true, results });
     } catch (err) {
-      res.status(500).json({ ok: false, message: err.message });
+      const finalMessage =
+        err?.message ||
+        err?.originalError?.info?.message ||
+        err?.precedingErrors?.[0]?.message ||
+        'Internal server error';
+
+      console.error('[FIRST-INTIMATION SEND ERROR]', {
+        message: finalMessage,
+        rawMessage: err?.message,
+        code: err?.code,
+        number: err?.number,
+        state: err?.state,
+        class: err?.class,
+        lineNumber: err?.lineNumber,
+        serverName: err?.serverName,
+        procName: err?.procName,
+        originalError: err?.originalError,
+        precedingErrors: err?.precedingErrors,
+        stack: err?.stack,
+        responseStatus: err?.response?.status,
+        responseData: err?.response?.data
+      });
+      const statusCode = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
+      res.status(statusCode).json({
+        ok: false,
+        message: finalMessage,
+        duplicateOrderBookingDetailsIds: err?.duplicateOrderBookingDetailsIds || []
+      });
     }
   });
 

@@ -42,10 +42,10 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Simple console request logger for visibility
 app.use((req, res, next) => {
 	const start = Date.now();
-	//console.log(`[REQ] ${req.method} ${req.originalUrl}`);
+	console.log(`[REQ] ${req.method} ${req.originalUrl}`);
 	res.on('finish', () => {
 		const ms = Date.now() - start;
-		//console.log(`[RES] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
+		console.log(`[RES] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${ms}ms)`);
 	});
 	next();
 });
@@ -123,6 +123,14 @@ process.on('SIGTERM', async () => {
 		console.log('Server closed');
 		process.exit(0);
 	});
+});
+
+process.on('unhandledRejection', (reason) => {
+	console.error('Unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+	console.error('Uncaught exception:', error);
 });
 
 
