@@ -3036,6 +3036,83 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool — normalize all-tab-summary rows so every SELECT column is a stable JSON key
+// (mssql may use different property casing; ensures TopSalesExecutive is always present for the UI).
+function pickInventoryRowFieldCaseInsensitive(row, fieldName) {
+    if (row == null || typeof row !== 'object') return null;
+    const want = String(fieldName).toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(row, fieldName)) {
+        const direct = row[fieldName];
+        return direct === undefined ? null : direct;
+    }
+    const keys = Object.keys(row);
+    for (let i = 0; i < keys.length; i += 1) {
+        if (String(keys[i]).toLowerCase() === want) {
+            const v = row[keys[i]];
+            return v === undefined ? null : v;
+        }
+    }
+    const own = Object.getOwnPropertyNames(row);
+    for (let i = 0; i < own.length; i += 1) {
+        const k = own[i];
+        if (String(k).toLowerCase() === want) {
+            const v = row[k];
+            return v === undefined ? null : v;
+        }
+    }
+    return null;
+}
+
+const INVENTORY_ALL_TAB_SUMMARY_FIELDS = [
+    'ItemID',
+    'ItemCode',
+    'ItemGroup',
+    'SubGroup',
+    'ItemName',
+    'PhysicalStockInPU',
+    'PurchaseUnit',
+    'PhysicalStockSU',
+    'StockUnit',
+    'ClientRef',
+    'TopSalesExecutive',
+    'IncomingStock',
+    'allocatedstock',
+    'FreeStock',
+    'Manufecturer',
+    'SizeL',
+    'SizeW',
+    'GSM',
+    'Quality',
+    'CertificationType',
+    'LastPONO',
+    'LastPODate',
+    'StockStatus',
+    'LastGRNNO',
+    'LastGRNDate',
+    'Aging'
+];
+
+function mapInventoryAllTabSummaryRows(recordset) {
+    const rows = Array.isArray(recordset) ? recordset : [];
+    const fieldLc = new Set(INVENTORY_ALL_TAB_SUMMARY_FIELDS.map((f) => String(f).toLowerCase()));
+    return rows.map((row) => {
+        const out = {};
+        for (let i = 0; i < INVENTORY_ALL_TAB_SUMMARY_FIELDS.length; i += 1) {
+            const field = INVENTORY_ALL_TAB_SUMMARY_FIELDS[i];
+            out[field] = pickInventoryRowFieldCaseInsensitive(row, field);
+        }
+        const keys = Object.keys(row);
+        for (let j = 0; j < keys.length; j += 1) {
+            const k = keys[j];
+            if (fieldLc.has(String(k).toLowerCase())) continue;
+            if (!Object.prototype.hasOwnProperty.call(out, k)) {
+                out[k] = row[k];
+            }
+        }
+        return out;
+    });
+}
+
 // Inventory Summary Tool: all tab summary
 router.get('/inventory-summary/all-tab-summary', async (req, res) => {
     try {
@@ -3058,6 +3135,7 @@ router.get('/inventory-summary/all-tab-summary', async (req, res) => {
                 PhysicalStockSU,
                 StockUnit,
                 ClientRef,
+                TopSalesExecutive,
                 IncomingStock,
                 allocatedstock,
                 FreeStock,
@@ -3082,7 +3160,7 @@ router.get('/inventory-summary/all-tab-summary', async (req, res) => {
             ORDER BY PhysicalStockInPU DESC;
         `);
 
-        const records = result.recordset || [];
+        const records = mapInventoryAllTabSummaryRows(result.recordset || []);
         return res.json({ status: true, records });
     } catch (err) {
         console.error('Inventory summary all-tab-summary error:', err);
