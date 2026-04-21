@@ -2820,6 +2820,7 @@ ORDER BY ITD_PO.ExpectedDeliveryDate, ITM_PO.VoucherDate;
             expectedDeliveryDate: row.ExpectedDeliveryDate ?? row.expecteddeliverydate ?? null,
             itemCode: row.ItemCode ?? row.itemcode ?? '',
             itemName: row.ItemName ?? row.itemname ?? '',
+            itemGroupName: row.ItemGroupName ?? row.itemgroupname ?? '',
             quality: row.Quality ?? row.quality ?? '',
             gsm: Number(row.GSM ?? row.gsm ?? 0),
             sizeW: Number(row.SizeW ?? row.sizew ?? 0),
@@ -3098,6 +3099,115 @@ router.get('/inventory-summary/po-no-client-top200', async (req, res) => {
     } catch (err) {
         console.error('Inventory Summary PO no-client error:', err);
         return res.status(500).json({ status: false, error: 'Failed to fetch top 200 PO (no client)' });
+    }
+});
+
+// Google Sheets parity: GetItemDetailsWithBufferTotal_Manu — column subset matches Apps Script colMap (1-based JDBC indices).
+const STOCK_BUFFER_JDBC_COL_INDEX_ONE_BASED = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 22, 19];
+const STOCK_BUFFER_HEADER_KEYS = [
+    'itemCode',
+    'itemName',
+    'sizeW',
+    'sizeL',
+    'quality',
+    'gsm',
+    'manufacturer',
+    'certification',
+    'stockUnit',
+    'stock',
+    'freeStock',
+    'clientName',
+    'stockType'
+];
+
+function getStockBufferOrderedColumnNames(recordset) {
+    if (!recordset || !recordset.columns || typeof recordset.columns !== 'object') return null;
+    const cols = recordset.columns;
+    return Object.keys(cols).sort((a, b) => cols[a].index - cols[b].index);
+}
+
+function mapStockBufferProcedureRows(recordset) {
+    if (!Array.isArray(recordset) || recordset.length === 0) return [];
+    const orderedNames = getStockBufferOrderedColumnNames(recordset);
+    if (!orderedNames || orderedNames.length === 0) {
+        return recordset.map((row) => ({ ...row }));
+    }
+    return recordset.map((row) => {
+        const out = {};
+        STOCK_BUFFER_JDBC_COL_INDEX_ONE_BASED.forEach((jdbc1, i) => {
+            const idx = jdbc1 - 1;
+            const prop = STOCK_BUFFER_HEADER_KEYS[i];
+            if (idx < 0 || idx >= orderedNames.length) {
+                out[prop] = '';
+                return;
+            }
+            const colKey = orderedNames[idx];
+            const v = row[colKey];
+            out[prop] = v == null ? '' : String(v);
+        });
+        return out;
+    });
+}
+
+// Inventory Summary Tool: stock search (dbo.GetItemDetailsWithBufferTotal_Manu)
+// SP: @Quality NVARCHAR(255), @GSM INT, @SizeW FLOAT, @SizeL FLOAT (optional → NULL), @CompanyID INT
+// Body: { database, quality, gsm, deckle → @SizeW, sizeL? (omit or null = not passed as NULL), companyId? (default 2) }
+router.post('/inventory-summary/stock-search-buffer', async (req, res) => {
+    try {
+        const { database, deckle, gsm, quality, sizeL, companyId } = req.body || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const qualityStr = String(quality ?? '').trim().slice(0, 255);
+        if (!qualityStr) {
+            return res.status(400).json({ status: false, error: 'Quality is required' });
+        }
+
+        const gsmNum = parseInt(String(gsm), 10);
+        if (!Number.isFinite(gsmNum)) {
+            return res.status(400).json({ status: false, error: 'GSM must be a valid integer' });
+        }
+
+        const sizeWNum = parseFloat(String(deckle));
+        if (!Number.isFinite(sizeWNum) || sizeWNum < 0) {
+            return res.status(400).json({ status: false, error: 'Deckle (Size W) must be a valid non-negative number' });
+        }
+
+        let sizeLVal = null;
+        if (sizeL !== undefined && sizeL !== null && String(sizeL).trim() !== '') {
+            const parsedL = parseFloat(String(sizeL));
+            if (!Number.isFinite(parsedL) || parsedL < 0) {
+                return res.status(400).json({ status: false, error: 'Size L must be a valid non-negative number if provided' });
+            }
+            sizeLVal = parsedL;
+        }
+
+        let companyIdNum = parseInt(String(companyId ?? ''), 10);
+        if (!Number.isFinite(companyIdNum) || companyIdNum <= 0) {
+            companyIdNum = 2;
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool
+            .request()
+            .input('Quality', sql.NVarChar(255), qualityStr)
+            .input('GSM', sql.Int, gsmNum)
+            .input('SizeW', sql.Float, sizeWNum)
+            .input('SizeL', sql.Float, sizeLVal)
+            .input('CompanyID', sql.Int, companyIdNum)
+            .execute('dbo.GetItemDetailsWithBufferTotal_Manu');
+
+        const raw = result.recordset || [];
+        const records = mapStockBufferProcedureRows(raw);
+        return res.json({ status: true, records, rowCount: records.length });
+    } catch (err) {
+        console.error('Inventory summary stock-search-buffer error:', err);
+        return res.status(500).json({
+            status: false,
+            error: err.message || 'Failed to search stock with buffer'
+        });
     }
 });
 
