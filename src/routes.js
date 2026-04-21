@@ -2676,6 +2676,10 @@ router.get('/grn/pending-po-not-fully-delivered', async (req, res) => {
         const query = `
             SELECT
     ITM_PO.VoucherNo                                        AS PONumber,
+    ITM_PO.TransactionID                                    AS POTransactionID,
+    ITD_PO.TransactionDetailID                                AS PODetailID,
+    ITD_PO.ItemID                                           AS ItemID,
+    ITD_PO.PurchaseTransactionID                            AS PurchaseTransactionID,
     ITM_PO.VoucherDate                                      AS PODate,
     ITD_PO.ExpectedDeliveryDate,
     IM.ItemCode,
