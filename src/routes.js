@@ -4176,7 +4176,15 @@ router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
 
 // QC Job Card parameter-wise summary by Job Card Number (for QC Tool home page search)
 const QC_JOB_CARD_ENTRIES_QUERY = `
-;WITH InspectionBase AS
+;WITH JobNumberResolved AS (
+    SELECT TOP 1 jc.JobBookingNo AS JobNumber
+    FROM dbo.ProductionEntryProcessInspectionMain m
+    INNER JOIN dbo.JobBookingJobCard jc ON m.JobBookingID = jc.JobBookingID
+    WHERE jc.JobBookingNo LIKE N'%' + @JobBookingNo + N'%'
+      AND ISNULL(m.IsDeletedTransaction, 0) = 0
+    ORDER BY m.VoucherDate DESC, m.TransactionID DESC
+),
+InspectionBase AS
 (
     SELECT
         m.TransactionID,
@@ -4193,30 +4201,49 @@ DetailResults AS
     SELECT
         ib.ProcessID,
         d.ParameterName,
+        MAX(d.InputFieldType) AS InputFieldType,
+        COUNT(*) AS AuditCount,
         MIN(d.ModifiedDate) AS InspectionStartAt,
         MAX(d.ModifiedDate) AS InspectionEndAt,
         SUM(CASE
+                WHEN d.InputFieldType = 'Text Field' THEN 0
                 WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
-                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
+                WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 1
                 WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('OK','PASS') THEN 1
                 ELSE 0
             END) AS OKCount,
         SUM(CASE
+                WHEN d.InputFieldType = 'Text Field' THEN 0
                 WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
                 WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
                 WHEN d.Result IS NULL THEN 1
                 WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NOT OK','FAIL','NG') THEN 1
                 ELSE 0
-            END) AS NotOKCount
+            END) AS NotOKCount,
+        STUFF((
+            SELECT N'|' + d2.Result
+            FROM dbo.ProductionEntryProcessInspectionDetail d2
+            JOIN InspectionBase ib2
+                ON ib2.TransactionID = d2.TransactionID
+                AND ib2.ProcessID = ib.ProcessID
+            WHERE
+                d2.ParameterName = d.ParameterName
+                AND ISNULL(d2.IsDeletedTransaction, 0) = 0
+                AND d2.InputFieldType = 'Text Field'
+                AND d2.Result IS NOT NULL
+                AND LTRIM(RTRIM(d2.Result)) <> ''
+            FOR XML PATH(''), TYPE
+        ).value('.', 'NVARCHAR(MAX)'), 1, 1, '') AS TextResults
     FROM InspectionBase ib
     JOIN dbo.ProductionEntryProcessInspectionDetail d
         ON d.TransactionID = ib.TransactionID
         AND ISNULL(d.IsDeletedTransaction, 0) = 0
-        AND d.InputFieldType <> 'Text Field'
     GROUP BY
         ib.ProcessID,
         d.ParameterName
     HAVING
+        MAX(d.InputFieldType) = 'Text Field'
+        OR
         SUM(CASE
                 WHEN TRY_CAST(d.Result AS DECIMAL(18,4)) IS NOT NULL THEN 0
                 WHEN LTRIM(RTRIM(UPPER(d.Result))) IN ('NA','N/A') THEN 0
@@ -4233,10 +4260,16 @@ DetailResults AS
             END) > 0
 )
 SELECT
+    (SELECT jnr.JobNumber FROM JobNumberResolved jnr) AS [Job Number],
     pm.ProcessName,
     dr.ParameterName,
+    dr.AuditCount AS [Audit Count],
     dr.OKCount AS [Number of OK],
     dr.NotOKCount AS [Number of Not OK],
+    CASE WHEN dr.InputFieldType = 'Text Field'
+         THEN ISNULL(dr.TextResults, '')
+         ELSE ''
+    END AS [Result],
     CONVERT(VARCHAR(19), CAST((dr.InspectionStartAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS [Inspection Start At],
     CONVERT(VARCHAR(19), CAST((dr.InspectionEndAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS [Inspection End At]
 FROM DetailResults dr
@@ -4248,7 +4281,15 @@ ORDER BY
 `;
 
 const QC_JOB_CARD_USERWISE_QUERY = `
-;WITH Base AS
+;WITH JobNumberResolved AS (
+    SELECT TOP 1 jc.JobBookingNo AS JobNumber
+    FROM dbo.ProductionEntryProcessInspectionMain m
+    INNER JOIN dbo.JobBookingJobCard jc ON m.JobBookingID = jc.JobBookingID
+    WHERE jc.JobBookingNo LIKE N'%' + @JobBookingNo + N'%'
+      AND ISNULL(m.IsDeletedTransaction, 0) = 0
+    ORDER BY m.VoucherDate DESC, m.TransactionID DESC
+),
+Base AS
 (
     SELECT
         UM.UserName,
@@ -4270,6 +4311,7 @@ const QC_JOB_CARD_USERWISE_QUERY = `
         CAST(PEP.VoucherDate AS DATE)
 )
 SELECT
+    (SELECT jnr.JobNumber FROM JobNumberResolved jnr) AS [Job Number],
     UserName,
     EntryDate,
     EntryCount,
@@ -4324,12 +4366,42 @@ router.post('/reports/qc-job-card-entries', async (req, res) => {
             .input('JobBookingNo', sql.NVarChar(50), trimmedJobNo)
             .query(queryToRun);
 
-        const rows = result.recordset || [];
+        const rawRows = result.recordset || [];
+        const rows =
+            selectedViewMode === 'process'
+                ? rawRows.map((row) => {
+                      const auditCountRaw =
+                          row['Audit Count'] ?? row.AuditCount ?? row.auditcount;
+                      const resultRaw = row['Result'] ?? row.Result ?? row.result ?? '';
+                      const auditCountNum =
+                          auditCountRaw != null && auditCountRaw !== ''
+                              ? Number(auditCountRaw)
+                              : null;
+                      return {
+                          ...row,
+                          auditCount:
+                              auditCountNum != null && !Number.isNaN(auditCountNum)
+                                  ? auditCountNum
+                                  : null,
+                          result: resultRaw != null ? String(resultRaw) : '',
+                      };
+                  })
+                : rawRows;
         console.log(`[QC-JOB-CARD] Records returned: ${rows.length}`);
+
+        const jobNumberFromRow =
+            rawRows[0]?.['Job Number'] ??
+            rawRows[0]?.JobNumber ??
+            rawRows[0]?.jobnumber;
+        const jobNumber =
+            jobNumberFromRow != null && String(jobNumberFromRow).trim() !== ''
+                ? String(jobNumberFromRow).trim()
+                : trimmedJobNo;
 
         return res.json({
             status: true,
             data: rows,
+            jobNumber,
             message: 'Job card entries retrieved successfully'
         });
     } catch (error) {
