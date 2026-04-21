@@ -2675,75 +2675,136 @@ router.get('/grn/pending-po-not-fully-delivered', async (req, res) => {
         const pool = await getPool(selectedDatabase);
         const query = `
             SELECT
-                ITM_PO.TransactionID                                    AS POTransactionID,
-                ITD_PO.ItemID                                           AS ItemID,
-                ITM_PO.VoucherNo                                        AS PONumber,
-                ITM_PO.VoucherDate                                      AS PODate,
-                ITD_PO.ExpectedDeliveryDate,
-                IM.ItemCode,
-                IM.ItemName,
-                IM.Quality,
-                IM.GSM,
-                IM.SizeW,
-                IM.SizeL,
-                IM.StockUnit,
-                LM.LedgerName                                           AS Supplier,
+    ITM_PO.VoucherNo                                        AS PONumber,
+    ITM_PO.VoucherDate                                      AS PODate,
+    ITD_PO.ExpectedDeliveryDate,
+    IM.ItemCode,
+    IM.ItemName,
+    IM.Quality,
+    IM.GSM,
+    IM.SizeW,
+    IM.SizeL,
+    IM.StockUnit,
+    IGM.ItemGroupName,
+    LM.LedgerName                                           AS Supplier,
+
+    -- PO qty in StockUnit
+    CASE
+        WHEN UPPER(IM.StockUnit) = 'KG'
+        THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+        ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+    END                                                     AS POQty,
+
+    -- Total GRN received so far
+    ISNULL(GRN.ReceivedQty, 0)                              AS ReceivedQty,
+
+    -- Balance still pending
+    CASE
+        WHEN UPPER(IM.StockUnit) = 'KG'
+        THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+        ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+    END - ISNULL(GRN.ReceivedQty, 0)                       AS PendingQty,
+
+    -- % received (for visibility / debugging)
+    CASE
+        WHEN
+            CASE
+                WHEN UPPER(IM.StockUnit) = 'KG'
+                THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+            END = 0 THEN 0
+        ELSE
+            ISNULL(GRN.ReceivedQty, 0) * 100.0 /
+            CASE
+                WHEN UPPER(IM.StockUnit) = 'KG'
+                THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+            END
+    END                                                     AS PctReceived,
+
+    -- Job component this PO was raised for (if job-linked)
+    ITD_PO.RefJobBookingJobCardContentsID                   AS JBJCC_ID,
+    JEJ.JobBookingNo,
+    JEJ.JobName,
+    ITD_PO.TransactionDetailID
+
+FROM dbo.ItemTransactionMain  ITM_PO
+JOIN dbo.ItemTransactionDetail ITD_PO
+    ON  ITD_PO.TransactionID         = ITM_PO.TransactionID
+JOIN dbo.ItemMaster IM
+    ON  IM.ItemID                    = ITD_PO.ItemID
+LEFT JOIN dbo.ItemGroupMaster IGM
+    ON  IGM.ItemGroupID              = IM.ItemGroupID
+LEFT JOIN dbo.LedgerMaster LM
+    ON  LM.LedgerID                  = ITM_PO.LedgerID
+
+-- Aggregate GRN receipts for this PO line
+LEFT JOIN (
+    SELECT
+        ITD_GRN.PurchaseTransactionID,
+        ITD_GRN.ItemID,
+        SUM(ISNULL(ITD_GRN.ReceiptQuantity, 0)) AS ReceivedQty
+    FROM dbo.ItemTransactionDetail  ITD_GRN
+    JOIN dbo.ItemTransactionMain    ITM_GRN
+        ON  ITM_GRN.TransactionID             = ITD_GRN.TransactionID
+    WHERE ITM_GRN.VoucherID                   = -14   -- GRN
+      AND ISNULL(ITD_GRN.IsDeletedTransaction, 0) = 0
+      AND ISNULL(ITM_GRN.IsDeletedTransaction, 0) = 0
+      AND ISNULL(ITD_GRN.IsCancelled, 0)          = 0
+    GROUP BY ITD_GRN.PurchaseTransactionID, ITD_GRN.ItemID
+) GRN
+    ON  GRN.PurchaseTransactionID    = ITM_PO.TransactionID
+    AND GRN.ItemID                   = ITD_PO.ItemID
+
+-- Job card (if this PO was job-linked via alloc's RefJBJCC)
+LEFT JOIN dbo.JobBookingJobCard JEJ
+    ON  JEJ.JobBookingID = (
+            SELECT TOP 1 JEJC.JobBookingID
+            FROM dbo.JobBookingJobCardContents JEJC
+            WHERE JEJC.JobBookingJobCardContentsID = ITD_PO.RefJobBookingJobCardContentsID
+        )
+
+WHERE ITM_PO.VoucherID                          = -11   -- Purchase Orders only
+  AND ISNULL(ITD_PO.IsDeletedTransaction, 0)    = 0
+  AND ISNULL(ITM_PO.IsDeletedTransaction, 0)    = 0
+  AND ISNULL(ITD_PO.IsCancelled, 0)             = 0
+  AND ISNULL(ITD_PO.IsCompleted, 0)             = 0   -- NEW: exclude completed PO lines
+
+  -- Pending qty > 0  (not fully received)
+  AND (
+        CASE
+            WHEN UPPER(IM.StockUnit) = 'KG'
+            THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+            ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+        END - ISNULL(GRN.ReceivedQty, 0)
+      ) > 0
+
+  -- NEW: exclude POs where receipt is >= 90% of ordered qty
+  AND (
+        CASE
+            WHEN
                 CASE
                     WHEN UPPER(IM.StockUnit) = 'KG'
                     THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
                     ELSE ISNULL(ITD_PO.ChallanWeight, 0)
-                END                                                     AS POQty,
-                ISNULL(GRN.ReceivedQty, 0)                              AS ReceivedQty,
+                END = 0 THEN 1    -- guard: qty 0 treated as 'not yet received'
+            ELSE
                 CASE
-                    WHEN UPPER(IM.StockUnit) = 'KG'
-                    THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
-                    ELSE ISNULL(ITD_PO.ChallanWeight, 0)
-                END - ISNULL(GRN.ReceivedQty, 0)                        AS PendingQty,
-                ITD_PO.RefJobBookingJobCardContentsID                   AS JBJCC_ID,
-                JEJ.JobBookingNo,
-                JEJ.JobName
-            FROM dbo.ItemTransactionMain  ITM_PO
-            JOIN dbo.ItemTransactionDetail ITD_PO
-                ON  ITD_PO.TransactionID         = ITM_PO.TransactionID
-            JOIN dbo.ItemMaster IM
-                ON  IM.ItemID                    = ITD_PO.ItemID
-            LEFT JOIN dbo.LedgerMaster LM
-                ON  LM.LedgerID                  = ITM_PO.LedgerID
-            LEFT JOIN (
-                SELECT
-                    ITD_GRN.PurchaseTransactionID,
-                    ITD_GRN.ItemID,
-                    SUM(ISNULL(ITD_GRN.ReceiptQuantity, 0)) AS ReceivedQty
-                FROM dbo.ItemTransactionDetail  ITD_GRN
-                JOIN dbo.ItemTransactionMain    ITM_GRN
-                    ON  ITM_GRN.TransactionID             = ITD_GRN.TransactionID
-                WHERE ITM_GRN.VoucherID                   = -14
-                  AND ISNULL(ITD_GRN.IsDeletedTransaction, 0) = 0
-                  AND ISNULL(ITM_GRN.IsDeletedTransaction, 0) = 0
-                  AND ISNULL(ITD_GRN.IsCancelled, 0)          = 0
-                GROUP BY ITD_GRN.PurchaseTransactionID, ITD_GRN.ItemID
-            ) GRN
-                ON  GRN.PurchaseTransactionID    = ITM_PO.TransactionID
-                AND GRN.ItemID                   = ITD_PO.ItemID
-            LEFT JOIN dbo.JobBookingJobCard JEJ
-                ON  JEJ.JobBookingID = (
-                        SELECT TOP 1 JEJC.JobBookingID
-                        FROM dbo.JobBookingJobCardContents JEJC
-                        WHERE JEJC.JobBookingJobCardContentsID = ITD_PO.RefJobBookingJobCardContentsID
-                    )
-            WHERE ITM_PO.VoucherID                          = -11
-              AND ISNULL(ITD_PO.IsDeletedTransaction, 0)    = 0
-              AND ISNULL(ITM_PO.IsDeletedTransaction, 0)    = 0
-              AND ISNULL(ITD_PO.IsCancelled, 0)             = 0
-              AND (
-                    CASE
-                        WHEN UPPER(IM.StockUnit) = 'KG'
-                        THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
-                        ELSE ISNULL(ITD_PO.ChallanWeight, 0)
-                    END - ISNULL(GRN.ReceivedQty, 0)
-                  ) > 0
-              AND ISNULL(IM.Quality, '') NOT LIKE '%Kraft%'
-            ORDER BY ITD_PO.ExpectedDeliveryDate, ITM_PO.VoucherDate;
+                    WHEN ISNULL(GRN.ReceivedQty, 0) * 1.0 /
+                        CASE
+                            WHEN UPPER(IM.StockUnit) = 'KG'
+                            THEN ISNULL(ITD_PO.PurchaseOrderQuantity, 0)
+                            ELSE ISNULL(ITD_PO.ChallanWeight, 0)
+                        END < 0.9 THEN 1
+                    ELSE 0
+                END
+        END = 1
+      )
+
+  -- Exclude Kraft (remove this line if you want Kraft too)
+  AND ISNULL(IM.Quality, '') NOT LIKE '%Kraft%'
+
+ORDER BY ITD_PO.ExpectedDeliveryDate, ITM_PO.VoucherDate;
         `;
 
         const result = await pool.request().query(query);
