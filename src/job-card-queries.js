@@ -549,6 +549,24 @@ LEFT JOIN LedgerMaster lm
 ORDER BY lm.LedgerName;
 `;
 
+/** Delivery breakdown rows (Dispatch Note level) for a job. */
+export const DeliveryBreakdownQuery = `
+SELECT
+    fgm.VoucherNo,
+    SUM(ISNULL(fgd.innercarton, 0) * ISNULL(fgd.quantityperpack, 0)) AS DispatchQty,
+    MAX(fgd.CreatedDate) AS deliverydate
+FROM dbo.FinishGoodsTransactionMain fgm
+JOIN dbo.FinishGoodsTransactionDetail fgd
+    ON fgd.FGTransactionID = fgm.FGtransactionID
+WHERE fgm.voucherid = -51
+  AND fgm.VoucherPrefix = 'DN'
+  AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
+  AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
+  AND fgd.jobbookingid = @JobBookingID
+GROUP BY fgd.JobBookingID, fgm.VoucherNo
+ORDER BY MAX(fgd.CreatedDate), fgm.VoucherNo;
+`;
+
 /**
  * Gang Jobs for a given primary job booking/card number (JJG.primaryjobbookingno).
  * Columns returned (note: caller can hide JobBookingNo and primaryjobbookingno):

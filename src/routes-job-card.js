@@ -14,6 +14,7 @@ import {
   GangJobsQuery,
   GangJobPaperDetailsQuery,
   JobCardSearchQuery,
+  DeliveryBreakdownQuery,
   SalesPersonsFilterQuery,
   ClientNamesFilterQuery
 } from './job-card-queries.js';
@@ -532,6 +533,7 @@ router.get('/job-card', async (req, res) => {
         deliveredQty: str(pickCol(row, 'DeliveredQty', 'deliveredqty')) || '-',
         deliveryDate: formatIndianDateTime(pickCol(row, 'DeliveryDate', 'deliverydate')) || '-'
       };
+      const jbIdInt = jobBookingId ? parseInt(String(jobBookingId).replace(/,.*/, ''), 10) : null;
       try {
         request = pool.request();
         request.input('JobBookingNo', sql.NVarChar(50), jobNo);
@@ -554,9 +556,26 @@ router.get('/job-card', async (req, res) => {
         console.warn('[job-card] DeliveryDetails via JobCardSearchQuery failed:', e.message);
       }
 
+      // ---- Delivery Breakdown: voucher-wise dispatch qty/date ----
+      let deliveryBreakdown = [];
+      if (jbIdInt != null && !Number.isNaN(jbIdInt)) {
+        try {
+          request = pool.request();
+          request.input('JobBookingID', sql.Int, jbIdInt);
+          const breakdownRes = await request.query(DeliveryBreakdownQuery);
+          const breakdownRows = breakdownRes.recordset || [];
+          deliveryBreakdown = breakdownRows.map(r => ({
+            voucherNo: str(get(r, 'VoucherNo')) || '-',
+            dispatchQty: str(get(r, 'DispatchQty')) || '0',
+            deliverydate: formatIndianDateTime(get(r, 'deliverydate')) || '-'
+          }));
+        } catch (e) {
+          console.warn('[job-card] DeliveryBreakdownQuery failed:', e.message);
+        }
+      }
+
       // ---- Raw Material QC Details: from procedure GetRawMaterialQC_ByJobBooking ----
       let rawMaterialQCDetails = [];
-      const jbIdInt = jobBookingId ? parseInt(String(jobBookingId).replace(/,.*/, ''), 10) : null;
       if (jbIdInt != null && !Number.isNaN(jbIdInt)) {
         try {
           request = pool.request();
@@ -633,6 +652,7 @@ router.get('/job-card', async (req, res) => {
         corrugationDetails,
         paperFlow,
         deliveryDetails,
+        deliveryBreakdown,
         paperFlowHeaderRows,
         rawMaterialQCDetails,
         footer
@@ -852,6 +872,7 @@ router.get('/job-card', async (req, res) => {
         parts,
         paperFlow: paperFlow || [],
         deliveryDetails,
+        deliveryBreakdown,
         rawMaterialQCDetails,
         footer
       };
