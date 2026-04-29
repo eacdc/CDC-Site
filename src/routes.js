@@ -3924,9 +3924,28 @@ router.get('/machine-floor/:machineId', async (req, res) => {
             : null;
 
         if (!raw) {
+            let machineName = null;
+            try {
+                const nameResult = await pool.request()
+                    .input('MachineID', sql.Int, machineIdNum)
+                    .query(`
+                        SELECT TOP 1 MachineName
+                        FROM dbo.MachineMaster
+                        WHERE MachineID = @MachineID AND ISNULL(IsDeletedTransaction, 0) = 0
+                    `);
+                if (nameResult.recordset && nameResult.recordset.length > 0) {
+                    const nm = nameResult.recordset[0];
+                    machineName = nm.MachineName ?? nm.machinename ?? null;
+                }
+            } catch (nameErr) {
+                console.error('[MACHINE-FLOOR] Failed to resolve machine name from MachineMaster:', nameErr);
+            }
             return res.json({
                 status: false,
-                error: `No floor screen data returned for MachineID ${machineIdNum}`
+                noFloorData: true,
+                machineId: machineIdNum,
+                machineName,
+                error: 'No floor screen data returned for this machine'
             });
         }
 
