@@ -18,6 +18,7 @@ import rawQcRoutes from './routes-raw-qc.js';
 import shipmentEtaRoutes from './routes-shipment-eta.js';
 import concernPersonRoutes from './routes-concern-person.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
+import jobProductImageRoutes from './routes-job-product-image.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 
@@ -74,6 +75,7 @@ app.use('/api', rawQcRoutes);
 app.use('/api', shipmentEtaRoutes);
 app.use('/api', concernPersonRoutes);
 app.use('/api', previousItemsByClientRoutes);
+app.use('/api', jobProductImageRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 // Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
