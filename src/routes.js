@@ -1879,6 +1879,30 @@ router.get('/production/search-by-job-card', async (req, res) => {
 	}
 });
 
+// Machine master list (active machines only)
+router.get('/machines/master-list', async (req, res) => {
+	try {
+		const { database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request().query(`
+			SELECT MachineId, MachineName
+			FROM dbo.MachineMaster
+			WHERE ISNULL(isdeletedtransaction, 0) = 0
+			ORDER BY MachineName
+		`);
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Machine master list error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
 // Production history search by machine and date range
 router.get('/production/search-by-machine', async (req, res) => {
 	try {
