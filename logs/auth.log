@@ -109,3 +109,17 @@
 {"ts":"2026-04-21T11:25:18.087Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
 {"ts":"2026-04-21T11:25:18.189Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
 {"ts":"2026-04-21T11:25:18.190Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
+{"ts":"2026-05-05T11:12:54.199Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"tesop","database":"KOL","_t":"1777979572365"}}
+{"ts":"2026-05-05T11:12:54.201Z","message":"Login params normalized","username":"tesop","databaseParam":"KOL","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:12:54.205Z","message":"Attempting to get DB pool","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:12:54.810Z","message":"DB pool acquired","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:12:54.859Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
+{"ts":"2026-05-05T11:12:54.894Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":0,"resultColumns":[]}
+{"ts":"2026-05-05T11:12:54.896Z","message":"Login completed - no machines for user","selectedDatabase":"KOL","username":"tesop","currentDb":"IndusEnterprise","getMachinesForUserExists":true}
+{"ts":"2026-05-05T11:12:59.975Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"testop","database":"KOL","_t":"1777979579964"}}
+{"ts":"2026-05-05T11:12:59.976Z","message":"Login params normalized","username":"testop","databaseParam":"KOL","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:13:00.009Z","message":"Attempting to get DB pool","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:13:00.126Z","message":"DB pool acquired","selectedDatabase":"KOL"}
+{"ts":"2026-05-05T11:13:00.179Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
+{"ts":"2026-05-05T11:13:00.244Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":22,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-05-05T11:13:00.245Z","message":"Login success","selectedDatabase":"KOL","username":"testop","userId":71,"ledgerId":8108,"machinesCount":22,"currentDb":"IndusEnterprise"}

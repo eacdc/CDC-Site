@@ -1879,6 +1879,46 @@ router.get('/production/search-by-job-card', async (req, res) => {
 	}
 });
 
+// Production history search by machine and date range
+router.get('/production/search-by-machine', async (req, res) => {
+	try {
+		const { startDate, endDate, machineId, database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const start = (startDate || '').trim();
+		const end = (endDate || '').trim();
+		if (!start || !end) {
+			return res.status(400).json({ status: false, error: 'startDate and endDate are required' });
+		}
+
+		const startParsed = new Date(start);
+		const endParsed = new Date(end);
+		if (isNaN(startParsed.getTime()) || isNaN(endParsed.getTime())) {
+			return res.status(400).json({ status: false, error: 'Invalid date format for startDate or endDate' });
+		}
+
+		const machineIdNum = parseInt(machineId, 10);
+		if (!Number.isInteger(machineIdNum) || machineIdNum <= 0) {
+			return res.status(400).json({ status: false, error: 'machineId must be a positive integer' });
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('StartDate', sql.DateTime, startParsed)
+			.input('EndDate', sql.DateTime, endParsed)
+			.input('MachineID', sql.Int, machineIdNum)
+			.execute('dbo.Production_Search_By_Machine_DateRange');
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Production search by machine error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
 const PRODUCTION_REVERSE_SUCCESS = 'Success: Reversed';
 
 router.post('/production/reverse', async (req, res) => {
