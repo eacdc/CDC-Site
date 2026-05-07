@@ -514,7 +514,8 @@ router.get('/job-card', async (req, res) => {
         const flowRows = flowResult.recordset || [];
         paperFlow = flowRows.map(r => ({
           jobNo: str(get(r, 'JobNo')) || jobNo,
-          compName: str(get(r, 'CompName')) || str(get(r, 'PlanContName')) || '',
+          compName: str(get(r, 'CompName')) || str(get(r, 'ComponentName')) || str(get(r, 'PlanContName')) || '',
+          componentName: str(get(r, 'ComponentName')) || str(get(r, 'CompName')) || str(get(r, 'PlanContName')) || '',
           stage: str(get(r, 'Stage')) || str(get(r, 'MaterialStatus')) || '',
           voucherNo: str(get(r, 'VoucherNo')) || '',
           voucherDate: str(get(r, 'VoucherDate')) || '',

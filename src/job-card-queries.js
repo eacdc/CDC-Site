@@ -28,8 +28,6 @@ ORDER BY JM.SequenceNo
 
 export const OperationDetailsQuery = `
 
-
-
 SELECT DISTINCT
     JP.SequenceNo,
     JP.Remarks,
@@ -76,16 +74,6 @@ FROM JobBookingJobCard J
 INNER JOIN JobBookingJobCardContents JJ
     ON J.JobBookingID   = JJ.JobBookingID
    AND J.CompanyID      = JJ.CompanyID
-
-LEFT JOIN (
-    SELECT DISTINCT JobBookingJobCardContentsID
-    FROM   JobScheduleRelease
-    WHERE  JobBookingID                     = @JobBookingID
-      AND  CompanyID                        = @CompanyID
-      AND  ISNULL(IsDeletedTransaction, 0)  = 0
-      AND  ISNULL(IsOnlineProcess, 0)       = 0
-) JSR_EXISTS
-    ON JSR_EXISTS.JobBookingJobCardContentsID = JJ.JobBookingJobCardContentsID
 
 INNER JOIN JobBookingJobCardProcess JP
     ON JJ.JobBookingJobCardContentsID       = JP.JobBookingJobCardContentsID
@@ -160,22 +148,6 @@ WHERE J.CompanyID    = @CompanyID
   AND (
         @JobBookingJobCardContentsID IS NULL
         OR JJ.JobBookingJobCardContentsID = @JobBookingJobCardContentsID
-      )
-  AND (
-        JSR_EXISTS.JobBookingJobCardContentsID IS NULL
-        OR
-        OPS.ScheduledMachineID IS NOT NULL
-        OR
-        EXISTS (
-            SELECT 1
-            FROM   JobScheduleRelease JSR_CHK
-            WHERE  JSR_CHK.JobBookingJobCardContentsID    = JP.JobBookingJobCardContentsID
-              AND  JSR_CHK.ProcessID                      = JP.ProcessID
-              AND  JSR_CHK.JobBookingID                   = @JobBookingID
-              AND  JSR_CHK.CompanyID                      = @CompanyID
-              AND  ISNULL(JSR_CHK.IsDeletedTransaction,0) = 0
-              AND  ISNULL(JSR_CHK.IsOnlineProcess,0)      = 0
-        )
       )
 
 ORDER BY JP.SequenceNo;
