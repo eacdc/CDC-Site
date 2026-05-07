@@ -17,6 +17,10 @@ const operationSchema = new mongoose.Schema({
     required: true,
     min: 0
   },
+  isAdhocOp: {
+    type: Boolean,
+    default: false,
+  },
   categories: {
     type: [String],
     default: [],

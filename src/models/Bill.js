@@ -11,6 +11,11 @@ import mongoose from 'mongoose';
 //          - totalValue
 
 const operationSubSchema = new mongoose.Schema({
+  opId: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   opsName: {
     type: String,
     required: true,
@@ -41,8 +46,8 @@ const operationSubSchema = new mongoose.Schema({
 const jobSubSchema = new mongoose.Schema({
   jobNumber: {
     type: String,
-    required: true,
     trim: true,
+    default: '',
   },
   clientName: {
     type: String,
@@ -50,6 +55,20 @@ const jobSubSchema = new mongoose.Schema({
     default: '',
   },
   jobTitle: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  isAdhoc: {
+    type: Boolean,
+    default: false,
+  },
+  adhocOrderId: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  adhocLabel: {
     type: String,
     trim: true,
     default: '',

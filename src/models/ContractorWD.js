@@ -29,6 +29,11 @@ const opsDoneSubSchema = new mongoose.Schema({
     required: true,
     min: 0,
   },
+  savedInBill: {
+    type: String,
+    enum: ['Yes', 'No'],
+    default: 'No',
+  },
   completionDate: {
     type: Date,
     default: Date.now,
@@ -43,8 +48,23 @@ const contractorWDSchema = new mongoose.Schema({
   },
   jobId: {
     type: String,
-    required: true,
+    required: false,
     trim: true,
+    default: '',
+  },
+  isAdhoc: {
+    type: Boolean,
+    default: false,
+  },
+  adhocOrderId: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  adhocLabel: {
+    type: String,
+    trim: true,
+    default: '',
   },
   opsDone: [opsDoneSubSchema],
 }, {

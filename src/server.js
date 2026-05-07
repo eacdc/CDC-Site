@@ -54,8 +54,21 @@ app.use((req, res, next) => {
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/contractor-po-system';
 
 mongoose.connect(MONGODB_URI)
-	.then(() => {
+	.then(async () => {
 		console.log('✅ Connected to MongoDB');
+		// Drop the stale 'label_1' unique index from AdhocWorkOrders if it still exists
+		// (leftover from when the unique field was called 'label' before being renamed to 'adhocId')
+		try {
+			const col = mongoose.connection.collection('AdhocWorkOrders');
+			const indexes = await col.indexes();
+			const stale = indexes.find(idx => idx.name === 'label_1');
+			if (stale) {
+				await col.dropIndex('label_1');
+				console.log('✅ Dropped stale label_1 index from AdhocWorkOrders');
+			}
+		} catch (idxErr) {
+			console.warn('⚠️  Could not clean up AdhocWorkOrders indexes:', idxErr.message);
+		}
 	})
 	.catch((error) => {
 		console.error('❌ MongoDB connection error:', error);
