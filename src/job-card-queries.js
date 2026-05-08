@@ -84,36 +84,62 @@ INNER JOIN ProcessMaster PM
     ON PM.ProcessID  = JP.ProcessID
    AND PM.CompanyID  = JP.CompanyID
 
+/* ===============================
+   OPS: aggregate JSR and PE separately to avoid cartesian fan-out
+   =============================== */
 LEFT JOIN (
     SELECT
         JP2.JobBookingJobCardContentsID,
         JP2.ProcessID,
         CASE 
-            WHEN SUM(ISNULL(JSR2.ScheduleQty, 0)) > 0
-                THEN SUM(ISNULL(JSR2.ScheduleQty, 0))
+            WHEN ISNULL(JSR_AGG.ScheduleQty, 0) > 0
+                THEN JSR_AGG.ScheduleQty
             ELSE ISNULL(JP2.ToBeProduceQty, 0)
         END                                     AS ScheduledQty,
-        SUM(ISNULL(PE2.ProductionQuantity, 0))  AS ProducedQty,
-        MAX(JSR2.MachineID)                     AS ScheduledMachineID,
-        MAX(PE2.MachineID)                      AS ProductionMachineID,
-        MAX(PE2.ToTime)                         AS LastToTime
+        ISNULL(PE_AGG.ProducedQty, 0)           AS ProducedQty,
+        JSR_AGG.ScheduledMachineID              AS ScheduledMachineID,
+        PE_AGG.ProductionMachineID              AS ProductionMachineID,
+        PE_AGG.LastToTime                       AS LastToTime
     FROM JobBookingJobCardProcess JP2
-    LEFT JOIN JobScheduleRelease JSR2
-        ON JSR2.JobBookingID                    = JP2.JobBookingID
-       AND JSR2.JobBookingJobCardContentsID      = JP2.JobBookingJobCardContentsID
-       AND JSR2.ProcessID                        = JP2.ProcessID
-       AND JSR2.CompanyID                        = JP2.CompanyID
-       AND ISNULL(JSR2.IsDeletedTransaction, 0)  = 0
-       AND ISNULL(JSR2.IsOnlineProcess, 0)       = 0
-    LEFT JOIN ProductionEntry PE2
-        ON PE2.JobBookingJobCardContentsID       = JP2.JobBookingJobCardContentsID
-       AND PE2.ProcessID                         = JP2.ProcessID
-    WHERE JP2.JobBookingID  = @JobBookingID
-      AND JP2.CompanyID     = @CompanyID
-    GROUP BY
-        JP2.JobBookingJobCardContentsID,
-        JP2.ProcessID,
-        JP2.ToBeProduceQty
+    LEFT JOIN (
+        SELECT
+            JSR2.JobBookingID,
+            JSR2.JobBookingJobCardContentsID,
+            JSR2.ProcessID,
+            JSR2.CompanyID,
+            SUM(ISNULL(JSR2.ScheduleQty, 0))    AS ScheduleQty,
+            MAX(JSR2.MachineID)                 AS ScheduledMachineID
+        FROM JobScheduleRelease JSR2
+        WHERE JSR2.JobBookingID                   = @JobBookingID
+          AND JSR2.CompanyID                      = @CompanyID
+          AND ISNULL(JSR2.IsDeletedTransaction,0) = 0
+          AND ISNULL(JSR2.IsOnlineProcess,0)      = 0
+        GROUP BY
+            JSR2.JobBookingID,
+            JSR2.JobBookingJobCardContentsID,
+            JSR2.ProcessID,
+            JSR2.CompanyID
+    ) JSR_AGG
+        ON JSR_AGG.JobBookingID                  = JP2.JobBookingID
+       AND JSR_AGG.JobBookingJobCardContentsID    = JP2.JobBookingJobCardContentsID
+       AND JSR_AGG.ProcessID                      = JP2.ProcessID
+       AND JSR_AGG.CompanyID                      = JP2.CompanyID
+    LEFT JOIN (
+        SELECT
+            PE2.JobBookingJobCardContentsID,
+            PE2.ProcessID,
+            SUM(ISNULL(PE2.ProductionQuantity,0)) AS ProducedQty,
+            MAX(PE2.MachineID)                    AS ProductionMachineID,
+            MAX(PE2.ToTime)                       AS LastToTime
+        FROM ProductionEntry PE2
+        GROUP BY
+            PE2.JobBookingJobCardContentsID,
+            PE2.ProcessID
+    ) PE_AGG
+        ON PE_AGG.JobBookingJobCardContentsID    = JP2.JobBookingJobCardContentsID
+       AND PE_AGG.ProcessID                      = JP2.ProcessID
+    WHERE JP2.JobBookingID = @JobBookingID
+      AND JP2.CompanyID    = @CompanyID
 ) OPS
     ON OPS.JobBookingJobCardContentsID = JP.JobBookingJobCardContentsID
    AND OPS.ProcessID                   = JP.ProcessID
