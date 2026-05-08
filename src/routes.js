@@ -7737,6 +7737,79 @@ router.post('/work/save/adhoc', async (req, res) => {
 // Returns Contractor_WD entries with savedInBill != 'Yes' for a job.
 // Used to auto-populate the Bill Details section when a job is searched.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GET /work/unsaved/all/:contractorId
+// Returns ALL unsaved Contractor_WD entries (job-based + ad-hoc) for a contractor.
+// ---------------------------------------------------------------------------
+router.get('/work/unsaved/all/:contractorId', async (req, res) => {
+  try {
+    const { contractorId } = req.params;
+    const wdDocs = await ContractorWD.find({ contractorId }).lean();
+
+    const result = [];
+
+    for (const doc of wdDocs) {
+      const unsavedOps = (doc.opsDone || []).filter(od => od.savedInBill !== 'Yes');
+      if (unsavedOps.length === 0) continue;
+
+      if (doc.isAdhoc && doc.adhocOrderId) {
+        const order = await AdhocWorkOrder.findById(doc.adhocOrderId).lean();
+        const adhocLabel = doc.adhocLabel || (order ? order.adhocId : '') || String(doc.adhocOrderId);
+
+        result.push({
+          isAdhoc: true,
+          adhocOrderId: String(doc.adhocOrderId),
+          adhocLabel,
+          jobNumber: '',
+          clientName: '',
+          jobTitle: '',
+          items: unsavedOps.map(od => ({
+            opsId: String(od.opsId),
+            opsName: od.opsName,
+            valuePerBook: Number(od.valuePerBook || 0),
+            qtyCompleted: Number(od.opsDoneQty || 0),
+            totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
+            qtyBook: 1
+          }))
+        });
+      } else if (doc.jobId) {
+        const jobOpsMaster = await JobOpsMaster.findOne({ jobId: doc.jobId }).lean();
+        const clientName = jobOpsMaster ? (jobOpsMaster.clientName || '') : '';
+        const jobTitle  = jobOpsMaster ? (jobOpsMaster.jobTitle  || '') : '';
+
+        result.push({
+          isAdhoc: false,
+          adhocOrderId: '',
+          adhocLabel: '',
+          jobNumber: doc.jobId,
+          clientName,
+          jobTitle,
+          items: unsavedOps.map(od => {
+            let qtyBook = 0;
+            if (jobOpsMaster) {
+              const jop = (jobOpsMaster.ops || []).find(o => String(o.opId) === String(od.opsId));
+              if (jop) qtyBook = Number(jop.qtyPerBook || 0);
+            }
+            return {
+              opsId: String(od.opsId),
+              opsName: od.opsName,
+              valuePerBook: Number(od.valuePerBook || 0),
+              qtyCompleted: Number(od.opsDoneQty || 0),
+              totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
+              qtyBook
+            };
+          })
+        });
+      }
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching all unsaved work:', error);
+    res.status(500).json({ error: 'Error fetching all unsaved work', details: error.message });
+  }
+});
+
 router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
   try {
     const { contractorId, jobNumber } = req.params;
