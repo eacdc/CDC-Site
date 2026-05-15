@@ -4,15 +4,13 @@
  * All endpoints accept ?database=KOL|AHM (default: KOL).
  */
 import { Router } from 'express';
-import { getPool } from './db.js';
+import { getPool, getLongQueryPool, LONG_REQUEST_TIMEOUT_MS } from './db.js';
 import sql from 'mssql';
 
 const router = Router();
 
 const DEFAULT_DATABASE = 'KOL';
 const ALLOWED_DATABASES = ['KOL', 'AHM'];
-/** rpt_job_gp_per_impression_v11 can exceed the default 2 min pool timeout */
-const LONG_REPORT_TIMEOUT_MS = Number(process.env.DB_LONG_REQUEST_TIMEOUT_MS) || 600_000;
 
 function getDbFromQuery(req) {
   const db = (req.query?.database || DEFAULT_DATABASE).toString().trim().toUpperCase();
@@ -145,20 +143,35 @@ router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
   }
 
   const { startDateStr, endDateStr } = getLastSixMonthsDateRange();
+  const startedAt = Date.now();
 
   try {
-    const pool = await getPool(db);
-    const request = pool.request();
-    request.timeout = LONG_REPORT_TIMEOUT_MS;
-    const result = await request
+    console.log('[google-sheet] job-gp-per-impression start', {
+      db,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      requestTimeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    });
+
+    const pool = await getLongQueryPool(db);
+    const result = await pool
+      .request()
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
       .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+
+    const elapsedMs = Date.now() - startedAt;
     const recordset = result.recordset ?? [];
     const data = recordsetTo2DArray(recordset);
+    console.log('[google-sheet] job-gp-per-impression done', {
+      db,
+      rows: Math.max(0, data.length - 1),
+      elapsedMs,
+    });
     return res.json({ data, startDate: startDateStr, endDate: endDateStr });
   } catch (e) {
-    console.error('[google-sheet] job-gp-per-impression failed:', e);
+    const elapsedMs = Date.now() - startedAt;
+    console.error('[google-sheet] job-gp-per-impression failed:', { elapsedMs, error: e });
     return res.status(500).json({ error: e.message || 'Failed to fetch Job GP per Impression' });
   }
 });

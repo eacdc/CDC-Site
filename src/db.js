@@ -38,8 +38,48 @@ const sqlConfig = {
 	requestTimeout: 120000  // 2 minutes - artwork pending/completed procs can be slow
 };
 
+/** Used by heavy report endpoints (e.g. rpt_job_gp_per_impression_v11). */
+export const LONG_REQUEST_TIMEOUT_MS = Number(process.env.DB_LONG_REQUEST_TIMEOUT_MS) || 600_000;
+
 // Store multiple pools for different databases
 const pools = new Map();
+const longQueryPools = new Map();
+
+function resolveDbName(database) {
+	const dbKey = (database || '').toUpperCase();
+	if (dbKey === 'KOL') {
+		return { dbKey, dbName: process.env.DB_NAME_KOL || process.env.DB_NAME };
+	}
+	if (dbKey === 'AHM') {
+		return { dbKey, dbName: process.env.DB_NAME_AHM || process.env.DB_NAME };
+	}
+	return { dbKey: null, dbName: null };
+}
+
+async function connectPool(dbKey, dbName, requestTimeout, cache) {
+	const newConfig = {
+		...sqlConfig,
+		database: dbName,
+		requestTimeout,
+	};
+	console.log(`[DB] Creating pool`, { dbKey, dbName, requestTimeout });
+
+	const pool = await sql.connect(newConfig);
+	await pool.request().query(`USE [${dbName}]`);
+	const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+	const actualDb = verifyDb.recordset[0]?.currentDb;
+	if (actualDb !== dbName) {
+		throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+	}
+
+	pool.on('error', (err) => {
+		console.error(`[DB] Pool error for ${dbKey}:`, err);
+		cache.delete(dbKey);
+		pool.close().catch(() => {});
+	});
+
+	return pool;
+}
 
 export function getPool(database) {
 	const dbKey = (database || '').toUpperCase();
@@ -235,30 +275,65 @@ export function getPool(database) {
 	return poolPromise;
 }
 
+/**
+ * Connection pool with a longer requestTimeout for slow reports.
+ * Separate from getPool() so cached 2-minute pools are not reused.
+ */
+export function getLongQueryPool(database) {
+	const { dbKey, dbName } = resolveDbName(database);
+	if (!dbKey || !dbName) {
+		throw new Error(`Invalid or missing database selection: ${database}`);
+	}
+	if (!dbName) {
+		throw new Error(`No database name configured for ${database}`);
+	}
+
+	const cacheKey = `${dbKey}_LONG`;
+	if (longQueryPools.has(cacheKey)) {
+		return longQueryPools.get(cacheKey);
+	}
+
+	const poolPromise = connectPool(cacheKey, dbName, LONG_REQUEST_TIMEOUT_MS, longQueryPools);
+	longQueryPools.set(cacheKey, poolPromise);
+	poolPromise.catch((err) => {
+		console.error(`[DB] Long-query connection error`, { cacheKey, dbName, error: String(err) });
+		longQueryPools.delete(cacheKey);
+	});
+	return poolPromise;
+}
+
 // Function to close all database connections
 export async function closeAllPools() {
-	const promises = [];
-	for (const [dbKey, poolPromise] of pools) {
-		promises.push(
-			poolPromise.then(pool => {
-				if (pool && pool.close) {
-					console.log(`Closing database pool for ${dbKey}`);
-					return pool.close();
-				}
-			}).catch(err => {
-				console.error(`Error closing pool for ${dbKey}:`, err);
-			})
-		);
-	}
-	
-	await Promise.all(promises);
-	pools.clear();
+	const closeMap = async (map) => {
+		const promises = [];
+		for (const [dbKey, poolPromise] of map) {
+			promises.push(
+				poolPromise.then((pool) => {
+					if (pool?.close) {
+						console.log(`Closing database pool for ${dbKey}`);
+						return pool.close();
+					}
+				}).catch((err) => {
+					console.error(`Error closing pool for ${dbKey}:`, err);
+				})
+			);
+		}
+		await Promise.all(promises);
+		map.clear();
+	};
+
+	await closeMap(pools);
+	await closeMap(longQueryPools);
 }
 
 // Function to clear pool cache (for logout/session clearing)
 export function clearPoolCache() {
-	console.log('[DB] Clearing pool cache', { poolKeys: Array.from(pools.keys()) });
+	console.log('[DB] Clearing pool cache', {
+		poolKeys: Array.from(pools.keys()),
+		longPoolKeys: Array.from(longQueryPools.keys()),
+	});
 	pools.clear();
+	longQueryPools.clear();
 }
 
 export { sql };
