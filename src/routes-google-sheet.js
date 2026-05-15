@@ -11,6 +11,8 @@ const router = Router();
 
 const DEFAULT_DATABASE = 'KOL';
 const ALLOWED_DATABASES = ['KOL', 'AHM'];
+/** rpt_job_gp_per_impression_v11 can exceed the default 2 min pool timeout */
+const LONG_REPORT_TIMEOUT_MS = Number(process.env.DB_LONG_REQUEST_TIMEOUT_MS) || 600_000;
 
 function getDbFromQuery(req) {
   const db = (req.query?.database || DEFAULT_DATABASE).toString().trim().toUpperCase();
@@ -146,8 +148,9 @@ router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
 
   try {
     const pool = await getPool(db);
-    const result = await pool
-      .request()
+    const request = pool.request();
+    request.timeout = LONG_REPORT_TIMEOUT_MS;
+    const result = await request
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
       .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
