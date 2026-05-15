@@ -355,13 +355,15 @@ const qrLogFile = path.join(logsDir, 'qr.log');
 const processStartLogFile = path.join(logsDir, 'process-start.log');
 const authLogFile = path.join(logsDir, 'auth.log');
 
+let _logsDirReady = false;
 function ensureLogsDir() {
+	if (_logsDirReady) return;
 	try {
 		if (!fs.existsSync(logsDir)) {
 			fs.mkdirSync(logsDir, { recursive: true });
 		}
+		_logsDirReady = true;
 	} catch (e) {
-		// Best effort; don't crash the app on logging failure
 		console.error('Failed to create logs directory:', e);
 	}
 }
@@ -369,46 +371,31 @@ function ensureLogsDir() {
 function logQr(message, extra = {}) {
 	try {
 		ensureLogsDir();
-		const timestamp = new Date().toISOString();
-		const entry = {
-			ts: timestamp,
-			message,
-			...extra,
-		};
-		fs.appendFileSync(qrLogFile, JSON.stringify(entry) + '\n');
+		const entry = { ts: new Date().toISOString(), message, ...extra };
+		fs.appendFile(qrLogFile, JSON.stringify(entry) + '\n', () => {});
 	} catch (e) {
 		console.error('Failed to write QR log entry:', e);
 	}
 }
 
 function logProcessStart(message, extra = {}) {
-    try {
-        ensureLogsDir();
-        const timestamp = new Date().toISOString();
-        const entry = {
-            ts: timestamp,
-            message,
-            ...extra,
-        };
-        fs.appendFileSync(processStartLogFile, JSON.stringify(entry) + '\n');
-    } catch (e) {
-        console.error('Failed to write process-start log entry:', e);
-    }
+	try {
+		ensureLogsDir();
+		const entry = { ts: new Date().toISOString(), message, ...extra };
+		fs.appendFile(processStartLogFile, JSON.stringify(entry) + '\n', () => {});
+	} catch (e) {
+		console.error('Failed to write process-start log entry:', e);
+	}
 }
 
 function logAuth(message, extra = {}) {
-    try {
-        ensureLogsDir();
-        const timestamp = new Date().toISOString();
-        const entry = {
-            ts: timestamp,
-            message,
-            ...extra,
-        };
-        fs.appendFileSync(authLogFile, JSON.stringify(entry) + '\n');
-    } catch (e) {
-        console.error('Failed to write auth log entry:', e);
-    }
+	try {
+		ensureLogsDir();
+		const entry = { ts: new Date().toISOString(), message, ...extra };
+		fs.appendFile(authLogFile, JSON.stringify(entry) + '\n', () => {});
+	} catch (e) {
+		console.error('Failed to write auth log entry:', e);
+	}
 }
 
 // Helper function to check if result contains only Status column
@@ -1351,8 +1338,6 @@ router.post('/processes/start', async (req, res) => {
     try {
         // Log raw incoming payload for traceability
         //console.log('[START] /api/processes/start called with body:', req.body);
-        logProcessStart('Start process called', { route: '/processes/start', ip: req.ip, body: req.body });
-
         const { UserID, EmployeeID, ProcessID, JobBookingJobCardContentsID, MachineID, JobCardFormNo, database } = req.body || {};
 
         const userIdNum = Number(UserID);
@@ -1361,7 +1346,7 @@ router.post('/processes/start', async (req, res) => {
         const jobBookingIdNum = Number(JobBookingJobCardContentsID);
         const machineIdNum = Number(MachineID);
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
-        const selectedDatabase = database || 'KOL'; // Default to KOL
+        const selectedDatabase = database || 'KOL';
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
@@ -1382,52 +1367,14 @@ router.post('/processes/start', async (req, res) => {
             return res.status(400).json({ status: false, error: 'JobCardFormNo is required' });
         }
 
-        // Log normalized parameters after basic coercion
-        logProcessStart('Normalized start params', {
-            route: '/processes/start',
-            ip: req.ip,
-            normalized: {
-                UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr
-            }
+        logProcessStart('Start process called', {
+            route: '/processes/start', ip: req.ip, db: selectedDatabase,
+            UserID: userIdNum, ProcessID: processIdNum, MachineID: machineIdNum
         });
 
         const pool = await getPool(selectedDatabase);
-        
-        // Log query execution details
-        logProcessStart('Executing Production_Start_Manu_v2 stored procedure', {
-            route: '/processes/start',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_Start_Manu_v2',
-            parameters: {
-                UserID: userIdNum,
-                EmployeeID: employeeIdNum,
-                ProcessID: processIdNum,
-                JobBookingJobCardContentsID: jobBookingIdNum,
-                MachineID: machineIdNum,
-                JobCardFormNo: jobCardFormNoStr
-            }
-        });
-
-        console.log(`\n${'='.repeat(80)}`);
-        console.log(`[SYNC START] CALLING START PROCEDURE`);
-        console.log(`Procedure: dbo.Production_Start_Manu_v2`);
-        console.log(`Parameters:`);
-        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
-        console.log(`  - EmployeeID: ${employeeIdNum} (${typeof employeeIdNum})`);
-        console.log(`  - ProcessID: ${processIdNum} (${typeof processIdNum})`);
-        console.log(`  - JobBookingJobCardContentsID: ${jobBookingIdNum} (${typeof jobBookingIdNum})`);
-        console.log(`  - MachineID: ${machineIdNum} (${typeof machineIdNum})`);
-        console.log(`  - JobCardFormNo: ${jobCardFormNoStr} (${typeof jobCardFormNoStr})`);
-        console.log(`Database: ${selectedDatabase}`);
-        console.log(`${'='.repeat(80)}\n`);
-
         const request = pool.request();
-        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for start operations
+        request.timeout = 180000;
         const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('EmployeeID', sql.Int, employeeIdNum)
@@ -1437,47 +1384,22 @@ router.post('/processes/start', async (req, res) => {
             .input('JobCardFormNo', sql.NVarChar(255), jobCardFormNoStr)
             .execute('dbo.Production_Start_Manu_v2');
 
-        // Extract ProductionID from result
         let productionId = null;
         if (result.recordset && result.recordset.length > 0 && result.recordset[0].ProductionID) {
             productionId = result.recordset[0].ProductionID;
-            console.log(`[SYNC START] ✅ ProductionID returned: ${productionId}`);
         }
 
-        // Log detailed query results
-        logProcessStart('Start process query completed', {
-            route: '/processes/start',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_Start_Manu_v2',
-            productionId: productionId,
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
-            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
-            resultData: result.recordset || [],
-            returnValue: result.returnValue,
-            rowsAffected: result.rowsAffected
-        });
-        
-        // Check if result contains only Status column
         const statusWarning = _checkStatusOnlyResponse(result.recordset);
-        if (statusWarning) {
-            logProcessStart('Status warning detected in start process', {
-                route: '/processes/start',
-                ip: req.ip,
-                statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_Start_Manu_v2'
-            });
-            return res.json({ 
-                status: true, 
-                result: result.recordset || [],
-                productionId: productionId,
-                statusWarning: statusWarning
-            });
-        }
-        
-        return res.json({ 
-            status: true, 
+        logProcessStart('Start process completed', {
+            route: '/processes/start', ip: req.ip, db: selectedDatabase,
+            productionId, statusWarning: !!statusWarning
+        });
+
+        return res.json({
+            status: true,
             result: result.recordset || [],
-            productionId: productionId
+            productionId: productionId,
+            ...(statusWarning ? { statusWarning } : {})
         });
     } catch (err) {
         console.error('Start process error:', err);
@@ -1628,8 +1550,6 @@ router.post('/qr/process-base64', async (req, res) => {
 router.post('/processes/complete', async (req, res) => {
     try {
         //console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
-        logProcessStart('Complete process called', { route: '/processes/complete', ip: req.ip, body: req.body });
-
         const { UserID, ProductionID, ProductionQty, WastageQty, database } = req.body || {};
 
         const userIdNum = Number(UserID);
@@ -1654,94 +1574,32 @@ router.post('/processes/complete', async (req, res) => {
             return res.status(400).json({ status: false, error: 'WastageQty must be an integer' });
         }
 
-        logProcessStart('Normalized complete params', {
-            route: '/processes/complete',
-            ip: req.ip,
-            normalized: {
-                UserID: userIdNum,
-                ProductionID: productionIdNum,
-                ProductionQty: productionQtyNum,
-                WastageQty: wastageQtyNum
-            }
+        logProcessStart('Complete process called', {
+            route: '/processes/complete', ip: req.ip, db: selectedDatabase,
+            UserID: userIdNum, ProductionID: productionIdNum
         });
 
         const pool = await getPool(selectedDatabase);
-
-        // Diagnostics: verify actual DB context and SP existence
-        try {
-            const dbInfo = await pool.request().query("SELECT DB_NAME() AS currentDb");
-            const currentDb = dbInfo?.recordset?.[0]?.currentDb || null;
-            const spCheck = await pool.request().query("SELECT OBJECT_ID('dbo.Production_End_Manu_v2') AS spId");
-            const spId = spCheck?.recordset?.[0]?.spId || null;
-            logProcessStart('Diagnostics - DB and SP availability (complete)', { selectedDatabase, currentDb, productionEndManuExists: !!spId, spId });
-        } catch (diagErr) {
-            logProcessStart('Diagnostics failed (complete)', { selectedDatabase, error: String(diagErr) });
-        }
-        
-        // Log query execution details
-        logProcessStart('Executing Production_End_Manu_v2 stored procedure', {
-            route: '/processes/complete',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_End_Manu_v2',
-            parameters: {
-                UserID: userIdNum,
-                ProductionID: productionIdNum,
-                ProductionQty: productionQtyNum,
-                WastageQty: wastageQtyNum
-            }
-        });
-
-        console.log(`\n${'='.repeat(80)}`);
-        console.log(`[SYNC COMPLETE] CALLING COMPLETE PROCEDURE`);
-        console.log(`Procedure: dbo.Production_End_Manu_v2`);
-        console.log(`Parameters:`);
-        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
-        console.log(`  - ProductionID: ${productionIdNum} (${typeof productionIdNum})`);
-        console.log(`  - ProductionQty: ${productionQtyNum} (${typeof productionQtyNum})`);
-        console.log(`  - WastageQty: ${wastageQtyNum} (${typeof wastageQtyNum})`);
-        console.log(`Database: ${selectedDatabase}`);
-        console.log(`${'='.repeat(80)}\n`);
-
         const request = pool.request();
-        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for complete operations
+        request.timeout = 180000;
         const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('ProductionID', sql.Int, productionIdNum)
             .input('ProductionQty', sql.Int, productionQtyNum)
             .input('WastageQty', sql.Int, wastageQtyNum)
             .execute('dbo.Production_End_Manu_v2');
-        
-        console.log(`[SYNC COMPLETE] ✅ Complete operation finished successfully`);
 
-        // Log detailed query results
-        logProcessStart('Complete process query completed', {
-            route: '/processes/complete',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_End_Manu_v2',
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
-            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
-            resultData: result.recordset || [],
-            returnValue: result.returnValue,
-            rowsAffected: result.rowsAffected
-        });
-        
-        // Check if result contains only Status column
         const statusWarning = _checkStatusOnlyResponse(result.recordset);
-        if (statusWarning) {
-            logProcessStart('Status warning detected in complete process', {
-                route: '/processes/complete',
-                ip: req.ip,
-                statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_End_Manu_v2'
-            });
-            return res.json({ 
-                status: true, 
-                result: result.recordset || [],
-                statusWarning: statusWarning
-            });
-        }
-        
-        return res.json({ status: true, result: result.recordset || [] });
+        logProcessStart('Complete process done', {
+            route: '/processes/complete', ip: req.ip, db: selectedDatabase,
+            ProductionID: productionIdNum, statusWarning: !!statusWarning
+        });
+
+        return res.json({
+            status: true,
+            result: result.recordset || [],
+            ...(statusWarning ? { statusWarning } : {})
+        });
     } catch (err) {
         console.error('Complete process error:', err);
         logProcessStart('Complete process failed', { route: '/processes/complete', ip: req.ip, error: String(err) });
@@ -1753,8 +1611,6 @@ router.post('/processes/complete', async (req, res) => {
 router.post('/processes/cancel', async (req, res) => {
     try {
         //console.log('[CANCEL] /api/processes/cancel called with body:', req.body);
-        logProcessStart('Cancel process called', { route: '/processes/cancel', ip: req.ip, body: req.body });
-
         const { UserID, ProductionID, database } = req.body || {};
 
         const userIdNum = Number(UserID);
@@ -1771,75 +1627,30 @@ router.post('/processes/cancel', async (req, res) => {
             return res.status(400).json({ status: false, error: 'ProductionID must be an integer' });
         }
 
-        logProcessStart('Normalized cancel params', {
-            route: '/processes/cancel',
-            ip: req.ip,
-            normalized: {
-                UserID: userIdNum,
-                ProductionID: productionIdNum
-            }
+        logProcessStart('Cancel process called', {
+            route: '/processes/cancel', ip: req.ip, db: selectedDatabase,
+            UserID: userIdNum, ProductionID: productionIdNum
         });
 
         const pool = await getPool(selectedDatabase);
-        
-        // Log query execution details
-        logProcessStart('Executing Production_Cancel_Manu_v2 stored procedure', {
-            route: '/processes/cancel',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_Cancel_Manu_v2',
-            parameters: {
-                UserID: userIdNum,
-                ProductionID: productionIdNum
-            }
-        });
-
-        console.log(`\n${'='.repeat(80)}`);
-        console.log(`[SYNC CANCEL] CALLING CANCEL PROCEDURE`);
-        console.log(`Procedure: dbo.Production_Cancel_Manu_v2`);
-        console.log(`Parameters:`);
-        console.log(`  - UserID: ${userIdNum} (${typeof userIdNum})`);
-        console.log(`  - ProductionID: ${productionIdNum} (${typeof productionIdNum})`);
-        console.log(`Database: ${selectedDatabase}`);
-        console.log(`${'='.repeat(80)}\n`);
-
         const request = pool.request();
-        request.timeout = 180000; // Set timeout to 3 minutes (180 seconds) for cancel operations
+        request.timeout = 180000;
         const result = await request
             .input('UserID', sql.Int, userIdNum)
             .input('ProductionID', sql.Int, productionIdNum)
             .execute('dbo.Production_Cancel_Manu_v2');
-        
-        console.log(`[SYNC CANCEL] ✅ Cancel operation finished successfully`);
 
-        // Log detailed query results
-        logProcessStart('Cancel process query completed', {
-            route: '/processes/cancel',
-            ip: req.ip,
-            storedProcedure: 'dbo.Production_Cancel_Manu_v2',
-            resultRowCount: Array.isArray(result.recordset) ? result.recordset.length : 0,
-            resultColumns: result.recordset && result.recordset.length > 0 ? Object.keys(result.recordset[0]) : [],
-            resultData: result.recordset || [],
-            returnValue: result.returnValue,
-            rowsAffected: result.rowsAffected
-        });
-        
-        // Check if result contains only Status column
         const statusWarning = _checkStatusOnlyResponse(result.recordset);
-        if (statusWarning) {
-            logProcessStart('Status warning detected in cancel process', {
-                route: '/processes/cancel',
-                ip: req.ip,
-                statusWarning: statusWarning,
-                storedProcedure: 'dbo.Production_Cancel_Manu_v2'
-            });
-            return res.json({ 
-                status: true, 
-                result: result.recordset || [],
-                statusWarning: statusWarning
-            });
-        }
-        
-        return res.json({ status: true, result: result.recordset || [] });
+        logProcessStart('Cancel process done', {
+            route: '/processes/cancel', ip: req.ip, db: selectedDatabase,
+            ProductionID: productionIdNum, statusWarning: !!statusWarning
+        });
+
+        return res.json({
+            status: true,
+            result: result.recordset || [],
+            ...(statusWarning ? { statusWarning } : {})
+        });
     } catch (err) {
         console.error('Cancel process error:', err);
         logProcessStart('Cancel process failed', { route: '/processes/cancel', ip: req.ip, error: String(err) });

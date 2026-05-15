@@ -35,6 +35,25 @@ function recordsetTo2DArray(recordset) {
   return [headers, ...rows];
 }
 
+function formatDateYYYYMMDD(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** End = yesterday, start = 6 months before end (inclusive range for reports). */
+function getLastSixMonthsDateRange() {
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() - 1);
+  const startDate = new Date(endDate);
+  startDate.setMonth(startDate.getMonth() - 6);
+  return {
+    startDateStr: formatDateYYYYMMDD(startDate),
+    endDateStr: formatDateYYYYMMDD(endDate),
+  };
+}
+
 /**
  * GET /api/google-sheet/process-otif?database=KOL
  * Runs dbo.GetProcessOTIF with StartDate = 6 months ago, EndDate = yesterday.
@@ -112,6 +131,34 @@ router.get('/google-sheet/process-otif2', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/google-sheet/job-gp-per-impression?database=KOL
+ * Runs rpt_job_gp_per_impression_v11 with StartDate = 6 months ago, EndDate = yesterday.
+ * Returns 2D array (headers + rows) for Google Sheets.
+ */
+router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  const { startDateStr, endDateStr } = getLastSixMonthsDateRange();
+
+  try {
+    const pool = await getPool(db);
+    const result = await pool
+      .request()
+      .input('StartDate', sql.VarChar(10), startDateStr)
+      .input('EndDate', sql.VarChar(10), endDateStr)
+      .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+    const recordset = result.recordset ?? [];
+    const data = recordsetTo2DArray(recordset);
+    return res.json({ data, startDate: startDateStr, endDate: endDateStr });
+  } catch (e) {
+    console.error('[google-sheet] job-gp-per-impression failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to fetch Job GP per Impression' });
+  }
+});
 
 /**
  * GET /api/google-sheet/machine-schedule?database=KOL&machineId=123

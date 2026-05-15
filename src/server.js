@@ -19,8 +19,10 @@ import shipmentEtaRoutes from './routes-shipment-eta.js';
 import concernPersonRoutes from './routes-concern-person.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
+import purchaseBillsRoutes from './routes-purchase-bills.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
+import { closePurchaseBillsMongo } from './db-purchase-bills.js';
 
 dotenv.config();
 
@@ -90,6 +92,9 @@ app.use('/api', concernPersonRoutes);
 app.use('/api', previousItemsByClientRoutes);
 app.use('/api', jobProductImageRoutes);
 
+// CDC Bills Digitization Platform
+app.use('/api/purchase-bills', purchaseBillsRoutes);
+
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 // Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
 app.use('/api/contractor-po/auth',        require('./contractor-po/routes/auth.js'));
@@ -122,6 +127,7 @@ process.on('SIGINT', async () => {
 	console.log('Received SIGINT, shutting down gracefully...');
 	await closeAllPools();
 	await closeVoiceNotesConnection();
+	await closePurchaseBillsMongo();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
@@ -133,6 +139,7 @@ process.on('SIGTERM', async () => {
 	console.log('Received SIGTERM, shutting down gracefully...');
 	await closeAllPools();
 	await closeVoiceNotesConnection();
+	await closePurchaseBillsMongo();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');

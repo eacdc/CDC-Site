@@ -138,3 +138,33 @@
 {"ts":"2026-05-05T11:24:20.413Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
 {"ts":"2026-05-05T11:24:20.414Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
 {"ts":"2026-05-05T11:24:23.997Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T02:53:13.882Z","message":"Admin PIN rejected","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T02:53:22.396Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T02:54:02.088Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"admin","database":"AHM","_t":"1778640842057"}}
+{"ts":"2026-05-13T02:54:02.089Z","message":"Login params normalized","username":"admin","databaseParam":"AHM","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T02:54:02.102Z","message":"Attempting to get DB pool","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T02:54:02.155Z","message":"DB pool acquired","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T02:54:02.218Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"AHM","currentDb":"IndusEnterprise2","getMachinesForUserExists":true,"spId":1603028992}
+{"ts":"2026-05-13T02:54:02.250Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"AHM","resultRowCount":17,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-05-13T02:54:02.252Z","message":"Login success","selectedDatabase":"AHM","username":"admin","userId":2,"ledgerId":6269,"machinesCount":17,"currentDb":"IndusEnterprise2"}
+{"ts":"2026-05-13T02:54:07.881Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T03:12:03.747Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T03:12:08.625Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T03:15:35.944Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T03:23:07.599Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T03:24:38.633Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T11:04:16.952Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-05-13T11:05:07.351Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"vijay","database":"AHM","_t":"1778670307312"}}
+{"ts":"2026-05-13T11:05:07.351Z","message":"Login params normalized","username":"vijay","databaseParam":"AHM","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:07.352Z","message":"Attempting to get DB pool","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:07.528Z","message":"DB pool acquired","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:07.781Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"AHM","currentDb":"IndusEnterprise2","getMachinesForUserExists":true,"spId":1603028992}
+{"ts":"2026-05-13T11:05:07.873Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"AHM","resultRowCount":0,"resultColumns":[]}
+{"ts":"2026-05-13T11:05:07.873Z","message":"Login completed - no machines for user","selectedDatabase":"AHM","username":"vijay","currentDb":"IndusEnterprise2","getMachinesForUserExists":true}
+{"ts":"2026-05-13T11:05:14.345Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"vijay singh","database":"AHM","_t":"1778670314335"}}
+{"ts":"2026-05-13T11:05:14.345Z","message":"Login params normalized","username":"vijay singh","databaseParam":"AHM","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:14.361Z","message":"Attempting to get DB pool","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:14.547Z","message":"DB pool acquired","selectedDatabase":"AHM"}
+{"ts":"2026-05-13T11:05:14.804Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"AHM","currentDb":"IndusEnterprise2","getMachinesForUserExists":true,"spId":1603028992}
+{"ts":"2026-05-13T11:05:14.899Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"AHM","resultRowCount":5,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-05-13T11:05:14.902Z","message":"Login success","selectedDatabase":"AHM","username":"vijay singh","userId":92,"ledgerId":6347,"machinesCount":5,"currentDb":"IndusEnterprise2"}
