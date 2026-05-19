@@ -29,6 +29,7 @@ import {
   buildBillScanPdf,
   collectBillImageUrls,
 } from './lib/purchase-bill-pdf.js';
+import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
 
 const router = Router();
 
@@ -287,8 +288,11 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'slots are required' });
     }
 
-    // Aggregate per-slot fields from the supplied pages.
-    const aggregatedSlots = aggregateAllSlots(body.slots);
+    // Vision extraction runs here (not on each image upload) so the client stays fast.
+    const slotsWithExtraction = await extractAllSlotPages(body.slots);
+
+    // Aggregate per-slot fields from the extracted pages.
+    const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
     const canonical = buildCanonicalFields(aggregatedSlots, { setType });
 
     // Compute perceptual hash on supplier invoice page 1 (if not already provided)
@@ -494,8 +498,8 @@ router.patch('/:id', async (req, res) => {
     const body = req.body || {};
 
     if (body.slots) {
-      // Replace pages but re-aggregate.
-      const aggregatedSlots = aggregateAllSlots(body.slots);
+      const slotsWithExtraction = await extractAllSlotPages(body.slots);
+      const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
       bill.slots = aggregatedSlots;
       const canonical = buildCanonicalFields(aggregatedSlots, { setType: bill.set_type });
       Object.assign(bill, canonical);

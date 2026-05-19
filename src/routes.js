@@ -7448,7 +7448,9 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       for (const newOp of contractorWDOps) {
         const nvpb = parseFloat(Number(newOp.valuePerBook).toFixed(2));
         const existing = contractorWD.opsDone.find(od =>
-          od.opsName === newOp.opsName && parseFloat(Number(od.valuePerBook).toFixed(2)) === nvpb && od.savedInBill !== 'Yes'
+          od.opsName === newOp.opsName &&
+          parseFloat(Number(od.valuePerBook).toFixed(2)) === nvpb &&
+          od.savedInBill === 'No'
         );
         if (existing) {
           existing.opsDoneQty += newOp.opsDoneQty;
@@ -7518,8 +7520,10 @@ router.post('/work/save/adhoc', async (req, res) => {
       contractorWD.adhocLabel = order.adhocId || contractorWD.adhocLabel || '';
       for (const newOp of contractorWDOps) {
         const existing = contractorWD.opsDone.find(od =>
-          String(od.opsId) === String(newOp.opsId) && od.opsName === newOp.opsName &&
-          Number(od.valuePerBook) === Number(newOp.valuePerBook) && od.savedInBill !== 'Yes'
+          String(od.opsId) === String(newOp.opsId) &&
+          od.opsName === newOp.opsName &&
+          Number(od.valuePerBook) === Number(newOp.valuePerBook) &&
+          od.savedInBill === 'No'
         );
         if (existing) {
           existing.opsDoneQty += newOp.opsDoneQty;
@@ -7545,7 +7549,7 @@ router.post('/work/save/adhoc', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // GET /work/unsaved/:contractorId/:jobNumber
-// Returns Contractor_WD entries with savedInBill != 'Yes' for a job.
+// Returns Contractor_WD entries with savedInBill = 'No' for a job.
 // Used to auto-populate the Bill Details section when a job is searched.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -7560,7 +7564,7 @@ router.get('/work/unsaved/all/:contractorId', async (req, res) => {
     const result = [];
 
     for (const doc of wdDocs) {
-      const unsavedOps = (doc.opsDone || []).filter(od => od.savedInBill !== 'Yes');
+      const unsavedOps = (doc.opsDone || []).filter(od => od.savedInBill === 'No');
       if (unsavedOps.length === 0) continue;
 
       if (doc.isAdhoc && doc.adhocOrderId) {
@@ -7633,7 +7637,7 @@ router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
 
     if (!contractorWD) return res.json({ jobNumber, clientName: '', jobTitle: '', items: [] });
 
-    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill !== 'Yes');
+    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill === 'No');
     if (unsavedOps.length === 0) return res.json({ jobNumber, clientName: '', jobTitle: '', items: [] });
 
     // Look up qtyPerBook and clientName/jobTitle from JobOpsMaster
@@ -7667,7 +7671,7 @@ router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // GET /work/unsaved/adhoc/:contractorId/:adhocOrderId
-// Returns Contractor_WD entries with savedInBill != 'Yes' for an ad-hoc order.
+// Returns Contractor_WD entries with savedInBill = 'No' for an ad-hoc order.
 // ---------------------------------------------------------------------------
 router.get('/work/unsaved/adhoc/:contractorId/:adhocOrderId', async (req, res) => {
   try {
@@ -7681,7 +7685,7 @@ router.get('/work/unsaved/adhoc/:contractorId/:adhocOrderId', async (req, res) =
 
     if (!contractorWD) return res.json({ adhocOrderId, adhocLabel: '', items: [] });
 
-    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill !== 'Yes');
+    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill === 'No');
     if (unsavedOps.length === 0) return res.json({ adhocOrderId, adhocLabel: contractorWD.adhocLabel || '', items: [] });
 
     // Look up rate (valuePerBook) from AdhocWorkOrder if needed
