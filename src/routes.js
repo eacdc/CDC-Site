@@ -8095,15 +8095,46 @@ router.post('/bills', async (req, res) => {
       }
     }
 
+    // Fallback lookup for missing clientName/jobTitle from JobOpsMaster
+    const nonAdhocJobNumbers = [...new Set(
+      jobs
+        .filter(j => !j.isAdhoc && j.jobNumber != null && String(j.jobNumber).trim())
+        .map(j => String(j.jobNumber).trim())
+    )];
+    const jobDetailsFallbackMap = {};
+    if (nonAdhocJobNumbers.length > 0) {
+      const jobDocs = await JobOpsMaster.find({ jobId: { $in: nonAdhocJobNumbers } }).lean();
+      jobDocs.forEach(doc => {
+        const key = String(doc.jobId || '').trim();
+        if (key) {
+          jobDetailsFallbackMap[key] = {
+            clientName: String(doc.clientName || '').trim(),
+            jobTitle: String(doc.jobTitle || '').trim()
+          };
+        }
+      });
+    }
+
     // Create bill (include clientName and jobTitle per job for display/print)
     const bill = new Bill({
       billNumber,
       contractorName: contractorName.trim(),
-      jobs: jobs.map(job => ({
-        jobNumber: (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '',
-        clientName: (job.clientName != null && String(job.clientName).trim()) ? String(job.clientName).trim() : '',
-        jobTitle: (job.jobTitle != null && String(job.jobTitle).trim()) ? String(job.jobTitle).trim() : '',
-        isAdhoc: !!job.isAdhoc,
+      jobs: jobs.map(job => {
+        const isAdhoc = !!job.isAdhoc;
+        const normalizedJobNumber = (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '';
+        const fallback = (!isAdhoc && normalizedJobNumber) ? (jobDetailsFallbackMap[normalizedJobNumber] || {}) : {};
+        const clientName = (job.clientName != null && String(job.clientName).trim())
+          ? String(job.clientName).trim()
+          : String(fallback.clientName || '');
+        const jobTitle = (job.jobTitle != null && String(job.jobTitle).trim())
+          ? String(job.jobTitle).trim()
+          : String(fallback.jobTitle || '');
+
+        return {
+        jobNumber: normalizedJobNumber,
+        clientName,
+        jobTitle,
+        isAdhoc,
         adhocOrderId: (job.adhocOrderId != null && String(job.adhocOrderId).trim()) ? String(job.adhocOrderId).trim() : '',
         adhocLabel: (job.adhocLabel != null && String(job.adhocLabel).trim()) ? String(job.adhocLabel).trim() : '',
         ops: job.ops.map(op => {
@@ -8127,7 +8158,8 @@ router.post('/bills', async (req, res) => {
             totalValue: Number(op.totalValue)
           };
         })
-      }))
+      };
+      })
     });
 
     await bill.save();
@@ -8164,11 +8196,41 @@ router.put('/bills/:billNumber', async (req, res) => {
         return res.status(400).json({ error: 'At least one job is required' });
       }
 
-      bill.jobs = jobs.map(job => ({
-        jobNumber: (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '',
-        clientName: (job.clientName != null && String(job.clientName).trim()) ? String(job.clientName).trim() : '',
-        jobTitle: (job.jobTitle != null && String(job.jobTitle).trim()) ? String(job.jobTitle).trim() : '',
-        isAdhoc: !!job.isAdhoc,
+      const nonAdhocJobNumbers = [...new Set(
+        jobs
+          .filter(j => !j.isAdhoc && j.jobNumber != null && String(j.jobNumber).trim())
+          .map(j => String(j.jobNumber).trim())
+      )];
+      const jobDetailsFallbackMap = {};
+      if (nonAdhocJobNumbers.length > 0) {
+        const jobDocs = await JobOpsMaster.find({ jobId: { $in: nonAdhocJobNumbers } }).lean();
+        jobDocs.forEach(doc => {
+          const key = String(doc.jobId || '').trim();
+          if (key) {
+            jobDetailsFallbackMap[key] = {
+              clientName: String(doc.clientName || '').trim(),
+              jobTitle: String(doc.jobTitle || '').trim()
+            };
+          }
+        });
+      }
+
+      bill.jobs = jobs.map(job => {
+        const isAdhoc = !!job.isAdhoc;
+        const normalizedJobNumber = (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '';
+        const fallback = (!isAdhoc && normalizedJobNumber) ? (jobDetailsFallbackMap[normalizedJobNumber] || {}) : {};
+        const clientName = (job.clientName != null && String(job.clientName).trim())
+          ? String(job.clientName).trim()
+          : String(fallback.clientName || '');
+        const jobTitle = (job.jobTitle != null && String(job.jobTitle).trim())
+          ? String(job.jobTitle).trim()
+          : String(fallback.jobTitle || '');
+
+        return {
+        jobNumber: normalizedJobNumber,
+        clientName,
+        jobTitle,
+        isAdhoc,
         adhocOrderId: (job.adhocOrderId != null && String(job.adhocOrderId).trim()) ? String(job.adhocOrderId).trim() : '',
         adhocLabel: (job.adhocLabel != null && String(job.adhocLabel).trim()) ? String(job.adhocLabel).trim() : '',
         ops: job.ops.map(op => ({
@@ -8179,7 +8241,8 @@ router.put('/bills/:billNumber', async (req, res) => {
           qtyCompleted: Number(op.qtyCompleted ?? 0),
           totalValue: Number(op.totalValue ?? 0)
         }))
-      }));
+      };
+      });
     }
 
     await bill.save();

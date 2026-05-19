@@ -9,7 +9,9 @@
     "test": "node --test src/sql-guard.test.js",
     "test:sql-guard": "node --test src/sql-guard.test.js",
     "backfill-job-details": "node scripts/backfill-job-details.js",
-    "backfill-job-details:dry-run": "node scripts/backfill-job-details.js --dry-run"
+    "backfill-job-details:dry-run": "node scripts/backfill-job-details.js --dry-run",
+    "backfill-bill-job-metadata": "node scripts/backfill-bill-job-metadata.js",
+    "backfill-bill-job-metadata:dry-run": "node scripts/backfill-bill-job-metadata.js --dry-run"
   },
   "keywords": [],
   "author": "",
