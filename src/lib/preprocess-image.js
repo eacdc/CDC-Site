@@ -28,11 +28,14 @@ const SHARPEN_SIGMA = 1.1;    // mild unsharp mask — enough to crisp text
 const JPEG_QUALITY = 88;
 
 // Document detection constants
-const ANALYSIS_SIZE = 400;    // analyse a small thumbnail for speed
-const BRIGHT_THRESHOLD = 170; // greyscale value above which a pixel is "document"
-const ROW_DOC_FRACTION = 0.5; // fraction of row/col pixels that must be bright
-const MIN_CROP_FRACTION = 0.3; // skip crop if result is < 30 % of original area
-const CROP_PADDING_PX = 8;    // extra pixels to keep around detected edges
+const ANALYSIS_SIZE = 400;        // analyse a small thumbnail for speed
+const BRIGHT_THRESHOLD = 140;     // greyscale value above which a pixel is "document"
+                                  // (lowered to include slightly shadowed paper edges)
+const ROW_DOC_FRACTION = 0.25;    // fraction of row/col pixels that must be bright
+                                  // (lowered so text-heavy rows still count as document)
+const MIN_CROP_FRACTION = 0.3;    // skip crop if result is < 30 % of original area
+const CROP_PADDING_FRAC = 0.025;  // padding as fraction of image edge (≈ 2.5%)
+                                  // keeps a safety margin around detected bounds
 
 // ---------- helpers ----------
 
@@ -94,10 +97,14 @@ async function detectDocumentBounds(buf) {
   const scaleX = origW / tw;
   const scaleY = origH / th;
 
-  const left   = Math.max(0,      Math.floor(leftCol  * scaleX) - CROP_PADDING_PX);
-  const top    = Math.max(0,      Math.floor(topRow   * scaleY) - CROP_PADDING_PX);
-  const right  = Math.min(origW,  Math.ceil(rightCol  * scaleX) + CROP_PADDING_PX);
-  const bottom = Math.min(origH,  Math.ceil(bottomRow * scaleY) + CROP_PADDING_PX);
+  // Proportional padding so behaviour is consistent across image sizes
+  const padX = Math.round(origW * CROP_PADDING_FRAC);
+  const padY = Math.round(origH * CROP_PADDING_FRAC);
+
+  const left   = Math.max(0,      Math.floor(leftCol  * scaleX) - padX);
+  const top    = Math.max(0,      Math.floor(topRow   * scaleY) - padY);
+  const right  = Math.min(origW,  Math.ceil(rightCol  * scaleX) + padX);
+  const bottom = Math.min(origH,  Math.ceil(bottomRow * scaleY) + padY);
 
   const cropW = right  - left;
   const cropH = bottom - top;
