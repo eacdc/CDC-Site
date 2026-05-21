@@ -5143,74 +5143,107 @@ ${senderPhone}`;
 // Contractor PO System Routes (COMMENTED OUT - using subfolder backend instead)
 // ============================================
 
-// Helper function to get MSSQL connection for contractor routes
-// Uses env vars (DB_SERVER, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME_KOL) when set; otherwise previous hardcoded config
+// Helper function to get MSSQL connection for contractor PO routes.
+//
+// Contractor PO MUST ALWAYS use Kolkata (IndusEnterprise). To prevent the
+// database from being silently switched by other callers we:
+//   1. Hardcode database to 'IndusEnterprise' — no env fallback.
+//   2. Use `new sql.ConnectionPool()` so this pool is isolated from the
+//      mssql global singleton pool (which is shared by `sql.connect()` and
+//      `getPool('AHM')` callers, and can be overwritten).
+//   3. Verify DB_NAME() on every reuse; if drifted, run USE [IndusEnterprise]
+//      and recreate the pool if the switch fails.
+const CONTRACTOR_PO_DATABASE = 'IndusEnterprise';
 let contractorPool = null;
 let contractorConnectionPromise = null;
 
+async function buildContractorPool() {
+  const serverEnv = process.env.DB_SERVER || 'cdcindas.24mycloud.com';
+  let serverHost = serverEnv;
+  let serverPort = Number(process.env.DB_PORT) || 51175;
+  if (serverEnv.includes(',')) {
+    const parts = serverEnv.split(',');
+    serverHost = parts[0];
+    const parsed = parseInt(parts[1], 10);
+    if (!Number.isNaN(parsed)) serverPort = parsed;
+  }
+  const config = {
+    server: serverHost,
+    port: serverPort,
+    // Hardcoded: contractor PO must always run against IndusEnterprise (Kolkata).
+    database: CONTRACTOR_PO_DATABASE,
+    user: process.env.DB_USER || 'indus',
+    password: process.env.DB_PASSWORD || 'Param@99811',
+    connectionTimeout: 10000,
+    requestTimeout: 30000,
+    pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+    options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true }
+  };
+
+  console.log('🔌 [MSSQL] Establishing isolated Contractor-PO pool...');
+  const startTime = Date.now();
+  // Isolated pool — does NOT touch the mssql global singleton.
+  const newPool = new sql.ConnectionPool(config);
+  await newPool.connect();
+
+  // Belt-and-suspenders: enforce DB context.
+  await newPool.request().query(`USE [${CONTRACTOR_PO_DATABASE}]`);
+  const verify = await newPool.request().query('SELECT DB_NAME() AS currentDb');
+  const actualDb = verify.recordset?.[0]?.currentDb;
+  if (actualDb !== CONTRACTOR_PO_DATABASE) {
+    await newPool.close().catch(() => {});
+    throw new Error(`Contractor PO pool ended up on ${actualDb}, expected ${CONTRACTOR_PO_DATABASE}`);
+  }
+  console.log(`✅ [MSSQL] Contractor-PO connected to ${CONTRACTOR_PO_DATABASE} in ${Date.now() - startTime}ms`);
+
+  newPool.on('error', (err) => {
+    console.error('❌ [MSSQL] Contractor-PO pool error:', err);
+    contractorPool = null;
+    contractorConnectionPromise = null;
+  });
+
+  return newPool;
+}
+
 async function getConnection() {
   try {
-    // If already connected, return existing pool
+    // Reuse existing healthy pool — but verify it's still on IndusEnterprise.
     if (contractorPool && contractorPool.connected) {
-      return contractorPool;
+      try {
+        const dbCheck = await contractorPool.request().query('SELECT DB_NAME() AS currentDb');
+        const actualDb = dbCheck.recordset?.[0]?.currentDb;
+        if (actualDb === CONTRACTOR_PO_DATABASE) {
+          return contractorPool;
+        }
+        // Drifted (extremely unlikely for an isolated pool, but recover anyway).
+        console.warn(`⚠️ [MSSQL] Contractor-PO pool drifted to ${actualDb}. Switching back to ${CONTRACTOR_PO_DATABASE}.`);
+        await contractorPool.request().query(`USE [${CONTRACTOR_PO_DATABASE}]`);
+        const reverify = await contractorPool.request().query('SELECT DB_NAME() AS currentDb');
+        if (reverify.recordset?.[0]?.currentDb === CONTRACTOR_PO_DATABASE) {
+          return contractorPool;
+        }
+        // Could not switch — recreate.
+        console.warn('⚠️ [MSSQL] Could not switch contractor pool back; recreating.');
+        await contractorPool.close().catch(() => {});
+        contractorPool = null;
+      } catch (verifyErr) {
+        console.warn('⚠️ [MSSQL] Contractor-PO pool verification failed; recreating.', verifyErr.message);
+        await contractorPool.close().catch(() => {});
+        contractorPool = null;
+      }
     }
 
-    // If connection is in progress, wait for it
     if (contractorConnectionPromise) {
-      console.log('⏳ [MSSQL] Connection already in progress, waiting...');
+      console.log('⏳ [MSSQL] Contractor-PO connection already in progress, waiting...');
       return await contractorConnectionPromise;
     }
 
-    // Start new connection: prefer new backend env vars, fall back to previous hardcoded values
-    console.log('🔌 [MSSQL] Establishing connection...');
-    const startTime = Date.now();
-    const serverEnv = process.env.DB_SERVER || 'cdcindas.24mycloud.com';
-    let serverHost = serverEnv;
-    let serverPort = Number(process.env.DB_PORT) || 51175;
-    if (!serverPort && serverEnv.includes(',')) {
-      const parts = serverEnv.split(',');
-      serverHost = parts[0];
-      const parsed = parseInt(parts[1], 10);
-      if (!Number.isNaN(parsed)) serverPort = parsed;
-    }
-    const config = {
-      server: serverHost,
-      port: serverPort,
-      database: process.env.DB_NAME_KOL || process.env.DB_NAME || 'IndusEnterprise',
-      user: process.env.DB_USER || 'indus',
-      password: process.env.DB_PASSWORD || 'Param@99811',
-      connectionTimeout: 10000,
-      requestTimeout: 30000,
-      pool: {
-        max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000
-      },
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true
-      }
-    };
-    
-    contractorConnectionPromise = sql.connect(config);
+    contractorConnectionPromise = buildContractorPool();
     contractorPool = await contractorConnectionPromise;
-    
-    const connectionTime = Date.now() - startTime;
-    console.log(`✅ [MSSQL] Connected to MSSQL Server in ${connectionTime}ms`);
-    
     contractorConnectionPromise = null;
-    
-    // Handle connection errors
-    contractorPool.on('error', (err) => {
-      console.error('❌ [MSSQL] Connection pool error:', err);
-      contractorPool = null;
-      contractorConnectionPromise = null;
-    });
-
     return contractorPool;
   } catch (error) {
-    console.error('❌ [MSSQL] Connection error:', error);
+    console.error('❌ [MSSQL] Contractor-PO connection error:', error);
     contractorPool = null;
     contractorConnectionPromise = null;
     throw error;
