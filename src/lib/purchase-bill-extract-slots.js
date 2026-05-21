@@ -3,8 +3,13 @@
  * Used on POST /api/purchase-bills so the client only uploads images first.
  */
 import { extractFromImage } from './openai-vision.js';
+import { preprocessForAI } from './preprocess-image.js';
 
 const SLOT_TYPES = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
+
+// Internal documents contain no meaningful colour → greyscale saves tokens
+// and removes colour noise from scanner/camera.
+const GREYSCALE_SLOTS = new Set(['tally_voucher', 'grn_sheet']);
 
 function pageNeedsExtraction(page) {
   if (!page?.cloudinary_url) return false;
@@ -24,14 +29,28 @@ export async function extractAllSlotPages(slots) {
     const slot = out[slotType];
     if (!slot?.pages?.length) continue;
 
+    const greyscale = GREYSCALE_SLOTS.has(slotType);
     const pages = [];
+
     for (const page of slot.pages) {
       if (!pageNeedsExtraction(page)) {
         pages.push(page);
         continue;
       }
 
-      const result = await extractFromImage(page.cloudinary_url, slotType);
+      // Preprocess image (auto-rotate, crop, resize, normalise, sharpen) before
+      // sending to OpenAI. Returns a base64 data URI so no re-upload is needed.
+      let imageSource = page.cloudinary_url;
+      try {
+        imageSource = await preprocessForAI(page.cloudinary_url, { greyscale });
+      } catch (prepErr) {
+        console.warn(
+          `[extract-slots] preprocess failed for ${page.cloudinary_url}, falling back to raw URL:`,
+          prepErr?.message,
+        );
+      }
+
+      const result = await extractFromImage(imageSource, slotType);
       pages.push({
         ...page,
         extracted_fields: result.fields,

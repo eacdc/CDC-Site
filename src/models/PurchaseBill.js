@@ -95,8 +95,8 @@ export const purchaseBillSchema = new Schema({
   // ---------- verification ----------
   verification_status: {
     type: String,
-    enum: ['verified', 'verified_with_warnings', 'needs_review', 'rejected'],
-    default: 'needs_review',
+    enum: ['pending_extraction', 'verified', 'verified_with_warnings', 'needs_review', 'rejected'],
+    default: 'pending_extraction',
     index: true,
   },
   check_results: { type: [CheckResultSchema], default: [] },
@@ -108,6 +108,9 @@ export const purchaseBillSchema = new Schema({
   manually_reviewed_at: Date,
   review_comment: String,
   manually_overridden: { type: Boolean, default: false },
+
+  // Set when background extraction fails so the UI can surface it
+  extraction_error: { type: String, default: null },
 
   // ---------- dedup ----------
   // Form: `${UPPERCASE supplier_gstin}_${UPPERCASE invoice_number}`

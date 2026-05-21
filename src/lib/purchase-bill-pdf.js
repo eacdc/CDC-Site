@@ -1,8 +1,10 @@
 /**
  * Build a single PDF from all bill slot images (tally → invoice → e-way → GRN).
+ * Images are preprocessed (auto-rotate, auto-crop, normalise, sharpen) before
+ * embedding so the PDF contains clean, cropped pages.
  */
 import { PDFDocument } from 'pdf-lib';
-import axios from 'axios';
+import { preprocessForPDF } from './preprocess-image.js';
 
 const SLOT_ORDER = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
 
@@ -37,7 +39,7 @@ export function billScanPdfFilename(bill) {
 }
 
 /**
- * @param {string[]} imageUrls
+ * @param {string[]} imageUrls  Cloudinary URLs of bill pages (in display order)
  * @returns {Promise<Uint8Array>}
  */
 export async function buildBillScanPdf(imageUrls) {
@@ -48,23 +50,24 @@ export async function buildBillScanPdf(imageUrls) {
   const pdfDoc = await PDFDocument.create();
 
   for (const url of imageUrls) {
-    const resp = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 90_000,
-      maxContentLength: 25 * 1024 * 1024,
-    });
-    const bytes = new Uint8Array(resp.data);
-    const contentType = String(resp.headers['content-type'] || '').toLowerCase();
+    // Preprocess: auto-rotate, crop, normalise, sharpen → clean JPEG buffer
+    let jpegBuf;
+    try {
+      jpegBuf = await preprocessForPDF(url);
+    } catch (err) {
+      console.warn('[bill-pdf] preprocess failed, embedding raw image:', err?.message);
+      // Fallback: fetch raw bytes
+      const { default: axios } = await import('axios');
+      const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 90_000 });
+      jpegBuf = Buffer.from(resp.data);
+    }
 
+    // preprocessForPDF always returns JPEG; fallback might be any format
     let image;
-    if (contentType.includes('png')) {
-      image = await pdfDoc.embedPng(bytes);
-    } else {
-      try {
-        image = await pdfDoc.embedJpg(bytes);
-      } catch {
-        image = await pdfDoc.embedPng(bytes);
-      }
+    try {
+      image = await pdfDoc.embedJpg(new Uint8Array(jpegBuf));
+    } catch {
+      image = await pdfDoc.embedPng(new Uint8Array(jpegBuf));
     }
 
     const page = pdfDoc.addPage([A4_W, A4_H]);

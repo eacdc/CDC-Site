@@ -33,6 +33,10 @@ export async function ensurePurchaseBillsReady() {
       billingConnection = c;
       PurchaseBill = Model;
       console.log('✅ Billing MongoDB connected (PurchaseBills / MONGODB_URI_Billing)');
+      // Recover bills that were stuck in pending_extraction on last run
+      const { setQueueModel, recoverPendingOnStartup } = await import('./lib/extraction-queue.js');
+      setQueueModel(Model);
+      await recoverPendingOnStartup();
     })();
   }
   try {

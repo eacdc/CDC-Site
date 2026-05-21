@@ -30,13 +30,21 @@ import {
   collectBillImageUrls,
 } from './lib/purchase-bill-pdf.js';
 import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
+import { enqueue, setQueueModel } from './lib/extraction-queue.js';
 
 const router = Router();
 
 // All purchase-bill data lives on the billing MongoDB (MONGODB_URI_Billing).
+// Once connected, wire the queue model so background jobs can run.
+let queueModelSet = false;
 router.use(async (req, res, next) => {
   try {
     await ensurePurchaseBillsReady();
+    if (!queueModelSet) {
+      const { PurchaseBill: model } = await import('./db-purchase-bills.js');
+      setQueueModel(model);
+      queueModelSet = true;
+    }
     next();
   } catch (err) {
     console.error('[purchase-bills] billing DB not available:', err?.message || err);
@@ -288,55 +296,37 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'slots are required' });
     }
 
-    // Vision extraction runs here (not on each image upload) so the client stays fast.
-    const slotsWithExtraction = await extractAllSlotPages(body.slots);
+    // ---------------------------------------------------------------
+    // Save immediately with status "pending_extraction" so the upload
+    // user can move on. The background queue handles extraction +
+    // verification asynchronously.
+    // ---------------------------------------------------------------
 
-    // Aggregate per-slot fields from the extracted pages.
-    const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
-    const canonical = buildCanonicalFields(aggregatedSlots, { setType });
-
-    // Compute perceptual hash on supplier invoice page 1 (if not already provided)
-    let invoice_image_phash = body.invoice_image_phash || null;
-    if (!invoice_image_phash) {
-      const firstInvoicePage = aggregatedSlots.supplier_invoice?.pages?.[0];
-      if (firstInvoicePage?.cloudinary_url) {
-        invoice_image_phash = await generatePhash(firstInvoicePage.cloudinary_url);
-      }
+    // Store raw slot pages (no extraction yet).
+    const rawSlots = {};
+    for (const [slotName, slot] of Object.entries(body.slots || {})) {
+      rawSlots[slotName] = { pages: slot?.pages || [], aggregated_fields: {} };
     }
 
     const draft = {
       set_type: setType,
       uploaded_by: body.uploaded_by || 'anonymous',
       uploaded_at: new Date(),
-      slots: aggregatedSlots,
-      ...canonical,
-      invoice_image_phash,
+      slots: rawSlots,
+      verification_status: 'pending_extraction',
     };
 
-    // Run verification (we pass a plain object — helpers exclude no id).
-    await verifyAndStamp(draft);
-
-    // Save. Catch unique-index conflict on bill_dedup_key or tally_voucher_number.
     try {
       const saved = await PurchaseBill.create(draft);
-      return res.status(201).json(saved);
+      // Enqueue background extraction — returns immediately
+      enqueue(saved._id);
+      return res.status(201).json({ _id: saved._id, verification_status: 'pending_extraction' });
     } catch (err) {
       if (err && err.code === 11000) {
-        // Identify which key collided.
         const keyPattern = err.keyPattern || {};
-        let existing = null;
-        if (keyPattern.bill_dedup_key && draft.bill_dedup_key) {
-          existing = await PurchaseBill.findOne({ bill_dedup_key: draft.bill_dedup_key })
-            .select('_id invoice_number tally_voucher_number uploaded_by uploaded_at');
-        } else if (keyPattern.tally_voucher_number && draft.tally_voucher_number) {
-          existing = await PurchaseBill.findOne({ tally_voucher_number: draft.tally_voucher_number })
-            .select('_id invoice_number tally_voucher_number uploaded_by uploaded_at');
-        }
         return res.status(409).json({
           error: 'duplicate',
           conflict_field: keyPattern.bill_dedup_key ? 'bill_dedup_key' : 'tally_voucher_number',
-          existing_bill_id: existing ? String(existing._id) : null,
-          existing,
         });
       }
       throw err;
@@ -474,6 +464,22 @@ router.get('/:id/scan-pdf', async (req, res) => {
 });
 
 // ============================================================
+// GET /:id/status — lightweight poll endpoint used by the frontend
+// to check when background extraction finishes
+// ============================================================
+router.get('/:id/status', async (req, res) => {
+  try {
+    const bill = await PurchaseBill.findById(req.params.id)
+      .select('_id verification_status supplier_name invoice_number blocking_failures_count')
+      .lean();
+    if (!bill) return res.status(404).json({ error: 'not found' });
+    return res.json(bill);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'status lookup failed' });
+  }
+});
+
+// ============================================================
 // GET /:id
 // ============================================================
 router.get('/:id', async (req, res) => {
@@ -575,6 +581,42 @@ router.post('/:id/approve', async (req, res) => {
     return res.json(bill);
   } catch (err) {
     return res.status(500).json({ error: err.message || 'approval failed' });
+  }
+});
+
+// ============================================================
+// POST /:id/reprocess — re-queue a bill stuck in needs_review with no data
+// ============================================================
+router.post('/:id/reprocess', async (req, res) => {
+  try {
+    const bill = await PurchaseBill.findById(req.params.id);
+    if (!bill) return res.status(404).json({ error: 'not found' });
+    bill.verification_status = 'pending_extraction';
+    bill.extraction_error = null;
+    bill.check_results = [];
+    bill.blocking_failures_count = 0;
+    bill.warning_failures_count = 0;
+    await bill.save();
+    enqueue(bill._id);
+    return res.json({ _id: String(bill._id), verification_status: 'pending_extraction' });
+  } catch (err) {
+    console.error('[purchase-bills] reprocess error:', err);
+    return res.status(500).json({ error: err.message || 'reprocess failed' });
+  }
+});
+
+// ============================================================
+// DELETE /:id — permanently delete a bill record
+// ============================================================
+router.delete('/:id', async (req, res) => {
+  try {
+    const bill = await PurchaseBill.findByIdAndDelete(req.params.id);
+    if (!bill) return res.status(404).json({ error: 'not found' });
+    console.log(`[purchase-bills] deleted bill ${req.params.id} (${bill.invoice_number || 'no invoice #'})`);
+    return res.json({ deleted: true, _id: req.params.id });
+  } catch (err) {
+    console.error('[purchase-bills] DELETE error:', err);
+    return res.status(500).json({ error: err.message || 'delete failed' });
   }
 });
 
