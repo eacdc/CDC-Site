@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from "axios";
 import nodemailer from "nodemailer";
-import { getPool, sql, clearPoolCache } from './db.js';
+import { getPool, sql } from './db.js';
 import multer from 'multer';
 import QrCode from 'qrcode-reader';
 import * as jimp from 'jimp';
@@ -1086,10 +1086,6 @@ router.post('/auth/logout', async (req, res) => {
 	try {
 		logAuth('Logout request received', { route: '/auth/logout', ip: req.ip });
 		
-		// CRITICAL: Clear database pool cache to prevent wrong DB reuse
-		clearPoolCache();
-		console.log('[AUTH] Database pool cache cleared on logout');
-		
 		// Clear any session data if using express-session
 		if (req.session) {
 			req.session.destroy((err) => {
@@ -1346,7 +1342,10 @@ router.post('/processes/start', async (req, res) => {
         const jobBookingIdNum = Number(JobBookingJobCardContentsID);
         const machineIdNum = Number(MachineID);
         const jobCardFormNoStr = (JobCardFormNo || '').toString().trim();
-        const selectedDatabase = database || 'KOL';
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
 
         if (!Number.isInteger(userIdNum)) {
             return res.status(400).json({ status: false, error: 'UserID must be an integer' });
