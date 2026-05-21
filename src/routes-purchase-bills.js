@@ -470,7 +470,7 @@ router.get('/:id/scan-pdf', async (req, res) => {
 router.get('/:id/status', async (req, res) => {
   try {
     const bill = await PurchaseBill.findById(req.params.id)
-      .select('_id verification_status supplier_name invoice_number blocking_failures_count')
+      .select('_id verification_status supplier_name invoice_number tally_voucher_number blocking_failures_count')
       .lean();
     if (!bill) return res.status(404).json({ error: 'not found' });
     return res.json(bill);
@@ -504,10 +504,34 @@ router.patch('/:id', async (req, res) => {
     const body = req.body || {};
 
     if (body.slots) {
-      const slotsWithExtraction = await extractAllSlotPages(body.slots);
-      const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
-      bill.slots = aggregatedSlots;
-      const canonical = buildCanonicalFields(aggregatedSlots, { setType: bill.set_type });
+      // If caller already supplies aggregated_fields for each slot (manual
+      // edits from the Extracted-data tab) we skip re-extraction and just
+      // re-aggregate + re-verify. Otherwise we run the full extraction
+      // pipeline for any page that has no extracted_fields yet.
+      const alreadyAggregated = Object.values(body.slots).every(
+        (s) => s && typeof s === 'object' && s.aggregated_fields && typeof s.aggregated_fields === 'object',
+      );
+      if (alreadyAggregated) {
+        // Preserve existing per-page extracted_fields on the bill to keep
+        // history, but treat the new aggregated_fields as the source of truth.
+        const merged = {};
+        for (const [slotName, slot] of Object.entries(body.slots)) {
+          merged[slotName] = {
+            pages: Array.isArray(slot.pages) && slot.pages.length
+              ? slot.pages
+              : (bill.slots?.[slotName]?.pages ?? []),
+            aggregated_fields: slot.aggregated_fields ?? {},
+          };
+        }
+        bill.slots = merged;
+        bill.markModified('slots');
+      } else {
+        const slotsWithExtraction = await extractAllSlotPages(body.slots);
+        const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
+        bill.slots = aggregatedSlots;
+        bill.markModified('slots');
+      }
+      const canonical = buildCanonicalFields(bill.slots, { setType: bill.set_type });
       Object.assign(bill, canonical);
     }
     if (body.canonical && typeof body.canonical === 'object') {
