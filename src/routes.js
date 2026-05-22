@@ -8262,16 +8262,33 @@ router.put('/bills/:billNumber', async (req, res) => {
         });
       }
 
+      const existingJobDetailsMap = {};
+      (bill.jobs || []).forEach(j => {
+        const key = j.isAdhoc
+          ? `adhoc:${String(j.adhocOrderId || '').trim()}`
+          : `job:${String(j.jobNumber || '').trim()}`;
+        if (key !== 'adhoc:' && key !== 'job:') {
+          existingJobDetailsMap[key] = {
+            clientName: String(j.clientName || '').trim(),
+            jobTitle: String(j.jobTitle || '').trim(),
+          };
+        }
+      });
+
       bill.jobs = jobs.map(job => {
         const isAdhoc = !!job.isAdhoc;
         const normalizedJobNumber = (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '';
+        const existingKey = isAdhoc
+          ? `adhoc:${String(job.adhocOrderId || '').trim()}`
+          : `job:${normalizedJobNumber}`;
         const fallback = (!isAdhoc && normalizedJobNumber) ? (jobDetailsFallbackMap[normalizedJobNumber] || {}) : {};
+        const existing = existingJobDetailsMap[existingKey] || {};
         const clientName = (job.clientName != null && String(job.clientName).trim())
           ? String(job.clientName).trim()
-          : String(fallback.clientName || '');
+          : (String(fallback.clientName || '').trim() || String(existing.clientName || ''));
         const jobTitle = (job.jobTitle != null && String(job.jobTitle).trim())
           ? String(job.jobTitle).trim()
-          : String(fallback.jobTitle || '');
+          : (String(fallback.jobTitle || '').trim() || String(existing.jobTitle || ''));
 
         return {
         jobNumber: normalizedJobNumber,
@@ -8557,12 +8574,11 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
     // After adjustments, clean up bill jobs:
     // - Remove operations with qtyCompleted === 0
     // - Remove jobs with no operations
-    bill.jobs = bill.jobs
-      .map(job => {
-        const filteredOps = (job.ops || []).filter(op => Number(op.qtyCompleted || 0) > 0);
-        return { jobNumber: job.jobNumber, ops: filteredOps };
-      })
-      .filter(job => (job.ops || []).length > 0);
+    // Mutate in place so clientName, jobTitle, isAdhoc, etc. are preserved.
+    for (const job of bill.jobs) {
+      job.ops = (job.ops || []).filter(op => Number(op.qtyCompleted || 0) > 0);
+    }
+    bill.jobs = bill.jobs.filter(job => (job.ops || []).length > 0);
 
     await bill.save({ session });
 
