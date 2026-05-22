@@ -11,7 +11,9 @@
     "backfill-job-details": "node scripts/backfill-job-details.js",
     "backfill-job-details:dry-run": "node scripts/backfill-job-details.js --dry-run",
     "backfill-bill-job-metadata": "node scripts/backfill-bill-job-metadata.js",
-    "backfill-bill-job-metadata:dry-run": "node scripts/backfill-bill-job-metadata.js --dry-run"
+    "backfill-bill-job-metadata:dry-run": "node scripts/backfill-bill-job-metadata.js --dry-run",
+    "backfill-contractor-wd-saved-in-bill": "node scripts/backfill-contractor-wd-saved-in-bill.js",
+    "backfill-contractor-wd-saved-in-bill:dry-run": "node scripts/backfill-contractor-wd-saved-in-bill.js --dry-run"
   },
   "keywords": [],
   "author": "",

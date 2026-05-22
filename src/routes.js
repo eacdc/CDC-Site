@@ -5249,6 +5249,17 @@ async function getConnection() {
   }
 }
 
+// Contractor_WD savedInBill helpers.
+// Legacy opsDone rows may not have savedInBill. Treat missing/empty as billed ('Yes').
+// Only explicit savedInBill === 'No' is unsaved work pending bill submission.
+function isOpsDoneUnsaved(od) {
+  return String(od?.savedInBill ?? '').trim() === 'No';
+}
+
+function isOpsDoneBilled(od) {
+  return !isOpsDoneUnsaved(od);
+}
+
 /*
 
 async function getContractorConnection() {
@@ -7110,10 +7121,11 @@ router.post('/work/update/jobopsmaster', async (req, res) => {
       // Prepare Contractor_WD operation entry - use values from jobOp as authoritative source
       // Ensure all required fields are properly set with validated values
       const contractorWDOp = {
-        opsId: String(jobOp.opId).trim(), // Use jobOp.opId as authoritative source
-        opsName: normalizedOpsName, // Use normalized opsName
-        valuePerBook: Number(jobOp.valuePerBook), // Use jobOp.valuePerBook as authoritative source
-        opsDoneQty: qtyToDeduct, // Already validated
+        opsId: String(jobOp.opId).trim(),
+        opsName: normalizedOpsName,
+        valuePerBook: Number(jobOp.valuePerBook),
+        opsDoneQty: qtyToDeduct,
+        savedInBill: 'No',
         completionDate: new Date()
       };
       
@@ -7153,8 +7165,10 @@ router.post('/work/update/jobopsmaster', async (req, res) => {
         const newOpValuePerBook = parseFloat(Number(newOp.valuePerBook).toFixed(2));
         // Find existing entry with same opsName + valuePerBook
         const existingOp = contractorWD.opsDone.find(od => {
+          if (isOpsDoneBilled(od)) return false;
           const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
-          return od.opsName === newOp.opsName && odValuePerBook === newOpValuePerBook;
+          const idMatch = newOp.opsId && String(od.opsId) === String(newOp.opsId);
+          return idMatch || (od.opsName === newOp.opsName && odValuePerBook === newOpValuePerBook);
         });
         
         if (existingOp) {
@@ -7335,7 +7349,7 @@ router.post('/work/unsave', async (req, res) => {
           if (cwdAdhoc) {
             const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
             const wdOp = cwdAdhoc.opsDone.find(od => {
-              if (od.savedInBill === 'Yes') return false;
+              if (isOpsDoneBilled(od)) return false;
               return (opsId && String(od.opsId) === String(opsId)) ||
                      (od.opsName === opsName && parseFloat(Number(od.valuePerBook || 0).toFixed(2)) === vpb);
             });
@@ -7376,7 +7390,7 @@ router.post('/work/unsave', async (req, res) => {
           if (cwdJob) {
             const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
             const wdOp = cwdJob.opsDone.find(od => {
-              if (od.savedInBill === 'Yes') return false;
+              if (isOpsDoneBilled(od)) return false;
               return (opsId && String(od.opsId) === String(opsId)) ||
                      (od.opsName === opsName && parseFloat(Number(od.valuePerBook || 0).toFixed(2)) === vpb);
             });
@@ -7478,12 +7492,13 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
     let contractorWD = await ContractorWD.findOne({ contractorId, jobId: jobNumber });
     if (contractorWD) {
       for (const newOp of contractorWDOps) {
-        const nvpb = parseFloat(Number(newOp.valuePerBook).toFixed(2));
-        const existing = contractorWD.opsDone.find(od =>
-          od.opsName === newOp.opsName &&
-          parseFloat(Number(od.valuePerBook).toFixed(2)) === nvpb &&
-          od.savedInBill === 'No'
-        );
+        const existing = contractorWD.opsDone.find(od => {
+          if (isOpsDoneBilled(od)) return false;
+          const nvpb = parseFloat(Number(newOp.valuePerBook).toFixed(2));
+          const odVpb = parseFloat(Number(od.valuePerBook).toFixed(2));
+          const idMatch = newOp.opsId && String(od.opsId) === String(newOp.opsId);
+          return idMatch || (od.opsName === newOp.opsName && odVpb === nvpb);
+        });
         if (existing) {
           existing.opsDoneQty += newOp.opsDoneQty;
           existing.completionDate = new Date();
@@ -7555,7 +7570,7 @@ router.post('/work/save/adhoc', async (req, res) => {
           String(od.opsId) === String(newOp.opsId) &&
           od.opsName === newOp.opsName &&
           Number(od.valuePerBook) === Number(newOp.valuePerBook) &&
-          od.savedInBill === 'No'
+          isOpsDoneUnsaved(od)
         );
         if (existing) {
           existing.opsDoneQty += newOp.opsDoneQty;
@@ -7596,7 +7611,7 @@ router.get('/work/unsaved/all/:contractorId', async (req, res) => {
     const result = [];
 
     for (const doc of wdDocs) {
-      const unsavedOps = (doc.opsDone || []).filter(od => od.savedInBill === 'No');
+      const unsavedOps = (doc.opsDone || []).filter(isOpsDoneUnsaved);
       if (unsavedOps.length === 0) continue;
 
       if (doc.isAdhoc && doc.adhocOrderId) {
@@ -7669,7 +7684,7 @@ router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
 
     if (!contractorWD) return res.json({ jobNumber, clientName: '', jobTitle: '', items: [] });
 
-    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill === 'No');
+    const unsavedOps = (contractorWD.opsDone || []).filter(isOpsDoneUnsaved);
     if (unsavedOps.length === 0) return res.json({ jobNumber, clientName: '', jobTitle: '', items: [] });
 
     // Look up qtyPerBook and clientName/jobTitle from JobOpsMaster
@@ -7690,7 +7705,7 @@ router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
         qtyCompleted: Number(od.opsDoneQty || 0),
         totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
         qtyBook,
-        savedInBill: od.savedInBill || 'No'
+        savedInBill: 'No'
       };
     });
 
@@ -7717,7 +7732,7 @@ router.get('/work/unsaved/adhoc/:contractorId/:adhocOrderId', async (req, res) =
 
     if (!contractorWD) return res.json({ adhocOrderId, adhocLabel: '', items: [] });
 
-    const unsavedOps = (contractorWD.opsDone || []).filter(od => od.savedInBill === 'No');
+    const unsavedOps = (contractorWD.opsDone || []).filter(isOpsDoneUnsaved);
     if (unsavedOps.length === 0) return res.json({ adhocOrderId, adhocLabel: contractorWD.adhocLabel || '', items: [] });
 
     // Look up rate (valuePerBook) from AdhocWorkOrder if needed
@@ -7737,7 +7752,7 @@ router.get('/work/unsaved/adhoc/:contractorId/:adhocOrderId', async (req, res) =
         qtyCompleted: Number(od.opsDoneQty || 0),
         totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
         qtyBook,
-        savedInBill: od.savedInBill || 'No'
+        savedInBill: 'No'
       };
     });
 
@@ -7785,7 +7800,7 @@ router.post('/work/mark-billed', async (req, res) => {
         const vpb = parseFloat(Number(markItem.valuePerBook || 0).toFixed(2));
         const opsId = String(markItem.opsId || '');
         for (const od of contractorWD.opsDone) {
-          if (od.savedInBill === 'Yes') continue;
+          if (isOpsDoneBilled(od)) continue;
           const odVpb = parseFloat(Number(od.valuePerBook || 0).toFixed(2));
           const idMatch = opsId && String(od.opsId) === opsId;
           const nameMatch = od.opsName === markItem.opsName && odVpb === vpb;
@@ -7811,7 +7826,7 @@ router.post('/work/mark-billed', async (req, res) => {
         const vpb = parseFloat(Number(markItem.valuePerBook || 0).toFixed(2));
         const opsId = String(markItem.opsId || '');
         for (const od of contractorWD.opsDone) {
-          if (od.savedInBill === 'Yes') continue;
+          if (isOpsDoneBilled(od)) continue;
           const odVpb = parseFloat(Number(od.valuePerBook || 0).toFixed(2));
           const idMatch = opsId && String(od.opsId) === opsId;
           const nameMatch = od.opsName === markItem.opsName && odVpb === vpb;
