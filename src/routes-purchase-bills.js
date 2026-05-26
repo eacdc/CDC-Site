@@ -18,6 +18,7 @@
  */
 
 import { Router } from 'express';
+import * as XLSX from 'xlsx';
 import { v2 as cloudinary } from 'cloudinary';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { extractFromImage } from './lib/openai-vision.js';
@@ -337,39 +338,73 @@ router.post('/', async (req, res) => {
   }
 });
 
+/**
+ * Parse a Tally voucher number like `PUR/70/26-27` into its FY year and
+ * serial. Returns null for unparseable values.
+ */
+function parseVoucherNumber(v) {
+  if (!v) return null;
+  const m = String(v).trim().match(/^.*?\/\s*(\d+)\s*\/\s*(\d{2})-(\d{2})\s*$/i);
+  if (!m) return null;
+  return { serial: parseInt(m[1], 10), fyStart: parseInt(m[2], 10) };
+}
+
+/**
+ * Comparator for sorting bills by voucher number descending — newest FY
+ * first, then highest serial first. Bills with no voucher (or unparseable)
+ * fall to the end.
+ */
+function compareByVoucherDesc(a, b) {
+  const pa = parseVoucherNumber(a.tally_voucher_number);
+  const pb = parseVoucherNumber(b.tally_voucher_number);
+  if (pa && pb) {
+    if (pa.fyStart !== pb.fyStart) return pb.fyStart - pa.fyStart;
+    return pb.serial - pa.serial;
+  }
+  if (pa) return -1;
+  if (pb) return 1;
+  return 0;
+}
+
+/**
+ * Build a Mongo filter object from the standard search query params.
+ * Shared between the paginated list (`GET /`) and the Excel export.
+ */
+function buildSearchFilter(query = {}) {
+  const { q, supplier_gstin, set_type, status, from, to } = query;
+  const filter = {};
+  if (set_type && ['grn', 'non_grn'].includes(set_type)) filter.set_type = set_type;
+  if (status) filter.verification_status = status;
+  if (supplier_gstin) filter.supplier_gstin = String(supplier_gstin).trim().toUpperCase();
+  if (from || to) {
+    filter.invoice_date = {};
+    if (from) filter.invoice_date.$gte = new Date(from);
+    if (to) filter.invoice_date.$lte = new Date(to);
+  }
+  if (q && String(q).trim()) {
+    const text = String(q).trim();
+    const re = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$or = [
+      { supplier_name: re },
+      { supplier_gstin: re },
+      { invoice_number: re },
+      { tally_voucher_number: re },
+      { grn_voucher_number: re },
+      { po_numbers: re },
+    ];
+  }
+  return filter;
+}
+
 // ============================================================
 // GET /
 // Query: q, supplier_gstin, set_type, status, from, to, page, limit
 // ============================================================
 router.get('/', async (req, res) => {
   try {
-    const { q, supplier_gstin, set_type, status, from, to } = req.query;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
-
-    const filter = {};
-    if (set_type && ['grn', 'non_grn'].includes(set_type)) filter.set_type = set_type;
-    if (status) filter.verification_status = status;
-    if (supplier_gstin) filter.supplier_gstin = String(supplier_gstin).trim().toUpperCase();
-    if (from || to) {
-      filter.invoice_date = {};
-      if (from) filter.invoice_date.$gte = new Date(from);
-      if (to) filter.invoice_date.$lte = new Date(to);
-    }
-    if (q && String(q).trim()) {
-      const text = String(q).trim();
-      // Use either $text (when there's a text index) or fall back to regex
-      // across the most common identifiers.
-      const re = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [
-        { supplier_name: re },
-        { supplier_gstin: re },
-        { invoice_number: re },
-        { tally_voucher_number: re },
-        { grn_voucher_number: re },
-        { po_numbers: re },
-      ];
-    }
+    const filter = buildSearchFilter(req.query);
 
     const [rows, total] = await Promise.all([
       PurchaseBill.find(filter)
@@ -385,6 +420,156 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error('[purchase-bills] GET / error:', err);
     return res.status(500).json({ error: err.message || 'search failed' });
+  }
+});
+
+// ============================================================
+// GET /export.xlsx — Excel export of all rows matching the search filters
+// ============================================================
+router.get('/export.xlsx', async (req, res) => {
+  try {
+    const filter = buildSearchFilter(req.query);
+    // We fetch with a fast index-friendly sort and then re-sort in JS by
+    // (FY DESC, serial DESC) because Mongo can't natively understand the
+    // PUR/<serial>/<FY> structure of a voucher number string.
+    const rows = await PurchaseBill.find(filter)
+      .select('-slots -check_results')
+      .sort({ uploaded_at: -1 })
+      .limit(5000)
+      .lean();
+    rows.sort(compareByVoucherDesc);
+
+    const isoDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+    const isoMinute = (d) =>
+      d ? new Date(d).toISOString().slice(0, 16).replace('T', ' ') : '';
+
+    const sheet = rows.map((b) => ({
+      'Uploaded At': isoMinute(b.uploaded_at),
+      'Uploaded By': b.uploaded_by || '',
+      'Set Type': b.set_type === 'grn' ? 'GRN' : 'Non-GRN',
+      'Status': b.verification_status || '',
+      'Tally Voucher': b.tally_voucher_number || '',
+      'Tally Voucher Date': isoDate(b.tally_voucher_date),
+      'Client Invoice': b.invoice_number || '',
+      'Client Invoice Date': isoDate(b.invoice_date),
+      'Supplier Name': b.supplier_name || '',
+      'Supplier GSTIN': b.supplier_gstin || '',
+      'CDC Unit': b.cdc_unit || '',
+      'GRN Voucher': b.grn_voucher_number || '',
+      'GRN Voucher Date': isoDate(b.grn_voucher_date),
+      'PO Numbers': Array.isArray(b.po_numbers) ? b.po_numbers.join(', ') : '',
+      'Eway Bill': b.eway_bill_number || '',
+      'Vehicle': b.vehicle_number || '',
+      'Tax Type': b.tax_type || '',
+      'Taxable Value': b.taxable_value ?? '',
+      'CGST': b.cgst_amount ?? '',
+      'SGST': b.sgst_amount ?? '',
+      'IGST': b.igst_amount ?? '',
+      'Round Off': b.round_off ?? '',
+      'Grand Total': b.grand_total ?? '',
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(sheet);
+    // Reasonable column widths so the file is usable without manual resizing
+    ws['!cols'] = [
+      { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 22 },
+      { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 12 },
+      { wch: 32 }, { wch: 18 }, { wch: 16 }, { wch: 16 },
+      { wch: 12 }, { wch: 24 }, { wch: 16 }, { wch: 14 },
+      { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 },
+      { wch: 10 }, { wch: 10 }, { wch: 12 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Bills');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const ts = new Date().toISOString().slice(0, 10);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="CDC-Bills-${ts}.xlsx"`);
+    return res.send(buf);
+  } catch (err) {
+    console.error('[purchase-bills] export error:', err);
+    return res.status(500).json({ error: err.message || 'export failed' });
+  }
+});
+
+// ============================================================
+// GET /missing-vouchers
+// Query: fy (required, YY-YY), prefix (default "PUR"), from, to
+//
+// Returns the set of Tally voucher serial numbers in [from..to] for the
+// given FY that are NOT present in the database. Useful for catching
+// bills the user forgot to upload.
+//
+// Voucher format expected: <PREFIX>/<SERIAL>/<FY>   e.g. PUR/70/26-27
+// ============================================================
+router.get('/missing-vouchers', async (req, res) => {
+  try {
+    const fy = String(req.query.fy || '').trim();
+    const prefix = String(req.query.prefix || 'PUR').trim();
+    const from = parseInt(req.query.from, 10);
+    const to = parseInt(req.query.to, 10);
+
+    if (!fy) return res.status(400).json({ error: 'fy is required (e.g. 26-27)' });
+    if (!/^\d{2}-\d{2}$/.test(fy)) {
+      return res.status(400).json({ error: 'fy must be in YY-YY format (e.g. 26-27)' });
+    }
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < from) {
+      return res
+        .status(400)
+        .json({ error: 'from and to must be non-negative integers with from <= to' });
+    }
+    if (to - from > 50_000) {
+      return res.status(400).json({ error: 'range too large (max 50,000 serials)' });
+    }
+
+    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedFy = fy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Allow optional whitespace and leading zeros in the serial.
+    const re = new RegExp(`^\\s*${escapedPrefix}\\s*/\\s*(\\d+)\\s*/\\s*${escapedFy}\\s*$`, 'i');
+
+    const docs = await PurchaseBill.find({
+      tally_voucher_number: { $regex: re },
+    })
+      .select('_id tally_voucher_number')
+      .lean();
+
+    const presentMap = new Map(); // serial -> bill_id (first match wins)
+    for (const d of docs) {
+      const m = String(d.tally_voucher_number || '').match(re);
+      if (!m) continue;
+      const n = parseInt(m[1], 10);
+      if (!presentMap.has(n)) presentMap.set(n, String(d._id));
+    }
+
+    const missing = [];
+    const present = [];
+    for (let n = from; n <= to; n++) {
+      if (presentMap.has(n)) {
+        present.push({ serial: n, bill_id: presentMap.get(n) });
+      } else {
+        missing.push(n);
+      }
+    }
+
+    return res.json({
+      fy,
+      prefix,
+      from,
+      to,
+      total_in_range: to - from + 1,
+      present_count: present.length,
+      missing_count: missing.length,
+      missing,
+      present,
+    });
+  } catch (err) {
+    console.error('[purchase-bills] missing-vouchers error:', err);
+    return res.status(500).json({ error: err.message || 'missing-vouchers failed' });
   }
 });
 
