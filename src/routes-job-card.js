@@ -172,95 +172,95 @@ async function fetchComponentPaperFallback(pool, companyId, jobBookingId, conten
   };
 }
 
-/**
- * GET /api/job-card/production-summary?jobBookingNo=J01359/26-27&database=KOL
- * Returns production + prepress summary columns for a commercial/book job.
- */
-router.get('/job-card/production-summary', async (req, res) => {
-  const { jobBookingNo, database } = req.query || {};
-  const jobNo = str(jobBookingNo);
-  const db = (str(database) || 'KOL').toUpperCase();
-
-  if (!jobNo) {
-    return res.status(400).json({ error: 'jobBookingNo is required' });
+function parseJobBookingNos(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => str(item)).filter(Boolean))];
   }
-  if (db !== 'KOL' && db !== 'AHM') {
-    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  if (typeof value === 'string') {
+    return [...new Set(value.split(/[\n,;]+/).map((item) => str(item)).filter(Boolean))];
+  }
+  return [];
+}
+
+function normalizeDatabase(value) {
+  const db = (str(value) || 'KOL').toUpperCase();
+  if (db !== 'KOL' && db !== 'AHM') return null;
+  return db;
+}
+
+async function fetchProductionSummaryForJob(pool, jobNo) {
+  const summaryRequest = pool.request();
+  summaryRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
+  summaryRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
+  const summaryRes = await summaryRequest.query(JobProductionSummaryQuery);
+  const summary = (summaryRes.recordset || [])[0];
+  if (!summary) {
+    return { ok: false, jobBookingNo: jobNo, error: 'Job not found' };
   }
 
-  try {
-    const pool = await getPool(db);
+  const procRequest = pool.request();
+  procRequest.input('JobNumber', sql.NVarChar(100), jobNo);
+  const procResult = await procRequest.query("EXEC dbo.ProductionWorkOrderPrint 1, @JobNumber, '2'");
+  const procRows = procResult.recordset || [];
+  if (!procRows.length) {
+    return { ok: false, jobBookingNo: jobNo, error: 'Job not found in ProductionWorkOrderPrint' };
+  }
 
-    const summaryRequest = pool.request();
-    summaryRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
-    summaryRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
-    const summaryRes = await summaryRequest.query(JobProductionSummaryQuery);
-    const summary = (summaryRes.recordset || [])[0];
-    if (!summary) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
+  const firstRow = procRows[0];
+  const jobBookingId = str(get(firstRow, 'JobBookingID'))?.split(',')[0]?.trim() || null;
+  let closeSize = dedupeSizeString(str(get(firstRow, 'JobCloseSize')) || '');
 
-    const procRequest = pool.request();
-    procRequest.input('JobNumber', sql.NVarChar(100), jobNo);
-    const procResult = await procRequest.query("EXEC dbo.ProductionWorkOrderPrint 1, @JobNumber, '2'");
-    const procRows = procResult.recordset || [];
-    if (!procRows.length) {
-      return res.status(404).json({ error: 'Job not found in ProductionWorkOrderPrint' });
-    }
+  let textColor = null;
+  let textContentsId = null;
+  let coverContentsId = null;
 
-    const firstRow = procRows[0];
-    const jobBookingId = str(get(firstRow, 'JobBookingID'))?.split(',')[0]?.trim() || null;
-    let closeSize = dedupeSizeString(str(get(firstRow, 'JobCloseSize')) || '');
-
-    let textColor = null;
-    let textContentsId = null;
-    let coverContentsId = null;
-
-    for (const row of procRows) {
-      const compType = componentTypeFromPlanContName(get(row, 'PlanContName'));
-      const contentsId = get(row, 'JobBookingJobCardContentsID');
-      if (compType === 'Text') {
-        textContentsId = contentsId;
-        textColor = str(get(row, 'FrontColor')) || str(get(row, 'FrontColorName')) || textColor;
-        if (!closeSize) {
-          closeSize = dedupeSizeString(str(get(row, 'JobCloseSize')) || str(get(row, 'CloseSize')) || '');
-        }
-      } else if (compType === 'Cover') {
-        coverContentsId = contentsId;
+  for (const row of procRows) {
+    const compType = componentTypeFromPlanContName(get(row, 'PlanContName'));
+    const contentsId = get(row, 'JobBookingJobCardContentsID');
+    if (compType === 'Text') {
+      textContentsId = contentsId;
+      textColor = str(get(row, 'FrontColor')) || str(get(row, 'FrontColorName')) || textColor;
+      if (!closeSize) {
+        closeSize = dedupeSizeString(str(get(row, 'JobCloseSize')) || str(get(row, 'CloseSize')) || '');
       }
+    } else if (compType === 'Cover') {
+      coverContentsId = contentsId;
     }
+  }
 
-    const paperRequest = pool.request();
-    paperRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
-    paperRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
-    const paperRes = await paperRequest.query(JobComponentPaperQuery);
-    const paperRows = paperRes.recordset || [];
+  const paperRequest = pool.request();
+  paperRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
+  paperRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
+  const paperRes = await paperRequest.query(JobComponentPaperQuery);
+  const paperRows = paperRes.recordset || [];
 
-    let textPaper = { gsm: null, paperQuality: null };
-    let coverPaper = { gsm: null, paperQuality: null };
+  let textPaper = { gsm: null, paperQuality: null };
+  let coverPaper = { gsm: null, paperQuality: null };
 
-    for (const row of paperRows) {
-      const compType = str(get(row, 'CompType'));
-      const target = compType === 'Text' ? textPaper : compType === 'Cover' ? coverPaper : null;
-      if (!target) continue;
-      target.gsm = get(row, 'PaperGSM') ?? null;
-      target.paperQuality = str(get(row, 'PaperQuality')) || null;
-    }
+  for (const row of paperRows) {
+    const compType = str(get(row, 'CompType'));
+    const target = compType === 'Text' ? textPaper : compType === 'Cover' ? coverPaper : null;
+    if (!target) continue;
+    target.gsm = get(row, 'PaperGSM') ?? null;
+    target.paperQuality = str(get(row, 'PaperQuality')) || null;
+  }
 
-    if (!textPaper.paperQuality && textContentsId != null) {
-      const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, textContentsId);
-      textPaper.paperQuality = fallback.paperQuality;
-      textPaper.gsm = fallback.paperGsm;
-    }
-    if (!coverPaper.paperQuality && coverContentsId != null) {
-      const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, coverContentsId);
-      coverPaper.paperQuality = fallback.paperQuality;
-      coverPaper.gsm = fallback.paperGsm;
-    }
+  if (!textPaper.paperQuality && textContentsId != null) {
+    const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, textContentsId);
+    textPaper.paperQuality = fallback.paperQuality;
+    textPaper.gsm = fallback.paperGsm;
+  }
+  if (!coverPaper.paperQuality && coverContentsId != null) {
+    const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, coverContentsId);
+    coverPaper.paperQuality = fallback.paperQuality;
+    coverPaper.gsm = fallback.paperGsm;
+  }
 
-    const prepress = await fetchPrepressDatesByJob(pool, jobNo);
+  const prepress = await fetchPrepressDatesByJob(pool, jobNo);
 
-    return res.json({
+  return {
+    ok: true,
+    data: {
       jobBookingNo: get(summary, 'JobBookingNo') || jobNo,
       jobName: prepress.jobName || str(get(firstRow, 'JobName')) || null,
       textPages: get(summary, 'TextPages') ?? null,
@@ -280,14 +280,101 @@ router.get('/job-card/production-summary', async (req, res) => {
       coverPrintingCompletionPct: get(summary, 'CoverPrintCompletionPct') ?? null,
       bindingEndDate: get(summary, 'BindingEndDate') ?? null,
       lastGpnDate: get(summary, 'LastGpnDate') ?? null
-    });
+    }
+  };
+}
+
+async function fetchProductionSummaryBulk(pool, jobBookingNos) {
+  const results = [];
+  for (const jobNo of jobBookingNos) {
+    try {
+      const result = await fetchProductionSummaryForJob(pool, jobNo);
+      if (result.ok) {
+        results.push(result.data);
+      } else {
+        results.push({
+          jobBookingNo: result.jobBookingNo,
+          error: result.error
+        });
+      }
+    } catch (e) {
+      results.push({
+        jobBookingNo: jobNo,
+        error: e.message || 'Failed to load production summary'
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * GET /api/job-card/production-summary?jobBookingNo=J01359/26-27&database=KOL
+ * Single job lookup (backward compatible).
+ */
+router.get('/job-card/production-summary', async (req, res) => {
+  const { jobBookingNo, database } = req.query || {};
+  const jobNo = str(jobBookingNo);
+  const db = normalizeDatabase(database);
+
+  if (!jobNo) {
+    return res.status(400).json({ error: 'jobBookingNo is required' });
+  }
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  try {
+    const pool = await getPool(db);
+    const result = await fetchProductionSummaryForJob(pool, jobNo);
+    if (!result.ok) {
+      return res.status(404).json({ error: result.error, jobBookingNo: result.jobBookingNo });
+    }
+    return res.json(result.data);
   } catch (e) {
     console.error('[job-card] production-summary failed:', e);
     return res.status(500).json({ error: e.message || 'Failed to load production summary' });
   }
 });
 
-/** GET /api/job-card/filters/sales-persons?database=KOL */
+/**
+ * POST /api/job-card/production-summary
+ * Bulk lookup for one database.
+ * Body: { "database": "KOL", "jobBookingNos": ["J01359/26-27", "J01234/26-27"] }
+ */
+router.post('/job-card/production-summary', async (req, res) => {
+  const { database, jobBookingNos, jobBookingNo } = req.body || {};
+  const db = normalizeDatabase(database);
+  const jobs = parseJobBookingNos(jobBookingNos ?? jobBookingNo);
+
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+  if (!jobs.length) {
+    return res.status(400).json({ error: 'jobBookingNos must be a non-empty array of job numbers' });
+  }
+
+  try {
+    const pool = await getPool(db);
+    const results = await fetchProductionSummaryBulk(pool, jobs);
+    const successCount = results.filter((row) => !row.error).length;
+    const errorCount = results.length - successCount;
+
+    return res.json({
+      database: db,
+      count: results.length,
+      successCount,
+      errorCount,
+      results
+    });
+  } catch (e) {
+    console.error('[job-card] production-summary bulk failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to load production summaries' });
+  }
+});
+
+/**
+ * GET /api/job-card/filters/sales-persons?database=KOL
+ */
 router.get('/job-card/filters/sales-persons', async (req, res) => {
   const { database } = req.query || {};
   const db = (str(database) || 'KOL').toUpperCase();
