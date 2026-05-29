@@ -783,3 +783,204 @@ GROUP BY IM.ItemCode, IM.ItemName, IM.ManufecturerItemCode, IM.ItemSize, IM.Size
          JC.PlanType
 ORDER BY JM.SequenceNo;
 `;
+
+/**
+ * Job production summary for a single job (commercial / book).
+ * Params: @CompanyID, @JobBookingNo
+ *
+ * Text component matched via PlanContName LIKE '%Col Pgs%'; Cover via '%Cover%'.
+ * Text/Cover print completion %: if calculated value is > 80%, display as 100%.
+ * Prepress dates come from dbo.GetArtworkApprovalDatesByPWONO (@PWONO = JobBookingNo).
+ */
+export const JobProductionSummaryQuery = `
+WITH Components AS (
+    SELECT
+        JC.JobBookingJobCardContentsID,
+        JC.PlanContName,
+        JC.JobCloseSize,
+        CASE
+            WHEN JC.PlanContName LIKE '%Col Pgs%' THEN 'Text'
+            WHEN JC.PlanContName LIKE '%Cover%'  THEN 'Cover'
+        END AS CompType
+    FROM dbo.JobBookingJobCardContents JC
+    INNER JOIN dbo.JobBookingJobCard JB
+        ON JB.JobBookingID = JC.JobBookingID
+       AND JB.CompanyID = JC.CompanyID
+    WHERE JB.CompanyID = @CompanyID
+      AND JB.JobBookingNo = @JobBookingNo
+      AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+      AND (
+            JC.PlanContName LIKE '%Col Pgs%'
+         OR JC.PlanContName LIKE '%Cover%'
+      )
+),
+PrintingProcs AS (
+    SELECT PM.ProcessID
+    FROM dbo.ProcessMaster PM
+    WHERE PM.ProcessName LIKE '%Printing%'
+),
+CompPrintRaw AS (
+    SELECT
+        C.CompType,
+        C.JobBookingJobCardContentsID,
+        ISNULL((
+            SELECT SUM(ISNULL(JSR.ScheduleQty, 0))
+            FROM dbo.JobScheduleRelease JSR
+            WHERE JSR.JobBookingJobCardContentsID = C.JobBookingJobCardContentsID
+              AND JSR.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+              AND ISNULL(JSR.IsDeletedTransaction, 0) = 0
+              AND ISNULL(JSR.IsOnlineProcess, 0) = 0
+        ), 0) AS PrintPlanQty,
+        ISNULL((
+            SELECT SUM(ISNULL(PE.ProductionQuantity, 0))
+            FROM dbo.ProductionEntry PE
+            WHERE PE.JobBookingJobCardContentsID = C.JobBookingJobCardContentsID
+              AND PE.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+        ), 0) AS PrintDoneQty,
+        (
+            SELECT MAX(TRY_CONVERT(datetime, PE.ToTime))
+            FROM dbo.ProductionEntry PE
+            WHERE PE.JobBookingJobCardContentsID = C.JobBookingJobCardContentsID
+              AND PE.ProcessID IN (SELECT ProcessID FROM PrintingProcs)
+        ) AS LastPrintActualEnd
+    FROM Components C
+),
+CompPrint AS (
+    SELECT
+        CompType,
+        SUM(PrintPlanQty)     AS PrintPlanQty,
+        SUM(PrintDoneQty)     AS PrintDoneQty,
+        MAX(LastPrintActualEnd) AS LastPrintActualEnd
+    FROM CompPrintRaw
+    GROUP BY CompType
+),
+BindingEnd AS (
+    SELECT MAX(TRY_CONVERT(datetime, PE.ToTime)) AS BindingEndDate
+    FROM dbo.ProductionEntry PE
+    INNER JOIN dbo.ProcessMaster PM ON PM.ProcessID = PE.ProcessID
+    INNER JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = PE.JobBookingID
+    WHERE JB.CompanyID = @CompanyID
+      AND JB.JobBookingNo = @JobBookingNo
+      AND (
+            PM.ProcessName LIKE '%perfect%'
+         OR PM.ProcessName LIKE '%stitch%'
+         OR PM.ProcessName LIKE '%past%'
+      )
+),
+LastGPN AS (
+    SELECT MAX(fgd.CreatedDate) AS LastGpnDate
+    FROM dbo.FinishGoodsTransactionMain fgm
+    JOIN dbo.FinishGoodsTransactionDetail fgd ON fgd.FGTransactionID = fgm.FGtransactionID
+    JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = fgd.JobBookingID
+    WHERE JB.CompanyID = @CompanyID
+      AND JB.JobBookingNo = @JobBookingNo
+      AND fgm.voucherid = -50
+      AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
+      AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
+)
+SELECT
+    JB.JobBookingNo,
+    JB.OrderQuantity                                                    AS TotalOrderQty,
+    (
+        SELECT TOP 1 F.Pages
+        FROM dbo.JobBookingJOBCardFormWiseDetails F
+        WHERE F.JobBookingID = JB.JobBookingID
+          AND F.CompanyID = JB.CompanyID
+          AND F.PlanContName LIKE '%Col Pgs%'
+        ORDER BY F.JobCardFormNo
+    )                                                                   AS TextPages,
+    (
+        SELECT TOP 1
+            CASE
+                WHEN ISNULL(JP.RateFactor, '') = ''
+                    THEN PM.ProcessName
+                ELSE PM.ProcessName + ' - (' + JP.RateFactor + ')'
+            END
+        FROM dbo.JobBookingJobCardProcess JP
+        INNER JOIN dbo.ProcessMaster PM
+            ON PM.ProcessID = JP.ProcessID
+           AND PM.CompanyID = JP.CompanyID
+        WHERE JP.JobBookingID = JB.JobBookingID
+          AND JP.CompanyID = JB.CompanyID
+          AND ISNULL(JP.IsDeletedTransaction, 0) = 0
+          AND (
+                PM.ProcessName LIKE '%perfect%'
+             OR PM.ProcessName LIKE '%stitch%'
+             OR PM.ProcessName LIKE '%past%'
+          )
+        ORDER BY JP.SequenceNo
+    )                                                                   AS BindingStyle,
+    TP.PrintPlanQty                                                     AS TextPrintPlanQty,
+    TP.PrintDoneQty                                                     AS TextPrintDoneQty,
+    CASE
+        WHEN ISNULL(TP.PrintPlanQty, 0) > 0
+         AND (100.0 * ISNULL(TP.PrintDoneQty, 0) / TP.PrintPlanQty) > 80
+            THEN 100
+        WHEN ISNULL(TP.PrintPlanQty, 0) > 0
+            THEN ROUND(100.0 * ISNULL(TP.PrintDoneQty, 0) / TP.PrintPlanQty, 1)
+        ELSE NULL
+    END                                                                 AS TextPrintCompletionPct,
+    CASE
+        WHEN ISNULL(TP.PrintPlanQty, 0) > 0
+         AND ISNULL(TP.PrintDoneQty, 0) >= TP.PrintPlanQty * 0.5
+            THEN TP.LastPrintActualEnd
+        ELSE NULL
+    END                                                                 AS TextPrintingEndDate,
+    CP.PrintPlanQty                                                     AS CoverPrintPlanQty,
+    CP.PrintDoneQty                                                     AS CoverPrintDoneQty,
+    CASE
+        WHEN ISNULL(CP.PrintPlanQty, 0) > 0
+         AND (100.0 * ISNULL(CP.PrintDoneQty, 0) / CP.PrintPlanQty) > 80
+            THEN 100
+        WHEN ISNULL(CP.PrintPlanQty, 0) > 0
+            THEN ROUND(100.0 * ISNULL(CP.PrintDoneQty, 0) / CP.PrintPlanQty, 1)
+        ELSE NULL
+    END                                                                 AS CoverPrintCompletionPct,
+    CASE
+        WHEN ISNULL(CP.PrintPlanQty, 0) > 0
+         AND ISNULL(CP.PrintDoneQty, 0) >= CP.PrintPlanQty * 0.5
+            THEN CP.LastPrintActualEnd
+        ELSE NULL
+    END                                                                 AS CoverPrintingEndDate,
+    BE.BindingEndDate,
+    LG.LastGpnDate
+FROM dbo.JobBookingJobCard JB
+LEFT JOIN CompPrint TP ON TP.CompType = 'Text'
+LEFT JOIN CompPrint CP ON CP.CompType = 'Cover'
+CROSS JOIN BindingEnd BE
+CROSS JOIN LastGPN LG
+WHERE JB.CompanyID = @CompanyID
+  AND JB.JobBookingNo = @JobBookingNo
+  AND ISNULL(JB.IsDeletedTransaction, 0) = 0;
+`;
+
+/** Text/Cover paper quality and GSM for a job. Params: @CompanyID, @JobBookingNo */
+export const JobComponentPaperQuery = `
+SELECT
+    CASE
+        WHEN JC.PlanContName LIKE '%Col Pgs%' THEN 'Text'
+        WHEN JC.PlanContName LIKE '%Cover%'  THEN 'Cover'
+    END AS CompType,
+    CONCAT(Nullif(IM.ItemName, ''), '-', Nullif(IM.ManufecturerItemCode, '')) AS PaperQuality,
+    GSM.GSMValue AS PaperGSM
+FROM dbo.JobBookingJobCardContents JC
+INNER JOIN dbo.JobBookingJobCard JB
+    ON JB.JobBookingID = JC.JobBookingID
+   AND JB.CompanyID = JC.CompanyID
+LEFT JOIN dbo.ItemMaster IM
+    ON IM.ItemID = JC.PaperID
+   AND IM.CompanyID = JC.CompanyID
+LEFT JOIN (
+    SELECT IMD.ItemID, CAST(IMD.FieldValue AS float) AS GSMValue
+    FROM dbo.ItemMasterDetails IMD
+    WHERE IMD.FieldName = 'GSM'
+      AND ISNULL(IMD.FieldValue, '') <> ''
+) GSM ON GSM.ItemID = JC.PaperID
+WHERE JB.CompanyID = @CompanyID
+  AND JB.JobBookingNo = @JobBookingNo
+  AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+  AND (
+        JC.PlanContName LIKE '%Col Pgs%'
+     OR JC.PlanContName LIKE '%Cover%'
+  );
+`;

@@ -16,7 +16,9 @@ import {
   JobCardSearchQuery,
   DeliveryBreakdownQuery,
   SalesPersonsFilterQuery,
-  ClientNamesFilterQuery
+  ClientNamesFilterQuery,
+  JobProductionSummaryQuery,
+  JobComponentPaperQuery
 } from './job-card-queries.js';
 
 const router = Router();
@@ -120,6 +122,167 @@ function dedupeSizeString(s) {
   }
   return s;
 }
+
+function componentTypeFromPlanContName(planContName) {
+  const name = str(planContName).toLowerCase();
+  if (name.includes('col pgs')) return 'Text';
+  if (name.includes('cover')) return 'Cover';
+  return null;
+}
+
+async function fetchPrepressDatesByJob(pool, jobBookingNo) {
+  const request = pool.request();
+  request.input('PWONO', sql.NVarChar(100), jobBookingNo);
+  const result = await request.query('EXEC dbo.GetArtworkApprovalDatesByPWONO @PWONO');
+  const row = (result.recordset || [])[0];
+
+  if (!row) {
+    return {
+      fileReceivedDate: null,
+      softCopyApprovalSentDate: null,
+      finalApprovalDate: null,
+      finallyApproved: null
+    };
+  }
+
+  return {
+    fileReceivedDate: pickCol(row, 'FileReceivedDate') ?? null,
+    softCopyApprovalSentDate: pickCol(row, 'SoftApprovalSentActDate') ?? null,
+    finalApprovalDate: pickCol(row, 'FinallyApprovedDate') ?? null,
+    finallyApproved: pickCol(row, 'FinallyApproved') ?? null
+  };
+}
+
+async function fetchComponentPaperFallback(pool, companyId, jobBookingId, contentsId) {
+  if (contentsId == null || !jobBookingId) return { paperQuality: null, paperGsm: null };
+
+  const request = pool.request();
+  request.input('CompanyID', sql.NVarChar(10), companyId);
+  request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+  request.input('JobBookingJobCardContentsID', sql.BigInt, contentsId);
+  const itemRes = await request.query(ItemDetailsQuery);
+  const first = (itemRes.recordset || [])[0];
+  if (!first) return { paperQuality: null, paperGsm: null };
+
+  return {
+    paperQuality: str(get(first, 'ItemName')) || null,
+    paperGsm: null
+  };
+}
+
+/**
+ * GET /api/job-card/production-summary?jobBookingNo=J01359/26-27&database=KOL
+ * Returns production + prepress summary columns for a commercial/book job.
+ */
+router.get('/job-card/production-summary', async (req, res) => {
+  const { jobBookingNo, database } = req.query || {};
+  const jobNo = str(jobBookingNo);
+  const db = (str(database) || 'KOL').toUpperCase();
+
+  if (!jobNo) {
+    return res.status(400).json({ error: 'jobBookingNo is required' });
+  }
+  if (db !== 'KOL' && db !== 'AHM') {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  try {
+    const pool = await getPool(db);
+
+    const summaryRequest = pool.request();
+    summaryRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
+    summaryRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
+    const summaryRes = await summaryRequest.query(JobProductionSummaryQuery);
+    const summary = (summaryRes.recordset || [])[0];
+    if (!summary) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const procRequest = pool.request();
+    procRequest.input('JobNumber', sql.NVarChar(100), jobNo);
+    const procResult = await procRequest.query("EXEC dbo.ProductionWorkOrderPrint 1, @JobNumber, '2'");
+    const procRows = procResult.recordset || [];
+    if (!procRows.length) {
+      return res.status(404).json({ error: 'Job not found in ProductionWorkOrderPrint' });
+    }
+
+    const firstRow = procRows[0];
+    const jobBookingId = str(get(firstRow, 'JobBookingID'))?.split(',')[0]?.trim() || null;
+    let closeSize = dedupeSizeString(str(get(firstRow, 'JobCloseSize')) || '');
+
+    let textColor = null;
+    let textContentsId = null;
+    let coverContentsId = null;
+
+    for (const row of procRows) {
+      const compType = componentTypeFromPlanContName(get(row, 'PlanContName'));
+      const contentsId = get(row, 'JobBookingJobCardContentsID');
+      if (compType === 'Text') {
+        textContentsId = contentsId;
+        textColor = str(get(row, 'FrontColor')) || str(get(row, 'FrontColorName')) || textColor;
+        if (!closeSize) {
+          closeSize = dedupeSizeString(str(get(row, 'JobCloseSize')) || str(get(row, 'CloseSize')) || '');
+        }
+      } else if (compType === 'Cover') {
+        coverContentsId = contentsId;
+      }
+    }
+
+    const paperRequest = pool.request();
+    paperRequest.input('CompanyID', sql.NVarChar(10), COMPANY_ID);
+    paperRequest.input('JobBookingNo', sql.NVarChar(100), jobNo);
+    const paperRes = await paperRequest.query(JobComponentPaperQuery);
+    const paperRows = paperRes.recordset || [];
+
+    let textPaper = { gsm: null, paperQuality: null };
+    let coverPaper = { gsm: null, paperQuality: null };
+
+    for (const row of paperRows) {
+      const compType = str(get(row, 'CompType'));
+      const target = compType === 'Text' ? textPaper : compType === 'Cover' ? coverPaper : null;
+      if (!target) continue;
+      target.gsm = get(row, 'PaperGSM') ?? null;
+      target.paperQuality = str(get(row, 'PaperQuality')) || null;
+    }
+
+    if (!textPaper.paperQuality && textContentsId != null) {
+      const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, textContentsId);
+      textPaper.paperQuality = fallback.paperQuality;
+      textPaper.gsm = fallback.paperGsm;
+    }
+    if (!coverPaper.paperQuality && coverContentsId != null) {
+      const fallback = await fetchComponentPaperFallback(pool, COMPANY_ID, jobBookingId, coverContentsId);
+      coverPaper.paperQuality = fallback.paperQuality;
+      coverPaper.gsm = fallback.paperGsm;
+    }
+
+    const prepress = await fetchPrepressDatesByJob(pool, jobNo);
+
+    return res.json({
+      jobBookingNo: get(summary, 'JobBookingNo') || jobNo,
+      textPages: get(summary, 'TextPages') ?? null,
+      totalOrderQty: get(summary, 'TotalOrderQty') ?? null,
+      textColor: textColor || null,
+      textPaper,
+      coverPaper,
+      closeSize: closeSize || null,
+      bindingStyle: str(get(summary, 'BindingStyle')) || null,
+      fileReceivedDate: prepress.fileReceivedDate,
+      softCopyApprovalSentDate: prepress.softCopyApprovalSentDate,
+      finalApprovalDate: prepress.finalApprovalDate,
+      finallyApproved: prepress.finallyApproved,
+      textPrintingEndDate: get(summary, 'TextPrintingEndDate') ?? null,
+      textPrintingCompletionPct: get(summary, 'TextPrintCompletionPct') ?? null,
+      coverPrintingEndDate: get(summary, 'CoverPrintingEndDate') ?? null,
+      coverPrintingCompletionPct: get(summary, 'CoverPrintCompletionPct') ?? null,
+      bindingEndDate: get(summary, 'BindingEndDate') ?? null,
+      lastGpnDate: get(summary, 'LastGpnDate') ?? null
+    });
+  } catch (e) {
+    console.error('[job-card] production-summary failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed to load production summary' });
+  }
+});
 
 /** GET /api/job-card/filters/sales-persons?database=KOL */
 router.get('/job-card/filters/sales-persons', async (req, res) => {
