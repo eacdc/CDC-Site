@@ -123,8 +123,8 @@ function dedupeSizeString(s) {
   return s;
 }
 
-function componentTypeFromPlanContName(planContName) {
-  const name = str(planContName).toLowerCase();
+function componentTypeFromPlanContName(planContName, contentName) {
+  const name = str(planContName || contentName).toLowerCase();
   if (name.includes('col pgs')) return 'Text';
   if (name.includes('cover')) return 'Cover';
   return null;
@@ -215,7 +215,7 @@ async function fetchProductionSummaryForJob(pool, jobNo) {
   let coverContentsId = null;
 
   for (const row of procRows) {
-    const compType = componentTypeFromPlanContName(get(row, 'PlanContName'));
+    const compType = componentTypeFromPlanContName(get(row, 'PlanContName'), get(row, 'ContentName'));
     const contentsId = get(row, 'JobBookingJobCardContentsID');
     if (compType === 'Text') {
       textContentsId = contentsId;
