@@ -138,6 +138,7 @@ async function fetchPrepressDatesByJob(pool, jobBookingNo) {
 
   if (!row) {
     return {
+      jobName: null,
       fileReceivedDate: null,
       softCopyApprovalSentDate: null,
       finalApprovalDate: null,
@@ -146,6 +147,7 @@ async function fetchPrepressDatesByJob(pool, jobBookingNo) {
   }
 
   return {
+    jobName: str(pickCol(row, 'JobName')) || null,
     fileReceivedDate: pickCol(row, 'FileReceivedDate') ?? null,
     softCopyApprovalSentDate: pickCol(row, 'SoftApprovalSentActDate') ?? null,
     finalApprovalDate: pickCol(row, 'FinallyApprovedDate') ?? null,
@@ -260,6 +262,7 @@ router.get('/job-card/production-summary', async (req, res) => {
 
     return res.json({
       jobBookingNo: get(summary, 'JobBookingNo') || jobNo,
+      jobName: prepress.jobName || str(get(firstRow, 'JobName')) || null,
       textPages: get(summary, 'TextPages') ?? null,
       totalOrderQty: get(summary, 'TotalOrderQty') ?? null,
       textColor: textColor || null,
