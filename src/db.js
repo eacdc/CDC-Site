@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 // MSSQL connection env: DB_SERVER, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME_KOL (and DB_NAME_AHM for AHM).
+// Optional previous fallbacks: DB_HOST (for server), DB_NAME (for database when DB_NAME_KOL not set).
 const serverEnv = process.env.DB_SERVER || process.env.DB_HOST || 'localhost';
 let serverHost = serverEnv;
 let serverPort = Number(process.env.DB_PORT || '');
@@ -17,28 +18,30 @@ if (!serverPort && serverEnv.includes(',')) {
 	}
 }
 
-const baseSqlConfig = {
+const sqlConfig = {
 	user: process.env.DB_USER,
 	password: process.env.DB_PASSWORD,
+	database: process.env.DB_NAME || process.env.DB_NAME_KOL,
 	server: serverHost,
 	...(serverPort ? { port: serverPort } : {}),
 	pool: {
 		max: 10,
-		min: 1,
-		idleTimeoutMillis: 600_000, // 10 min – keep connections warm during long production runs
+		min: 0,
+		idleTimeoutMillis: 300000
 	},
 	options: {
 		encrypt: true,
 		trustServerCertificate: true,
-		enableArithAbort: true,
+		enableArithAbort: true
 	},
-	connectionTimeout: 30_000,
-	requestTimeout: 120_000,
+	connectionTimeout: 30000,
+	requestTimeout: 120000  // 2 minutes - artwork pending/completed procs can be slow
 };
 
 /** Used by heavy report endpoints (e.g. rpt_job_gp_per_impression_v11). */
 export const LONG_REQUEST_TIMEOUT_MS = Number(process.env.DB_LONG_REQUEST_TIMEOUT_MS) || 600_000;
 
+// Store multiple pools for different databases
 const pools = new Map();
 const longQueryPools = new Map();
 
@@ -53,128 +56,277 @@ function resolveDbName(database) {
 	return { dbKey: null, dbName: null };
 }
 
-function validateDbConfig() {
-	const kolDb = process.env.DB_NAME_KOL;
-	const ahmDb = process.env.DB_NAME_AHM;
-	if (kolDb && ahmDb && kolDb === ahmDb) {
-		throw new Error(`KOL and AHM databases cannot be the same (both: ${kolDb}). Set DB_NAME_KOL and DB_NAME_AHM to different values.`);
-	}
-}
-
-async function pingPool(pool, timeoutMs = 5000) {
-	const healthCheck = pool.request().query('SELECT 1 AS ok');
-	const timeout = new Promise((_, reject) =>
-		setTimeout(() => reject(new Error('Health check timeout')), timeoutMs)
-	);
-	await Promise.race([healthCheck, timeout]);
-}
-
-async function createConnectionPool(dbKey, dbName, requestTimeout) {
-	validateDbConfig();
-	if (!dbName) {
-		throw new Error(`No database name configured for ${dbKey}. Set DB_NAME_${dbKey} in .env`);
-	}
-
-	const config = {
-		...baseSqlConfig,
+async function connectPool(dbKey, dbName, requestTimeout, cache) {
+	const newConfig = {
+		...sqlConfig,
 		database: dbName,
 		requestTimeout,
 	};
+	console.log(`[DB] Creating pool`, { dbKey, dbName, requestTimeout });
 
-	console.log('[DB] Creating pool', { dbKey, dbName, requestTimeout });
-
-	// IMPORTANT: use ConnectionPool, NOT sql.connect().
-	// sql.connect() is a global singleton – KOL and AHM would share one pool and
-	// require fragile USE [db] switching, which caused wrong-DB queries after idle time.
-	const pool = new sql.ConnectionPool(config);
-	await pool.connect();
+	const pool = await sql.connect(newConfig);
+	await pool.request().query(`USE [${dbName}]`);
+	const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+	const actualDb = verifyDb.recordset[0]?.currentDb;
+	if (actualDb !== dbName) {
+		throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+	}
 
 	pool.on('error', (err) => {
 		console.error(`[DB] Pool error for ${dbKey}:`, err);
+		cache.delete(dbKey);
+		pool.close().catch(() => {});
 	});
 
-	console.log('[DB] Pool ready', { dbKey, dbName });
 	return pool;
 }
 
-async function getOrCreatePool(database, cache, requestTimeout) {
-	const { dbKey, dbName } = resolveDbName(database);
-	if (!dbKey || !dbName) {
+export function getPool(database) {
+	const dbKey = (database || '').toUpperCase();
+	console.log('[DB] getPool called', { input: database, normalizedKey: dbKey });
+
+	// Strict validation: require explicit KOL or AHM
+	if (dbKey !== 'KOL' && dbKey !== 'AHM') {
 		throw new Error(`Invalid or missing database selection: ${database}`);
 	}
-
-	if (cache.has(dbKey)) {
-		const existing = cache.get(dbKey);
-		try {
-			const pool = await existing;
-			if (pool?.connected) {
+	
+	// Return existing pool if available and still connected
+	if (pools.has(dbKey)) {
+		const existingPool = pools.get(dbKey);
+		console.log(`[DB] Reusing existing pool for ${dbKey}`);
+		console.log(`[DB] Current pools in cache:`, Array.from(pools.keys()));
+		return existingPool.then(async pool => {
+			// Check if pool appears connected
+			if (pool && pool.connected) {
+				// Actively verify with a lightweight ping AND check which database we're connected to
 				try {
-					await pingPool(pool);
+					// Use a timeout for the health check to prevent hanging
+					const healthCheckPromise = pool.request().query('SELECT 1');
+					const timeoutPromise = new Promise((_, reject) => 
+						setTimeout(() => reject(new Error('Health check timeout')), 5000)
+					);
+					await Promise.race([healthCheckPromise, timeoutPromise]);
+					
+					// CRITICAL: Verify we're connected to the CORRECT database
+					const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+					const actualDbName = dbCheck.recordset[0]?.currentDb;
+					const expectedDbName = dbKey === 'KOL' ? process.env.DB_NAME_KOL : process.env.DB_NAME_AHM;
+					
+					console.log(`[DB] Pool verification for ${dbKey}:`, {
+						requestedKey: dbKey,
+						actualDatabase: actualDbName,
+						expectedDatabase: expectedDbName,
+						match: actualDbName === expectedDbName
+					});
+					
+					// If connected to wrong database, switch to correct one
+					if (actualDbName !== expectedDbName) {
+						console.warn(`[DB] Pool ${dbKey} on wrong database! Expected: ${expectedDbName}, Actual: ${actualDbName}`);
+						console.log(`[DB] Switching to correct database [${expectedDbName}]...`);
+						
+						try {
+							await pool.request().query(`USE [${expectedDbName}]`);
+							
+							// Verify switch was successful
+							const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+							const newActualDb = verifyDb.recordset[0]?.currentDb;
+							
+							if (newActualDb !== expectedDbName) {
+								console.error(`[DB] Failed to switch database! Still on: ${newActualDb}`);
+								// Close and recreate pool
+								await pool.close().catch(() => {});
+								pools.delete(dbKey);
+								return getPool(database);
+							}
+							
+							console.log(`[DB] Successfully switched pool ${dbKey} to [${expectedDbName}]`);
+						} catch (switchErr) {
+							console.error(`[DB] Error switching database:`, switchErr);
+							// Close and recreate pool
+							await pool.close().catch(() => {});
+							pools.delete(dbKey);
+							return getPool(database);
+						}
+					}
+					
+					console.log(`[DB] Existing pool for ${dbKey} is healthy and connected to correct database`);
 					return pool;
 				} catch (pingErr) {
-					console.warn(`[DB] Pool ${dbKey} failed health check, recreating`, { error: String(pingErr) });
-					await pool.close().catch(() => {});
+					console.warn(`[DB] Pool for ${dbKey} failed health check, recreating`, { error: String(pingErr) });
+					// Close the bad pool before removing
+					try {
+						await pool.close();
+					} catch (closeErr) {
+						console.warn(`[DB] Error closing bad pool for ${dbKey}:`, closeErr);
+					}
+					pools.delete(dbKey);
+					return getPool(database);
 				}
 			} else {
-				console.warn(`[DB] Pool ${dbKey} disconnected, recreating`);
+				// Pool is disconnected, remove from cache and create new one
+				console.log(`Pool for ${dbKey} is disconnected, creating new connection`);
+				pools.delete(dbKey);
+				return getPool(database); // Recursive call to create new pool
 			}
-		} catch (err) {
-			console.warn(`[DB] Cached pool ${dbKey} unusable, recreating`, { error: String(err) });
-		}
-		cache.delete(dbKey);
+		}).catch(err => {
+			console.error(`Error checking pool for ${dbKey}:`, err);
+			pools.delete(dbKey);
+			return getPool(database); // Recursive call to create new pool
+		});
+	}
+	
+	// Determine the database name: use DB_NAME_KOL / DB_NAME_AHM (new backend) or fall back to DB_NAME (previous) for KOL
+	let dbName;
+	if (database === 'KOL') {
+		dbName = process.env.DB_NAME_KOL || process.env.DB_NAME;
+	} else if (database === 'AHM') {
+		dbName = process.env.DB_NAME_AHM || process.env.DB_NAME;
+	}
+	
+	// Validate that we have a database name
+	if (!dbName) {
+		throw new Error(`No database name configured for ${database}. Set DB_NAME_KOL (or DB_NAME for KOL) in .env`);
 	}
 
-	const poolPromise = createConnectionPool(dbKey, dbName, requestTimeout);
-	cache.set(dbKey, poolPromise);
-	poolPromise.catch((err) => {
-		console.error('[DB] Connection error', { dbKey, dbName, error: String(err) });
-		cache.delete(dbKey);
+	// Validate that KOL and AHM databases are different (prevent accidental same-DB config)
+	const kolDb = process.env.DB_NAME_KOL;
+	const ahmDb = process.env.DB_NAME_AHM;
+	if (kolDb && ahmDb && kolDb === ahmDb) {
+		throw new Error(`KOL and AHM databases cannot be the same (both: ${kolDb}). Please configure DB_NAME_KOL and DB_NAME_AHM with different values.`);
+	}
+	
+	console.log(`[DB] Creating new database connection`, { 
+		dbKey, 
+		dbName, 
+		server: serverHost, 
+		port: serverPort || null,
+		envVars: {
+			DB_NAME_KOL: process.env.DB_NAME_KOL,
+			DB_NAME_AHM: process.env.DB_NAME_AHM
+		}
 	});
+	
+	// Create new config with the selected database
+	const newConfig = {
+		...sqlConfig,
+		database: dbName
+	};
+	
+	// Create new pool for this database
+	const poolPromise = sql.connect(newConfig).then(async pool => {
+		console.log(`[DB] Successfully connected`, { dbKey, dbName });
+		
+		// CRITICAL: Explicitly switch to the correct database using USE statement
+		// This ensures we're using the right DB even if user's default DB is different
+		try {
+			await pool.request().query(`USE [${dbName}]`);
+			console.log(`[DB] Explicitly switched to database [${dbName}]`);
+			
+			// Verify we're on the correct database
+			const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+			const actualDb = verifyDb.recordset[0]?.currentDb;
+			if (actualDb !== dbName) {
+				throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+			}
+			console.log(`[DB] Verified connection to correct database`, { expected: dbName, actual: actualDb });
+		} catch (useErr) {
+			console.error(`[DB] Failed to switch to database ${dbName}:`, useErr);
+			throw useErr;
+		}
+		
+		// Handle pool events
+		pool.on('error', err => {
+			console.error(`[DB] Pool error for ${dbKey}:`, err);
+			pools.delete(dbKey);
+			// Try to close the pool
+			pool.close().catch(closeErr => {
+				console.error(`[DB] Error closing pool after error for ${dbKey}:`, closeErr);
+			});
+		});
+		
+		// Auto-cleanup: remove pool after extended idle time
+		// This prevents stale connections from persisting too long
+		const cleanupTimeout = setTimeout(() => {
+			if (pools.has(dbKey)) {
+				console.log(`[DB] Auto-cleanup: closing idle pool for ${dbKey}`);
+				pool.close().catch(err => console.warn(`[DB] Error during auto-cleanup for ${dbKey}:`, err));
+				pools.delete(dbKey);
+			}
+		}, 600000); // 10 minutes of idle time
+		
+		// Clear timeout if pool is manually closed
+		pool.on('close', () => {
+			clearTimeout(cleanupTimeout);
+		});
+		
+		return pool;
+	});
+	
+	// Store the pool promise
+	pools.set(dbKey, poolPromise);
+	
+	// Handle pool errors
+	poolPromise.catch(err => {
+		console.error(`[DB] Connection error`, { dbKey, dbName, error: String(err) });
+		// Remove failed pool from cache
+		pools.delete(dbKey);
+	});
+	
 	return poolPromise;
-}
-
-export function getPool(database) {
-	return getOrCreatePool(database, pools, baseSqlConfig.requestTimeout);
 }
 
 /**
  * Connection pool with a longer requestTimeout for slow reports.
- * Kept separate so report timeouts do not affect production routes.
+ * Separate from getPool() so cached 2-minute pools are not reused.
  */
 export function getLongQueryPool(database) {
-	const { dbKey } = resolveDbName(database);
-	if (!dbKey) {
+	const { dbKey, dbName } = resolveDbName(database);
+	if (!dbKey || !dbName) {
 		throw new Error(`Invalid or missing database selection: ${database}`);
 	}
-	return getOrCreatePool(database, longQueryPools, LONG_REQUEST_TIMEOUT_MS);
+	if (!dbName) {
+		throw new Error(`No database name configured for ${database}`);
+	}
+
+	const cacheKey = `${dbKey}_LONG`;
+	if (longQueryPools.has(cacheKey)) {
+		return longQueryPools.get(cacheKey);
+	}
+
+	const poolPromise = connectPool(cacheKey, dbName, LONG_REQUEST_TIMEOUT_MS, longQueryPools);
+	longQueryPools.set(cacheKey, poolPromise);
+	poolPromise.catch((err) => {
+		console.error(`[DB] Long-query connection error`, { cacheKey, dbName, error: String(err) });
+		longQueryPools.delete(cacheKey);
+	});
+	return poolPromise;
 }
 
-async function closeMap(map) {
-	const promises = [];
-	for (const [dbKey, poolPromise] of map) {
-		promises.push(
-			poolPromise
-				.then((pool) => {
+// Function to close all database connections
+export async function closeAllPools() {
+	const closeMap = async (map) => {
+		const promises = [];
+		for (const [dbKey, poolPromise] of map) {
+			promises.push(
+				poolPromise.then((pool) => {
 					if (pool?.close) {
-						console.log(`[DB] Closing pool for ${dbKey}`);
+						console.log(`Closing database pool for ${dbKey}`);
 						return pool.close();
 					}
+				}).catch((err) => {
+					console.error(`Error closing pool for ${dbKey}:`, err);
 				})
-				.catch((err) => {
-					console.error(`[DB] Error closing pool for ${dbKey}:`, err);
-				})
-		);
-	}
-	await Promise.all(promises);
-	map.clear();
-}
+			);
+		}
+		await Promise.all(promises);
+		map.clear();
+	};
 
-export async function closeAllPools() {
 	await closeMap(pools);
 	await closeMap(longQueryPools);
 }
 
-/** Clears cache entries only; does not close underlying TCP connections. Prefer closeAllPools on shutdown. */
+// Function to clear pool cache (for logout/session clearing)
 export function clearPoolCache() {
 	console.log('[DB] Clearing pool cache', {
 		poolKeys: Array.from(pools.keys()),
@@ -185,3 +337,5 @@ export function clearPoolCache() {
 }
 
 export { sql };
+
+
