@@ -195,6 +195,124 @@ async function sendEmailSMTP({ creds, to, subject, text }) {
   });
 }
 
+// ============================================
+// Customer Portal helpers (used by WhatsApp / email templates)
+// ----------------------------------------------------------------
+// 1) getCompanyCodeByEmail(pool, email)
+//    Looks up ConcernPersonMaster.Email -> LedgerID -> LedgerMaster.LedgerCodeString
+// 2) isEmailRegisteredInPortal(email)
+//    Looks up tenants collection in MongoDB (DB: customer_portal) for { email }
+// 3) buildPortalAppend({ pool, customerEmail })
+//    Returns the "🔗 Track your orders online" block (Scenario 1 / 2 / 3)
+//    that gets appended to the WhatsApp and email bodies of the three
+//    intimation templates.
+// ============================================
+
+let portalMongoConnPromise = null;
+
+function escapeRegexLiteral(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function getPortalMongoConnection() {
+  if (portalMongoConnPromise) return portalMongoConnPromise;
+
+  const rawUri = process.env.mongodb_uri_concern || process.env.MONGODB_URI_CONCERN || '';
+  const rawDb  = process.env.mongo_db_concern  || process.env.MONGO_DB_CONCERN  || '';
+  const uri    = String(rawUri).trim().replace(/^['"]|['"]$/g, '');
+  const dbName = String(rawDb).trim().replace(/^['"]|['"]$/g, '');
+
+  if (!uri || !dbName) {
+    throw new Error('Portal MongoDB config missing (mongodb_uri_concern / mongo_db_concern)');
+  }
+
+  portalMongoConnPromise = mongoose
+    .createConnection(uri, { dbName, serverSelectionTimeoutMS: 5000 })
+    .asPromise()
+    .then((conn) => {
+      console.log('[PORTAL-MONGO] Connected', { dbName: conn?.name || dbName, readyState: conn?.readyState });
+      return conn;
+    })
+    .catch((err) => {
+      console.error('[PORTAL-MONGO] Connect failed', err?.message || err);
+      portalMongoConnPromise = null;
+      throw err;
+    });
+
+  return portalMongoConnPromise;
+}
+
+async function isEmailRegisteredInPortal(email) {
+  if (!email) return false;
+  try {
+    const conn = await getPortalMongoConnection();
+    const pattern = new RegExp(`^${escapeRegexLiteral(String(email).trim())}$`, 'i');
+    const doc = await conn.collection('tenants').findOne(
+      { email: pattern },
+      { projection: { _id: 1 } }
+    );
+    return !!doc;
+  } catch (err) {
+    console.error('[PORTAL-REG-CHECK] Lookup failed for', email, '-', err?.message || err);
+    return false;
+  }
+}
+
+async function getCompanyCodeByEmail(pool, email) {
+  if (!email) return null;
+  try {
+    const result = await pool.request()
+      .input('Email', sql.NVarChar(255), String(email).trim())
+      .query(`
+        SELECT TOP 1 lm.LedgerCodeString
+        FROM ConcernPersonMaster cpm
+        INNER JOIN LedgerMaster lm ON lm.LedgerID = cpm.LedgerID
+        WHERE cpm.Email = @Email
+          AND ISNULL(cpm.IsDeleted, 0) = 0
+          AND ISNULL(cpm.IsDeletedTransaction, 0) = 0
+          AND ISNULL(lm.IsDeleted, 0) = 0
+      `);
+    return result.recordset?.[0]?.LedgerCodeString || null;
+  } catch (err) {
+    console.error('[PORTAL-COMPANY-CODE] Lookup failed for', email, '-', err?.message || err);
+    return null;
+  }
+}
+
+/**
+ * Build the portal-tracking block to append at the end of WhatsApp /
+ * email templates. Picks one of three scenarios based on whether the
+ * customer email is present and whether it's already registered.
+ */
+async function buildPortalAppend({ pool, customerEmail }) {
+  let scenarioText;
+  let scenarioId;
+
+  if (!customerEmail) {
+    scenarioId = 1;
+    scenarioText =
+      "We'd love to give you access to our customer portal, where you can see real-time status on all your orders plus your complete order history. Please share your email ID so we can register you.";
+  } else {
+    const registered = await isEmailRegisteredInPortal(customerEmail);
+
+    if (registered) {
+      scenarioId = 3;
+      scenarioText =
+        `Track all your orders in real time on our customer portal, along with your full order history. Just log in at https://crm.cdcprinters.com with your email ID ${customerEmail}.`;
+    } else {
+      scenarioId = 2;
+      // companyCode placeholder fallback if no ConcernPersonMaster match
+      const companyCode = (await getCompanyCodeByEmail(pool, customerEmail)) || '<COMPANY_CODE>';
+      scenarioText =
+        `You can now track all your orders in real time on our customer portal, along with your full order history. To get started, please register at https://crm.cdcprinters.com/register using your email ID ${customerEmail} and company code ${companyCode}.`;
+    }
+  }
+
+  console.log('[PORTAL] Append built', { scenarioId, customerEmail: customerEmail || null });
+
+  return `\n\n—\n\n🔗 Track your orders online\n${scenarioText}`;
+}
+
 // Background worker function
 async function processJobInBackground(jobId, jobType, requestData, database) {
   try {
@@ -499,7 +617,7 @@ router.post("/comm/first-intimation/send", async (req, res) => {
   
         const orderLines = buildOrderLines(clientRows);
   
-        const whatsappText =
+        let whatsappText =
   `Dear ${contactName},
   
 Warm greetings from CDC Printers Pvt Ltd 😊
@@ -515,7 +633,7 @@ CDC Printers Pvt Ltd
 ${senderPhone}`;
   
         const emailSubject = `Order Planned & Delivery Commitment | ${clientName}`;
-        const emailBody =
+        let emailBody =
   `Dear ${contactName},
   
   Warm greetings from CDC Printers Pvt Ltd.
@@ -534,7 +652,15 @@ ${senderPhone}`;
         const mobileList = splitCsv(clientRows[0]["Concern Mobile No"])
           .map(normalizeINPhone)
           .filter(Boolean);
-  
+
+        // Append "Track your orders online" portal block (Scenario 1/2/3)
+        const portalAppend = await buildPortalAppend({
+          pool,
+          customerEmail: emailList[0] || null
+        });
+        whatsappText += portalAppend;
+        emailBody += portalAppend;
+
         let sentEmail = false;
         let sentWhatsapp = false;
         let whatsappError = null;
@@ -814,7 +940,7 @@ router.post("/comm/material-readiness/send", async (req, res) => {
 
       const readinessLines = buildReadinessLines(clientRows, readinessByObdId);
 
-      const whatsappMessage =
+      let whatsappMessage =
 `Dear ${contactName},
 
 Warm greetings from CDC Printers Pvt Ltd 😊
@@ -832,7 +958,7 @@ CDC Printers Pvt Ltd
 ${senderPhone}`.trim();
 
       const emailSubject = `Material Ready for Dispatch | ${clientName}`;
-      const emailBody =
+      let emailBody =
 `Dear ${contactName},
 
 Warm greetings from CDC Printers Pvt Ltd.
@@ -854,6 +980,14 @@ ${senderPhone}`.trim();
       const mobileList = splitCsv(clientRows[0]["Contact phone"])
         .map(normalizeINPhone)
         .filter(Boolean);
+
+      // Append "Track your orders online" portal block (Scenario 1/2/3)
+      const portalAppend = await buildPortalAppend({
+        pool,
+        customerEmail: emailList[0] || null
+      });
+      whatsappMessage += portalAppend;
+      emailBody += portalAppend;
 
       let sentEmail = false;
       let sentWhatsapp = false;
@@ -4486,6 +4620,444 @@ router.post('/reports/qc-job-card-entries', async (req, res) => {
 // WhatsApp Messaging Routes
 // ============================================
 
+// ============================================
+// TEMPLATE PREVIEW ENDPOINTS (Postman-friendly, NO side effects)
+// --------------------------------------------------------------
+// These endpoints render the exact WhatsApp / Email text that the
+// matching "send" endpoint would generate, including the new
+// "🔗 Track your orders online" portal block, but do NOT
+// actually send anything or mark anything as sent.
+// ============================================
+
+// 1) Quick portal-block scenario tester — no SQL data fetch required.
+//    Body: { customerEmail?: string }
+//      - omit customerEmail or pass "" -> Scenario 1
+//      - present + not in tenants       -> Scenario 2 (with companyCode lookup)
+//      - present + in tenants            -> Scenario 3
+router.post('/whatsapp/preview/portal-block', async (req, res) => {
+    try {
+        const rawEmail = (req.body?.customerEmail ?? '').toString().trim();
+        const customerEmail = rawEmail || null;
+
+        const pool = await getPool('KOL');
+
+        let scenario = 1;
+        let isRegistered = false;
+        let companyCode = null;
+
+        if (customerEmail) {
+            isRegistered = await isEmailRegisteredInPortal(customerEmail);
+            if (isRegistered) {
+                scenario = 3;
+            } else {
+                scenario = 2;
+                companyCode = await getCompanyCodeByEmail(pool, customerEmail);
+            }
+        }
+
+        const portalBlock = await buildPortalAppend({ pool, customerEmail });
+
+        return res.json({
+            ok: true,
+            input: { customerEmail },
+            scenario,
+            isRegistered,
+            companyCode: companyCode || (scenario === 2 ? '<COMPANY_CODE>' : null),
+            portalBlock
+        });
+    } catch (err) {
+        console.error('[PREVIEW/portal-block] Error:', err);
+        return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+});
+
+// 2) 1st Intimation full template preview
+//    Body: { username: string, orderBookingDetailsIds: number[] }
+//    Mirrors POST /comm/first-intimation/send but does NOT send / mark.
+router.post('/whatsapp/preview/first-intimation', async (req, res) => {
+    try {
+        const { username, orderBookingDetailsIds } = req.body || {};
+
+        if (!username || !Array.isArray(orderBookingDetailsIds) || orderBookingDetailsIds.length === 0) {
+            return res.status(400).json({ ok: false, error: 'username and orderBookingDetailsIds[] required' });
+        }
+
+        const pool = await getPool('KOL');
+
+        const credRes = await pool.request()
+            .input('Username', sql.NVarChar(100), username)
+            .execute('dbo.comm_get_user_credentials');
+        const creds = credRes.recordset?.[0];
+        if (!creds) return res.status(400).json({ ok: false, error: 'Credentials not found' });
+
+        const senderName = username;
+        const senderPhone = creds.ContactNo || '';
+
+        const tvp = new sql.Table('dbo.IdList');
+        tvp.columns.add('Id', sql.Int, { nullable: false });
+        orderBookingDetailsIds.forEach(id => tvp.rows.add(Number(id)));
+
+        const detRes = await pool.request()
+            .input('Ids', tvp)
+            .execute('dbo.comm_first_intimation_details_by_ids');
+
+        const rows = detRes.recordset || [];
+        if (!rows.length) {
+            return res.json({ ok: true, message: 'No pending items found.', previews: [] });
+        }
+
+        const byClient = new Map();
+        for (const r of rows) {
+            if (!byClient.has(r.ClientLedgerID)) byClient.set(r.ClientLedgerID, []);
+            byClient.get(r.ClientLedgerID).push(r);
+        }
+
+        const previews = [];
+
+        for (const [ledgerId, clientRows] of byClient.entries()) {
+            const clientName = clientRows[0]['Client Name'];
+            const contactName = (clientRows[0]['Contact Person'] || '').split(',')[0] || clientName;
+            const orderLines = buildOrderLines(clientRows);
+
+            let whatsappText =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd 😊
+
+Your order(s) have been planned in our system. Details below:
+
+  ${orderLines}
+
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailSubject = `Order Planned & Delivery Commitment | ${clientName}`;
+            let emailBody =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd.
+
+Your order(s) have been planned in our system. Details below:
+
+  ${orderLines}
+
+Regards,
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailList = splitCsv(clientRows[0]['Concern Email']);
+            const mobileList = splitCsv(clientRows[0]['Concern Mobile No'])
+                .map(normalizeINPhone)
+                .filter(Boolean);
+
+            const customerEmail = emailList[0] || null;
+            const portalAppend = await buildPortalAppend({ pool, customerEmail });
+            whatsappText += portalAppend;
+            emailBody += portalAppend;
+
+            previews.push({
+                clientLedgerId: ledgerId,
+                clientName,
+                contactName,
+                emailList,
+                mobileList,
+                portalCustomerEmail: customerEmail,
+                emailSubject,
+                whatsappText,
+                emailBody
+            });
+        }
+
+        return res.json({ ok: true, previews });
+    } catch (err) {
+        console.error('[PREVIEW/first-intimation] Error:', err);
+        return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+});
+
+// 3) 2nd Intimation / Material-Readiness full template preview
+//    Body: { username, items: [{ orderBookingDetailsId, readyForDispatchDate, noOfCarton, qtyPerCarton }] }
+//    Mirrors POST /comm/material-readiness/send but does NOT send / update DispatchSchedule.
+router.post('/whatsapp/preview/material-readiness', async (req, res) => {
+    try {
+        const { username, items } = req.body || {};
+        if (!username || !Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({ ok: false, error: 'username and items[] are required' });
+        }
+
+        const readinessByObdId = new Map();
+        const ids = [];
+        for (const it of items) {
+            const id = Number(it.orderBookingDetailsId);
+            if (!id) return res.status(400).json({ ok: false, error: 'Invalid orderBookingDetailsId in items[]' });
+            readinessByObdId.set(id, {
+                readyForDispatchDate: it.readyForDispatchDate,
+                noOfCarton: Number(it.noOfCarton || 0),
+                qtyPerCarton: Number(it.qtyPerCarton || 0)
+            });
+            ids.push(id);
+        }
+
+        const pool = await getPool('KOL');
+
+        const credRes = await pool.request()
+            .input('Username', sql.NVarChar(100), username)
+            .execute('dbo.comm_get_user_credentials');
+        const creds = credRes.recordset?.[0];
+        if (!creds) return res.status(400).json({ ok: false, error: 'Credentials not found' });
+
+        const senderName = username;
+        const senderPhone = creds.ContactNo || '';
+
+        const tvp = new sql.Table('dbo.IdList');
+        tvp.columns.add('Id', sql.Int, { nullable: false });
+        ids.forEach(id => tvp.rows.add(id));
+
+        const dataRes = await pool.request()
+            .input('Ids', tvp)
+            .execute('dbo.comm_pending_delivery_followup_by_ids');
+
+        const rows = dataRes.recordset || [];
+        if (!rows.length) return res.json({ ok: true, message: 'No matching rows for selected IDs.', previews: [] });
+
+        const byClient = new Map();
+        for (const r of rows) {
+            const ledgerId = Number(r.ClientLedgerID);
+            if (!byClient.has(ledgerId)) byClient.set(ledgerId, []);
+            byClient.get(ledgerId).push(r);
+        }
+
+        const previews = [];
+
+        for (const [clientLedgerId, clientRowsRaw] of byClient.entries()) {
+            const clientRows = clientRowsRaw.filter(r => readinessByObdId.has(Number(r.OrderBookingDetailsID)));
+            if (!clientRows.length) continue;
+
+            const clientName = clientRows[0]['Client Name'] || '';
+            const contactName = (clientRows[0]['Contact Person'] || '').split(',')[0].trim() || clientName;
+            const readinessLines = buildReadinessLines(clientRows, readinessByObdId);
+
+            let whatsappMessage =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd 😊
+
+Your material is ready and planned for dispatch as per details below:
+
+${readinessLines}
+
+For any coordination required, please reply here.
+
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`.trim();
+
+            const emailSubject = `Material Ready for Dispatch | ${clientName}`;
+            let emailBody =
+`Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd.
+
+Your material is ready and planned for dispatch as per details below:
+
+${readinessLines}
+
+For any coordination required, please reply to this email.
+
+Regards,
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`.trim();
+
+            const emailList = splitCsv(clientRows[0]['Contact Email']);
+            const mobileList = splitCsv(clientRows[0]['Contact phone']).map(normalizeINPhone).filter(Boolean);
+
+            const customerEmail = emailList[0] || null;
+            const portalAppend = await buildPortalAppend({ pool, customerEmail });
+            whatsappMessage += portalAppend;
+            emailBody += portalAppend;
+
+            previews.push({
+                clientLedgerId,
+                clientName,
+                contactName,
+                emailList,
+                mobileList,
+                portalCustomerEmail: customerEmail,
+                emailSubject,
+                whatsappText: whatsappMessage,
+                emailBody
+            });
+        }
+
+        return res.json({ ok: true, previews });
+    } catch (err) {
+        console.error('[PREVIEW/material-readiness] Error:', err);
+        return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+});
+
+// 4) Updated Delivery Dates full template preview
+//    Body: { username, items: [{ orderBookingDetailsID, newExpectedDeliveryDate: 'YYYY-MM-DD' }] }
+//    Mirrors POST /whatsapp/update-delivery-dates-and-send but does NOT update SQL dates or send.
+router.post('/whatsapp/preview/update-delivery-dates', async (req, res) => {
+    try {
+        const { username, items } = req.body || {};
+        if (!username || !Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({ ok: false, error: 'username and items[] are required' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        for (const item of items) {
+            if (!item.orderBookingDetailsID || typeof item.orderBookingDetailsID !== 'number') {
+                return res.status(400).json({ ok: false, error: 'Each item must have orderBookingDetailsID (number)' });
+            }
+            if (!item.newExpectedDeliveryDate || !dateRegex.test(item.newExpectedDeliveryDate)) {
+                return res.status(400).json({ ok: false, error: 'Each item must have newExpectedDeliveryDate (YYYY-MM-DD)' });
+            }
+        }
+
+        const pool = await getPool('KOL');
+
+        const credRes = await pool.request()
+            .input('Username', sql.NVarChar(100), username)
+            .execute('dbo.comm_get_user_credentials');
+        const creds = credRes.recordset?.[0];
+        if (!creds) return res.status(400).json({ ok: false, error: 'Credentials not found' });
+
+        const senderName = username;
+        const senderPhone = creds.ContactNo || '';
+
+        const dateUpdatesMap = new Map();
+        items.forEach(it => dateUpdatesMap.set(Number(it.orderBookingDetailsID), it.newExpectedDeliveryDate));
+
+        const tvp = new sql.Table('dbo.IdList');
+        tvp.columns.add('Id', sql.Int, { nullable: false });
+        items.forEach(it => { const id = Number(it.orderBookingDetailsID); if (id) tvp.rows.add(id); });
+
+        const detRes = await pool.request().input('Ids', tvp).execute('dbo.comm_pending_delivery_followup_by_ids');
+        const rows = detRes.recordset || [];
+        if (!rows.length) return res.json({ ok: true, message: 'No order details found for selected items.', previews: [] });
+
+        rows.forEach(row => {
+            const newDate = dateUpdatesMap.get(Number(row.OrderBookingDetailsID));
+            if (newDate) {
+                row['Final Delivery Date'] = newDate;
+                row.FinalDeliveryDate = newDate;
+            }
+        });
+
+        const byClient = new Map();
+        for (const r of rows) {
+            if (!byClient.has(r.ClientLedgerID)) byClient.set(r.ClientLedgerID, []);
+            byClient.get(r.ClientLedgerID).push(r);
+        }
+
+        function buildOrderLinesWithUpdatedDates(clientRows) {
+            if (!clientRows.length) return '';
+            const firstRow = clientRows[0];
+            const columnNames = Object.keys(firstRow);
+            const jobNumberColumnIndex = 2;
+            const jobNameColumnIndex = 4;
+
+            let orderQtyColumnName = null;
+            for (const key of columnNames) {
+                const keyLower = key.toLowerCase();
+                if ((keyLower.includes('order') && keyLower.includes('qty')) || key === 'Order Qty' || key === 'OrderQty') {
+                    orderQtyColumnName = key; break;
+                }
+            }
+
+            return clientRows.map(r => {
+                const updatedDate = dateUpdatesMap.get(Number(r.OrderBookingDetailsID)) || r['Committed Delivery Date'] || r['CommittedDeliveryDate'] || r['Final Delivery Date'] || r.FinalDeliveryDate;
+                const jobNumber = (columnNames[jobNumberColumnIndex] && r[columnNames[jobNumberColumnIndex]]) ? String(r[columnNames[jobNumberColumnIndex]]) : '';
+                const jobName = (columnNames[jobNameColumnIndex] && r[columnNames[jobNameColumnIndex]]) ? String(r[columnNames[jobNameColumnIndex]]) : '';
+                const orderQty = orderQtyColumnName ? (r[orderQtyColumnName] ? String(r[orderQtyColumnName]) : '') : '';
+                return [
+                    `• Item: ${jobName}`,
+                    `  Qty: ${orderQty}`,
+                    `  Job No: ${jobNumber}`,
+                    `  Updated Committed Delivery: ${fmtDate(updatedDate)}`
+                ].join('\n');
+            }).join('\n\n');
+        }
+
+        const previews = [];
+
+        for (const [ledgerId, clientRows] of byClient.entries()) {
+            const clientName = clientRows[0]['Client Name'] || clientRows[0]['ClientName'] || '';
+            const contactPerson = clientRows[0]['Contact Person'] || clientRows[0]['ContactPerson'] || '';
+            const contactName = (contactPerson.split(',')[0] || clientName).trim();
+
+            const orderLines = buildOrderLinesWithUpdatedDates(clientRows);
+
+            let whatsappText = `Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd 😊
+
+We regret to inform you that due to unforeseen circumstances, we will not be able to deliver the below jobs within the committed timeframe. Please find the updated committed delivery dates below:
+
+  ${orderLines}
+
+—
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailSubject = `Updated Delivery Schedule | ${clientName}`;
+            let emailBody = `Dear ${contactName},
+
+Warm greetings from CDC Printers Pvt Ltd.
+
+We regret to inform you that due to unforeseen circumstances, we will not be able to deliver the below jobs within the committed timeframe. Please find the updated committed delivery dates below:
+
+  ${orderLines}
+
+Regards,
+${senderName}
+Customer Relationship Manager
+CDC Printers Pvt Ltd
+${senderPhone}`;
+
+            const emailList = splitCsv(clientRows[0]['Contact Email'] || clientRows[0]['ContactEmail'] || clientRows[0]['Concern Email'] || clientRows[0]['ConcernEmail'] || '');
+            const mobileList = splitCsv(clientRows[0]['Contact phone'] || clientRows[0]['Contactphone'] || clientRows[0]['Concern Mobile No'] || clientRows[0]['ConcernMobileNo'] || '')
+                .map(normalizeINPhone)
+                .filter(Boolean);
+
+            const customerEmail = emailList[0] || null;
+            const portalAppend = await buildPortalAppend({ pool, customerEmail });
+            whatsappText += portalAppend;
+            emailBody += portalAppend;
+
+            previews.push({
+                clientLedgerId: ledgerId,
+                clientName,
+                contactName,
+                emailList,
+                mobileList,
+                portalCustomerEmail: customerEmail,
+                emailSubject,
+                whatsappText,
+                emailBody
+            });
+        }
+
+        return res.json({ ok: true, previews });
+    } catch (err) {
+        console.error('[PREVIEW/update-delivery-dates] Error:', err);
+        return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+});
+
 // Login endpoint for WhatsApp Web UI
 router.post('/whatsapp/login', async (req, res) => {
     try {
@@ -5011,7 +5583,7 @@ router.post('/whatsapp/update-delivery-dates-and-send', async (req, res) => {
 
             const orderLines = buildOrderLinesWithUpdatedDates(clientRows);
 
-            const whatsappText = `Dear ${contactName},
+            let whatsappText = `Dear ${contactName},
 
 Warm greetings from CDC Printers Pvt Ltd 😊
 
@@ -5026,7 +5598,7 @@ CDC Printers Pvt Ltd
 ${senderPhone}`;
 
             const emailSubject = `Updated Delivery Schedule | ${clientName}`;
-            const emailBody = `Dear ${contactName},
+            let emailBody = `Dear ${contactName},
 
 Warm greetings from CDC Printers Pvt Ltd.
 
@@ -5045,6 +5617,14 @@ ${senderPhone}`;
             const mobileList = splitCsv(clientRows[0]["Contact phone"] || clientRows[0]["Contactphone"] || clientRows[0]["Concern Mobile No"] || clientRows[0]["ConcernMobileNo"] || "")
                 .map(normalizeINPhone)
                 .filter(Boolean);
+
+            // Append "Track your orders online" portal block (Scenario 1/2/3)
+            const portalAppend = await buildPortalAppend({
+                pool,
+                customerEmail: emailList[0] || null
+            });
+            whatsappText += portalAppend;
+            emailBody += portalAppend;
 
             let sentEmail = false;
             let sentWhatsapp = false;
