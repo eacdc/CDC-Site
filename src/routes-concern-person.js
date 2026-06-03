@@ -54,6 +54,21 @@ function resolveFinancialYear(now = new Date()) {
   return `${startYear}-${startYear + 1}`;
 }
 
+function getGreetingSheetWebhookUrl() {
+  const candidates = [
+    'CONCERN_GREETING_SHEET_WEBHOOK_URL',
+    'GOOGLE_SHEET_WEBHOOK_URL',
+    'GOOGLE_SHEET_EXPORT_WEBHOOK_URL'
+  ];
+  for (const key of candidates) {
+    const raw = process.env[key];
+    if (raw === undefined) continue;
+    const value = String(raw).trim().replace(/^['"]|['"]$/g, '');
+    if (value) return value;
+  }
+  return '';
+}
+
 async function getConcernMongoConnection() {
   if (!concernMongoConnPromise) {
     const uriResolved = resolveEnvValue([
@@ -563,6 +578,74 @@ router.post('/concern-person', async (req, res) => {
     return res.status(500).json({
       status: false,
       error: error?.message || 'Failed to create concerned person.'
+    });
+  }
+});
+
+router.post('/concern-person/export-greeting', async (req, res) => {
+  try {
+    const webhookUrl = getGreetingSheetWebhookUrl();
+    if (!webhookUrl) {
+      return res.status(500).json({
+        status: false,
+        error: 'Google Sheet webhook URL is not configured.'
+      });
+    }
+
+    const database = normalizeDatabase(req.body?.database);
+    if (database !== 'KOL' && database !== 'AHM') {
+      return res.status(400).json({ status: false, error: 'database must be KOL or AHM.' });
+    }
+
+    const clientname = asRequiredString(req.body?.clientname, 'clientname', 200);
+    const email = asRequiredString(req.body?.email, 'email', 200);
+    const ledgerCodeString = asRequiredString(req.body?.ledgerCodeString, 'ledgerCodeString', 100);
+    const messageText = asRequiredString(req.body?.messageText, 'messageText', 5000);
+    const concernPersonName = String(req.body?.concernPersonName ?? '').trim().slice(0, 200) || null;
+
+    const exportPayload = {
+      source: 'concern-person-tool',
+      exportedAt: new Date().toISOString(),
+      database,
+      clientname,
+      concernPersonName,
+      email,
+      ledgerCodeString,
+      messageText
+    };
+
+    const sheetResponse = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(exportPayload)
+    });
+    const rawText = await sheetResponse.text();
+    if (!sheetResponse.ok) {
+      console.error('[concern-person] export-greeting webhook failed', {
+        status: sheetResponse.status,
+        responseText: rawText
+      });
+      return res.status(502).json({
+        status: false,
+        error: `Google Sheet webhook failed (${sheetResponse.status}).`
+      });
+    }
+
+    console.log('[concern-person] export-greeting success', {
+      database,
+      clientname,
+      email,
+      ledgerCodeString
+    });
+    return res.json({
+      status: true,
+      sheetResponse: rawText || null
+    });
+  } catch (error) {
+    console.error('[concern-person] export-greeting failed:', error);
+    return res.status(500).json({
+      status: false,
+      error: error?.message || 'Failed to export greeting to Google Sheet.'
     });
   }
 });
