@@ -302,9 +302,9 @@ async function buildPortalAppend({ pool, customerEmail }) {
     } else {
       scenarioId = 2;
       // companyCode placeholder fallback if no ConcernPersonMaster match
-      const companyCode = (await getCompanyCodeByEmail(pool, customerEmail)) || '<COMPANY_CODE>';
+      const companyCode = (await getCompanyCodeByEmail(pool, customerEmail)) || '';
       scenarioText =
-        `You can now track all your orders in real time on our customer portal, along with your full order history. To get started, please register at https://crm.cdcprinters.com/register using your email ID ${customerEmail} and company code ${companyCode}.`;
+        `You can now track all your orders in real time on our customer portal, along with your full order history. To get started, please register at https://crm.cdcprinters.com using your email ID ${customerEmail} and company code ${companyCode}.`;
     }
   }
 
