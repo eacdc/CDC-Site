@@ -18,7 +18,8 @@ import {
   SalesPersonsFilterQuery,
   ClientNamesFilterQuery,
   JobProductionSummaryQuery,
-  JobComponentPaperQuery
+  JobComponentPaperQuery,
+  JobBookingBatchDetailsQuery
 } from './job-card-queries.js';
 
 const router = Router();
@@ -673,6 +674,7 @@ router.get('/job-card', async (req, res) => {
       let operationDetails = [];
       let allocatedMaterials = [];
       let corrugationDetails = [];
+      let batchDetails = [];
       if (jobBookingId && cardType === 'packaging') {
         const toolBySeq = {};
         try {
@@ -751,6 +753,20 @@ router.get('/job-card', async (req, res) => {
           }));
         } catch (e) {
           console.warn('[job-card] CorrugationDetails query failed:', e.message);
+        }
+        try {
+          request = pool.request();
+          request.input('CompanyID', sql.NVarChar(10), companyId);
+          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+          const batchRes = await request.query(JobBookingBatchDetailsQuery);
+          batchDetails = (batchRes.recordset || []).map(r => ({
+            quantity: str(get(r, 'Quantity')) ?? '',
+            batchNo: str(get(r, 'BatchNo')) || '',
+            mfgDate: str(get(r, 'MfgDate')) || '',
+            expDate: str(get(r, 'ExpDate')) || ''
+          }));
+        } catch (e) {
+          console.warn('[job-card] JobBookingBatchDetails query failed:', e.message);
         }
       }
 
@@ -903,6 +919,7 @@ router.get('/job-card', async (req, res) => {
         printDetails,
         operationDetails,
         allocatedMaterials,
+        batchDetails,
         corrugationDetails,
         paperFlow,
         deliveryDetails,

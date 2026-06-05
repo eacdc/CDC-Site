@@ -984,3 +984,16 @@ WHERE JB.CompanyID = @CompanyID
      OR JC.PlanContName LIKE '%Cover%'
   );
 `;
+
+/** Batch details for packaging job card PDF. Params: @CompanyID, @JobBookingID */
+export const JobBookingBatchDetailsQuery = `
+SELECT
+  JBATCH.Quantity,
+  JBATCH.BatchNo,
+  JBATCH.MfgDate,
+  JBATCH.ExpDate
+FROM dbo.JobBookingJobCardBatch JBATCH
+WHERE JBATCH.JobBookingID = @JobBookingID
+  AND JBATCH.CompanyID = @CompanyID
+ORDER BY JBATCH.JobBookingJobCardBatchID
+`;
