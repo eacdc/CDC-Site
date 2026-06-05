@@ -2377,7 +2377,8 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             gpnQty: first.GPNQty || first.gpnqty || null,
             deliveredThisVoucher: first.DeliveredThisVoucher || first.deliveredthisvoucher || null,
             deliveredTotal: first.DeliveredTotal || first.deliveredtotal || null,
-            cartonCount: first.CartonCt || first.cartonct || null
+            cartonCount: first.CartonCt || first.cartonct || null,
+            batchNo: first.BatchNo || first.batchno || null
         };
 
         // Handle known failure from SP (e.g., "Fail: Barcode already dispatched")
@@ -2451,7 +2452,8 @@ router.post('/grn/update-delivery-note', async (req, res) => {
             gpnQty: first.GPNQty || first.gpnqty || null,
             deliveredThisVoucher: first.DeliveredThisVoucher || first.deliveredthisvoucher || null,
             deliveredTotal: first.DeliveredTotal || first.deliveredtotal || null,
-            cartonCount: first.CartonCt || first.cartonct || null
+            cartonCount: first.CartonCt || first.cartonct || null,
+            batchNo: first.BatchNo || first.batchno || null
         };
 
         // Fail handling
