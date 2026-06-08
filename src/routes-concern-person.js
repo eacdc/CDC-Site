@@ -272,6 +272,8 @@ async function insertConcernPerson(pool, payload) {
     .input('Mobile', sql.NVarChar(25), payload.mobile)
     .input('Email', sql.NVarChar(200), payload.email)
     .input('FYear', sql.NVarChar(20), payload.fYear)
+    .input('IsEmailSend', sql.Int, payload.isEmailSend)
+    .input('IsWhatsAppSend', sql.Int, payload.isWhatsAppSend)
     .query(`
       INSERT INTO ConcernPersonMaster (
         CompanyID,
@@ -329,8 +331,8 @@ async function insertConcernPerson(pool, payload) {
         0,
         0,
         NULL,
-        1,
-        1
+        @IsEmailSend,
+        @IsWhatsAppSend
       )
     `);
   return insertResult.recordset?.[0]?.ConcernPersonID ?? null;
@@ -480,6 +482,8 @@ router.post('/concern-person', async (req, res) => {
       return res.status(400).json({ status: false, error: 'ledgerCodeString is required.' });
     }
     const clientname = String(req.body?.clientname ?? '').trim() || null;
+    const isEmailSend = Number(req.body?.isEmailSend) === 1 ? 1 : 0;
+    const isWhatsAppSend = Number(req.body?.isWhatsAppSend) === 1 ? 1 : 0;
     const fYear = resolveFinancialYear();
 
     const pool = await getPool(database);
@@ -512,6 +516,8 @@ router.post('/concern-person', async (req, res) => {
       mobile,
       email,
       fYear,
+      isEmailSend,
+      isWhatsAppSend,
       expectedDbName: selectedExpectedDbName
     });
 
@@ -549,6 +555,8 @@ router.post('/concern-person', async (req, res) => {
           mobile,
           email,
           fYear,
+          isEmailSend,
+          isWhatsAppSend,
           expectedDbName: mirrorExpectedDbName
         });
         mirrorSave = {
