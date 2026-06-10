@@ -212,4 +212,55 @@ router.get('/google-sheet/machine-schedule', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/google-sheet/delivery-otif?database=KOL
+ * Runs getdeliveryotif with StartDate = 6 months ago, EndDate = today.
+ * Returns 2D array (headers + rows) for Google Sheets.
+ */
+router.get('/google-sheet/delivery-otif', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  const now = new Date();
+  const endDate = new Date(now);
+  const startDate = new Date(now);
+  startDate.setMonth(startDate.getMonth() - 6);
+
+  const startDateStr = formatDateYYYYMMDD(startDate);
+  const endDateStr = formatDateYYYYMMDD(endDate);
+  const startedAt = Date.now();
+
+  try {
+    console.log('[google-sheet] delivery-otif start', {
+      db,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      requestTimeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    });
+
+    const pool = await getLongQueryPool(db);
+    const result = await pool
+      .request()
+      .input('StartDate', sql.VarChar(10), startDateStr)
+      .input('EndDate', sql.VarChar(10), endDateStr)
+      .query('EXEC getdeliveryotif @StartDate, @EndDate');
+
+    const elapsedMs = Date.now() - startedAt;
+    const recordset = result.recordset ?? [];
+    const data = recordsetTo2DArray(recordset);
+    console.log('[google-sheet] delivery-otif done', {
+      db,
+      rows: Math.max(0, data.length - 1),
+      elapsedMs,
+    });
+    return res.json({ data, startDate: startDateStr, endDate: endDateStr });
+  } catch (e) {
+    const elapsedMs = Date.now() - startedAt;
+    console.error('[google-sheet] delivery-otif failed:', { elapsedMs, error: e });
+    return res.status(500).json({ error: e.message || 'Failed to fetch Delivery OTIF' });
+  }
+});
+
 export default router;
