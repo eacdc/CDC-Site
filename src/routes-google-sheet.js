@@ -21,8 +21,21 @@ function getDbFromQuery(req) {
 }
 
 /**
+ * Formats a Date object as dd/MM/yyyy (no time component).
+ * @param {Date} d
+ * @returns {string}
+ */
+function formatDateDDMMYYYY(d) {
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const year = d.getUTCFullYear();
+  return `${day}/${month}/${year}`;
+}
+
+/**
  * Converts a recordset (array of row objects) into a 2D array for Google Sheets.
  * First row = column names (headers), following rows = data.
+ * Date values from MSSQL are formatted as dd/MM/yyyy strings.
  * @param {Array<Object>} recordset - Rows from MSSQL
  * @returns {Array<Array>} 2D array [headers, ...dataRows]
  */
@@ -31,7 +44,14 @@ function recordsetTo2DArray(recordset) {
     return [];
   }
   const headers = Object.keys(recordset[0]);
-  const rows = recordset.map(row => headers.map(col => row[col] ?? ''));
+  const rows = recordset.map(row =>
+    headers.map(col => {
+      const val = row[col];
+      if (val === null || val === undefined) return '';
+      if (val instanceof Date) return formatDateDDMMYYYY(val);
+      return val;
+    })
+  );
   return [headers, ...rows];
 }
 
