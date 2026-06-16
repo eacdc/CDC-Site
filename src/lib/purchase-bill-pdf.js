@@ -1,7 +1,10 @@
 /**
  * Build a single PDF from all bill slot images (tally → invoice → e-way → GRN).
- * Images are preprocessed (auto-rotate, auto-crop, normalise, sharpen) before
- * embedding so the PDF contains clean, cropped pages.
+ *
+ * Images are only auto-cropped before embedding (plus EXIF orientation fix
+ * + JPEG encode). No resize, contrast normalisation, sharpening, or
+ * greyscaling is applied, so the downloaded scan looks like the original
+ * captured photo, just trimmed.
  */
 import { PDFDocument } from 'pdf-lib';
 import { preprocessForPDF } from './preprocess-image.js';
@@ -50,7 +53,8 @@ export async function buildBillScanPdf(imageUrls) {
   const pdfDoc = await PDFDocument.create();
 
   for (const url of imageUrls) {
-    // Preprocess: auto-rotate, crop, normalise, sharpen → clean JPEG buffer
+    // Preprocess: EXIF auto-rotate + auto-crop only → JPEG buffer
+    // (no resize / normalise / sharpen — see preprocess-image.js)
     let jpegBuf;
     try {
       jpegBuf = await preprocessForPDF(url);

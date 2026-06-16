@@ -1,7 +1,36 @@
 import { Router } from 'express';
 import { getPool, sql } from './db.js';
 import { MongoClient } from 'mongodb';
+import bcrypt from 'bcryptjs';
 import { insertUnorderedMinimal } from './unordered.js';
+
+// ---------- Prepress FMS auth config ----------
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = process.env.PREPRESS_ADMIN_PASSWORD || '933086';
+
+// Static (non-DB) executive accounts. Admin can set their passwords via the
+// Set Passwords page; their password hashes are stored in the
+// `prepressStaticUsers` Mongo collection keyed by userKey.
+const STATIC_EXECUTIVES = [
+  { userKey: 'executive-1', displayName: 'Executive 1' },
+  { userKey: 'executive-2', displayName: 'Executive 2' },
+  { userKey: 'executive-3', displayName: 'Executive 3' },
+  { userKey: 'executive-4', displayName: 'Executive 4' },
+];
+const STATIC_USERS_COLLECTION = 'prepressStaticUsers';
+
+function findStaticExecutive({ userKey, username } = {}) {
+  if (userKey) {
+    const byKey = STATIC_EXECUTIVES.find(e => e.userKey === String(userKey));
+    if (byKey) return byKey;
+  }
+  if (username) {
+    const trimmed = String(username).trim().toLowerCase();
+    const byName = STATIC_EXECUTIVES.find(e => e.displayName.toLowerCase() === trimmed);
+    if (byName) return byName;
+  }
+  return null;
+}
 
 // Combined pending API (Kolkata SQL + Ahmedabad SQL + Mongo ArtworkUnordered)
 // Exposed as: GET /api/artwork/pending
@@ -942,18 +971,41 @@ router.get('/artwork/users', async (req, res) => {
     const users = await db
       .collection('user')
       .find(query, {
-        projection: { _id: 1, displayName: 1, sites: 1, erp: 1 }
+        projection: { _id: 1, displayName: 1, sites: 1, erp: 1, passwordHash: 1 }
       })
       .sort({ displayName: 1 })
       .toArray();
     
     // Format response: return userKey, displayName, sites, and ERP data (with ledgerIds)
+    // hasPassword indicates whether a password has been set; the hash itself is never returned
     const userList = users.map(user => ({
       userKey: user._id,
       displayName: user.displayName,
       sites: user.sites || [],
-      erp: user.erp || {} // Include ERP data with ledgerIds for SQL updates
+      erp: user.erp || {}, // Include ERP data with ledgerIds for SQL updates
+      hasPassword: !!user.passwordHash
     }));
+
+    // Merge static (non-DB) executive accounts. They have no site/erp data and
+    // their passwordHashes live in the prepressStaticUsers collection.
+    // Skip them when a site filter is requested (they aren't site-specific).
+    if (site !== 'KOLKATA' && site !== 'AHMEDABAD') {
+      const staticDocs = await db
+        .collection(STATIC_USERS_COLLECTION)
+        .find({ _id: { $in: STATIC_EXECUTIVES.map(e => e.userKey) } }, { projection: { _id: 1, passwordHash: 1 } })
+        .toArray();
+      const staticPwMap = new Map(staticDocs.map(d => [d._id, !!d.passwordHash]));
+      for (const exec of STATIC_EXECUTIVES) {
+        userList.push({
+          userKey: exec.userKey,
+          displayName: exec.displayName,
+          sites: [],
+          erp: {},
+          hasPassword: !!staticPwMap.get(exec.userKey),
+          isStatic: true,
+        });
+      }
+    }
     
     res.json({
       ok: true,
@@ -966,6 +1018,141 @@ router.get('/artwork/users', async (req, res) => {
       ok: false, 
       error: e.message || 'Failed to fetch users' 
     });
+  }
+});
+
+// ---------- Prepress FMS auth ----------
+
+// Login: static admin (password 933086) or DB user (bcrypt-hashed passwordHash)
+// Exposed as: POST /api/artwork/auth/login
+// Body: { userKey?, username?, password }
+//   - For admin login: username === 'admin' and password === ADMIN_PASSWORD
+//   - For user login: userKey is the user's _id (preferred). username (displayName) is also accepted as a fallback.
+router.post('/artwork/auth/login', async (req, res) => {
+  try {
+    const { userKey, username, password } = req.body || {};
+    if (typeof password !== 'string' || password.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Password is required' });
+    }
+
+    // Static admin login
+    if ((username && String(username).trim().toLowerCase() === ADMIN_USERNAME) ||
+        (userKey && String(userKey).trim().toLowerCase() === ADMIN_USERNAME)) {
+      if (password === ADMIN_PASSWORD) {
+        return res.json({ ok: true, role: 'admin', userKey: ADMIN_USERNAME, displayName: 'admin' });
+      }
+      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    }
+
+    const db = await getMongoDb();
+
+    // Static executive accounts (Executive 1..4)
+    const staticExec = findStaticExecutive({ userKey, username });
+    if (staticExec) {
+      const doc = await db.collection(STATIC_USERS_COLLECTION).findOne(
+        { _id: staticExec.userKey },
+        { projection: { _id: 1, passwordHash: 1 } }
+      );
+      if (!doc || !doc.passwordHash) {
+        return res.status(401).json({ ok: false, error: 'No password set for this user. Contact admin.' });
+      }
+      const ok = await bcrypt.compare(password, doc.passwordHash);
+      if (!ok) {
+        return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+      }
+      return res.json({
+        ok: true,
+        role: 'executive',
+        userKey: staticExec.userKey,
+        displayName: staticExec.displayName,
+        sites: [],
+        isStatic: true,
+      });
+    }
+
+    // DB user login
+    let userDoc = null;
+    if (userKey) {
+      userDoc = await db.collection('user').findOne(
+        { _id: userKey, active: true },
+        { projection: { _id: 1, displayName: 1, sites: 1, passwordHash: 1, active: 1 } }
+      );
+    }
+    if (!userDoc && username) {
+      userDoc = await db.collection('user').findOne(
+        { displayName: String(username).trim(), active: true },
+        { projection: { _id: 1, displayName: 1, sites: 1, passwordHash: 1, active: 1 } }
+      );
+    }
+
+    if (!userDoc) {
+      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    }
+    if (!userDoc.passwordHash) {
+      return res.status(401).json({ ok: false, error: 'No password set for this user. Contact admin.' });
+    }
+
+    const ok = await bcrypt.compare(password, userDoc.passwordHash);
+    if (!ok) {
+      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    }
+
+    return res.json({
+      ok: true,
+      role: 'user',
+      userKey: userDoc._id,
+      displayName: userDoc.displayName,
+      sites: userDoc.sites || []
+    });
+  } catch (e) {
+    console.error('Error in /api/artwork/auth/login:', e);
+    res.status(500).json({ ok: false, error: e.message || 'Login failed' });
+  }
+});
+
+// Set a user password (admin-only)
+// Exposed as: POST /api/artwork/users/set-password
+// Body: { userKey, password, adminPassword }
+router.post('/artwork/users/set-password', async (req, res) => {
+  try {
+    const { userKey, password, adminPassword } = req.body || {};
+    if (!adminPassword || adminPassword !== ADMIN_PASSWORD) {
+      return res.status(403).json({ ok: false, error: 'Admin authentication required' });
+    }
+    if (!userKey || typeof userKey !== 'string') {
+      return res.status(400).json({ ok: false, error: 'userKey is required' });
+    }
+    if (typeof password !== 'string' || !/^[0-9]{6}$/.test(password)) {
+      return res.status(400).json({ ok: false, error: 'Password must be exactly 6 digits (0-9)' });
+    }
+
+    const db = await getMongoDb();
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Static executive accounts live in prepressStaticUsers, keyed by userKey.
+    const staticExec = findStaticExecutive({ userKey });
+    if (staticExec) {
+      await db.collection(STATIC_USERS_COLLECTION).updateOne(
+        { _id: staticExec.userKey },
+        { $set: { passwordHash, displayName: staticExec.displayName, updatedAt: new Date() } },
+        { upsert: true }
+      );
+      return res.json({ ok: true });
+    }
+
+    const result = await db.collection('user').updateOne(
+      { _id: userKey },
+      { $set: { passwordHash } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Error in /api/artwork/users/set-password:', e);
+    res.status(500).json({ ok: false, error: e.message || 'Failed to set password' });
   }
 });
 

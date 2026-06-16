@@ -3,9 +3,11 @@
  *
  * Applied before:
  *   (a) sending images to OpenAI Vision — improves OCR accuracy
- *   (b) building the "Scan & Download" PDF — produces clean, cropped pages
+ *       (full pipeline: rotate, resize, auto-crop, normalise, sharpen, JPEG)
+ *   (b) building the "Scan & Download" PDF — auto-crop only, no enhancement,
+ *       so the downloaded pages look like the original photo (just trimmed).
  *
- * Steps (in order):
+ * Steps (in order) when `enhance: true` (the default, used for AI/OCR):
  *   1. Fetch raw bytes from the Cloudinary URL
  *   2. Auto-rotate based on EXIF orientation (phone photos are often sideways)
  *   3. Resize so the long edge is ≤ MAX_LONG_EDGE px (keeps image in one
@@ -18,6 +20,13 @@
  *   7. Optional greyscale (for internal documents like Tally Vouchers / GRN
  *      sheets that have no meaningful colour information)
  *   8. Encode as JPEG quality 88 → small payload, lossless-enough for OCR
+ *
+ * When `enhance: false` (used for the Scan & Download PDF):
+ *   1. Fetch raw bytes
+ *   2. Auto-rotate based on EXIF orientation (required for correct orientation)
+ *   3. Auto-crop (the one preprocessing step we keep for the scan PDF)
+ *   4. Encode as JPEG quality SCAN_JPEG_QUALITY
+ *   (no resize, no normalise, no sharpen, no greyscale)
  */
 
 import sharp from 'sharp';
@@ -25,7 +34,9 @@ import axios from 'axios';
 
 const MAX_LONG_EDGE = 1536;   // fits in one GPT-4o high-res tile
 const SHARPEN_SIGMA = 1.1;    // mild unsharp mask — enough to crisp text
-const JPEG_QUALITY = 88;
+const JPEG_QUALITY = 88;      // for OCR / AI path
+const SCAN_JPEG_QUALITY = 92; // for Scan & Download PDF — preserve more detail
+                              // since we are NOT sharpening/normalising
 
 // Document detection constants
 const ANALYSIS_SIZE = 400;        // analyse a small thumbnail for speed
@@ -142,11 +153,24 @@ async function autoCrop(buf) {
  * Preprocess a Cloudinary image URL and return a JPEG buffer.
  *
  * @param {string} url  - Cloudinary (or any HTTP) image URL
- * @param {{ greyscale?: boolean }} [opts]
+ * @param {{ greyscale?: boolean, enhance?: boolean }} [opts]
+ *   - greyscale: convert to greyscale (only honoured when enhance=true)
+ *   - enhance:   when true (default), run the full OCR pipeline (resize,
+ *                normalise, sharpen, optional greyscale). When false, only
+ *                auto-rotate + auto-crop + JPEG encode are applied.
  * @returns {Promise<Buffer>}
  */
-export async function preprocessToBuffer(url, { greyscale = false } = {}) {
+export async function preprocessToBuffer(url, { greyscale = false, enhance = true } = {}) {
   const raw = await fetchBuffer(url);
+
+  if (!enhance) {
+    // Scan & Download path: only auto-crop. No resize, normalise, or sharpen.
+    // EXIF rotate is kept because without it phone photos would be sideways
+    // — that is orientation correction, not image enhancement.
+    const rotatedBuf = await sharp(raw).rotate().toBuffer();
+    const croppedBuf = await autoCrop(rotatedBuf);
+    return sharp(croppedBuf).jpeg({ quality: SCAN_JPEG_QUALITY }).toBuffer();
+  }
 
   // Step 1+2: rotate from EXIF + resize
   const resizedBuf = await sharp(raw)
@@ -176,23 +200,28 @@ export async function preprocessToBuffer(url, { greyscale = false } = {}) {
 
 /**
  * Preprocess an image and return a base64 data URI suitable for OpenAI
- * `image_url` message content.
+ * `image_url` message content. Runs the full enhancement pipeline.
  *
  * @param {string} url
  * @param {{ greyscale?: boolean }} [opts]
  * @returns {Promise<string>}  e.g. "data:image/jpeg;base64,/9j/..."
  */
 export async function preprocessForAI(url, { greyscale = false } = {}) {
-  const buf = await preprocessToBuffer(url, { greyscale });
+  const buf = await preprocessToBuffer(url, { greyscale, enhance: true });
   return `data:image/jpeg;base64,${buf.toString('base64')}`;
 }
 
 /**
- * Preprocess an image and return a raw JPEG Buffer for embedding in a PDF.
+ * Preprocess an image and return a raw JPEG Buffer for embedding in the
+ * "Scan & Download" bill PDF.
+ *
+ * Only auto-cropping is applied (plus the unavoidable EXIF orientation fix
+ * and JPEG encoding). No resize, normalise, sharpen, or greyscale — so the
+ * downloaded image looks like the original captured photo, just trimmed.
  *
  * @param {string} url
  * @returns {Promise<Buffer>}
  */
 export async function preprocessForPDF(url) {
-  return preprocessToBuffer(url, { greyscale: false });
+  return preprocessToBuffer(url, { greyscale: false, enhance: false });
 }
