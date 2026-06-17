@@ -57,28 +57,82 @@ function resolveDbName(database) {
 }
 
 async function connectPool(dbKey, dbName, requestTimeout, cache) {
-	const newConfig = {
-		...sqlConfig,
-		database: dbName,
-		requestTimeout,
-	};
-	console.log(`[DB] Creating pool`, { dbKey, dbName, requestTimeout });
+  const newConfig = {
+    ...sqlConfig,
+    database: dbName,
+    requestTimeout,
+  };
+  console.log(`[DB] Creating pool`, { dbKey, dbName, requestTimeout });
 
-	const pool = await sql.connect(newConfig);
-	await pool.request().query(`USE [${dbName}]`);
-	const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
-	const actualDb = verifyDb.recordset[0]?.currentDb;
-	if (actualDb !== dbName) {
-		throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
-	}
+  const pool = await sql.connect(newConfig);
+  await pool.request().query(`USE [${dbName}]`);
+  const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+  const actualDb = verifyDb.recordset[0]?.currentDb;
+  if (actualDb !== dbName) {
+    throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+  }
 
-	pool.on('error', (err) => {
-		console.error(`[DB] Pool error for ${dbKey}:`, err);
-		cache.delete(dbKey);
-		pool.close().catch(() => {});
-	});
+  pool.on('error', (err) => {
+    console.error(`[DB] Pool error for ${dbKey}:`, err);
+    cache.delete(dbKey);
+    pool.close().catch(() => {});
+  });
 
-	return pool;
+  return pool;
+}
+
+/**
+ * Returns a healthy pool from cache, or recreates it after idle disconnect / pool errors.
+ * Shared by getPool() and getLongQueryPool().
+ */
+async function resolveHealthyPool(cacheKey, dbKey, dbName, requestTimeout, cache, recreate) {
+  if (!cache.has(cacheKey)) {
+    return recreate();
+  }
+
+  try {
+    const pool = await cache.get(cacheKey);
+    if (!pool || !pool.connected) {
+      console.log(`[DB] Pool for ${cacheKey} is disconnected, creating new connection`);
+      cache.delete(cacheKey);
+      return recreate();
+    }
+
+    try {
+      const healthCheckPromise = pool.request().query('SELECT 1');
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Health check timeout')), 5000),
+      );
+      await Promise.race([healthCheckPromise, timeoutPromise]);
+
+      const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
+      const actualDbName = dbCheck.recordset[0]?.currentDb;
+      if (actualDbName !== dbName) {
+        console.warn(`[DB] Pool ${cacheKey} on wrong database! Expected: ${dbName}, Actual: ${actualDbName}`);
+        await pool.request().query(`USE [${dbName}]`);
+        const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+        if (verifyDb.recordset[0]?.currentDb !== dbName) {
+          throw new Error(`Failed to switch to database ${dbName}`);
+        }
+      }
+
+      console.log(`[DB] Reusing healthy pool for ${cacheKey}`);
+      return pool;
+    } catch (pingErr) {
+      console.warn(`[DB] Pool for ${cacheKey} failed health check, recreating`, { error: String(pingErr) });
+      try {
+        await pool.close();
+      } catch (closeErr) {
+        console.warn(`[DB] Error closing bad pool for ${cacheKey}:`, closeErr);
+      }
+      cache.delete(cacheKey);
+      return recreate();
+    }
+  } catch (err) {
+    console.error(`[DB] Error checking pool for ${cacheKey}:`, err);
+    cache.delete(cacheKey);
+    return recreate();
+  }
 }
 
 export function getPool(database) {
@@ -284,22 +338,21 @@ export function getLongQueryPool(database) {
 	if (!dbKey || !dbName) {
 		throw new Error(`Invalid or missing database selection: ${database}`);
 	}
-	if (!dbName) {
-		throw new Error(`No database name configured for ${database}`);
-	}
 
 	const cacheKey = `${dbKey}_LONG`;
-	if (longQueryPools.has(cacheKey)) {
-		return longQueryPools.get(cacheKey);
-	}
 
-	const poolPromise = connectPool(cacheKey, dbName, LONG_REQUEST_TIMEOUT_MS, longQueryPools);
-	longQueryPools.set(cacheKey, poolPromise);
-	poolPromise.catch((err) => {
-		console.error(`[DB] Long-query connection error`, { cacheKey, dbName, error: String(err) });
+	const recreate = () => {
 		longQueryPools.delete(cacheKey);
-	});
-	return poolPromise;
+		const poolPromise = connectPool(cacheKey, dbName, LONG_REQUEST_TIMEOUT_MS, longQueryPools);
+		longQueryPools.set(cacheKey, poolPromise);
+		poolPromise.catch((err) => {
+			console.error(`[DB] Long-query connection error`, { cacheKey, dbName, error: String(err) });
+			longQueryPools.delete(cacheKey);
+		});
+		return poolPromise;
+	};
+
+	return resolveHealthyPool(cacheKey, dbKey, dbName, LONG_REQUEST_TIMEOUT_MS, longQueryPools, recreate);
 }
 
 // Function to close all database connections
