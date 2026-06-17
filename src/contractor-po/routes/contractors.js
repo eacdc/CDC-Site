@@ -6,6 +6,18 @@ function generateSixDigitPassword() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+async function findActiveContractorByName(name, excludeId = null) {
+  const trimmed = name.trim();
+  const query = {
+    isdeleted: 0,
+    name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+  };
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+  return Contractor.findOne(query);
+}
+
 // Get all contractors (only active ones - isdeleted = 0)
 router.get('/', async (req, res) => {
   try {
@@ -24,6 +36,11 @@ router.post('/', async (req, res) => {
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    const duplicate = await findActiveContractorByName(name);
+    if (duplicate) {
+      return res.status(400).json({ error: 'A contractor with this name already exists' });
     }
 
     // Generate a unique contractorId
@@ -64,6 +81,11 @@ router.put('/:id', async (req, res) => {
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    const duplicate = await findActiveContractorByName(name, req.params.id);
+    if (duplicate) {
+      return res.status(400).json({ error: 'A contractor with this name already exists' });
     }
 
     const contractor = await Contractor.findByIdAndUpdate(

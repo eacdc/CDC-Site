@@ -8504,12 +8504,29 @@ router.get('/contractors', async (req, res) => {
   }
 });
 
+async function findActiveContractorByName(name, excludeId = null) {
+  const trimmed = name.trim();
+  const query = {
+    isdeleted: 0,
+    name: { $regex: new RegExp(`^${trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+  };
+  if (excludeId) {
+    query._id = { $ne: excludeId };
+  }
+  return Contractor.findOne(query);
+}
+
 router.post('/contractors', async (req, res) => {
   try {
     const { name } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    const duplicate = await findActiveContractorByName(name);
+    if (duplicate) {
+      return res.status(400).json({ error: 'A contractor with this name already exists' });
     }
 
     let contractorId;
@@ -8545,6 +8562,11 @@ router.put('/contractors/:id', async (req, res) => {
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Contractor name is required' });
+    }
+
+    const duplicate = await findActiveContractorByName(name, req.params.id);
+    if (duplicate) {
+      return res.status(400).json({ error: 'A contractor with this name already exists' });
     }
 
     const contractor = await Contractor.findByIdAndUpdate(
