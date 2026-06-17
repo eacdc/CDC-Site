@@ -12,6 +12,7 @@
  *   GET  /                      — search bills (text + filters)
  *   GET  /:id                   — single bill (full)
  *   PATCH /:id                  — manual field corrections + re-verify
+ *   POST /:id/replace-image     — replace one slot page image (within 1 month of upload)
  *   POST /:id/approve           — manual approval with comment
  *   GET  /stats/dashboard       — dashboard counts
  *   POST /phash                 — server-side perceptual hash for an image URL
@@ -34,6 +35,17 @@ import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
 import { enqueue, setQueueModel } from './lib/extraction-queue.js';
 
 const router = Router();
+
+const SLOT_TYPES = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
+/** Image replacement allowed for 30 days after the bill was first uploaded. */
+const IMAGE_REPLACE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+function isWithinImageReplaceWindow(uploadedAt) {
+  if (!uploadedAt) return false;
+  const uploaded = uploadedAt instanceof Date ? uploadedAt : new Date(uploadedAt);
+  if (Number.isNaN(uploaded.getTime())) return false;
+  return Date.now() - uploaded.getTime() <= IMAGE_REPLACE_WINDOW_MS;
+}
 
 // All purchase-bill data lives on the billing MongoDB (MONGODB_URI_Billing).
 // Once connected, wire the queue model so background jobs can run.
@@ -762,6 +774,98 @@ router.patch('/:id', async (req, res) => {
   } catch (err) {
     console.error('[purchase-bills] PATCH error:', err);
     return res.status(500).json({ error: err.message || 'update failed' });
+  }
+});
+
+// ============================================================
+// POST /:id/replace-image — swap one page image, re-extract + re-verify
+// Body: { slot_type, page_no, cloudinary_url, cloudinary_public_id, replaced_by? }
+// Allowed only within 30 days of bill.uploaded_at.
+// ============================================================
+router.post('/:id/replace-image', async (req, res) => {
+  try {
+    const bill = await PurchaseBill.findById(req.params.id);
+    if (!bill) return res.status(404).json({ error: 'not found' });
+
+    if (!isWithinImageReplaceWindow(bill.uploaded_at)) {
+      return res.status(403).json({
+        error: 'Image replacement is only allowed within 30 days of the original upload.',
+      });
+    }
+
+    const body = req.body || {};
+    const slotType = String(body.slot_type || '').trim();
+    const pageNo = Number(body.page_no);
+    const cloudinaryUrl = body.cloudinary_url ? String(body.cloudinary_url).trim() : '';
+    const cloudinaryPublicId = body.cloudinary_public_id
+      ? String(body.cloudinary_public_id).trim()
+      : '';
+
+    if (!SLOT_TYPES.includes(slotType)) {
+      return res.status(400).json({ error: `slot_type must be one of ${SLOT_TYPES.join(', ')}` });
+    }
+    if (!Number.isInteger(pageNo) || pageNo < 1) {
+      return res.status(400).json({ error: 'page_no must be a positive integer' });
+    }
+    if (!cloudinaryUrl || !cloudinaryPublicId) {
+      return res.status(400).json({ error: 'cloudinary_url and cloudinary_public_id are required' });
+    }
+
+    const slot = bill.slots?.[slotType];
+    const pages = Array.isArray(slot?.pages) ? slot.pages : [];
+    const pageIdx = pages.findIndex((p) => Number(p.page_no) === pageNo);
+    if (pageIdx < 0) {
+      return res.status(404).json({ error: `No page ${pageNo} in slot ${slotType}` });
+    }
+
+    const now = new Date();
+    pages[pageIdx] = {
+      page_no: pageNo,
+      cloudinary_url: cloudinaryUrl,
+      cloudinary_public_id: cloudinaryPublicId,
+      uploaded_at: now,
+      extracted_fields: {},
+      extraction_model: undefined,
+      classification_passed: undefined,
+      classification_confidence: undefined,
+    };
+    bill.slots[slotType] = { ...slot, pages };
+    bill.markModified('slots');
+
+    const slotsWithExtraction = await extractAllSlotPages(bill.slots);
+    const aggregatedSlots = aggregateAllSlots(slotsWithExtraction);
+    bill.slots = aggregatedSlots;
+    bill.markModified('slots');
+
+    const canonical = buildCanonicalFields(bill.slots, { setType: bill.set_type });
+    Object.assign(bill, canonical);
+
+    if (slotType === 'supplier_invoice' && pageNo === 1) {
+      const firstPage = aggregatedSlots.supplier_invoice?.pages?.[0];
+      if (firstPage?.cloudinary_url) {
+        try {
+          bill.invoice_image_phash = await generatePhash(firstPage.cloudinary_url);
+        } catch (phashErr) {
+          console.warn('[purchase-bills] replace-image phash failed:', phashErr?.message);
+        }
+      }
+    }
+
+    await verifyAndStamp(bill);
+
+    try {
+      await bill.save();
+    } catch (err) {
+      if (err && err.code === 11000) {
+        return res.status(409).json({ error: 'duplicate after image replacement', keyPattern: err.keyPattern });
+      }
+      throw err;
+    }
+
+    return res.json(bill);
+  } catch (err) {
+    console.error('[purchase-bills] replace-image error:', err);
+    return res.status(500).json({ error: err.message || 'image replacement failed' });
   }
 });
 
