@@ -194,7 +194,9 @@ async function getConcernPersonsByLedger(pool, ledgerId, expectedDbName) {
         Email,
         FYear,
         Designation,
-        ModifiedDate
+        ModifiedDate,
+        ISNULL(IsEmailSend, 0) AS IsEmailSend,
+        ISNULL(IsWhatsAppSend, 0) AS IsWhatsAppSend
       FROM ConcernPersonMaster
       WHERE LedgerID = @LedgerID
         AND ISNULL(IsDeleted, 0) = 0
