@@ -131,6 +131,197 @@ function componentTypeFromPlanContName(planContName, contentName) {
   return null;
 }
 
+/** One row per component from ProductionWorkOrderPrint recordset. */
+function extractComponentsFromRecordset(recordset) {
+  const seenIds = new Set();
+  return (recordset || [])
+    .map((r, idx) => ({
+      JobBookingJobCardContentsID: get(r, 'JobBookingJobCardContentsID'),
+      PlanContName: str(get(r, 'PlanContName')) || str(get(r, 'ContentName')) || str(get(r, 'JobCardContentNo')) || ('Component ' + (idx + 1))
+    }))
+    .filter(c => {
+      if (c.JobBookingJobCardContentsID == null) return false;
+      if (seenIds.has(c.JobBookingJobCardContentsID)) return false;
+      seenIds.add(c.JobBookingJobCardContentsID);
+      return true;
+    });
+}
+
+function mapJobInfoFromProcRow(procRow) {
+  return {
+    jobName: str(get(procRow, 'JobName')),
+    clientName: str(get(procRow, 'LedgerName')),
+    consignee: str(get(procRow, 'ConsigneeName')),
+    coordinator: str(get(procRow, 'JobCoordinatorName')),
+    category: str(get(procRow, 'CategoryName')) || str(get(procRow, 'Category')),
+    contentName: str(get(procRow, 'ContentName')),
+    jobSizeMm: dedupeSizeString(str(get(procRow, 'JobCloseSize'))),
+    salesPerson: str(get(procRow, 'salespersonname')) || str(get(procRow, 'Salespersonname')),
+    poNo: str(get(procRow, 'PONo')),
+    poDate: str(get(procRow, 'PODate')),
+    jobPriority: str(get(procRow, 'JobPriority')),
+    jobType: str(get(procRow, 'JobType')),
+    plateType: str(get(procRow, 'PlanType')) || str(get(procRow, 'PlateType')),
+    productCode: str(get(procRow, 'ProductCode')),
+    pcCode: str(get(procRow, 'ProductMasterCode')),
+    ProductHSNName: str(get(procRow, 'ProductHSNName')),
+    refPcCode: str(get(procRow, 'RefProductMasterCode')) || str(get(procRow, 'RefProductMasterCode1')),
+    finishedFormat: str(get(procRow, 'FormprintStyle')) || '',
+    ups: str(get(procRow, 'TotalUps')),
+    paperBy: str(get(procRow, 'PaperBy')),
+    actualSheets: str(get(procRow, 'ActualSheets')),
+    processWaste: str(get(procRow, 'WastageSheets')),
+    makeReadyWaste: str(get(procRow, 'MakeReadyWastageSheet')),
+    totalReqSheets: str(get(procRow, 'TotalSheets'))
+  };
+}
+
+/** Packaging header: Job No. shows JobCardContentNo (e.g. J08289_25_26[1_2]). */
+function mapPackagingComponentHeader(baseHeader, compRow, jobNoFallback) {
+  const jobCardContentNo = str(get(compRow, 'JobCardContentNo')) || jobNoFallback;
+  return {
+    ...baseHeader,
+    jobNo: jobCardContentNo
+  };
+}
+
+function mapPrintDetailsFromProcRow(procRow) {
+  return {
+    machineName: str(get(procRow, 'MachineName')),
+    printingStyle: str(get(procRow, 'PrintingStyle')),
+    plateQty: str(get(procRow, 'PlateQty')),
+    frontColor: str(get(procRow, 'FrontColor')) || str(get(procRow, 'FrontColorName')),
+    spFrontColor: str(get(procRow, 'SpecialFrontColor')),
+    soiRemark: '',
+    remark: str(get(procRow, 'Remark')) || str(get(procRow, 'JobCardRemark')),
+    specialInstr: str(get(procRow, 'SpecialInstructions')),
+    jobReference: str(get(procRow, 'JobReference')),
+    processSize: str(get(procRow, 'JobProcessSize')),
+    reverseTuckIn: str(get(procRow, 'Orientation')) || str(get(procRow, 'ContentName')),
+    onlineCoating: str(get(procRow, 'OnlineCoating')),
+    gripperMm: str(get(procRow, 'GRIPPERREMARK')) || str(get(procRow, 'Gripper')),
+    backColor: str(get(procRow, 'BackColor')) || str(get(procRow, 'BackColorName')),
+    spBackColor: str(get(procRow, 'SpecialBackColor')),
+    impressions: str(get(procRow, 'ImpressionsToBeCharged')) || str(get(procRow, 'totalimpressionsnew')) || str(get(procRow, 'PrintingImpressions'))
+  };
+}
+
+async function fetchPaperDetailsForComponent(pool, companyId, jobBookingId, contentsId, compRow) {
+  let paperDetails = [];
+  const procPaper = str(get(compRow, 'Paper'));
+  const procPaperSize = str(get(compRow, 'PaperSizeinMM'));
+  const procTotalSheets = str(get(compRow, 'TotalSheets'));
+  const procCutSize = str(get(compRow, 'CutSize'));
+  const procCuts = str(get(compRow, 'Cuts'));
+  const procWeight = str(get(compRow, 'TotalRequiredWt')) || str(get(compRow, 'ActualWt'));
+  const procItemCode = str(get(compRow, 'PaperCode'));
+  if (procItemCode || procPaper) {
+    paperDetails.push({
+      itemCode: procItemCode || '-',
+      itemName: procPaper || '-',
+      paperSize: procPaperSize || procCutSize || '-',
+      totalSheets: procTotalSheets || '-',
+      cutSize: procCutSize || '-',
+      cuts: procCuts || '-',
+      finalQty: procTotalSheets || '-',
+      itemWeight: procWeight || '-'
+    });
+  }
+
+  if (!jobBookingId || contentsId == null) return paperDetails;
+
+  try {
+    const request = pool.request();
+    request.input('CompanyID', sql.NVarChar(10), companyId);
+    request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+    request.input('JobBookingJobCardContentsID', sql.BigInt, contentsId);
+    const itemRes = await request.query(ItemDetailsQuery);
+    const itemRows = itemRes.recordset || [];
+    if (itemRows.length > 0) {
+      paperDetails = itemRows.map(r => ({
+        itemCode: str(get(r, 'ItemCode')) || '-',
+        itemName: str(get(r, 'ItemName')) || '-',
+        paperSize: str(get(r, 'PaperSize')) || '-',
+        totalSheets: str(get(r, 'TotalSheets')) || '-',
+        cutSize: str(get(r, 'CutSize')) || '-',
+        cuts: str(get(r, 'Cuts')) ?? '-',
+        finalQty: str(get(r, 'Final_Quantity')) || str(get(r, 'TotalSheets')) || '-',
+        itemWeight: str(get(r, 'ItemWeight')) || '-'
+      }));
+    }
+  } catch (e) {
+    console.warn('[job-card] ItemDetails query failed:', e.message);
+  }
+
+  return paperDetails;
+}
+
+async function fetchOperationDetailsForComponent(pool, companyId, jobBookingId, contentsId) {
+  const toolBySeq = {};
+  let operationDetails = [];
+  try {
+    let request = pool.request();
+    request.input('CompanyID', sql.NVarChar(10), companyId);
+    request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+    request.input('JobBookingJobCardContentsID', sql.BigInt, contentsId);
+    const opRes = await request.query(OperationDetailsQuery);
+    const opRows = opRes.recordset || [];
+    request = pool.request();
+    request.input('CompanyID', sql.NVarChar(10), companyId);
+    request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+    request.input('JobBookingJobCardContentsID', sql.BigInt, contentsId);
+    const toolRes = await request.query(ToolAllocationDetailsQuery);
+    (toolRes.recordset || []).forEach(r => {
+      const seq = get(r, 'SequenceNo');
+      if (seq != null) toolBySeq[String(seq)] = { toolCode: str(get(r, 'ToolCode')), refNo: str(get(r, 'ToolRefCode')) };
+    });
+    operationDetails = opRows.map((r, i) => {
+      const seq = get(r, 'SequenceNo');
+      const tool = seq != null ? toolBySeq[String(seq)] : null;
+      return {
+        sn: i + 1,
+        operationName: str(get(r, 'ProcessName')) || '-',
+        scheduleMachineName: str(get(r, 'ScheduledMachineName')) || '-',
+        scheduleQty: str(get(r, 'ToBeProduceQty')) || '0',
+        employeeName: str(get(r, 'EmployeeName')) || '-',
+        proMachineName: str(get(r, 'ProductionMachineName')) || '-',
+        proQty: str(get(r, 'ReadyQty')) || str(get(r, 'ProductionQuantity')) || '0',
+        date: str(get(r, 'FromTime')) || '',
+        status: str(get(r, 'Status')) || '-',
+        remark: str(get(r, 'Remarks')) || '',
+        toolCode: tool ? tool.toolCode : '',
+        refNo: tool ? tool.refNo : ''
+      };
+    });
+    const opsWithoutTool = operationDetails.filter(op => !op.toolCode && !op.refNo);
+    const opsWithTool = operationDetails.filter(op => op.toolCode || op.refNo);
+    operationDetails = [...opsWithoutTool, ...opsWithTool];
+    operationDetails.forEach((op, idx) => { op.sn = idx + 1; });
+  } catch (e) {
+    console.warn('[job-card] OperationDetails/Tool query failed:', e.message);
+  }
+  return operationDetails;
+}
+
+async function fetchAllocatedMaterialsForComponent(pool, companyId, jobBookingId, contentsId) {
+  try {
+    const request = pool.request();
+    request.input('CompanyID', sql.NVarChar(10), companyId);
+    request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
+    request.input('JobBookingJobCardContentsID', sql.BigInt, contentsId);
+    const allocRes = await request.query(AllocateMaterialDetailsQuery);
+    return (allocRes.recordset || []).map(r => ({
+      operationName: str(get(r, 'OperationName')) || '-',
+      material: str(get(r, 'Material')) || '-',
+      qty: str(get(r, 'Qty')) || '0',
+      unit: str(get(r, 'Unit')) || '-'
+    }));
+  } catch (e) {
+    console.warn('[job-card] AllocateMaterialDetails query failed:', e.message);
+    return [];
+  }
+}
+
 async function fetchPrepressDatesByJob(pool, jobBookingNo) {
   const request = pool.request();
   request.input('PWONO', sql.NVarChar(100), jobBookingNo);
@@ -526,81 +717,19 @@ router.get('/job-card', async (req, res) => {
         soQuantity: str(get(row, 'OrderQuantity'))
       };
 
-      // ---- Job Info ----
-      const jobInfo = {
-        jobName: str(get(row, 'JobName')),
-        clientName: str(get(row, 'LedgerName')),
-        consignee: str(get(row, 'ConsigneeName')),
-        coordinator: str(get(row, 'JobCoordinatorName')),
-        category: str(get(row, 'CategoryName')) || str(get(row, 'Category')),
-        contentName: str(get(row, 'ContentName')),
-        jobSizeMm: dedupeSizeString(str(get(row, 'JobCloseSize'))),
-        salesPerson: str(get(row, 'salespersonname')) || str(get(row, 'Salespersonname')),
-        poNo: str(get(row, 'PONo')),
-        poDate: str(get(row, 'PODate')),
-        jobPriority: str(get(row, 'JobPriority')),
-        jobType: str(get(row, 'JobType')),
-        plateType: str(get(row, 'PlanType')) || str(get(row, 'PlateType')),
-        productCode: str(get(row, 'ProductCode')),
-        pcCode: str(get(row, 'ProductMasterCode')),
-        ProductHSNName: str(get(row, 'ProductHSNName')),
-        refPcCode: str(get(row, 'RefProductMasterCode')) || str(get(row, 'RefProductMasterCode1')),
-        finishedFormat: str(get(row, 'FormprintStyle')) || '',
-        ups: str(get(row, 'TotalUps')),
-        paperBy: str(get(row, 'PaperBy')),
-        actualSheets: str(get(row, 'ActualSheets')),
-        processWaste: str(get(row, 'WastageSheets')),
-        makeReadyWaste: str(get(row, 'MakeReadyWastageSheet')),
-        totalReqSheets: str(get(row, 'TotalSheets'))
-      };
+      const recordset = procResult.recordset || [];
 
-      // ---- Paper Details: from procedure (1 row) then from ItemDetails query ----
-      let paperDetails = [];
-      const procPaper = str(get(row, 'Paper'));
-      const procPaperSize = str(get(row, 'PaperSizeinMM'));
-      const procTotalSheets = str(get(row, 'TotalSheets'));
-      const procCutSize = str(get(row, 'CutSize'));
-      const procCuts = str(get(row, 'Cuts'));
-      const procWeight = str(get(row, 'TotalRequiredWt')) || str(get(row, 'ActualWt'));
-      const procItemCode = str(get(row, 'PaperCode'));
-      if (procItemCode || procPaper) {
-        paperDetails.push({
-          itemCode: procItemCode || '-',
-          itemName: procPaper || '-',
-          paperSize: procPaperSize || procCutSize || '-',
-          totalSheets: procTotalSheets || '-',
-          cutSize: procCutSize || '-',
-          cuts: procCuts || '-',
-          finalQty: procTotalSheets || '-',
-          itemWeight: procWeight || '-'
-        });
-      }
+      // ---- Job Info (first component row; packaging PDF uses per-component jobInfo) ----
+      const jobInfo = mapJobInfoFromProcRow(row);
 
-      if (jobBookingId) {
-        try {
-          request = pool.request();
-          request.input('CompanyID', sql.NVarChar(10), companyId);
-          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
-          request.input('JobBookingJobCardContentsID', sql.BigInt, null);
-          const itemRes = await request.query(ItemDetailsQuery);
-          console.log('[PENDING] itemRes:', itemRes);
-          const itemRows = itemRes.recordset || [];
-          if (itemRows.length > 0) {
-            paperDetails = itemRows.map(r => ({
-              itemCode: str(get(r, 'ItemCode')) || '-',
-              itemName: str(get(r, 'ItemName')) || '-',
-              paperSize: str(get(r, 'PaperSize')) || '-',
-              totalSheets: str(get(r, 'TotalSheets')) || '-',
-              cutSize: str(get(r, 'CutSize')) || '-',
-              cuts: str(get(r, 'Cuts')) ?? '-',
-              finalQty: str(get(r, 'Final_Quantity')) || str(get(r, 'TotalSheets')) || '-',
-              itemWeight: str(get(r, 'ItemWeight')) || '-'
-            }));
-          }
-        } catch (e) {
-          console.warn('[job-card] ItemDetails query failed:', e.message);
-        }
-      }
+      // ---- Paper Details: first component fallback for commercial ----
+      let paperDetails = await fetchPaperDetailsForComponent(
+        pool,
+        companyId,
+        jobBookingId,
+        get(row, 'JobBookingJobCardContentsID'),
+        row
+      );
 
       // ---- Gang Jobs Paper Details: supplementary section (only for packaging cards) ----
       let gangPaperDetails = [];
@@ -650,91 +779,55 @@ router.get('/job-card', async (req, res) => {
         }
       }
 
-      // ---- Print Details from procedure ----
-      const printDetails = {
-        machineName: str(get(row, 'MachineName')),
-        printingStyle: str(get(row, 'PrintingStyle')),
-        plateQty: str(get(row, 'PlateQty')),
-        frontColor: str(get(row, 'FrontColor')) || str(get(row, 'FrontColorName')),
-        spFrontColor: str(get(row, 'SpecialFrontColor')),
-        soiRemark: '',
-        remark: str(get(row, 'Remark')) || str(get(row, 'JobCardRemark')),
-        specialInstr: str(get(row, 'SpecialInstructions')),
-        jobReference: str(get(row, 'JobReference')),
-        processSize: str(get(row, 'JobProcessSize')),
-        reverseTuckIn: str(get(row, 'Orientation')) || str(get(row, 'ContentName')),
-        onlineCoating: str(get(row, 'OnlineCoating')),
-        gripperMm: str(get(row, 'GRIPPERREMARK')) || str(get(row, 'Gripper')),
-        backColor: str(get(row, 'BackColor')) || str(get(row, 'BackColorName')),
-        spBackColor: str(get(row, 'SpecialBackColor')),
-        impressions: str(get(row, 'ImpressionsToBeCharged')) || str(get(row, 'totalimpressionsnew')) || str(get(row, 'PrintingImpressions'))
-      };
+      // ---- Print Details from procedure (first row; packaging PDF uses per-component printDetails) ----
+      const printDetails = mapPrintDetailsFromProcRow(row);
 
-      // ---- Operation Details + Tool allocation + Allocated Materials + Corrugation (packaging: once with null; commercial: per component in loop below) ----
+      // ---- Packaging: per-component blocks + job-level batch/corrugation ----
+      let packagingComponents = [];
       let operationDetails = [];
       let allocatedMaterials = [];
       let corrugationDetails = [];
       let batchDetails = [];
       if (jobBookingId && cardType === 'packaging') {
-        const toolBySeq = {};
-        try {
-          console.log('[job-card] OperationDetails query inputs:', { CompanyID: companyId, JobBookingID: jobBookingId });
-          request = pool.request();
-          request.input('CompanyID', sql.NVarChar(10), companyId);
-          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
-          request.input('JobBookingJobCardContentsID', sql.BigInt, null);
-          const opRes = await request.query(OperationDetailsQuery);
-          const opRows = opRes.recordset || [];
-          request = pool.request();
-          request.input('CompanyID', sql.NVarChar(10), companyId);
-          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
-          request.input('JobBookingJobCardContentsID', sql.BigInt, null);
-          const toolRes = await request.query(ToolAllocationDetailsQuery);
-          (toolRes.recordset || []).forEach(r => {
-            const seq = get(r, 'SequenceNo');
-            if (seq != null) toolBySeq[String(seq)] = { toolCode: str(get(r, 'ToolCode')), refNo: str(get(r, 'ToolRefCode')) };
+        const componentList = extractComponentsFromRecordset(recordset);
+        for (const comp of componentList) {
+          const contentsId = comp.JobBookingJobCardContentsID;
+          const compRow = recordset.find(r => get(r, 'JobBookingJobCardContentsID') === contentsId) || row;
+          const jobCardContentNo = str(get(compRow, 'JobCardContentNo')) || jobNo;
+          packagingComponents.push({
+            partName: comp.PlanContName,
+            jobCardContentNo,
+            qrCode: jobCardContentNo,
+            header: mapPackagingComponentHeader(header, compRow, jobNo),
+            jobInfo: mapJobInfoFromProcRow(compRow),
+            paperDetails: await fetchPaperDetailsForComponent(pool, companyId, jobBookingId, contentsId, compRow),
+            printDetails: mapPrintDetailsFromProcRow(compRow),
+            operationDetails: await fetchOperationDetailsForComponent(pool, companyId, jobBookingId, contentsId),
+            allocatedMaterials: await fetchAllocatedMaterialsForComponent(pool, companyId, jobBookingId, contentsId)
           });
-          operationDetails = opRows.map((r, i) => {
-            const seq = get(r, 'SequenceNo');
-            const tool = seq != null ? toolBySeq[String(seq)] : null;
-            return {
-              sn: i + 1,
-              operationName: str(get(r, 'ProcessName')) || '-',
-              scheduleMachineName: str(get(r, 'ScheduledMachineName')) || '-',
-              scheduleQty: str(get(r, 'ToBeProduceQty')) || '0',
-              employeeName: str(get(r, 'EmployeeName')) || '-',
-              proMachineName: str(get(r, 'ProductionMachineName')) || '-',
-              proQty: str(get(r, 'ReadyQty')) || str(get(r, 'ProductionQuantity')) || '0',
-              date: str(get(r, 'FromTime')) || '',
-              status: str(get(r, 'Status')) || '-',
-              remark: str(get(r, 'Remarks')) || '',
-              toolCode: tool ? tool.toolCode : '',
-              refNo: tool ? tool.refNo : ''
-            };
+        }
+
+        if (packagingComponents.length === 0) {
+          const contentsId = get(row, 'JobBookingJobCardContentsID');
+          const jobCardContentNo = str(get(row, 'JobCardContentNo')) || jobNo;
+          packagingComponents.push({
+            partName: jobInfo.contentName || 'Main',
+            jobCardContentNo,
+            qrCode: jobCardContentNo,
+            header: mapPackagingComponentHeader(header, row, jobNo),
+            jobInfo,
+            paperDetails,
+            printDetails,
+            operationDetails: await fetchOperationDetailsForComponent(pool, companyId, jobBookingId, contentsId),
+            allocatedMaterials: await fetchAllocatedMaterialsForComponent(pool, companyId, jobBookingId, contentsId)
           });
-          const opsWithoutTool = operationDetails.filter(op => !op.toolCode && !op.refNo);
-          const opsWithTool = operationDetails.filter(op => op.toolCode || op.refNo);
-          operationDetails = [...opsWithoutTool, ...opsWithTool];
-          operationDetails.forEach((op, idx) => { op.sn = idx + 1; });
-        } catch (e) {
-          console.warn('[job-card] OperationDetails/Tool query failed:', e.message);
         }
-        try {
-          request = pool.request();
-          request.input('CompanyID', sql.NVarChar(10), companyId);
-          request.input('JobBookingID', sql.NVarChar(50), jobBookingId);
-          request.input('JobBookingJobCardContentsID', sql.BigInt, null);
-          const allocRes = await request.query(AllocateMaterialDetailsQuery);
-          const allocRows = allocRes.recordset || [];
-          allocatedMaterials = allocRows.map(r => ({
-            operationName: str(get(r, 'OperationName')) || '-',
-            material: str(get(r, 'Material')) || '-',
-            qty: str(get(r, 'Qty')) || '0',
-            unit: str(get(r, 'Unit')) || '-'
-          }));
-        } catch (e) {
-          console.warn('[job-card] AllocateMaterialDetails query failed:', e.message);
-        }
+
+        const firstComp = packagingComponents[0];
+        operationDetails = firstComp.operationDetails;
+        allocatedMaterials = firstComp.allocatedMaterials;
+        paperDetails = firstComp.paperDetails;
+
         try {
           request = pool.request();
           request.input('CompanyID', sql.NVarChar(10), companyId);
@@ -909,10 +1002,11 @@ router.get('/job-card', async (req, res) => {
       const packaging = {
         type: 'packaging',
         jobNumber: jobNo,
-        displayId: str(get(row, 'JobCardContentNo')) || jobNo,
-        qrCode: str(get(row, 'JobCardContentNo')) || jobNo,
+        displayId: packagingComponents[0]?.jobCardContentNo || str(get(row, 'JobCardContentNo')) || jobNo,
+        qrCode: packagingComponents[0]?.jobCardContentNo || str(get(row, 'JobCardContentNo')) || jobNo,
         header,
         jobInfo,
+        components: packagingComponents,
         paperDetails,
         gangJobs,
         gangPaperDetails,
@@ -960,19 +1054,7 @@ router.get('/job-card', async (req, res) => {
       console.log("#############4",JSON.stringify(jobInfo));
 
       // Components from ProductionWorkOrderPrint procedure recordset (one row per component with JobBookingJobCardContentsID)
-      const recordset = procResult.recordset || [];
-      const seenIds = new Set();
-      const components = recordset
-        .map((r, idx) => ({
-          JobBookingJobCardContentsID: get(r, 'JobBookingJobCardContentsID'),
-          PlanContName: str(get(r, 'PlanContName')) || str(get(r, 'ContentName')) || str(get(r, 'JobCardContentNo')) || ('Component ' + (idx + 1))
-        }))
-        .filter(c => {
-          if (c.JobBookingJobCardContentsID == null) return false;
-          if (seenIds.has(c.JobBookingJobCardContentsID)) return false;
-          seenIds.add(c.JobBookingJobCardContentsID);
-          return true;
-        });
+      const components = extractComponentsFromRecordset(recordset);
       console.log('[job-card] Components from procedure:', components);
 
       const parts = [];
