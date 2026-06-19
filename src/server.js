@@ -20,6 +20,7 @@ import concernPersonRoutes from './routes-concern-person.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
+import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 import { closePurchaseBillsMongo } from './db-purchase-bills.js';
@@ -93,6 +94,7 @@ app.use('/api', previousItemsByClientRoutes);
 app.use('/api', jobProductImageRoutes);
 
 // CDC Bills Digitization Platform
+app.use('/api/cdc-bills/auth', cdcBillsAuthRoutes);
 app.use('/api/purchase-bills', purchaseBillsRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)

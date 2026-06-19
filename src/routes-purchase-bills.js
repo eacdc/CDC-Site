@@ -33,6 +33,12 @@ import {
 } from './lib/purchase-bill-pdf.js';
 import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
 import { enqueue, setQueueModel } from './lib/extraction-queue.js';
+import {
+  requireCdcBillsAuth,
+  requireCdcBillsAdmin,
+  requireCdcBillsModify,
+} from './middleware/cdc-bills-auth.js';
+import { logActivity } from './lib/cdc-bills-activity.js';
 
 const router = Router();
 
@@ -66,6 +72,7 @@ router.use(async (req, res, next) => {
     });
   }
 });
+router.use(requireCdcBillsAuth);
 // Cloudinary config — relies on env vars; safe to call again even if
 // already configured by the main routes module.
 if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
@@ -323,7 +330,7 @@ router.post('/', async (req, res) => {
 
     const draft = {
       set_type: setType,
-      uploaded_by: body.uploaded_by || 'anonymous',
+      uploaded_by: req.cdcBillsUser?.displayName || body.uploaded_by || 'anonymous',
       uploaded_at: new Date(),
       slots: rawSlots,
       verification_status: 'pending_extraction',
@@ -333,6 +340,7 @@ router.post('/', async (req, res) => {
       const saved = await PurchaseBill.create(draft);
       // Enqueue background extraction — returns immediately
       enqueue(saved._id);
+      logActivity({ req, action: 'upload_bill', billId: saved._id, details: { set_type: setType } });
       return res.status(201).json({ _id: saved._id, verification_status: 'pending_extraction' });
     } catch (err) {
       if (err && err.code === 11000) {
@@ -428,6 +436,7 @@ router.get('/', async (req, res) => {
       PurchaseBill.countDocuments(filter),
     ]);
 
+    logActivity({ req, action: 'search_bills', details: { page, total } });
     return res.json({ rows, total, page, limit });
   } catch (err) {
     console.error('[purchase-bills] GET / error:', err);
@@ -438,7 +447,7 @@ router.get('/', async (req, res) => {
 // ============================================================
 // GET /export.xlsx — Excel export of all rows matching the search filters
 // ============================================================
-router.get('/export.xlsx', async (req, res) => {
+router.get('/export.xlsx', requireCdcBillsAdmin, async (req, res) => {
   try {
     const filter = buildSearchFilter(req.query);
     // We fetch with a fast index-friendly sort and then re-sort in JS by
@@ -502,6 +511,7 @@ router.get('/export.xlsx', async (req, res) => {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
     res.setHeader('Content-Disposition', `attachment; filename="CDC-Bills-${ts}.xlsx"`);
+    logActivity({ req, action: 'export_excel', details: { rowCount: rows.length } });
     return res.send(buf);
   } catch (err) {
     console.error('[purchase-bills] export error:', err);
@@ -519,7 +529,7 @@ router.get('/export.xlsx', async (req, res) => {
 //
 // Voucher format expected: <PREFIX>/<SERIAL>/<FY>   e.g. PUR/70/26-27
 // ============================================================
-router.get('/missing-vouchers', async (req, res) => {
+router.get('/missing-vouchers', requireCdcBillsAdmin, async (req, res) => {
   try {
     const fy = String(req.query.fy || '').trim();
     const prefix = String(req.query.prefix || 'PUR').trim();
@@ -588,7 +598,7 @@ router.get('/missing-vouchers', async (req, res) => {
 // ============================================================
 // GET /stats/dashboard
 // ============================================================
-router.get('/stats/dashboard', async (req, res) => {
+router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
   try {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -653,6 +663,7 @@ router.get('/:id/scan-pdf', async (req, res) => {
     const filename = billScanPdfFilename(bill);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    logActivity({ req, action: 'download_scan_pdf', billId: bill._id });
     return res.send(Buffer.from(pdfBytes));
   } catch (err) {
     console.error('[purchase-bills] scan-pdf error:', err);
@@ -683,6 +694,7 @@ router.get('/:id', async (req, res) => {
   try {
     const bill = await PurchaseBill.findById(req.params.id).lean();
     if (!bill) return res.status(404).json({ error: 'not found' });
+    logActivity({ req, action: 'view_bill', billId: bill._id });
     return res.json(bill);
   } catch (err) {
     return res.status(500).json({ error: err.message || 'lookup failed' });
@@ -693,7 +705,7 @@ router.get('/:id', async (req, res) => {
 // PATCH /:id — partial update; re-runs verification
 // Body: { canonical?: {...}, slots?: {...}, manually_overridden?: boolean }
 // ============================================================
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireCdcBillsModify, async (req, res) => {
   try {
     const bill = await PurchaseBill.findById(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
@@ -770,6 +782,7 @@ router.patch('/:id', async (req, res) => {
       }
       throw err;
     }
+    logActivity({ req, action: 'edit_bill', billId: bill._id });
     return res.json(bill);
   } catch (err) {
     console.error('[purchase-bills] PATCH error:', err);
@@ -782,7 +795,7 @@ router.patch('/:id', async (req, res) => {
 // Body: { slot_type, page_no, cloudinary_url, cloudinary_public_id, replaced_by? }
 // Allowed only within 30 days of bill.uploaded_at.
 // ============================================================
-router.post('/:id/replace-image', async (req, res) => {
+router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
   try {
     const bill = await PurchaseBill.findById(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
@@ -862,6 +875,7 @@ router.post('/:id/replace-image', async (req, res) => {
       throw err;
     }
 
+    logActivity({ req, action: 'replace_image', billId: bill._id, details: { slotType, pageNo } });
     return res.json(bill);
   } catch (err) {
     console.error('[purchase-bills] replace-image error:', err);
@@ -873,7 +887,7 @@ router.post('/:id/replace-image', async (req, res) => {
 // POST /:id/approve — manual approval; requires comment
 // Body: { reviewer: string, comment: string }
 // ============================================================
-router.post('/:id/approve', async (req, res) => {
+router.post('/:id/approve', requireCdcBillsModify, async (req, res) => {
   try {
     const { reviewer, comment } = req.body || {};
     if (!comment || !String(comment).trim()) {
@@ -882,7 +896,7 @@ router.post('/:id/approve', async (req, res) => {
     const bill = await PurchaseBill.findById(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
 
-    bill.manually_reviewed_by = reviewer || 'anonymous';
+    bill.manually_reviewed_by = req.cdcBillsUser?.displayName || reviewer || 'anonymous';
     bill.manually_reviewed_at = new Date();
     bill.review_comment = String(comment).trim();
     bill.manually_overridden = true;
@@ -891,6 +905,7 @@ router.post('/:id/approve', async (req, res) => {
     // manually_overridden=true so the UI can show the approval badge).
     bill.verification_status = 'verified';
     await bill.save();
+    logActivity({ req, action: 'approve_bill', billId: bill._id });
     return res.json(bill);
   } catch (err) {
     return res.status(500).json({ error: err.message || 'approval failed' });
@@ -900,7 +915,7 @@ router.post('/:id/approve', async (req, res) => {
 // ============================================================
 // POST /:id/reprocess — re-queue a bill stuck in needs_review with no data
 // ============================================================
-router.post('/:id/reprocess', async (req, res) => {
+router.post('/:id/reprocess', requireCdcBillsModify, async (req, res) => {
   try {
     const bill = await PurchaseBill.findById(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
@@ -911,6 +926,7 @@ router.post('/:id/reprocess', async (req, res) => {
     bill.warning_failures_count = 0;
     await bill.save();
     enqueue(bill._id);
+    logActivity({ req, action: 'reprocess_bill', billId: bill._id });
     return res.json({ _id: String(bill._id), verification_status: 'pending_extraction' });
   } catch (err) {
     console.error('[purchase-bills] reprocess error:', err);
@@ -921,11 +937,12 @@ router.post('/:id/reprocess', async (req, res) => {
 // ============================================================
 // DELETE /:id — permanently delete a bill record
 // ============================================================
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireCdcBillsModify, async (req, res) => {
   try {
     const bill = await PurchaseBill.findByIdAndDelete(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
     console.log(`[purchase-bills] deleted bill ${req.params.id} (${bill.invoice_number || 'no invoice #'})`);
+    logActivity({ req, action: 'delete_bill', billId: req.params.id });
     return res.json({ deleted: true, _id: req.params.id });
   } catch (err) {
     console.error('[purchase-bills] DELETE error:', err);

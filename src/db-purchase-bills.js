@@ -5,10 +5,14 @@
  */
 import mongoose from 'mongoose';
 import { purchaseBillSchema } from './models/PurchaseBill.js';
+import { cdcBillsUserPasswordSchema } from './models/CdcBillsUserPassword.js';
+import { cdcBillsActivityLogSchema } from './models/CdcBillsActivityLog.js';
 
 let billingConnection = null;
 /** Live binding: set after `ensurePurchaseBillsReady()` resolves. */
 export let PurchaseBill = null;
+export let CdcBillsUserPassword = null;
+export let CdcBillsActivityLog = null;
 
 /** In-flight first connection; reset if connection fails. */
 let connecting = null;
@@ -18,7 +22,7 @@ let connecting = null;
  * @throws {Error} if MONGODB_URI_Billing is missing or connection fails
  */
 export async function ensurePurchaseBillsReady() {
-  if (PurchaseBill) return;
+  if (PurchaseBill && CdcBillsUserPassword && CdcBillsActivityLog) return;
   const uri = process.env.MONGODB_URI_Billing;
   if (!uri || !String(uri).trim()) {
     throw new Error(
@@ -29,6 +33,8 @@ export async function ensurePurchaseBillsReady() {
     connecting = (async () => {
       const c = mongoose.createConnection(uri.trim());
       const Model = c.model('PurchaseBill', purchaseBillSchema);
+      CdcBillsUserPassword = c.model('CdcBillsUserPassword', cdcBillsUserPasswordSchema);
+      CdcBillsActivityLog = c.model('CdcBillsActivityLog', cdcBillsActivityLogSchema);
       await c.asPromise();
       billingConnection = c;
       PurchaseBill = Model;
@@ -44,6 +50,8 @@ export async function ensurePurchaseBillsReady() {
   } catch (err) {
     connecting = null;
     PurchaseBill = null;
+    CdcBillsUserPassword = null;
+    CdcBillsActivityLog = null;
     if (billingConnection) {
       try { await billingConnection.close(); } catch { /* ignore */ }
       billingConnection = null;
@@ -57,6 +65,8 @@ export async function closePurchaseBillsMongo() {
     await billingConnection.close();
     billingConnection = null;
     PurchaseBill = null;
+    CdcBillsUserPassword = null;
+    CdcBillsActivityLog = null;
     connecting = null;
   }
 }
