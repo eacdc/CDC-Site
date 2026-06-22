@@ -602,13 +602,20 @@ router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
   try {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfWeek = new Date(startOfDay);
-    startOfWeek.setDate(startOfDay.getDate() - 7);
+    const daysSinceMonday = (startOfDay.getDay() + 6) % 7;
+    const thisWeekMonday = new Date(startOfDay);
+    thisWeekMonday.setDate(startOfDay.getDate() - daysSinceMonday);
+    const lastWeekMonday = new Date(thisWeekMonday);
+    lastWeekMonday.setDate(thisWeekMonday.getDate() - 7);
+    const lastWeekSundayEnd = new Date(thisWeekMonday);
+    lastWeekSundayEnd.setMilliseconds(-1);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const [today, thisWeek, thisMonth, byStatus, topByCount, topByValue, needsReview] = await Promise.all([
+    const [today, lastWeek, thisMonth, byStatus, topByCount, topByValue, needsReview] = await Promise.all([
       PurchaseBill.countDocuments({ uploaded_at: { $gte: startOfDay } }),
-      PurchaseBill.countDocuments({ uploaded_at: { $gte: startOfWeek } }),
+      PurchaseBill.countDocuments({
+        uploaded_at: { $gte: lastWeekMonday, $lte: lastWeekSundayEnd },
+      }),
       PurchaseBill.countDocuments({ uploaded_at: { $gte: startOfMonth } }),
       PurchaseBill.aggregate([
         { $group: { _id: '$verification_status', count: { $sum: 1 } } },
@@ -634,7 +641,7 @@ router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
     }
 
     return res.json({
-      uploads: { today, this_week: thisWeek, this_month: thisMonth },
+      uploads: { today, last_week: lastWeek, this_month: thisMonth },
       by_status: statusCounts,
       pending_review: needsReview,
       top_suppliers_by_count: topByCount.map(s => ({ supplier_name: s._id, count: s.count })),
