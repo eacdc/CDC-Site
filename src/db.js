@@ -64,12 +64,13 @@ async function connectPool(dbKey, dbName, requestTimeout, cache) {
   };
   console.log(`[DB] Creating pool`, { dbKey, dbName, requestTimeout });
 
-  const pool = await sql.connect(newConfig);
-  await pool.request().query(`USE [${dbName}]`);
+  const pool = new sql.ConnectionPool(newConfig);
+  await pool.connect();
+
   const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
   const actualDb = verifyDb.recordset[0]?.currentDb;
   if (actualDb !== dbName) {
-    throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
+    throw new Error(`Failed to connect to database ${dbName}. Currently on: ${actualDb}`);
   }
 
   pool.on('error', (err) => {
@@ -108,12 +109,14 @@ async function resolveHealthyPool(cacheKey, dbKey, dbName, requestTimeout, cache
       const dbCheck = await pool.request().query('SELECT DB_NAME() AS currentDb');
       const actualDbName = dbCheck.recordset[0]?.currentDb;
       if (actualDbName !== dbName) {
-        console.warn(`[DB] Pool ${cacheKey} on wrong database! Expected: ${dbName}, Actual: ${actualDbName}`);
-        await pool.request().query(`USE [${dbName}]`);
-        const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
-        if (verifyDb.recordset[0]?.currentDb !== dbName) {
-          throw new Error(`Failed to switch to database ${dbName}`);
+        console.warn(`[DB] Pool ${cacheKey} on wrong database! Expected: ${dbName}, Actual: ${actualDbName} — recreating`);
+        try {
+          await pool.close();
+        } catch (closeErr) {
+          console.warn(`[DB] Error closing misconfigured pool for ${cacheKey}:`, closeErr);
         }
+        cache.delete(cacheKey);
+        return recreate();
       }
 
       console.log(`[DB] Reusing healthy pool for ${cacheKey}`);
@@ -175,32 +178,10 @@ export function getPool(database) {
 					
 					// If connected to wrong database, switch to correct one
 					if (actualDbName !== expectedDbName) {
-						console.warn(`[DB] Pool ${dbKey} on wrong database! Expected: ${expectedDbName}, Actual: ${actualDbName}`);
-						console.log(`[DB] Switching to correct database [${expectedDbName}]...`);
-						
-						try {
-							await pool.request().query(`USE [${expectedDbName}]`);
-							
-							// Verify switch was successful
-							const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
-							const newActualDb = verifyDb.recordset[0]?.currentDb;
-							
-							if (newActualDb !== expectedDbName) {
-								console.error(`[DB] Failed to switch database! Still on: ${newActualDb}`);
-								// Close and recreate pool
-								await pool.close().catch(() => {});
-								pools.delete(dbKey);
-								return getPool(database);
-							}
-							
-							console.log(`[DB] Successfully switched pool ${dbKey} to [${expectedDbName}]`);
-						} catch (switchErr) {
-							console.error(`[DB] Error switching database:`, switchErr);
-							// Close and recreate pool
-							await pool.close().catch(() => {});
-							pools.delete(dbKey);
-							return getPool(database);
-						}
+						console.warn(`[DB] Pool ${dbKey} on wrong database! Expected: ${expectedDbName}, Actual: ${actualDbName} — recreating`);
+						await pool.close().catch(() => {});
+						pools.delete(dbKey);
+						return getPool(database);
 					}
 					
 					console.log(`[DB] Existing pool for ${dbKey} is healthy and connected to correct database`);
@@ -266,55 +247,41 @@ export function getPool(database) {
 		database: dbName
 	};
 	
-	// Create new pool for this database
-	const poolPromise = sql.connect(newConfig).then(async pool => {
+	// Create new pool for this database (separate ConnectionPool per DB — not sql.connect global singleton)
+	const poolPromise = (async () => {
+		const pool = new sql.ConnectionPool(newConfig);
+		await pool.connect();
 		console.log(`[DB] Successfully connected`, { dbKey, dbName });
-		
-		// CRITICAL: Explicitly switch to the correct database using USE statement
-		// This ensures we're using the right DB even if user's default DB is different
-		try {
-			await pool.request().query(`USE [${dbName}]`);
-			console.log(`[DB] Explicitly switched to database [${dbName}]`);
-			
-			// Verify we're on the correct database
-			const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
-			const actualDb = verifyDb.recordset[0]?.currentDb;
-			if (actualDb !== dbName) {
-				throw new Error(`Failed to switch to database ${dbName}. Currently on: ${actualDb}`);
-			}
-			console.log(`[DB] Verified connection to correct database`, { expected: dbName, actual: actualDb });
-		} catch (useErr) {
-			console.error(`[DB] Failed to switch to database ${dbName}:`, useErr);
-			throw useErr;
+
+		const verifyDb = await pool.request().query('SELECT DB_NAME() AS currentDb');
+		const actualDb = verifyDb.recordset[0]?.currentDb;
+		if (actualDb !== dbName) {
+			throw new Error(`Failed to connect to database ${dbName}. Currently on: ${actualDb}`);
 		}
-		
-		// Handle pool events
+		console.log(`[DB] Verified connection to correct database`, { expected: dbName, actual: actualDb });
+
 		pool.on('error', err => {
 			console.error(`[DB] Pool error for ${dbKey}:`, err);
 			pools.delete(dbKey);
-			// Try to close the pool
 			pool.close().catch(closeErr => {
 				console.error(`[DB] Error closing pool after error for ${dbKey}:`, closeErr);
 			});
 		});
-		
-		// Auto-cleanup: remove pool after extended idle time
-		// This prevents stale connections from persisting too long
+
 		const cleanupTimeout = setTimeout(() => {
 			if (pools.has(dbKey)) {
 				console.log(`[DB] Auto-cleanup: closing idle pool for ${dbKey}`);
 				pool.close().catch(err => console.warn(`[DB] Error during auto-cleanup for ${dbKey}:`, err));
 				pools.delete(dbKey);
 			}
-		}, 600000); // 10 minutes of idle time
-		
-		// Clear timeout if pool is manually closed
+		}, 600000);
+
 		pool.on('close', () => {
 			clearTimeout(cleanupTimeout);
 		});
-		
+
 		return pool;
-	});
+	})();
 	
 	// Store the pool promise
 	pools.set(dbKey, poolPromise);
