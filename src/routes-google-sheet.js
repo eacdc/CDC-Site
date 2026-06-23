@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { getPool, getLongQueryPool, LONG_REQUEST_TIMEOUT_MS } from './db.js';
 import sql from 'mssql';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
+import { fetchUnorderedForProcess, mongoRowToProcessCells } from './lib/process-mongo.js';
 
 const router = Router();
 
@@ -299,6 +300,117 @@ router.get('/google-sheet/delivery-otif', async (req, res) => {
     const elapsedMs = Date.now() - startedAt;
     console.error('[google-sheet] delivery-otif failed:', { elapsedMs, error: e });
     return res.status(500).json({ error: e.message || 'Failed to fetch Delivery OTIF' });
+  }
+});
+
+/**
+ * GET /api/google-sheet/process?database=KOL
+ * Runs GetCoordinatorChecklist with StartDate = 6 months ago, EndDate = today,
+ * then appends MongoDB ArtworkUnordered rows (same columns) for MIS reporting.
+ * Returns 2D array (headers + rows) for Google Sheets.
+ */
+router.get('/google-sheet/process', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  const now = new Date();
+  const endDate = new Date(now);
+  const startDate = new Date(now);
+  startDate.setMonth(startDate.getMonth() - 6);
+
+  const startDateStr = formatDateYYYYMMDD(startDate);
+  const endDateStr = formatDateYYYYMMDD(endDate);
+  const startedAt = Date.now();
+
+  const PROCESS_FALLBACK_HEADERS = [
+    'Client Name',
+    'PO number',
+    'PO Date',
+    'Sale order number',
+    'Sale order Date',
+    'JobCard Number',
+    'Jobcard Date',
+    'Division',
+    'File status',
+    'PrepressPerson Allocated',
+    'SalesEmployeeID',
+    'Sales Name',
+    'CoordinatorUserID',
+    'Coordinator Name',
+    'Paper Allocation Status',
+    'Paper Allocation Date',
+    'FileName',
+    'FileReceivedDate',
+  ];
+
+  try {
+    console.log('[google-sheet] process start', {
+      db,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      requestTimeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    });
+
+    const pool = await getLongQueryPool(db);
+    const result = await pool
+      .request()
+      .input('StartDate', sql.VarChar(10), startDateStr)
+      .input('EndDate', sql.VarChar(10), endDateStr)
+      .query('EXEC GetCoordinatorChecklist @StartDate, @EndDate');
+
+    const recordset = result.recordset ?? [];
+    const headers = recordset.length > 0
+      ? Object.keys(recordset[0])
+      : PROCESS_FALLBACK_HEADERS;
+
+    const sqlRows = recordset.map(row =>
+      headers.map(col => {
+        const val = row[col];
+        if (val === null || val === undefined) return '';
+        if (val instanceof Date) return formatDateDDMMYYYY(val);
+        return val;
+      }),
+    );
+
+    let mongoRows = [];
+    let mongoError = null;
+    try {
+      const unordered = await fetchUnorderedForProcess({
+        database: db,
+        startDate,
+        endDate,
+      });
+      mongoRows = unordered.map(row => mongoRowToProcessCells(headers, row));
+      console.log('[google-sheet] process mongo unordered', { count: mongoRows.length });
+    } catch (mongoErr) {
+      mongoError = mongoErr?.message || String(mongoErr);
+      console.error('[google-sheet] process mongo unordered failed:', mongoErr);
+    }
+
+    const data = [headers, ...sqlRows, ...mongoRows];
+    const elapsedMs = Date.now() - startedAt;
+    console.log('[google-sheet] process done', {
+      db,
+      sqlRows: sqlRows.length,
+      mongoRows: mongoRows.length,
+      totalRows: Math.max(0, data.length - 1),
+      elapsedMs,
+    });
+
+    return res.json({
+      data,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      sqlRowCount: sqlRows.length,
+      mongoRowCount: mongoRows.length,
+      ...(mongoError ? { mongoWarning: mongoError } : {}),
+    });
+  } catch (e) {
+    const elapsedMs = Date.now() - startedAt;
+    console.error('[google-sheet] process failed:', { elapsedMs, error: e });
+    return res.status(500).json({ error: e.message || 'Failed to fetch Process data' });
   }
 });
 
