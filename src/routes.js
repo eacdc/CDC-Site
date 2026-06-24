@@ -13,6 +13,11 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
+import {
+    generateDispatchNotePdf,
+    normalizeDispatchHeader,
+    normalizeDispatchLine
+} from './lib/dispatch-note-pdf.js';
 import { v2 as cloudinary } from 'cloudinary';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
@@ -2678,6 +2683,386 @@ router.get('/grn/completed-delivery-amount', async (req, res) => {
     } catch (err) {
         console.error('GRN completed delivery amount error:', err);
         return res.status(500).json({ status: false, error: 'Failed to fetch completed delivery amount records' });
+    }
+});
+
+function pickGrnRowField(row, ...keys) {
+    if (!row || typeof row !== 'object') return null;
+    for (const key of keys) {
+        const direct = normalizeGrnScalar(row[key]);
+        if (direct != null && direct !== '') return direct;
+        const target = String(key).toLowerCase();
+        for (const [rk, rv] of Object.entries(row)) {
+            if (String(rk).toLowerCase() === target) {
+                const normalized = normalizeGrnScalar(rv);
+                if (normalized != null && normalized !== '') return normalized;
+            }
+        }
+    }
+    return null;
+}
+
+function getGrnOrderedColumnKeys(recordset) {
+    if (!recordset || !recordset.columns || typeof recordset.columns !== 'object') return [];
+    const cols = recordset.columns;
+    return Object.keys(cols).sort((a, b) => cols[a].index - cols[b].index);
+}
+
+function pickGrnRowFieldLoose(row, pattern) {
+    if (!row || typeof row !== 'object') return null;
+    for (const [rk, rv] of Object.entries(row)) {
+        const normalized = String(rk).toLowerCase().replace(/[\s_]/g, '');
+        if (pattern.test(normalized) && rv != null && rv !== '') return rv;
+    }
+    return null;
+}
+
+function pickGrnRowFieldByColumnPattern(row, recordset, pattern) {
+    if (!row) return null;
+
+    const loose = pickGrnRowFieldLoose(row, pattern);
+    if (loose != null && loose !== '') return loose;
+
+    const orderedKeys = getGrnOrderedColumnKeys(recordset);
+    const cols = recordset?.columns;
+    if (!cols || orderedKeys.length === 0) return null;
+
+    for (const colKey of orderedKeys) {
+        const col = cols[colKey];
+        const colName = col?.metadata?.colName || colKey || '';
+        const normalized = String(colName).toLowerCase().replace(/[\s_]/g, '');
+        if (!pattern.test(normalized)) continue;
+
+        const byKey = normalizeGrnScalar(row[colKey]);
+        if (byKey != null && byKey !== '') return byKey;
+
+        if (col?.index != null) {
+            const byIndex = normalizeGrnScalar(row[col.index]);
+            if (byIndex != null && byIndex !== '') return byIndex;
+        }
+    }
+    return null;
+}
+
+function normalizeGrnScalar(value) {
+    if (Array.isArray(value)) {
+        return value.length ? value[0] : null;
+    }
+    return value;
+}
+
+function parseGrnPositiveInt(value) {
+    const num = Number(normalizeGrnScalar(value));
+    return Number.isInteger(num) && num > 0 ? num : null;
+}
+
+function parseGrnIsoDate(value, label) {
+    const text = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        throw new Error(`Invalid or missing ${label} (expected yyyy-MM-dd)`);
+    }
+    return text;
+}
+
+// GRN: Processed delivery notes for Challan Detail screen
+router.get('/grn/processed-delivery-notes', async (req, res) => {
+    try {
+        const { database, fromDate, toDate } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const fromDateStr = parseGrnIsoDate(fromDate, 'fromDate');
+        const toDateStr = parseGrnIsoDate(toDate, 'toDate');
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, fromDateStr)
+            .input('ToDate', sql.Date, toDateStr)
+            .execute('dbo.GetProcessedDeliveryNotes');
+
+        const recordset = result.recordset || [];
+        const records = recordset.map((row) => {
+            const fgTransactionIdRaw = pickGrnRowField(
+                row,
+                'FGTransactionID',
+                'FGTransactionId',
+                'fgTransactionId',
+                'FG Transaction ID',
+                'FgTransactionID'
+            ) ?? pickGrnRowFieldByColumnPattern(row, recordset, /^fgtransactionid$/);
+            const fgTransactionId = parseGrnPositiveInt(fgTransactionIdRaw);
+            const totalDeliveredCartons = pickGrnRowField(
+                row,
+                'Total Delivered Carton',
+                'Total Delivered Cartons',
+                'TotalDeliveredCarton',
+                'TotalDeliveredCartons'
+            ) ?? pickGrnRowFieldByColumnPattern(row, recordset, /^totaldeliveredcartons?$/);
+            const totalQty = pickGrnRowField(row, 'Total Qty', 'TotalQty')
+                ?? pickGrnRowFieldByColumnPattern(row, recordset, /^totalqty$/);
+            const canUpdateRaw = pickGrnRowField(row, 'Update Challan Details', 'UpdateChallanDetails', 'CanUpdate')
+                ?? pickGrnRowFieldByColumnPattern(row, recordset, /^updatechallandetails$/);
+            const canUpdateExplicitFalse = canUpdateRaw === 0
+                || canUpdateRaw === false
+                || String(canUpdateRaw).trim().toLowerCase() === '0'
+                || String(canUpdateRaw).trim().toLowerCase() === 'false'
+                || String(canUpdateRaw).trim().toLowerCase() === 'no';
+            const canUpdateExplicitTrue = canUpdateRaw === 1
+                || canUpdateRaw === true
+                || String(canUpdateRaw).trim() === '1'
+                || String(canUpdateRaw).trim().toLowerCase() === 'true'
+                || String(canUpdateRaw).trim().toLowerCase() === 'yes';
+
+            return {
+                fgTransactionId,
+                deliveryNoteNo: pickGrnRowField(row, 'Delivery Note No.', 'DeliveryNoteNo', 'VoucherNo')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^deliverynoteno$/),
+                deliveryNoteDate: pickGrnRowField(row, 'Delivery Note Date', 'DeliveryNoteDate', 'VoucherDate')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^deliverynotedate$/),
+                clientName: pickGrnRowField(row, 'Client Name', 'ClientName', 'Clientname')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^clientname$/),
+                poDate: pickGrnRowField(row, 'PO Date', 'PODate')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^podate$/),
+                totalDeliveredCartons: totalDeliveredCartons != null ? Number(totalDeliveredCartons) : null,
+                totalQty: totalQty != null ? Number(totalQty) : null,
+                canUpdate: canUpdateExplicitFalse
+                    ? false
+                    : (canUpdateExplicitTrue || Boolean(fgTransactionId)),
+                jobBookingId: pickGrnRowField(row, 'JobBookingID', 'JobBookingId')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^jobbookingid$/),
+                jobBookingNo: pickGrnRowField(row, 'JobBookingNo', 'JobBookingNo')
+                    ?? pickGrnRowFieldByColumnPattern(row, recordset, /^jobbookingno$/)
+            };
+        });
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN processed delivery notes error:', err);
+        const msg = err?.message || String(err);
+        if (msg.includes('Invalid or missing fromDate') || msg.includes('Invalid or missing toDate')) {
+            return res.status(400).json({ status: false, error: msg });
+        }
+        return res.status(500).json({ status: false, error: 'Failed to fetch processed delivery notes' });
+    }
+});
+
+// GRN: Delivery note challan header for Update Challan Details screen
+router.get('/grn/delivery-note-challan-details', async (req, res) => {
+    try {
+        const { database, fgTransactionId } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const fgId = Number(fgTransactionId);
+        if (!Number.isInteger(fgId) || fgId <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing fgTransactionId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FGTransactionID', sql.Int, fgId)
+            .execute('dbo.GetDeliveryNoteChallanDetails');
+
+        const row = (result.recordset || [])[0];
+        if (!row) {
+            return res.status(404).json({ status: false, error: 'Delivery note not found' });
+        }
+
+        const consigneeLedgerIdRaw = pickGrnRowField(row, 'ConsigneeLedgerID', 'ConsigneeLedgerId');
+        const transporterLedgerIdRaw = pickGrnRowField(row, 'TransporterLedgerID', 'TransporterLedgerId');
+        const clientIdRaw = pickGrnRowField(row, 'ClientID', 'ClientId');
+
+        const details = {
+            fgTransactionId: fgId,
+            deliveryNoteNo: pickGrnRowField(row, 'DeliveryNoteNo', 'Delivery Note No.'),
+            deliveryNoteDate: pickGrnRowField(row, 'DeliveryNoteDate', 'Delivery Note Date'),
+            clientId: clientIdRaw != null ? Number(clientIdRaw) : null,
+            clientName: pickGrnRowField(row, 'ClientName', 'Client Name'),
+            consigneeLedgerId: consigneeLedgerIdRaw != null ? Number(consigneeLedgerIdRaw) : null,
+            consigneeName: pickGrnRowField(row, 'ConsigneeName', 'Consignee Name'),
+            modeOfTransport: pickGrnRowField(row, 'ModeOfTransport', 'Mode Of Transport'),
+            transporterLedgerId: transporterLedgerIdRaw != null ? Number(transporterLedgerIdRaw) : null,
+            transporterName: pickGrnRowField(row, 'TransporterName', 'Transporter Name'),
+            vehicleNo: pickGrnRowField(row, 'VehicleNo', 'Vehicle No'),
+            podNo: pickGrnRowField(row, 'PODNo', 'POD No'),
+            containerNo: pickGrnRowField(row, 'ContainerNo', 'Container No'),
+            sealNo: pickGrnRowField(row, 'SealNo', 'Seal No'),
+            remark: pickGrnRowField(row, 'Remark')
+        };
+
+        return res.json({ status: true, details });
+    } catch (err) {
+        console.error('GRN delivery note challan details error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch delivery note challan details' });
+    }
+});
+
+// GRN: Consignee options for Update Challan Details dropdown
+router.get('/grn/consignees', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().query(`
+            SELECT LedgerID, LedgerName
+            FROM LedgerMaster
+            WHERE LedgerType = 'Consignee'
+              AND ISNULL(IsDeleted, 0) = 0
+              AND ISNULL(IsDeletedTransaction, 0) = 0
+            ORDER BY LedgerName;
+        `);
+
+        const consignees = (result.recordset || []).map((row) => ({
+            ledgerId: row.LedgerID ?? row.ledgerid ?? null,
+            ledgerName: row.LedgerName ?? row.ledgername ?? ''
+        }));
+
+        return res.json({ status: true, consignees });
+    } catch (err) {
+        console.error('GRN consignees error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch consignees' });
+    }
+});
+
+// GRN: Update delivery note challan header (Update Challan Details screen)
+router.post('/grn/update-delivery-note-challan-details', async (req, res) => {
+    try {
+        const {
+            database,
+            userId,
+            fgTransactionId,
+            consigneeLedgerId,
+            modeOfTransport,
+            transporterLedgerId,
+            vehicleNo,
+            podNo,
+            containerNo,
+            sealNo,
+            remark
+        } = req.body || {};
+
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const userIdNum = Number(userId);
+        if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing userId' });
+        }
+
+        const fgId = Number(fgTransactionId);
+        if (!Number.isInteger(fgId) || fgId <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing fgTransactionId' });
+        }
+
+        const transporterIdNum = Number(transporterLedgerId);
+        if (!Number.isInteger(transporterIdNum) || transporterIdNum <= 0) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing transporterLedgerId' });
+        }
+
+        const modeText = String(modeOfTransport || '').trim();
+        const vehicleText = String(vehicleNo || '').trim();
+        if (!modeText || !vehicleText) {
+            return res.status(400).json({ status: false, error: 'Mode of transport and vehicle number are required' });
+        }
+
+        const consigneeIdNum = consigneeLedgerId == null || consigneeLedgerId === ''
+            ? 0
+            : Number(consigneeLedgerId);
+        if (!Number.isInteger(consigneeIdNum) || consigneeIdNum < 0) {
+            return res.status(400).json({ status: false, error: 'Invalid consigneeLedgerId' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FGTransactionID', sql.Int, fgId)
+            .input('UserID', sql.Int, userIdNum)
+            .input('ConsigneeLedgerID', sql.Int, consigneeIdNum)
+            .input('ModeOfTransport', sql.NVarChar(255), modeText)
+            .input('TransporterLedgerID', sql.Int, transporterIdNum)
+            .input('VehicleNo', sql.NVarChar(255), vehicleText)
+            .input('PODNo', sql.NVarChar(255), String(podNo || '').trim())
+            .input('ContainerNo', sql.NVarChar(255), String(containerNo || '').trim())
+            .input('SealNo', sql.NVarChar(255), String(sealNo || '').trim())
+            .input('Remark', sql.NVarChar(1000), String(remark || '').trim())
+            .execute('dbo.UpdateDeliveryNoteHeader_Manu');
+
+        const rows = result.recordset || [];
+        const first = rows[0] || {};
+        const statusText = pickGrnRowField(first, 'Status', 'Result', 'Message') || '';
+        const statusLower = String(statusText).toLowerCase();
+        if (statusLower !== 'success') {
+            return res.json({
+                status: false,
+                error: statusText || 'Update failed',
+                sp: first
+            });
+        }
+
+        return res.json({
+            status: true,
+            message: statusText || 'Challan details updated successfully',
+            sp: first
+        });
+    } catch (err) {
+        console.error('GRN update delivery note challan details error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to update delivery note challan details' });
+    }
+});
+
+// GRN: Download dispatch details PDF for a delivery note
+router.get('/grn/delivery-note-dispatch-pdf', async (req, res) => {
+    try {
+        const { database, voucherNo, username } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const voucherNoText = String(voucherNo || '').trim();
+        if (!voucherNoText) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing voucherNo' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('VoucherNo', sql.NVarChar(255), voucherNoText)
+            .execute('dbo.GetDeliveryNoteDetailsByBarcode_Manu');
+
+        const headerRow = (result.recordsets?.[0] || result.recordset || [])[0];
+        const header = normalizeDispatchHeader(headerRow);
+        if (!header) {
+            return res.status(404).json({ status: false, error: 'Delivery note not found' });
+        }
+
+        const statusLower = String(header.status || '').toLowerCase();
+        if (statusLower && statusLower !== 'success') {
+            return res.status(400).json({ status: false, error: header.status || 'Failed to load delivery note details' });
+        }
+
+        const lineRows = result.recordsets?.[1] || [];
+        const lines = lineRows.map(normalizeDispatchLine).filter(Boolean);
+
+        const pdfBytes = await generateDispatchNotePdf(header, lines, {
+            createdBy: String(username || '').trim()
+        });
+
+        const safeName = voucherNoText.replace(/[^\w.-]+/g, '_');
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="Dispatch_${safeName}.pdf"`);
+        return res.send(Buffer.from(pdfBytes));
+    } catch (err) {
+        console.error('GRN delivery note dispatch PDF error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to generate dispatch PDF' });
     }
 });
 
