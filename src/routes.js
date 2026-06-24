@@ -4890,6 +4890,7 @@ Base AS
 (
     SELECT
         UM.UserName,
+        PM.ProcessName,
         CAST(PEP.VoucherDate AS DATE) AS EntryDate,
         MIN(PEP.CreatedDate) AS FirstEntryAt,
         MAX(PEP.CreatedDate) AS LastEntryAt,
@@ -4900,16 +4901,20 @@ Base AS
         ON PEP.JobBookingID = JC.JobBookingID
     LEFT JOIN UserMaster UM
         ON PEP.UserID = UM.UserID
+    LEFT JOIN ProcessMaster PM
+        ON PM.ProcessID = PEP.ProcessID
     WHERE
         jc.JobBookingNo LIKE N'%' + @JobBookingNo + N'%'
         AND ISNULL(PEP.IsDeletedTransaction,0) = 0
     GROUP BY
         UM.UserName,
+        PM.ProcessName,
         CAST(PEP.VoucherDate AS DATE)
 )
 SELECT
     (SELECT jnr.JobNumber FROM JobNumberResolved jnr) AS [Job Number],
     UserName,
+    ProcessName,
     EntryDate,
     EntryCount,
     CONVERT(VARCHAR(19), CAST((FirstEntryAt AT TIME ZONE 'India Standard Time') AS DATETIME2(0)), 120) + ' IST' AS FirstEntryAt,
@@ -4924,7 +4929,8 @@ SELECT
 FROM Base
 ORDER BY
     EntryDate,
-    UserName;
+    UserName,
+    ProcessName;
 `;
 
 router.post('/reports/qc-job-card-entries', async (req, res) => {
