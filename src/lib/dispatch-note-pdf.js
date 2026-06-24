@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import sharp from 'sharp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const IMAGES_DIR = join(__dirname, '..', '..', 'images');
@@ -134,8 +135,14 @@ function detectImageType(bytes) {
 async function embedLogo(pdfDoc) {
     const logoPath = findLogoPath();
     if (!logoPath) return null;
-    const bytes = readFileSync(logoPath);
-    const imageType = detectImageType(bytes);
+    const rawBytes = readFileSync(logoPath);
+    const imageType = detectImageType(rawBytes);
+    if (!imageType) return null;
+
+    const bytes = await sharp(rawBytes)
+        .modulate({ brightness: 0.78, saturation: 1.2 })
+        .toBuffer();
+
     if (imageType === 'png') return pdfDoc.embedPng(bytes);
     if (imageType === 'jpg') return pdfDoc.embedJpg(bytes);
     return null;
@@ -216,43 +223,53 @@ function drawTableRow(page, fonts, x, y, row, width) {
     return y - rowHeight;
 }
 
-export async function generateDispatchNotePdf(header, lines, options = {}) {
-    const pdfDoc = await PDFDocument.create();
-    const fonts = {
-        regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
-        bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-    };
-    const logo = await embedLogo(pdfDoc);
+function drawCopyLabel(page, fonts, label, pageWidth, margin, pageHeight) {
+    const size = 10;
+    const textWidth = fonts.bold.widthOfTextAtSize(label, size);
+    const x = pageWidth - margin - textWidth;
+    const y = pageHeight - margin - 8;
+    page.drawText(label, { x, y, size, font: fonts.bold, color: rgb(0, 0, 0) });
+    page.drawLine({
+        start: { x, y: y - 2 },
+        end: { x: x + textWidth, y: y - 2 },
+        thickness: 0.8,
+        color: rgb(0, 0, 0)
+    });
+}
 
-    const pageWidth = 595.28;
-    const pageHeight = 841.89;
-    const margin = 36;
-    const contentWidth = pageWidth - margin * 2;
-    const createdBy = displayValue(options.createdBy, '');
+function renderDispatchCopy(pdfDoc, ctx, copyLabel) {
+    const { fonts, logo, header, lines, pageWidth, pageHeight, margin, contentWidth, createdBy } = ctx;
 
     let page = pdfDoc.addPage([pageWidth, pageHeight]);
     let y = pageHeight - margin;
 
+    const LOGO_SIZE = 58;
+    const LOGO_GAP = 10;
+    const COMPANY_FONT_SIZE = 8;
+    const COMPANY_LINE_HEIGHT = 10;
+    const headerTopY = pageHeight - margin;
+    const logoBottomY = headerTopY - LOGO_SIZE;
+
     if (logo) {
-        page.drawImage(logo, { x: margin, y: y - 58, width: 58, height: 58 });
+        page.drawImage(logo, { x: margin, y: logoBottomY, width: LOGO_SIZE, height: LOGO_SIZE });
     }
 
-    const companyX = margin + 68;
-    y = drawTextLines(page, COMPANY_LINES, companyX, y - 4, fonts.regular, 8, rgb(0, 0, 0), 10);
+    const logoCenterY = logoBottomY + LOGO_SIZE / 2;
+    const companyFirstBaselineY =
+        logoCenterY + ((COMPANY_LINES.length - 1) / 2) * COMPANY_LINE_HEIGHT;
+    const companyX = margin + LOGO_SIZE + LOGO_GAP;
+    drawTextLines(
+        page,
+        COMPANY_LINES,
+        companyX,
+        companyFirstBaselineY,
+        fonts.regular,
+        COMPANY_FONT_SIZE,
+        rgb(0, 0, 0),
+        COMPANY_LINE_HEIGHT
+    );
 
-    page.drawText('ORIGINAL', {
-        x: pageWidth - margin - 52,
-        y: pageHeight - margin - 8,
-        size: 10,
-        font: fonts.bold,
-        color: rgb(0, 0, 0)
-    });
-    page.drawLine({
-        start: { x: pageWidth - margin - 52, y: pageHeight - margin - 10 },
-        end: { x: pageWidth - margin, y: pageHeight - margin - 10 },
-        thickness: 0.8,
-        color: rgb(0, 0, 0)
-    });
+    drawCopyLabel(page, fonts, copyLabel, pageWidth, margin, pageHeight);
 
     const title = 'Dispatch Details';
     const titleWidth = fonts.bold.widthOfTextAtSize(title, 16);
@@ -434,6 +451,36 @@ export async function generateDispatchNotePdf(header, lines, options = {}) {
         size: 9,
         font: fonts.regular
     });
+}
+
+export async function generateDispatchNotePdf(header, lines, options = {}) {
+    const pdfDoc = await PDFDocument.create();
+    const fonts = {
+        regular: await pdfDoc.embedFont(StandardFonts.Helvetica),
+        bold: await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+    };
+    const logo = await embedLogo(pdfDoc);
+
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const margin = 36;
+    const contentWidth = pageWidth - margin * 2;
+    const createdBy = displayValue(options.createdBy, '');
+
+    const ctx = {
+        fonts,
+        logo,
+        header,
+        lines,
+        pageWidth,
+        pageHeight,
+        margin,
+        contentWidth,
+        createdBy
+    };
+
+    renderDispatchCopy(pdfDoc, ctx, 'ORIGINAL');
+    renderDispatchCopy(pdfDoc, ctx, 'DUPLICATE');
 
     return pdfDoc.save();
 }
