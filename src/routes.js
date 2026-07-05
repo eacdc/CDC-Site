@@ -3865,6 +3865,98 @@ router.post('/inventory-summary/po-noclient-update-client', async (req, res) => 
     }
 });
 
+// CDC Invoice Wise Inventory: purchase invoice register (dbo.GetPurchaseInvoiceRegister_Manu)
+router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
+    try {
+        const { database, fromDate, toDate, supplierLedgerId, invoiceTransactionId } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        let supplierLedgerIdNum = null;
+        if (supplierLedgerId != null && String(supplierLedgerId).trim() !== '') {
+            const parsed = parseInt(String(supplierLedgerId), 10);
+            if (!Number.isInteger(parsed) || parsed <= 0) {
+                return res.status(400).json({ status: false, error: 'Invalid supplierLedgerId' });
+            }
+            supplierLedgerIdNum = parsed;
+        }
+
+        let invoiceTransactionIdNum = null;
+        if (invoiceTransactionId != null && String(invoiceTransactionId).trim() !== '') {
+            const parsed = parseInt(String(invoiceTransactionId), 10);
+            if (!Number.isInteger(parsed) || parsed <= 0) {
+                return res.status(400).json({ status: false, error: 'Invalid invoiceTransactionId' });
+            }
+            invoiceTransactionIdNum = parsed;
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, safeFromDate)
+            .input('ToDate', sql.Date, safeToDate)
+            .input('SupplierLedgerID', sql.Int, supplierLedgerIdNum)
+            .input('InvoiceTransactionID', sql.Int, invoiceTransactionIdNum)
+            .execute('dbo.GetPurchaseInvoiceRegister_Manu');
+
+        const pick = (row, ...keys) => {
+            for (const key of keys) {
+                if (row[key] != null && row[key] !== '') return row[key];
+            }
+            return '';
+        };
+
+        const records = (result.recordset || []).map((row) => {
+            const vendorInvoiceDate = pick(row, 'Vendor Invoice Date', 'VendorInvoiceDate');
+            return {
+                supplier: pick(row, 'Supplier'),
+                clientRef: pick(row, 'ClientRef'),
+                item: pick(row, 'Item'),
+                vendorInvNum: pick(row, 'Vendor Inv Num', 'VendorInvNum'),
+                vendorInvoiceDate: vendorInvoiceDate instanceof Date
+                    ? vendorInvoiceDate.toISOString().slice(0, 10)
+                    : String(vendorInvoiceDate || '').slice(0, 10),
+                indusPurchaseInvNumber: pick(row, 'Indus Purchase Inv Number', 'IndusPurchaseInvNumber'),
+                grnNum: pick(row, 'GRN Num', 'GRNNum'),
+                poNumber: pick(row, 'PO Number', 'PONumber'),
+                wt: Number(pick(row, 'WT') || 0),
+                rate: Number(pick(row, 'Rate') || 0),
+                value: Number(pick(row, 'Value') || 0)
+            };
+        });
+
+        return res.json({
+            status: true,
+            database: selectedDatabase,
+            fromDate: safeFromDate,
+            toDate: safeToDate,
+            count: records.length,
+            records
+        });
+    } catch (err) {
+        console.error('Invoice wise inventory purchase register error:', err);
+        const msg = err?.message || String(err);
+        if (msg.toLowerCase().includes('could not find stored procedure')) {
+            return res.status(502).json({
+                status: false,
+                error: 'Stored procedure dbo.GetPurchaseInvoiceRegister_Manu was not found on this database.'
+            });
+        }
+        return res.status(500).json({ status: false, error: 'Failed to fetch purchase invoice register' });
+    }
+});
+
 // GRN: Save delivery amount entries
 router.post('/grn/save-delivery-amount', async (req, res) => {
     let transaction = null;

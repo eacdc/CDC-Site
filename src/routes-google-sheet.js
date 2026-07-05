@@ -8,6 +8,7 @@ import { getPool, getLongQueryPool, LONG_REQUEST_TIMEOUT_MS } from './db.js';
 import sql from 'mssql';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { fetchUnorderedForProcess, mongoRowToProcessCells } from './lib/process-mongo.js';
+import Bill from './models/Bill.js';
 
 const router = Router();
 
@@ -74,6 +75,208 @@ function getLastSixMonthsDateRange() {
     startDateStr: formatDateYYYYMMDD(startDate),
     endDateStr: formatDateYYYYMMDD(endDate),
   };
+}
+
+/** Formats a UTC-midnight Date (representing a calendar date) as yyyy-MM-dd. */
+function formatDateYYYYMMDD_UTC(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/** Returns "today" (as a UTC-midnight Date) per the Asia/Kolkata calendar date, regardless of server TZ. */
+function getTodayInKolkata() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const lookup = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return new Date(Date.UTC(Number(lookup.year), Number(lookup.month) - 1, Number(lookup.day)));
+}
+
+/**
+ * Mirrors the Apps Script date math: last Monday -> last Sunday, relative to
+ * "today" in Asia/Kolkata. E.g. if today is Wed, returns the Mon-Sun of the
+ * previous full week.
+ */
+function getLastMondayToSundayRange() {
+  const today = getTodayInKolkata();
+  const dayOfWeek = today.getUTCDay(); // 0=Sun..6=Sat
+
+  const lastSunday = new Date(today);
+  lastSunday.setUTCDate(today.getUTCDate() - dayOfWeek);
+
+  const lastMonday = new Date(lastSunday);
+  lastMonday.setUTCDate(lastSunday.getUTCDate() - 6);
+
+  return {
+    startDateStr: formatDateYYYYMMDD_UTC(lastMonday),
+    endDateStr: formatDateYYYYMMDD_UTC(lastSunday),
+  };
+}
+
+/** "dd/MM/yyyy hh:mm A" in Asia/Kolkata, matching Utilities.formatDate(now, "Asia/Kolkata", "dd/MM/yyyy hh:mm a"). */
+function formatTimestampIST(d) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(d);
+  const lookup = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return `${lookup.day}/${lookup.month}/${lookup.year} ${lookup.hour}:${lookup.minute} ${(lookup.dayPeriod || '').toUpperCase()}`;
+}
+
+// Columns rounded to whole numbers (quantities) vs 2 decimals (rates/costs),
+// mirroring the qtyColumns / rateCostColumns lists in the original Apps Script.
+const GP_REPORT_QTY_COLUMNS = new Set([
+  'OrderQty', 'GPN Qty', 'Del Qty',
+  'Planned Print Imp', 'Actual Print Imp', 'Final Print Imp',
+  'Foil Issued', 'TotalBookedPaperWt', 'IssuedWt',
+]);
+
+const GP_REPORT_RATE_COST_COLUMNS = new Set([
+  'Unit Price', 'Total Bill Value',
+  'IssuedCost', 'Booked Kraft Cost', 'Booked Lam Film Cost',
+  'Booked Adhesive Cost', 'Booked Coating Cost',
+  'Plate Amount', 'Notional Pack&Del',
+  'Delivery Cost',
+  'Notional-ContCost', 'Addl Manual Total Cost',
+  'Total Cost', 'GP', 'GP/Imp',
+]);
+
+function roundMoney(num) {
+  return Number(Number(num).toFixed(2));
+}
+
+/**
+ * Bulk-fetch finalized contractor cost per job number from MongoDB Bills.
+ * One aggregation round-trip for all jobs in the report (not per-job queries).
+ * @param {string[]} jobNumbers
+ * @returns {Promise<Map<string, number>>}
+ */
+async function fetchContractorCostByJobNumbers(jobNumbers) {
+  const uniqueJobNumbers = [...new Set(jobNumbers.filter(Boolean))];
+  if (uniqueJobNumbers.length === 0) return new Map();
+
+  const rows = await Bill.aggregate([
+    {
+      $match: {
+        $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }],
+        'jobs.jobNumber': { $in: uniqueJobNumbers },
+      },
+    },
+    { $unwind: '$jobs' },
+    { $match: { 'jobs.jobNumber': { $in: uniqueJobNumbers } } },
+    { $unwind: '$jobs.ops' },
+    {
+      $group: {
+        _id: '$jobs.jobNumber',
+        totalCost: { $sum: { $ifNull: ['$jobs.ops.totalValue', 0] } },
+      },
+    },
+  ]);
+
+  return new Map(rows.map(r => [String(r._id).trim(), Number(r.totalCost) || 0]));
+}
+
+/**
+ * Builds the 2D array (headers + rows) for the weekly GP% report, replicating
+ * the Apps Script `getmachineschedule()` row-processing logic:
+ *  - quantity columns rounded to whole numbers
+ *  - rate/cost columns rounded to 2 decimals
+ *  - Notional-ContCost populated from MongoDB contractor bills (when map provided)
+ *  - Total Cost / GP / GP/Imp recomputed to include contractor + addl manual cost
+ *  - an extra "GP %" column appended, computed as (BillValue - TotalCost) / BillValue
+ * @param {import('mssql').IResult<any>} result
+ * @param {Map<string, number>} [contractorCostByJob]
+ */
+function buildGpReportData(result, contractorCostByJob = new Map()) {
+  const recordset = result.recordset ?? [];
+  const columnNames = recordset.columns
+    ? Object.keys(recordset.columns)
+    : (recordset.length > 0 ? Object.keys(recordset[0]) : []);
+
+  const headers = [...columnNames, 'GP %'];
+  const idx = (name) => columnNames.indexOf(name);
+  const jobCardNoIdx = idx('JobCardNo');
+  const billValueIdx = idx('Total Bill Value');
+  const totalCostIdx = idx('Total Cost');
+  const gpIdx = idx('GP');
+  const gpImpIdx = idx('GP/Imp');
+  const finalPrintImpIdx = idx('Final Print Imp');
+  const notionalContCostIdx = idx('Notional-ContCost');
+  const addlManualCostIdx = idx('Addl Manual Total Cost');
+
+  const rows = recordset.map(record => {
+    const jobNumber = jobCardNoIdx !== -1
+      ? String(record[columnNames[jobCardNoIdx]] ?? '').trim()
+      : '';
+    const contractorCost = contractorCostByJob.get(jobNumber) || 0;
+
+    const enrichedRecord = { ...record };
+    if (notionalContCostIdx !== -1) {
+      enrichedRecord[columnNames[notionalContCostIdx]] = contractorCost;
+    }
+
+    const row = columnNames.map(colName => {
+      const value = enrichedRecord[colName];
+      if (value === null || value === undefined) return '';
+      if (value instanceof Date) return formatDateDDMMYYYY(value);
+
+      const num = Number(value);
+      if (typeof value !== 'boolean' && value !== '' && !Number.isNaN(num)) {
+        if (GP_REPORT_QTY_COLUMNS.has(colName)) return Math.round(num);
+        if (GP_REPORT_RATE_COST_COLUMNS.has(colName)) return Number(num.toFixed(2));
+      }
+      return value;
+    });
+
+    const billValue = billValueIdx !== -1 ? parseFloat(row[billValueIdx]) : NaN;
+    const spTotalCost = totalCostIdx !== -1
+      ? parseFloat(record[columnNames[totalCostIdx]])
+      : 0;
+    const addlManualCost = addlManualCostIdx !== -1
+      ? parseFloat(row[addlManualCostIdx]) || 0
+      : 0;
+    const contCost = roundMoney(contractorCost);
+
+    const newTotalCost = roundMoney(
+      (Number.isNaN(spTotalCost) ? 0 : spTotalCost) + contCost + addlManualCost,
+    );
+
+    if (totalCostIdx !== -1) {
+      row[totalCostIdx] = newTotalCost;
+    }
+
+    if (gpIdx !== -1 && !Number.isNaN(billValue)) {
+      row[gpIdx] = roundMoney(billValue - newTotalCost);
+    }
+
+    if (gpImpIdx !== -1 && finalPrintImpIdx !== -1) {
+      const finalPrintImp = parseFloat(row[finalPrintImpIdx]);
+      if (!Number.isNaN(finalPrintImp) && finalPrintImp !== 0 && !Number.isNaN(billValue)) {
+        row[gpImpIdx] = roundMoney((billValue - newTotalCost) / finalPrintImp);
+      } else {
+        row[gpImpIdx] = '';
+      }
+    }
+
+    let gpPercent = '';
+    if (!Number.isNaN(billValue) && billValue !== 0) {
+      gpPercent = roundMoney((billValue - newTotalCost) / billValue);
+    }
+    row.push(gpPercent);
+    return row;
+  });
+
+  return [headers, ...rows];
 }
 
 /**
@@ -213,6 +416,80 @@ router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
     const elapsedMs = Date.now() - startedAt;
     console.error('[google-sheet] job-gp-per-impression failed:', { elapsedMs, error: e });
     return res.status(500).json({ error: e.message || 'Failed to fetch Job GP per Impression' });
+  }
+});
+
+/**
+ * GET /api/google-sheet/job-gp-per-impression-weekly?database=KOL
+ *
+ * Replicates the Apps Script `getmachineschedule()` function that used to run
+ * inside the "Master" Google Sheet via JDBC:
+ *  - Date range = last Monday -> last Sunday (the previous full week), IST.
+ *  - Runs rpt_job_gp_per_impression_v11(@StartDate, @EndDate).
+ *  - Quantity columns rounded to whole numbers; rate/cost columns to 2 decimals.
+ *  - Appends a "GP %" column computed as (Total Bill Value - Total Cost) / Total Bill Value.
+ *  - Enriches Notional-ContCost from MongoDB Bills and recomputes Total Cost / GP / GP/Imp.
+ *
+ * Returns { data, startDate, endDate, updatedAt } where `data` is a 2D array
+ * (headers + rows) ready to be written into a sheet via setValues().
+ * The Apps Script side should call this endpoint with UrlFetchApp instead of
+ * connecting to the DB directly, then continue with its own PDF generation step.
+ */
+router.get('/google-sheet/job-gp-per-impression-weekly', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  const { startDateStr, endDateStr } = getLastMondayToSundayRange();
+  const startedAt = Date.now();
+
+  try {
+    console.log('[google-sheet] job-gp-per-impression-weekly start', {
+      db,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      requestTimeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    });
+
+    const pool = await getLongQueryPool(db);
+    const result = await pool
+      .request()
+      .input('StartDate', sql.VarChar(10), startDateStr)
+      .input('EndDate', sql.VarChar(10), endDateStr)
+      .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+
+    const recordset = result.recordset ?? [];
+    const jobNumbers = recordset.map(r => String(r.JobCardNo ?? '').trim());
+
+    let contractorCostByJob = new Map();
+    try {
+      contractorCostByJob = await fetchContractorCostByJobNumbers(jobNumbers);
+    } catch (mongoErr) {
+      console.error('[google-sheet] contractor cost lookup failed, defaulting to 0:', mongoErr);
+    }
+
+    const data = buildGpReportData(result, contractorCostByJob);
+    const updatedAt = formatTimestampIST(new Date());
+    const elapsedMs = Date.now() - startedAt;
+
+    console.log('[google-sheet] job-gp-per-impression-weekly done', {
+      db,
+      rows: Math.max(0, data.length - 1),
+      jobsWithContractorCost: contractorCostByJob.size,
+      elapsedMs,
+    });
+
+    return res.json({
+      data,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      updatedAt,
+    });
+  } catch (e) {
+    const elapsedMs = Date.now() - startedAt;
+    console.error('[google-sheet] job-gp-per-impression-weekly failed:', { elapsedMs, error: e });
+    return res.status(500).json({ error: e.message || 'Failed to fetch weekly Job GP per Impression' });
   }
 });
 

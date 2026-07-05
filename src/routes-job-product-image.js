@@ -98,14 +98,30 @@ function isCloudinaryConfigured() {
 	);
 }
 
+function trimEnv(name) {
+	const v = process.env[name];
+	return v != null ? String(v).trim() : '';
+}
+
 function ensureCloudinaryConfigured() {
 	if (!isCloudinaryConfigured()) return false;
 	cloudinary.config({
-		cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-		api_key: process.env.CLOUDINARY_API_KEY,
-		api_secret: process.env.CLOUDINARY_API_SECRET
+		cloud_name: trimEnv('CLOUDINARY_CLOUD_NAME'),
+		api_key: trimEnv('CLOUDINARY_API_KEY'),
+		api_secret: trimEnv('CLOUDINARY_API_SECRET')
 	});
 	return true;
+}
+
+function cloudinaryErrorMessage(err) {
+	const msg = err?.message || String(err);
+	if (msg.toLowerCase().includes('cloud_name is disabled') || msg.toLowerCase().includes('uploading is disabled')) {
+		return (
+			'Cloudinary account is disabled. Log in at console.cloudinary.com, verify your email, ' +
+			'check billing/plan limits, or update CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET in .env.'
+		);
+	}
+	return msg;
 }
 
 function cloudinaryFolder() {
@@ -467,13 +483,21 @@ router.post(
 				...payload
 			});
 		} catch (err) {
-			const msg =
+			const rawMsg =
 				err?.originalError?.info?.message ||
 				err?.precedingErrors?.[0]?.message ||
 				err?.message ||
 				'Upload failed';
+			const msg = cloudinaryErrorMessage({ message: rawMsg });
+			const httpCode = err?.http_code;
+			const status =
+				httpCode === 401 && rawMsg.toLowerCase().includes('disabled')
+					? 503
+					: httpCode && httpCode >= 400 && httpCode < 600
+						? httpCode
+						: 500;
 			console.error('[job-product-image] upload failed:', err);
-			return res.status(500).json({ error: msg });
+			return res.status(status).json({ error: msg });
 		}
 	}
 );
