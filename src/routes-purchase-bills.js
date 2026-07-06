@@ -19,6 +19,7 @@
  */
 
 import { Router } from 'express';
+import { ZipArchive } from 'archiver';
 import * as XLSX from 'xlsx';
 import { v2 as cloudinary } from 'cloudinary';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
@@ -650,6 +651,78 @@ router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
   } catch (err) {
     console.error('[purchase-bills] dashboard error:', err);
     return res.status(500).json({ error: err.message || 'dashboard failed' });
+  }
+});
+
+// ============================================================
+// POST /scan-pdf/bulk — ZIP of scan PDFs for multiple bills
+// ============================================================
+router.post('/scan-pdf/bulk', async (req, res) => {
+  try {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length < 2) {
+      return res.status(400).json({ error: 'Select at least 2 bills to download' });
+    }
+    if (ids.length > 50) {
+      return res.status(400).json({ error: 'Maximum 50 bills per download' });
+    }
+
+    const uniqueIds = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))];
+    const bills = await PurchaseBill.find({ _id: { $in: uniqueIds } }).lean();
+    if (bills.length === 0) {
+      return res.status(404).json({ error: 'No bills found' });
+    }
+
+    const billMap = new Map(bills.map((b) => [String(b._id), b]));
+    const orderedBills = uniqueIds.map((id) => billMap.get(id)).filter(Boolean);
+
+    const usedNames = new Set();
+    const entries = [];
+    for (const bill of orderedBills) {
+      const urls = collectBillImageUrls(bill);
+      if (urls.length === 0) continue;
+
+      const pdfBytes = await buildBillScanPdf(urls);
+      let name = billScanPdfFilename(bill);
+      if (usedNames.has(name)) {
+        const suffix = String(bill._id).slice(-6);
+        name = name.replace(/\.pdf$/i, `-${suffix}.pdf`);
+      }
+      usedNames.add(name);
+      entries.push({ bill, name, pdfBytes });
+    }
+
+    if (entries.length === 0) {
+      return res.status(400).json({ error: 'Selected bills have no images to download' });
+    }
+
+    const zipName = `CDC-Bills-Scans-${new Date().toISOString().slice(0, 10)}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+
+    const archive = new ZipArchive({ zlib: { level: 5 } });
+    archive.on('error', (err) => {
+      console.error('[purchase-bills] bulk scan-pdf zip error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err.message || 'ZIP creation failed' });
+      } else {
+        res.end();
+      }
+    });
+    archive.pipe(res);
+
+    for (const { bill, name, pdfBytes } of entries) {
+      archive.append(Buffer.from(pdfBytes), { name });
+      logActivity({ req, action: 'download_scan_pdf', billId: bill._id });
+    }
+
+    await archive.finalize();
+  } catch (err) {
+    console.error('[purchase-bills] bulk scan-pdf error:', err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: err.message || 'Bulk PDF download failed' });
+    }
+    res.end();
   }
 });
 
