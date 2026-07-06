@@ -3917,24 +3917,33 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
             return '';
         };
 
-        const records = (result.recordset || []).map((row) => {
-            const vendorInvoiceDate = pick(row, 'Vendor Invoice Date', 'VendorInvoiceDate');
-            return {
-                supplier: pick(row, 'Supplier'),
-                clientRef: pick(row, 'ClientRef'),
-                item: pick(row, 'Item'),
-                vendorInvNum: pick(row, 'Vendor Inv Num', 'VendorInvNum'),
-                vendorInvoiceDate: vendorInvoiceDate instanceof Date
-                    ? vendorInvoiceDate.toISOString().slice(0, 10)
-                    : String(vendorInvoiceDate || '').slice(0, 10),
-                indusPurchaseInvNumber: pick(row, 'Indus Purchase Inv Number', 'IndusPurchaseInvNumber'),
-                grnNum: pick(row, 'GRN Num', 'GRNNum'),
-                poNumber: pick(row, 'PO Number', 'PONumber'),
-                wt: Number(pick(row, 'WT') || 0),
-                rate: Number(pick(row, 'Rate') || 0),
-                value: Number(pick(row, 'Value') || 0)
-            };
-        });
+        const formatDateField = (value) => {
+            if (value instanceof Date) return value.toISOString().slice(0, 10);
+            return String(value || '').slice(0, 10);
+        };
+
+        const records = (result.recordset || []).map((row) => ({
+            supplier: pick(row, 'Supplier'),
+            clientRef: pick(row, 'ClientRef'),
+            itemId: Number(pick(row, 'ItemID', 'ItemId') || 0) || null,
+            item: pick(row, 'Item'),
+            uom: pick(row, 'UOM'),
+            vendorInvNum: pick(row, 'Vendor Inv Num', 'VendorInvNum'),
+            vendorInvoiceDate: formatDateField(pick(row, 'Vendor Invoice Date', 'VendorInvoiceDate')),
+            indusPurchaseInvNumber: pick(row, 'Indus Purchase Inv Number', 'IndusPurchaseInvNumber'),
+            grnNum: pick(row, 'GRN Num', 'GRNNum'),
+            grnDate: formatDateField(pick(row, 'GRN Date', 'GRNDate')),
+            poNumber: pick(row, 'PO Number', 'PONumber'),
+            poDate: formatDateField(pick(row, 'PO Date', 'PODate')),
+            wt: Number(pick(row, 'WT') || 0),
+            rate: Number(pick(row, 'Rate') || 0),
+            value: Number(pick(row, 'Value') || 0),
+            taxableValue: Number(pick(row, 'Taxable Value', 'TaxableValue') || 0),
+            cgst: Number(pick(row, 'CGST') || 0),
+            sgst: Number(pick(row, 'SGST') || 0),
+            igst: Number(pick(row, 'IGST') || 0),
+            total: Number(pick(row, 'Total') || 0)
+        }));
 
         return res.json({
             status: true,

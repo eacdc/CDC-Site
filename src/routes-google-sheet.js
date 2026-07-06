@@ -77,6 +77,18 @@ function getLastSixMonthsDateRange() {
   };
 }
 
+/** End = yesterday, start = 1 calendar month before end (inclusive range for reports). */
+function getLastOneMonthDateRange() {
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() - 1);
+  const startDate = new Date(endDate);
+  startDate.setMonth(startDate.getMonth() - 1);
+  return {
+    startDateStr: formatDateYYYYMMDD(startDate),
+    endDateStr: formatDateYYYYMMDD(endDate),
+  };
+}
+
 /** Formats a UTC-midnight Date (representing a calendar date) as yyyy-MM-dd. */
 function formatDateYYYYMMDD_UTC(d) {
   const y = d.getUTCFullYear();
@@ -277,6 +289,86 @@ function buildGpReportData(result, contractorCostByJob = new Map()) {
   });
 
   return [headers, ...rows];
+}
+
+/**
+ * Optional startDate/endDate query override (yyyy-MM-dd). Returns { error } on invalid input.
+ * @param {import('express').Request} req
+ * @returns {{ startDateStr: string, endDateStr: string } | { error: string } | null}
+ */
+function resolveGpReportDateRangeFromQuery(req) {
+  const hasStart = req.query?.startDate != null && String(req.query.startDate).trim() !== '';
+  const hasEnd = req.query?.endDate != null && String(req.query.endDate).trim() !== '';
+  if (!hasStart && !hasEnd) return null;
+
+  const customStart = parseDateYYYYMMDD(String(req.query.startDate ?? ''));
+  const customEnd = parseDateYYYYMMDD(String(req.query.endDate ?? ''));
+  if (!customStart || !customEnd) {
+    return { error: 'startDate and endDate must both be valid yyyy-MM-dd values' };
+  }
+  if (customStart > customEnd) {
+    return { error: 'startDate must be on or before endDate' };
+  }
+  return {
+    startDateStr: formatDateYYYYMMDD_UTC(customStart),
+    endDateStr: formatDateYYYYMMDD_UTC(customEnd),
+  };
+}
+
+/**
+ * Runs rpt_job_gp_per_impression_v11, enriches with Mongo contractor cost, builds sheet rows.
+ * @param {string} db
+ * @param {string} startDateStr
+ * @param {string} endDateStr
+ * @param {{ onlyWithContractorCost?: boolean }} [options]
+ */
+async function executeGpReportWithContractorCost(db, startDateStr, endDateStr, options = {}) {
+  const { onlyWithContractorCost = false } = options;
+  const pool = await getLongQueryPool(db);
+  const result = await pool
+    .request()
+    .input('StartDate', sql.VarChar(10), startDateStr)
+    .input('EndDate', sql.VarChar(10), endDateStr)
+    .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+
+  const recordset = result.recordset ?? [];
+  const jobNumbers = recordset.map(r => String(r.JobCardNo ?? '').trim());
+
+  let contractorCostByJob = new Map();
+  try {
+    contractorCostByJob = await fetchContractorCostByJobNumbers(jobNumbers);
+  } catch (mongoErr) {
+    console.error('[google-sheet] contractor cost lookup failed, defaulting to 0:', mongoErr);
+  }
+
+  const filteredRecordset = onlyWithContractorCost
+    ? recordset.filter(r => {
+        const jobNumber = String(r.JobCardNo ?? '').trim();
+        return (contractorCostByJob.get(jobNumber) || 0) > 0;
+      })
+    : recordset;
+
+  const data = buildGpReportData(
+    { recordset: filteredRecordset, columns: result.columns },
+    contractorCostByJob,
+  );
+
+  const contractorCostSummary = [...contractorCostByJob.entries()]
+    .filter(([, cost]) => cost > 0)
+    .map(([jobNumber, contractorCost]) => ({
+      jobNumber,
+      contractorCost: roundMoney(contractorCost),
+    }))
+    .sort((a, b) => a.jobNumber.localeCompare(b.jobNumber));
+
+  return {
+    data,
+    totalSqlRows: recordset.length,
+    rowsReturned: Math.max(0, data.length - 1),
+    jobsWithContractorCostInRange: filteredRecordset.length,
+    contractorCostSummary,
+    contractorCostByJob,
+  };
 }
 
 /**
@@ -490,6 +582,69 @@ router.get('/google-sheet/job-gp-per-impression-weekly', async (req, res) => {
     const elapsedMs = Date.now() - startedAt;
     console.error('[google-sheet] job-gp-per-impression-weekly failed:', { elapsedMs, error: e });
     return res.status(500).json({ error: e.message || 'Failed to fetch weekly Job GP per Impression' });
+  }
+});
+
+/**
+ * GET /api/google-sheet/job-gp-per-impression-contractor-test?database=KOL
+ *
+ * Test endpoint for validating contractor-cost enrichment:
+ *  - Default date range = last 1 calendar month (yesterday back 1 month).
+ *  - Optional ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD to override.
+ *  - Returns ONLY jobs that have billed contractor cost in MongoDB (> 0).
+ *  - Includes a flat `contractorCostSummary` for easy Postman inspection.
+ */
+router.get('/google-sheet/job-gp-per-impression-contractor-test', async (req, res) => {
+  const db = getDbFromQuery(req);
+  if (!db) {
+    return res.status(400).json({ error: 'database must be KOL or AHM' });
+  }
+
+  const customRange = resolveGpReportDateRangeFromQuery(req);
+  if (customRange?.error) {
+    return res.status(400).json({ error: customRange.error });
+  }
+  const { startDateStr, endDateStr } = customRange || getLastOneMonthDateRange();
+  const startedAt = Date.now();
+
+  try {
+    console.log('[google-sheet] job-gp-per-impression-contractor-test start', {
+      db,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      requestTimeoutMs: LONG_REQUEST_TIMEOUT_MS,
+    });
+
+    const report = await executeGpReportWithContractorCost(db, startDateStr, endDateStr, {
+      onlyWithContractorCost: true,
+    });
+
+    const elapsedMs = Date.now() - startedAt;
+    console.log('[google-sheet] job-gp-per-impression-contractor-test done', {
+      db,
+      totalSqlRows: report.totalSqlRows,
+      rowsReturned: report.rowsReturned,
+      jobsWithContractorCost: report.contractorCostSummary.length,
+      elapsedMs,
+    });
+
+    return res.json({
+      data: report.data,
+      startDate: startDateStr,
+      endDate: endDateStr,
+      updatedAt: formatTimestampIST(new Date()),
+      summary: {
+        totalSqlRows: report.totalSqlRows,
+        rowsWithContractorCost: report.jobsWithContractorCostInRange,
+        rowsReturned: report.rowsReturned,
+        uniqueJobsWithContractorCostInMongo: report.contractorCostSummary.length,
+      },
+      contractorCostSummary: report.contractorCostSummary,
+    });
+  } catch (e) {
+    const elapsedMs = Date.now() - startedAt;
+    console.error('[google-sheet] job-gp-per-impression-contractor-test failed:', { elapsedMs, error: e });
+    return res.status(500).json({ error: e.message || 'Failed to fetch contractor-cost GP test report' });
   }
 });
 
