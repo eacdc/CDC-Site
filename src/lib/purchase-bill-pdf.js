@@ -29,16 +29,16 @@ export function collectBillImageUrls(bill) {
   return urls;
 }
 
+/** Safe for Windows/macOS filenames; keeps PUR/1881/26-27 readable as PUR-1881-26-27 */
+function sanitizeTallyForFilename(value) {
+  return String(value).trim().replace(/[/\\:*?"<>|]/g, '-').slice(0, 80);
+}
+
 /** @param {import('../models/PurchaseBill.js').purchaseBillSchema | Record<string, unknown>} bill */
 export function billScanPdfFilename(bill) {
-  const inv = bill.invoice_number
-    ? String(bill.invoice_number).replace(/[^\w.-]+/g, '_').slice(0, 40)
-    : null;
-  const voucher = bill.tally_voucher_number
-    ? String(bill.tally_voucher_number).replace(/[^\w.-]+/g, '_').slice(0, 40)
-    : null;
-  const base = inv || voucher || String(bill._id || 'bill');
-  return `CDC-Bill-${base}.pdf`;
+  const tally = bill.tally_voucher_number ? sanitizeTallyForFilename(bill.tally_voucher_number) : '';
+  const base = tally || String(bill._id || 'bill');
+  return `CDC-Bills-${base}.pdf`;
 }
 
 /**
