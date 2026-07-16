@@ -34,6 +34,7 @@ import ContractorWD from './models/ContractorWD.js';
 import Bill from './models/Bill.js';
 import Series from './models/Series.js';
 import AdhocWorkOrder from './models/AdhocWorkOrder.js';
+import * as XLSX from 'xlsx';
 
 
 const router = Router();
@@ -7206,6 +7207,420 @@ router.get('/summary/chart', async (req, res) => {
   } catch (error) {
     console.error('Error building summary chart:', error);
     res.status(500).json({ error: 'Error building summary chart' });
+  }
+});
+
+function parseYmdExportDate(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || '').trim());
+  if (!m) return null;
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+
+function formatYmdExportDate(dateObj) {
+  const year = dateObj.getUTCFullYear();
+  const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getExportDateRange(query) {
+  const now = new Date();
+  const defaultEndExclusive = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + 1,
+  ));
+
+  const endParsed = parseYmdExportDate(query.endDate);
+  const endExclusive = endParsed
+    ? new Date(endParsed.getTime() + 86400000)
+    : defaultEndExclusive;
+
+  let start = parseYmdExportDate(query.startDate);
+  if (!start) {
+    start = new Date(endExclusive);
+    start.setUTCMonth(start.getUTCMonth() - 1);
+  }
+
+  if (start >= endExclusive) {
+    const err = new Error('startDate must be before endDate');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const endInclusive = new Date(endExclusive.getTime() - 1);
+  return {
+    start,
+    endExclusive,
+    startLabel: formatYmdExportDate(start),
+    endLabel: formatYmdExportDate(endInclusive),
+  };
+}
+
+function getContractorCostPct(totalJobValue, contractorAmount) {
+  const price = Number(totalJobValue || 0);
+  const cost = Number(contractorAmount || 0);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return (cost / price) * 100;
+}
+
+function formatOpsProcessed(opsByName) {
+  return Object.values(opsByName || {})
+    .sort((a, b) => String(a?.name || '').localeCompare(String(b?.name || '')))
+    .map((info) => `${info.name}: ${Number(info.qty || 0)}`)
+    .join('; ');
+}
+
+function getCompletedQtyFromOps(opsByName, orderQty) {
+  // Each entry's qty is already the TOTAL completed quantity for that
+  // operation, summed across every contractor and completion record in
+  // the selected period (see rollupContractorWorkRows). An operation is
+  // only considered "processed" for the job's completed-qty calculation
+  // when its completed qty is more than 30% of the job's order qty (when
+  // an order qty is known); operations with zero completed qty are
+  // always excluded so they don't drag the job's completed qty down to 0.
+  const safeOrderQty = Number(orderQty || 0);
+  const eligibleQtys = Object.values(opsByName || {})
+    .map((info) => Number(info?.qty || 0))
+    .filter((qty) => Number.isFinite(qty) && qty > 0)
+    .filter((qty) => {
+      if (!(safeOrderQty > 0)) return true;
+      return (qty / safeOrderQty) > 0.30;
+    });
+
+  if (!eligibleQtys.length) return 0;
+  return Math.min(...eligibleQtys);
+}
+
+async function buildContractorNameMap(contractorIds) {
+  const ids = [...new Set((contractorIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
+  if (!ids.length) return new Map();
+
+  const objectIds = ids
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  const query = {
+    isdeleted: { $ne: 1 },
+    $or: [{ contractorId: { $in: ids } }],
+  };
+  if (objectIds.length) {
+    query.$or.push({ _id: { $in: objectIds } });
+  }
+
+  const contractors = await Contractor.find(query).lean();
+  const map = new Map();
+  contractors.forEach((contractor) => {
+    const name = String(contractor.name || '').trim() || 'Unknown';
+    if (contractor.contractorId) map.set(String(contractor.contractorId), name);
+    map.set(String(contractor._id), name);
+  });
+  return map;
+}
+
+async function fetchErpJobDetailsByNumbers(jobNumbers) {
+  const unique = [...new Set((jobNumbers || []).map((j) => String(j || '').trim()).filter(Boolean))];
+  if (!unique.length) return new Map();
+
+  try {
+    const pool = await getConnection();
+    const request = pool.request();
+    const placeholders = unique.map((jobNo, index) => {
+      const param = `jobNo${index}`;
+      request.input(param, sql.NVarChar(255), jobNo);
+      return `@${param}`;
+    }).join(', ');
+
+    const query = `
+      SELECT
+        JB.JobBookingNo,
+        ISNULL(JB.ClientName, LM.LedgerName) AS ClientName,
+        JB.JobName,
+        JB.OrderQuantity,
+        CM.CategoryName,
+        SM.SegmentName
+      FROM JobBookingJobCard JB
+      LEFT JOIN LedgerMaster LM ON LM.LedgerID = JB.LedgerID
+      LEFT JOIN CategoryMaster CM ON CM.CategoryID = JB.CategoryID
+      LEFT JOIN SegmentMaster SM ON SM.SegmentID = CM.SegmentID
+      WHERE JB.JobBookingNo IN (${placeholders})
+    `;
+
+    const result = await request.query(query);
+    const map = new Map();
+    (result.recordset || []).forEach((row) => {
+      const jobNo = String(row.JobBookingNo || '').trim();
+      if (!jobNo) return;
+      map.set(jobNo, {
+        clientName: row.ClientName || '',
+        jobTitle: row.JobName || '',
+        orderQty: Number(row.OrderQuantity || 0),
+        productCategory: row.CategoryName || '',
+        segmentName: row.SegmentName || '',
+      });
+    });
+    return map;
+  } catch (error) {
+    console.error('Error fetching ERP job details for summary export:', error);
+    return new Map();
+  }
+}
+
+function rollupContractorWorkRows(rows, { idKey, type }) {
+  const grouped = new Map();
+
+  rows.forEach((row) => {
+    const groupId = String(row._id[idKey] || '').trim();
+    const contractorId = String(row._id.contractorId || '').trim();
+    if (!groupId) return;
+
+    if (!grouped.has(groupId)) {
+      grouped.set(groupId, {
+        rowKey: groupId,
+        type,
+        adhocLabel: type === 'Adhoc' ? String(row._id.adhocLabel || groupId).trim() : '',
+        contractorIds: new Set(),
+        contractorAmount: 0,
+        qtyDone: 0,
+        opsByName: {},
+      });
+    }
+
+    const entry = grouped.get(groupId);
+    if (contractorId) entry.contractorIds.add(contractorId);
+    entry.contractorAmount += Number(row.contractorAmount || 0);
+    entry.qtyDone += Number(row.qtyDone || 0);
+
+    (row.ops || []).forEach((op) => {
+      const displayName = String(op.opsName || 'Unknown').trim() || 'Unknown';
+      // Group by opsId (stable identifier) rather than the raw name text so
+      // multiple completion records for the same operation are always
+      // summed together, even if the recorded name text ever differs in
+      // case/whitespace across contractors or completion entries.
+      const opKey = String(op.opsId || '').trim() || displayName.toLowerCase();
+      if (!entry.opsByName[opKey]) {
+        entry.opsByName[opKey] = { name: displayName, qty: 0, value: 0 };
+      }
+      entry.opsByName[opKey].qty += Number(op.qty || 0);
+      entry.opsByName[opKey].value += Number(op.value || 0);
+    });
+  });
+
+  return grouped;
+}
+
+router.get('/summary/export.xlsx', async (req, res) => {
+  try {
+    const { start, endExclusive, startLabel, endLabel } = getExportDateRange(req.query);
+    const completionDateMatch = { 'opsDone.completionDate': { $gte: start, $lt: endExclusive } };
+    const opValueExpr = {
+      $multiply: [
+        { $ifNull: ['$opsDone.opsDoneQty', 0] },
+        { $ifNull: ['$opsDone.valuePerBook', 0] },
+      ],
+    };
+    const opsPushExpr = {
+      opsId: '$opsDone.opsId',
+      opsName: '$opsDone.opsName',
+      qty: '$opsDone.opsDoneQty',
+      value: opValueExpr,
+      savedInBill: '$opsDone.savedInBill',
+    };
+
+    // Step 1: the date range ONLY decides which jobs/adhoc orders are
+    // included in the report (i.e. jobs that had contractor work completed
+    // in that window). All other figures for a selected job (qty processed,
+    // operations, contractors worked, contractor amount, bills) reflect the
+    // job's ENTIRE history, not just the selected period.
+    const [periodJobIdRows, periodAdhocRows] = await Promise.all([
+      ContractorWD.aggregate([
+        { $match: { isAdhoc: { $ne: true }, jobId: { $exists: true, $ne: '' } } },
+        { $unwind: '$opsDone' },
+        { $match: completionDateMatch },
+        { $group: { _id: '$jobId' } },
+      ]),
+      ContractorWD.aggregate([
+        { $match: { isAdhoc: true } },
+        { $unwind: '$opsDone' },
+        { $match: completionDateMatch },
+        { $group: { _id: { adhocOrderId: '$adhocOrderId', adhocLabel: '$adhocLabel' } } },
+      ]),
+    ]);
+
+    const jobIds = [...new Set(periodJobIdRows.map((row) => String(row._id || '').trim()).filter(Boolean))];
+    const adhocOrderIds = [...new Set(
+      periodAdhocRows.map((row) => String(row._id.adhocOrderId || '').trim()).filter(Boolean),
+    )];
+
+    // Step 2: pull the FULL history for exactly those jobs/adhoc orders.
+    const [jobContractorRows, adhocContractorRows, billsAllRows] = await Promise.all([
+      jobIds.length
+        ? ContractorWD.aggregate([
+            { $match: { isAdhoc: { $ne: true }, jobId: { $in: jobIds } } },
+            { $unwind: '$opsDone' },
+            {
+              $group: {
+                _id: { jobId: '$jobId', contractorId: '$contractorId' },
+                contractorAmount: { $sum: opValueExpr },
+                qtyDone: { $sum: { $ifNull: ['$opsDone.opsDoneQty', 0] } },
+                ops: { $push: opsPushExpr },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      adhocOrderIds.length
+        ? ContractorWD.aggregate([
+            { $match: { isAdhoc: true, adhocOrderId: { $in: adhocOrderIds } } },
+            { $unwind: '$opsDone' },
+            {
+              $group: {
+                _id: {
+                  adhocOrderId: '$adhocOrderId',
+                  adhocLabel: '$adhocLabel',
+                  contractorId: '$contractorId',
+                },
+                contractorAmount: { $sum: opValueExpr },
+                qtyDone: { $sum: { $ifNull: ['$opsDone.opsDoneQty', 0] } },
+                ops: { $push: opsPushExpr },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      jobIds.length
+        ? Bill.aggregate([
+            {
+              $match: {
+                $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }],
+                'jobs.jobNumber': { $in: jobIds },
+              },
+            },
+            { $unwind: '$jobs' },
+            { $match: { 'jobs.jobNumber': { $in: jobIds } } },
+            { $group: { _id: '$jobs.jobNumber', billNumbers: { $addToSet: '$billNumber' } } },
+          ])
+        : Promise.resolve([]),
+    ]);
+
+    const jobRollup = rollupContractorWorkRows(jobContractorRows, { idKey: 'jobId', type: 'Job' });
+    const adhocRollup = rollupContractorWorkRows(adhocContractorRows, { idKey: 'adhocOrderId', type: 'Adhoc' });
+
+    const allContractorIds = [
+      ...jobContractorRows.map((row) => String(row._id.contractorId || '').trim()),
+      ...adhocContractorRows.map((row) => String(row._id.contractorId || '').trim()),
+    ];
+
+    const billsByJobId = {};
+    billsAllRows.forEach((row) => {
+      const jobId = String(row._id || '').trim();
+      if (!jobId) return;
+      billsByJobId[jobId] = (row.billNumbers || []).map((billNo) => String(billNo || '').trim()).filter(Boolean);
+    });
+
+    const [contractorNameMap, jobOpsDocs, erpDetailsMap] = await Promise.all([
+      buildContractorNameMap(allContractorIds),
+      jobIds.length
+        ? JobOpsMaster.find({ jobId: { $in: jobIds } }).lean()
+        : Promise.resolve([]),
+      fetchErpJobDetailsByNumbers(jobIds),
+    ]);
+
+    const jobOpsById = {};
+    jobOpsDocs.forEach((doc) => {
+      const jobId = String(doc.jobId || '').trim();
+      if (jobId) jobOpsById[jobId] = doc;
+    });
+
+    const resolveContractorNames = (contractorIds) => [...contractorIds]
+      .map((id) => contractorNameMap.get(String(id)) || String(id))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .join(', ');
+
+    const jobRows = jobIds.map((jobId) => {
+      const rollup = jobRollup.get(jobId);
+      if (!rollup) return null;
+      const jobOps = jobOpsById[jobId] || {};
+      const erp = erpDetailsMap.get(jobId) || {};
+      const totalJobValue = Number(jobOps.unitPrice || 0) * Number(jobOps.totalQty || 0);
+      const contractorAmount = Number(rollup.contractorAmount || 0);
+      const orderQty = Number(erp.orderQty || jobOps.totalQty || 0);
+      const completedQty = getCompletedQtyFromOps(rollup.opsByName, orderQty);
+      const billsGenerated = billsByJobId[jobId] || [];
+
+      return {
+        'Job Number': jobId,
+        Type: 'Job',
+        'Client Name': erp.clientName || jobOps.clientName || '',
+        'Job Title': erp.jobTitle || jobOps.jobTitle || '',
+        'Product Category': erp.productCategory || '',
+        'Segment Name': erp.segmentName || jobOps.segmentName || '',
+        'Order Qty': orderQty,
+        'Qty Processed': completedQty,
+        'Total Job Value': Number.isFinite(totalJobValue) ? totalJobValue : 0,
+        'Total Contractor Amount': contractorAmount,
+        '% Contractor Cost of Job Value': getContractorCostPct(totalJobValue, contractorAmount),
+        'Contractors Worked': resolveContractorNames(rollup.contractorIds),
+        'Operations Processed': formatOpsProcessed(rollup.opsByName),
+        'Bills Generated': billsGenerated.join(', '),
+      };
+    }).filter(Boolean);
+
+    const adhocRows = [...adhocRollup.values()].map((rollup) => {
+      const jobNumber = rollup.adhocLabel || rollup.rowKey;
+      const contractorAmount = Number(rollup.contractorAmount || 0);
+      const completedQty = getCompletedQtyFromOps(rollup.opsByName);
+
+      return {
+        'Job Number': jobNumber,
+        Type: 'Adhoc',
+        'Client Name': '',
+        'Job Title': rollup.adhocLabel || '',
+        'Product Category': '',
+        'Segment Name': '',
+        'Order Qty': '',
+        'Qty Processed': completedQty,
+        'Total Job Value': '',
+        'Total Contractor Amount': contractorAmount,
+        '% Contractor Cost of Job Value': '',
+        'Contractors Worked': resolveContractorNames(rollup.contractorIds),
+        'Operations Processed': formatOpsProcessed(rollup.opsByName),
+        'Bills Generated': '',
+      };
+    });
+
+    const sheetRows = [...jobRows, ...adhocRows]
+      .sort((a, b) => String(a['Job Number'] || '').localeCompare(String(b['Job Number'] || '')))
+      .map((row) => ({
+        ...row,
+        '% Contractor Cost of Job Value': row['% Contractor Cost of Job Value'] == null
+          ? ''
+          : Number(row['% Contractor Cost of Job Value']).toFixed(2),
+      }));
+
+    const ws = XLSX.utils.json_to_sheet(sheetRows);
+    ws['!cols'] = [
+      { wch: 16 }, { wch: 8 }, { wch: 28 }, { wch: 30 }, { wch: 20 }, { wch: 16 },
+      { wch: 12 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 22 },
+      { wch: 32 }, { wch: 40 }, { wch: 24 },
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Job Summary');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Contractor-Job-Summary-${startLabel}_to_${endLabel}.xlsx"`,
+    );
+    return res.send(buf);
+  } catch (error) {
+    console.error('Error exporting summary:', error);
+    const status = error.statusCode || 500;
+    return res.status(status).json({ error: error.message || 'Error exporting summary' });
   }
 });
 
