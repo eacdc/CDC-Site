@@ -7496,7 +7496,13 @@ router.get('/summary/export.xlsx', async (req, res) => {
             },
             { $unwind: '$jobs' },
             { $match: { 'jobs.jobNumber': { $in: jobIds } } },
-            { $group: { _id: '$jobs.jobNumber', billNumbers: { $addToSet: '$billNumber' } } },
+            {
+              $group: {
+                _id: '$jobs.jobNumber',
+                billNumbers: { $addToSet: '$billNumber' },
+                lastBillDate: { $max: '$createdAt' },
+              },
+            },
           ])
         : Promise.resolve([]),
     ]);
@@ -7510,10 +7516,21 @@ router.get('/summary/export.xlsx', async (req, res) => {
     ];
 
     const billsByJobId = {};
+    const billDateByJobId = {};
+    const formatBillDate = (value) => {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}-${mm}-${yyyy}`;
+    };
     billsAllRows.forEach((row) => {
       const jobId = String(row._id || '').trim();
       if (!jobId) return;
       billsByJobId[jobId] = (row.billNumbers || []).map((billNo) => String(billNo || '').trim()).filter(Boolean);
+      billDateByJobId[jobId] = formatBillDate(row.lastBillDate);
     });
 
     const [contractorNameMap, jobOpsDocs, erpDetailsMap] = await Promise.all([
@@ -7549,6 +7566,7 @@ router.get('/summary/export.xlsx', async (req, res) => {
 
       return {
         'Job Number': jobId,
+        'Bill Date': billDateByJobId[jobId] || '',
         Type: 'Job',
         'Client Name': erp.clientName || jobOps.clientName || '',
         'Job Title': erp.jobTitle || jobOps.jobTitle || '',
@@ -7572,6 +7590,7 @@ router.get('/summary/export.xlsx', async (req, res) => {
 
       return {
         'Job Number': jobNumber,
+        'Bill Date': '',
         Type: 'Adhoc',
         'Client Name': '',
         'Job Title': rollup.adhocLabel || '',
@@ -7599,7 +7618,7 @@ router.get('/summary/export.xlsx', async (req, res) => {
 
     const ws = XLSX.utils.json_to_sheet(sheetRows);
     ws['!cols'] = [
-      { wch: 16 }, { wch: 8 }, { wch: 28 }, { wch: 30 }, { wch: 20 }, { wch: 16 },
+      { wch: 16 }, { wch: 14 }, { wch: 8 }, { wch: 28 }, { wch: 30 }, { wch: 20 }, { wch: 16 },
       { wch: 12 }, { wch: 18 }, { wch: 16 }, { wch: 24 }, { wch: 22 },
       { wch: 32 }, { wch: 40 }, { wch: 24 },
     ];

@@ -9,7 +9,7 @@
  * Query/body: database=KOL|AHM (default KOL) — used by /upload only.
  * Excel columns: Container Number (If Ocean Shipment), Destination Port,
  *   Destination Arrival Original Planned Date (ETA), Destination Arrival Planned Date (ETA),
- *   Gate in Actual Date, Origin Departure Actual Date, Link
+ *   Destination Arrival Actual Date, Gate in Actual Date, Origin Departure Actual Date, Link
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -68,6 +68,7 @@ const HEADER_MAP = [
   { keys: ['destination port'], db: 'DestinationPort' },
   { keys: ['destination arrival original planned date (eta)', 'destination arrival original planned date', 'eta original'], db: 'DestinationArrivalOriginalPlannedDate' },
   { keys: ['destination arrival planned date (eta)', 'destination arrival planned date', 'eta'], db: 'DestinationArrivalPlannedDate' },
+  { keys: ['destination arrival actual date', 'destination arrival actual'], db: 'DestinationArrivalActualDate' },
   { keys: ['gate in actual date', 'gate in actual', 'gate-in actual date', 'gate in date'], db: 'GateInActualDate' },
   { keys: ['origin departure actual date', 'origin departure actual', 'origin departure date'], db: 'OriginDepartureActualDate' },
   { keys: ['link', 'links', 'url'], db: 'Link' }
@@ -125,13 +126,14 @@ router.post('/shipment-eta/upload', upload.single('file'), async (req, res) => {
       const destinationPort = colIndex.DestinationPort !== undefined ? toStr(row[colIndex.DestinationPort]) : null;
       const etaOriginal = colIndex.DestinationArrivalOriginalPlannedDate !== undefined ? toStr(row[colIndex.DestinationArrivalOriginalPlannedDate]) : null;
       const etaPlanned = colIndex.DestinationArrivalPlannedDate !== undefined ? toStr(row[colIndex.DestinationArrivalPlannedDate]) : null;
+      const destinationArrivalActual = colIndex.DestinationArrivalActualDate !== undefined ? toStr(row[colIndex.DestinationArrivalActualDate]) : null;
       const gateInActual = colIndex.GateInActualDate !== undefined ? toStr(row[colIndex.GateInActualDate]) : null;
       const originDepartureActual = colIndex.OriginDepartureActualDate !== undefined ? toStr(row[colIndex.OriginDepartureActualDate]) : null;
       const link = colIndex.Link !== undefined ? toStr(row[colIndex.Link]) : null;
-      rows.push({ containerNumber, destinationPort, etaOriginal, etaPlanned, gateInActual, originDepartureActual, link });
+      rows.push({ containerNumber, destinationPort, etaOriginal, etaPlanned, destinationArrivalActual, gateInActual, originDepartureActual, link });
     }
     if (rows.length === 0) {
-      return res.status(400).json({ error: 'No data rows found. Ensure column headers match: Container Number (If Ocean Shipment), Destination Port, Destination Arrival Original Planned Date (ETA), Destination Arrival Planned Date (ETA), Gate in Actual Date, Origin Departure Actual Date, Link' });
+      return res.status(400).json({ error: 'No data rows found. Ensure column headers match: Container Number (If Ocean Shipment), Destination Port, Destination Arrival Original Planned Date (ETA), Destination Arrival Planned Date (ETA), Destination Arrival Actual Date, Gate in Actual Date, Origin Departure Actual Date, Link' });
     }
     const pool = await getPool(db);
     let inserted = 0;
@@ -146,6 +148,7 @@ router.post('/shipment-eta/upload', upload.single('file'), async (req, res) => {
         .input('DestinationPort', r.destinationPort)
         .input('DestinationArrivalOriginalPlannedDate', r.etaOriginal)
         .input('DestinationArrivalPlannedDate', r.etaPlanned)
+        .input('DestinationArrivalActualDate', r.destinationArrivalActual)
         .input('GateInActualDate', r.gateInActual)
         .input('OriginDepartureActualDate', r.originDepartureActual)
         .input('Link', r.link)
@@ -159,12 +162,12 @@ router.post('/shipment-eta/upload', upload.single('file'), async (req, res) => {
           INSERT INTO dbo.ShipmentETA (
             ContainerNumber, DestinationPort,
             DestinationArrivalOriginalPlannedDate, DestinationArrivalPlannedDate,
-            GateInActualDate, OriginDepartureActualDate, Link
+            DestinationArrivalActualDate, GateInActualDate, OriginDepartureActualDate, Link
           )
           VALUES (
             @ContainerNumber, @DestinationPort,
             @DestinationArrivalOriginalPlannedDate, @DestinationArrivalPlannedDate,
-            @GateInActualDate, @OriginDepartureActualDate, @Link
+            @DestinationArrivalActualDate, @GateInActualDate, @OriginDepartureActualDate, @Link
           );
           SELECT @replaced AS Replaced;
         `);
@@ -236,19 +239,19 @@ router.get('/shipment-eta/list', async (req, res) => {
       ;WITH combined AS (
         SELECT 'KOL' AS SourceDatabase, s.Id, s.ContainerNumber, s.DestinationPort,
                s.DestinationArrivalOriginalPlannedDate, s.DestinationArrivalPlannedDate,
-               s.GateInActualDate, s.OriginDepartureActualDate,
+               s.DestinationArrivalActualDate, s.GateInActualDate, s.OriginDepartureActualDate,
                s.Link, s.CreatedAt
         FROM [${kolDb}].dbo.ShipmentETA s
         UNION ALL
         SELECT 'AHM' AS SourceDatabase, s.Id, s.ContainerNumber, s.DestinationPort,
                s.DestinationArrivalOriginalPlannedDate, s.DestinationArrivalPlannedDate,
-               s.GateInActualDate, s.OriginDepartureActualDate,
+               s.DestinationArrivalActualDate, s.GateInActualDate, s.OriginDepartureActualDate,
                s.Link, s.CreatedAt
         FROM [${ahmDb}].dbo.ShipmentETA s
       )
       SELECT c.SourceDatabase, c.Id, c.ContainerNumber, c.DestinationPort,
              c.DestinationArrivalOriginalPlannedDate, c.DestinationArrivalPlannedDate,
-             c.GateInActualDate, c.OriginDepartureActualDate,
+             c.DestinationArrivalActualDate, c.GateInActualDate, c.OriginDepartureActualDate,
              c.Link, c.CreatedAt,
              CASE
                WHEN EXISTS (
@@ -275,6 +278,7 @@ router.get('/shipment-eta/list', async (req, res) => {
         destinationPort: r.DestinationPort,
         destinationArrivalOriginalPlannedDate: r.DestinationArrivalOriginalPlannedDate,
         destinationArrivalPlannedDate: r.DestinationArrivalPlannedDate,
+        destinationArrivalActualDate: r.DestinationArrivalActualDate,
         gateInActualDate: r.GateInActualDate,
         originDepartureActualDate: r.OriginDepartureActualDate,
         link: r.Link,
