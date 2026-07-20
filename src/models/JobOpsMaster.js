@@ -69,6 +69,11 @@ const jobOpsMasterSchema = new mongoose.Schema({
     trim: true,
     default: '',
   },
+  productCategory: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   segmentName: {
     type: String,
     trim: true,

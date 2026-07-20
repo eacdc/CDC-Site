@@ -6896,6 +6896,7 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
       qty,
       clientName,
       jobTitle,
+      productCat,
       segmentName,
       unitPrice
     } = req.body;
@@ -6984,6 +6985,7 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
         totalQty,
         clientName: clientName || '',
         jobTitle: jobTitle || '',
+        productCategory: productCat || '',
         segmentName: segmentName || '',
         unitPrice: Number.isFinite(parsedUnitPrice) && parsedUnitPrice >= 0 ? parsedUnitPrice : 0,
         ops
@@ -6995,6 +6997,9 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
       }
       if (jobTitle !== undefined) {
         jobOpsMaster.jobTitle = jobTitle || '';
+      }
+      if (productCat !== undefined) {
+        jobOpsMaster.productCategory = productCat || '';
       }
       if (segmentName !== undefined) {
         jobOpsMaster.segmentName = segmentName || '';
@@ -7570,7 +7575,7 @@ router.get('/summary/export.xlsx', async (req, res) => {
         Type: 'Job',
         'Client Name': erp.clientName || jobOps.clientName || '',
         'Job Title': erp.jobTitle || jobOps.jobTitle || '',
-        'Product Category': erp.productCategory || '',
+        'Product Category': erp.productCategory || jobOps.productCategory || '',
         'Segment Name': erp.segmentName || jobOps.segmentName || '',
         'Order Qty': orderQty,
         'Qty Processed': completedQty,

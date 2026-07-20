@@ -13,7 +13,11 @@
     "backfill-bill-job-metadata": "node scripts/backfill-bill-job-metadata.js",
     "backfill-bill-job-metadata:dry-run": "node scripts/backfill-bill-job-metadata.js --dry-run",
     "backfill-contractor-wd-saved-in-bill": "node scripts/backfill-contractor-wd-saved-in-bill.js",
-    "backfill-contractor-wd-saved-in-bill:dry-run": "node scripts/backfill-contractor-wd-saved-in-bill.js --dry-run"
+    "backfill-contractor-wd-saved-in-bill:dry-run": "node scripts/backfill-contractor-wd-saved-in-bill.js --dry-run",
+    "backfill-jobops-unitprice": "node scripts/backfill-jobops-unitprice.js",
+    "backfill-jobops-unitprice:dry-run": "node scripts/backfill-jobops-unitprice.js --dry-run",
+    "backfill-jobops-product-category": "node scripts/backfill-jobops-product-category.js",
+    "backfill-jobops-product-category:dry-run": "node scripts/backfill-jobops-product-category.js --dry-run"
   },
   "keywords": [],
   "author": "",
