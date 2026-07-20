@@ -165,7 +165,9 @@ export function buildCanonicalFields(slots, { setType }) {
     invoice_number,
     invoice_date: parseDate(invoice.invoice_date),
 
-    supplier_name: invoice.supplier_name || voucher.supplier_name || grn.supplier_name || null,
+    supplier_name: voucher.supplier_name
+      ? String(voucher.supplier_name).trim().toUpperCase()
+      : null,
     supplier_gstin: supplier_gstin ? String(supplier_gstin).trim().toUpperCase() : null,
     supplier_pan: invoice.supplier_pan || voucher.supplier_pan || null,
     supplier_state: invoice.supplier_state || null,

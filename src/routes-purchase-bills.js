@@ -427,15 +427,25 @@ router.get('/', async (req, res) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
     const filter = buildSearchFilter(req.query);
 
-    const [rows, total] = await Promise.all([
+    const [rawRows, total] = await Promise.all([
       PurchaseBill.find(filter)
-        .select('-slots -check_results')
+        .select('-check_results -slots.tally_voucher.pages -slots.supplier_invoice -slots.eway_bill -slots.grn_sheet')
         .sort({ uploaded_at: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
       PurchaseBill.countDocuments(filter),
     ]);
+
+    // Search table: supplier name from Tally voucher page only, uppercased
+    const rows = rawRows.map((b) => {
+      const tallyName = b.slots?.tally_voucher?.aggregated_fields?.supplier_name;
+      const supplier_name = tallyName
+        ? String(tallyName).trim().toUpperCase()
+        : (b.supplier_name ? String(b.supplier_name).trim().toUpperCase() : null);
+      const { slots, ...rest } = b;
+      return { ...rest, supplier_name };
+    });
 
     logActivity({ req, action: 'search_bills', details: { page, total } });
     return res.json({ rows, total, page, limit });
@@ -530,7 +540,7 @@ router.get('/export.xlsx', requireCdcBillsAdmin, async (req, res) => {
 //
 // Voucher format expected: <PREFIX>/<SERIAL>/<FY>   e.g. PUR/70/26-27
 // ============================================================
-router.get('/missing-vouchers', requireCdcBillsAdmin, async (req, res) => {
+router.get('/missing-vouchers', async (req, res) => {
   try {
     const fy = String(req.query.fy || '').trim();
     const prefix = String(req.query.prefix || 'PUR').trim();
