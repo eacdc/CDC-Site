@@ -990,7 +990,7 @@ router.post('/:id/approve', requireCdcBillsModify, async (req, res) => {
     bill.manually_reviewed_at = new Date();
     bill.review_comment = String(comment).trim();
     bill.manually_overridden = true;
-    // Promote status: needs_review/verified_with_warnings -> approved (we
+    // Promote status: needs_review/verified_with_warnings/rejected -> approved (we
     // record this by setting verification_status to 'verified' but keep
     // manually_overridden=true so the UI can show the approval badge).
     bill.verification_status = 'verified';
@@ -999,6 +999,39 @@ router.post('/:id/approve', requireCdcBillsModify, async (req, res) => {
     return res.json(bill);
   } catch (err) {
     return res.status(500).json({ error: err.message || 'approval failed' });
+  }
+});
+
+// ============================================================
+// POST /:id/reject — mark bill cancelled; requires comment
+// Body: { reviewer: string, comment: string }
+// ============================================================
+router.post('/:id/reject', requireCdcBillsModify, async (req, res) => {
+  try {
+    const { reviewer, comment } = req.body || {};
+    if (!comment || !String(comment).trim()) {
+      return res.status(400).json({ error: 'comment is required to reject a bill' });
+    }
+    const bill = await PurchaseBill.findById(req.params.id);
+    if (!bill) return res.status(404).json({ error: 'not found' });
+
+    const status = bill.verification_status;
+    if (!['needs_review', 'verified_with_warnings', 'verified'].includes(status)) {
+      return res.status(400).json({
+        error: `Cannot reject a bill with status "${status}"`,
+      });
+    }
+
+    bill.manually_reviewed_by = req.cdcBillsUser?.displayName || reviewer || 'anonymous';
+    bill.manually_reviewed_at = new Date();
+    bill.review_comment = String(comment).trim();
+    bill.manually_overridden = true;
+    bill.verification_status = 'rejected';
+    await bill.save();
+    logActivity({ req, action: 'reject_bill', billId: bill._id });
+    return res.json(bill);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'reject failed' });
   }
 });
 
