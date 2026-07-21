@@ -391,9 +391,23 @@ function compareByVoucherDesc(a, b) {
  * Build a Mongo filter object from the standard search query params.
  * Shared between the paginated list (`GET /`) and the Excel export.
  */
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseSupplierNamesParam(value) {
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function buildSearchFilter(query = {}) {
-  const { q, supplier_gstin, set_type, status, from, to } = query;
+  const { q, supplier_gstin, set_type, status, from, to, supplier_names } = query;
   const filter = {};
+  const and = [];
+
   if (set_type && ['grn', 'non_grn'].includes(set_type)) filter.set_type = set_type;
   if (status) filter.verification_status = status;
   if (supplier_gstin) filter.supplier_gstin = String(supplier_gstin).trim().toUpperCase();
@@ -402,24 +416,85 @@ function buildSearchFilter(query = {}) {
     if (from) filter.invoice_date.$gte = new Date(from);
     if (to) filter.invoice_date.$lte = new Date(to);
   }
+
+  const supplierNameList = parseSupplierNamesParam(supplier_names);
+  if (supplierNameList.length) {
+    and.push({
+      $or: supplierNameList.flatMap((name) => {
+        const re = new RegExp(`^${escapeRegex(name)}$`, 'i');
+        return [
+          { supplier_name: re },
+          { 'slots.tally_voucher.aggregated_fields.supplier_name': re },
+        ];
+      }),
+    });
+  }
+
   if (q && String(q).trim()) {
     const text = String(q).trim();
-    const re = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    filter.$or = [
-      { supplier_name: re },
-      { supplier_gstin: re },
-      { invoice_number: re },
-      { tally_voucher_number: re },
-      { grn_voucher_number: re },
-      { po_numbers: re },
-    ];
+    const re = new RegExp(escapeRegex(text), 'i');
+    and.push({
+      $or: [
+        { supplier_name: re },
+        { supplier_gstin: re },
+        { invoice_number: re },
+        { tally_voucher_number: re },
+        { grn_voucher_number: re },
+        { po_numbers: re },
+      ],
+    });
   }
+
+  if (and.length) filter.$and = and;
   return filter;
 }
 
 // ============================================================
+// GET /suppliers — distinct Tally supplier names for filter dropdown
+// Query: q (optional typeahead)
+// ============================================================
+router.get('/suppliers', async (req, res) => {
+  try {
+    const q = req.query.q ? String(req.query.q).trim() : '';
+    const pipeline = [
+      {
+        $project: {
+          rawName: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  '$slots.tally_voucher.aggregated_fields.supplier_name',
+                  '$supplier_name',
+                ],
+              },
+            },
+          },
+        },
+      },
+      { $match: { rawName: { $nin: [null, ''] } } },
+      { $group: { _id: { $toUpper: '$rawName' } } },
+      { $sort: { _id: 1 } },
+    ];
+
+    if (q) {
+      pipeline.push({
+        $match: { _id: { $regex: escapeRegex(q), $options: 'i' } },
+      });
+    }
+
+    pipeline.push({ $limit: 500 });
+
+    const rows = await PurchaseBill.aggregate(pipeline);
+    return res.json({ suppliers: rows.map((r) => r._id) });
+  } catch (err) {
+    console.error('[purchase-bills] suppliers list error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to list suppliers' });
+  }
+});
+
+// ============================================================
 // GET /
-// Query: q, supplier_gstin, set_type, status, from, to, page, limit
+// Query: q, supplier_gstin, supplier_names, set_type, status, from, to, page, limit
 // ============================================================
 router.get('/', async (req, res) => {
   try {
