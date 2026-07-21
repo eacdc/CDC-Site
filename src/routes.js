@@ -7297,6 +7297,280 @@ function getCompletedQtyFromOps(opsByName, orderQty) {
   return Math.min(...eligibleQtys);
 }
 
+// ---------------------------------------------------------------------------
+// Contractor billing anomaly flagging.
+// Judges each JOB only by its realised per-piece rate and % of job value vs
+// comparable jobs (same product category, segment fallback). It never reads
+// the operation-level columns, which are contractor/accounts-entered and
+// therefore manipulable. See the flagging-logic specification.
+// ---------------------------------------------------------------------------
+const FLAG_PARAMS = {
+  Z_THRESHOLD: 3.0,      // robust-sigmas above median that counts as a breach
+  MIN_COHORT: 8,         // min jobs in a cohort before its baseline is trusted
+  MIN_REL_SPREAD: 0.15,  // spread floor: sigma >= 15% of the median
+  DOUBLE_LO: 1.8,        // ratio window that reads as "qty billed twice"
+  DOUBLE_HI: 2.2,
+  QTY_MISMATCH_PCT: 0.25,// processed-vs-order gap beyond this is notable
+  PCT_SANITY_MAX: 100,   // cost > this % of job value => job value is bad data
+  SCALE: 1.4826,         // MAD -> sigma constant
+  Z90: 1.2816,           // z-value at the 90th percentile
+};
+
+const FLAG_WEIGHTS = {
+  OVERCHARGE_SUSPECT: 4,
+  DOUBLE_QTY_SUSPECT: 4,
+  OVERCHARGE_SUSPECT_RATE_ONLY: 3,
+  DUPLICATE_SUSPECT: 3,
+  QTY_MISMATCH: 1,
+  QTY_PROCESSED_MISSING: 1,
+  FLAT_OR_MINIMUM: 1,
+  JOB_VALUE_SUSPECT: 1,
+  REVIEW_RATE_ONLY: 1,
+  REVIEW_PCT_ONLY: 1,
+  UNDERCHARGE: 1,
+  INSUFFICIENT_BASELINE: 0,
+};
+
+const FLAG_HIGH_SEVERITY = new Set([
+  'OVERCHARGE_SUSPECT',
+  'OVERCHARGE_SUSPECT_RATE_ONLY',
+  'DOUBLE_QTY_SUSPECT',
+]);
+
+// Normalise category/segment names so typos don't split one cohort into two
+// undersized ones (e.g. "Corrugarted" vs "Corrugated").
+function canonicalizeCohortName(raw) {
+  let s = String(raw || '').trim().replace(/\s+/g, ' ');
+  if (!s) return '';
+  s = s.replace(/corrugarted/gi, 'Corrugated');
+  return s;
+}
+
+// Linear-interpolated percentile (matches SQL PERCENTILE_CONT). Input sorted asc.
+function percentileCont(sortedAsc, p) {
+  const n = sortedAsc.length;
+  if (n === 0) return NaN;
+  if (n === 1) return sortedAsc[0];
+  const rank = p * (n - 1);
+  const lo = Math.floor(rank);
+  const hi = Math.ceil(rank);
+  if (lo === hi) return sortedAsc[lo];
+  return sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (rank - lo);
+}
+
+// Robust baseline for one metric within a cohort.
+function computeMetricBaseline(values, cohortCount, params) {
+  const arr = values.filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  if (arr.length === 0) return null;
+  const med = percentileCont(arr, 0.5);
+  const absDev = arr.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+  const madSigma = params.SCALE * percentileCont(absDev, 0.5);
+  const p90 = percentileCont(arr, 0.90);
+  const tailSigma = Math.max((p90 - med) / params.Z90, 0);
+  let sigma = Math.max(madSigma, tailSigma);
+  sigma = Math.max(sigma, Math.abs(med) * params.MIN_REL_SPREAD);
+  return { med, sigma, n: cohortCount };
+}
+
+function metricZScore(value, baseline) {
+  if (!baseline || !Number.isFinite(value)) return null;
+  if (!(baseline.sigma > 0)) return 0;
+  return (value - baseline.med) / baseline.sigma;
+}
+
+// Builds the "Anomalies" rows from the already-computed JOB summary rows.
+// Returns only rows with severity !== 'OK', sorted HIGH -> LOW.
+function buildAnomalyRows(jobRows, params = FLAG_PARAMS) {
+  // 1. Per-row derived fields (§3).
+  const derived = jobRows.map((row) => {
+    const orderQty = Number(row['Order Qty'] || 0);
+    const qtyProcessed = Number(row['Qty Processed'] || 0);
+    const amount = Number(row['Total Contractor Amount'] || 0);
+    const jobValueRaw = row['Total Job Value'];
+    const jobValue = (jobValueRaw === '' || jobValueRaw == null) ? null : Number(jobValueRaw);
+    const pctRaw = row['% Contractor Cost of Job Value'];
+    const pct = (pctRaw === '' || pctRaw == null) ? null : Number(pctRaw);
+
+    const billingQty = qtyProcessed > 0 ? qtyProcessed : orderQty;
+    const billingBasis = qtyProcessed > 0 ? 'processed' : 'order';
+    const ratePerPc = billingQty > 0 ? amount / billingQty : null;
+    const pctValid = jobValue != null && Number.isFinite(jobValue) && jobValue > 0
+      && pct != null && Number.isFinite(pct) && pct <= params.PCT_SANITY_MAX;
+
+    const categoryDisplay = canonicalizeCohortName(row['Product Category']);
+    const segmentDisplay = canonicalizeCohortName(row['Segment Name']);
+
+    return {
+      row, orderQty, qtyProcessed, amount, jobValue, pct,
+      billingQty, billingBasis, ratePerPc, pctValid,
+      categoryDisplay, segmentDisplay,
+      categoryKey: categoryDisplay.toLowerCase(),
+      segmentKey: segmentDisplay.toLowerCase(),
+      clientName: String(row['Client Name'] || '').trim(),
+      jobTitle: String(row['Job Title'] || '').trim(),
+      contractors: String(row['Contractors Worked'] || '').trim(),
+    };
+  });
+
+  const groupBy = (items, keyFn) => {
+    const m = new Map();
+    for (const it of items) {
+      const k = keyFn(it);
+      if (!k) continue;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(it);
+    }
+    return m;
+  };
+
+  // 2. Cohort baselines (§4) for category and segment fallback.
+  const baselineFor = (group) => ({
+    count: group.length,
+    rate: computeMetricBaseline(group.map((d) => d.ratePerPc), group.length, params),
+    pct: computeMetricBaseline(group.filter((d) => d.pctValid).map((d) => d.pct), group.length, params),
+  });
+
+  const catBaselines = new Map();
+  for (const [k, g] of groupBy(derived, (d) => d.categoryKey)) catBaselines.set(k, baselineFor(g));
+  const segBaselines = new Map();
+  for (const [k, g] of groupBy(derived, (d) => d.segmentKey)) segBaselines.set(k, baselineFor(g));
+
+  // 3. Structural group aggregates (§6b).
+  // FLAT_OR_MINIMUM: same (Contractors + Category) group, identical positive
+  // Amount across >=2 rows that have different billing_qty.
+  const flatFlagged = new Set();
+  for (const [, g] of groupBy(derived, (d) => `${d.contractors}||${d.categoryKey}`)) {
+    const byAmount = new Map();
+    for (const d of g) {
+      if (!(d.amount > 0)) continue;
+      if (!byAmount.has(d.amount)) byAmount.set(d.amount, []);
+      byAmount.get(d.amount).push(d);
+    }
+    for (const [, sameAmt] of byAmount) {
+      if (sameAmt.length >= 2 && new Set(sameAmt.map((d) => d.billingQty)).size >= 2) {
+        sameAmt.forEach((d) => flatFlagged.add(d));
+      }
+    }
+  }
+
+  // DUPLICATE_SUSPECT: same (Client, Job Title, Amount, billing_qty) more than once.
+  const dupFlagged = new Set();
+  for (const [, g] of groupBy(derived, (d) => (
+    d.clientName && d.jobTitle ? `${d.clientName}||${d.jobTitle}||${d.amount}||${d.billingQty}` : ''
+  ))) {
+    if (g.length > 1) g.forEach((d) => dupFlagged.add(d));
+  }
+
+  // 4. Per-row scores, flags, severity (§5-7).
+  const results = derived.map((d) => {
+    const flags = [];
+
+    const catB = catBaselines.get(d.categoryKey);
+    const segB = segBaselines.get(d.segmentKey);
+    let source = 'none';
+    let base = null;
+    if (catB && catB.count >= params.MIN_COHORT) { base = catB; source = 'category'; }
+    else if (segB && segB.count >= params.MIN_COHORT) { base = segB; source = 'segment'; }
+
+    const rateBase = base ? base.rate : null;
+    const pctBase = base ? base.pct : null;
+    const rateZ = rateBase ? metricZScore(d.ratePerPc, rateBase) : null;
+    const pctZ = (pctBase && d.pctValid) ? metricZScore(d.pct, pctBase) : null;
+
+    const rateHi = rateZ != null && rateZ >= params.Z_THRESHOLD;
+    const pctHi = d.pctValid && pctZ != null && pctZ >= params.Z_THRESHOLD;
+    const rateLo = rateZ != null && rateZ <= -params.Z_THRESHOLD;
+    const pctLo = d.pctValid && pctZ != null && pctZ <= -params.Z_THRESHOLD;
+
+    // 6a benchmark flags — only when a cohort is trusted.
+    if (!base) {
+      flags.push('INSUFFICIENT_BASELINE');
+    } else if (d.pctValid) {
+      if (rateHi && pctHi) {
+        const rateRatio = rateBase && rateBase.med !== 0 ? d.ratePerPc / rateBase.med : null;
+        const pctRatio = pctBase && pctBase.med !== 0 ? d.pct / pctBase.med : null;
+        const inDouble = (r) => r != null && r >= params.DOUBLE_LO && r <= params.DOUBLE_HI;
+        flags.push(inDouble(rateRatio) && inDouble(pctRatio) ? 'DOUBLE_QTY_SUSPECT' : 'OVERCHARGE_SUSPECT');
+      } else if (rateHi) {
+        flags.push('REVIEW_RATE_ONLY');
+      } else if (pctHi) {
+        flags.push('REVIEW_PCT_ONLY');
+      }
+      if (rateLo && pctLo) flags.push('UNDERCHARGE');
+    } else {
+      flags.push('JOB_VALUE_SUSPECT');
+      if (rateHi) flags.push('OVERCHARGE_SUSPECT_RATE_ONLY');
+      else if (rateLo) flags.push('UNDERCHARGE');
+    }
+
+    // 6b structural flags — always evaluated.
+    if (d.qtyProcessed === 0 && d.amount > 0) {
+      flags.push('QTY_PROCESSED_MISSING');
+    } else if (d.orderQty > 0 && Math.abs(d.qtyProcessed - d.orderQty) / d.orderQty > params.QTY_MISMATCH_PCT) {
+      flags.push('QTY_MISMATCH');
+    }
+    if (flatFlagged.has(d)) flags.push('FLAT_OR_MINIMUM');
+    if (dupFlagged.has(d)) flags.push('DUPLICATE_SUSPECT');
+
+    const uniqueFlags = [...new Set(flags)];
+    const riskScore = uniqueFlags.reduce((s, f) => s + (FLAG_WEIGHTS[f] || 0), 0);
+    let severity;
+    if (uniqueFlags.some((f) => FLAG_HIGH_SEVERITY.has(f))) severity = 'HIGH';
+    else if (riskScore >= 3) severity = 'MEDIUM';
+    else if (riskScore >= 1) severity = 'LOW';
+    else severity = 'OK';
+
+    return { d, source, rateBase, pctBase, rateZ, pctZ, uniqueFlags, riskScore, severity };
+  });
+
+  // 5. Keep only flagged rows, sort HIGH -> LOW.
+  const sevRank = { HIGH: 0, MEDIUM: 1, LOW: 2, OK: 3 };
+  const round = (v, dp) => (Number.isFinite(v) ? Number(v.toFixed(dp)) : '');
+
+  return results
+    .filter((r) => r.severity !== 'OK')
+    .sort((a, b) => (
+      sevRank[a.severity] - sevRank[b.severity]
+      || b.riskScore - a.riskScore
+      || (b.rateZ || 0) - (a.rateZ || 0)
+    ))
+    .map((r) => {
+      const d = r.d;
+      return {
+        'Job Number': d.row['Job Number'],
+        Severity: r.severity,
+        'Risk Score': r.riskScore,
+        Flags: r.uniqueFlags.join(', '),
+        'Product Category': d.categoryDisplay,
+        'Segment Name': d.segmentDisplay,
+        'Client Name': d.clientName,
+        'Job Title': d.jobTitle,
+        'Contractors Worked': d.contractors,
+        'Order Qty': d.orderQty,
+        'Qty Processed': d.qtyProcessed,
+        'Billing Qty': d.billingQty,
+        'Billing Basis': d.billingBasis,
+        'Total Contractor Amount': round(d.amount, 2),
+        'Total Job Value': d.jobValue == null ? '' : round(d.jobValue, 2),
+        'Rate / pc': d.ratePerPc == null ? '' : round(d.ratePerPc, 4),
+        'Cohort Rate Median': r.rateBase ? round(r.rateBase.med, 4) : '',
+        'Rate z': r.rateZ == null ? '' : round(r.rateZ, 2),
+        '% Cost of Job Value': d.pct == null ? '' : round(d.pct, 2),
+        'Cohort % Median': r.pctBase ? round(r.pctBase.med, 2) : '',
+        '% z': r.pctZ == null ? '' : round(r.pctZ, 2),
+        'Baseline Source': r.source,
+        'Cohort n': base_n(r),
+      };
+    });
+}
+
+function base_n(r) {
+  if (r.source === 'category' || r.source === 'segment') {
+    return (r.rateBase && r.rateBase.n) || (r.pctBase && r.pctBase.n) || '';
+  }
+  return '';
+}
+
 async function buildContractorNameMap(contractorIds) {
   const ids = [...new Set((contractorIds || []).map((id) => String(id || '').trim()).filter(Boolean))];
   if (!ids.length) return new Map();
@@ -7630,6 +7904,23 @@ router.get('/summary/export.xlsx', async (req, res) => {
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Job Summary');
+
+    // Anomalies tab: flag suspect JOB rows for manual review (never reads
+    // operation-level columns). Only rows with severity != OK are listed.
+    const anomalyRows = buildAnomalyRows(jobRows);
+    const wsFlags = anomalyRows.length > 0
+      ? XLSX.utils.json_to_sheet(anomalyRows)
+      : XLSX.utils.json_to_sheet([{ Note: 'No anomalies flagged for the selected period.' }]);
+    if (anomalyRows.length > 0) {
+      wsFlags['!cols'] = [
+        { wch: 16 }, { wch: 9 }, { wch: 10 }, { wch: 40 }, { wch: 24 }, { wch: 16 },
+        { wch: 28 }, { wch: 30 }, { wch: 24 }, { wch: 12 }, { wch: 14 }, { wch: 12 },
+        { wch: 13 }, { wch: 22 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 9 },
+        { wch: 18 }, { wch: 16 }, { wch: 9 }, { wch: 16 }, { wch: 9 },
+      ];
+    }
+    XLSX.utils.book_append_sheet(wb, wsFlags, 'Anomalies');
+
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     res.setHeader(
