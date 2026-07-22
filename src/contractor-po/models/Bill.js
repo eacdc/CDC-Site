@@ -80,6 +80,12 @@ const billSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+  // Composed contractor bill ref: mm_yy_<shortId>_<enteredNo> (e.g. 07_26_13_231)
+  contractorBillNo: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   roomRent: {
     type: Number,
     default: 0,

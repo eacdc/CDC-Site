@@ -646,16 +646,51 @@ router.get('/check-roomrent/:contractorName', async (req, res) => {
 router.patch('/:billNumber/pay', async (req, res) => {
   try {
     const { billNumber } = req.params;
-    const { roomRent } = req.body;
+    const { roomRent, contractorBillNumber } = req.body;
+
+    const enteredNo = String(contractorBillNumber || '').trim();
+    if (!enteredNo) {
+      return res.status(400).json({ error: 'Contractor Bill Number is required' });
+    }
     
     const bill = await Bill.findOne({ billNumber });
     
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
+
+    const contractor = await Contractor.findOne({
+      name: bill.contractorName.trim(),
+      isdeleted: 0,
+      shortId: { $ne: null },
+    }).select('shortId name').lean();
+
+    if (!contractor || !Number.isFinite(Number(contractor.shortId))) {
+      return res.status(400).json({
+        error: 'Contractor short ID not found. Please ensure this contractor has a 3-digit ID.',
+      });
+    }
+
+    const paymentDate = new Date();
+    const mmYy = (() => {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        month: '2-digit',
+        year: '2-digit',
+      }).formatToParts(paymentDate);
+      return {
+        mm: parts.find((p) => p.type === 'month')?.value,
+        yy: parts.find((p) => p.type === 'year')?.value,
+      };
+    })();
+    if (!mmYy.mm || !mmYy.yy) {
+      return res.status(500).json({ error: 'Could not derive payment month/year' });
+    }
+    const composedBillNo = `${mmYy.mm}_${mmYy.yy}_${Number(contractor.shortId)}_${enteredNo}`;
     
     bill.paymentStatus = 'Yes';
-    bill.paymentDate = new Date();
+    bill.paymentDate = paymentDate;
+    bill.contractorBillNo = composedBillNo;
     
     // Set roomRent if provided (default to 0 if not provided)
     if (roomRent !== undefined && roomRent !== null) {
@@ -672,7 +707,7 @@ router.patch('/:billNumber/pay', async (req, res) => {
     res.json(bill);
   } catch (error) {
     console.error('Error marking bill as paid:', error);
-    res.status(500).json({ error: 'Error marking bill as paid' });
+    res.status(500).json({ error: error.message || 'Error marking bill as paid' });
   }
 });
 

@@ -9738,6 +9738,16 @@ async function findActiveContractorByName(name, excludeId = null) {
   return Contractor.findOne(query);
 }
 
+/** Next free 3-digit ID in 1–999 (includes soft-deleted so IDs are not reused). */
+async function allocateNextShortId() {
+  const used = await Contractor.find({ shortId: { $ne: null } }).select('shortId').lean();
+  const usedSet = new Set(used.map((c) => Number(c.shortId)).filter((n) => Number.isFinite(n)));
+  for (let i = 1; i <= 999; i++) {
+    if (!usedSet.has(i)) return i;
+  }
+  throw new Error('No available 3-digit contractor IDs (001–999 are all used)');
+}
+
 router.post('/contractors', async (req, res) => {
   try {
     const { name } = req.body;
@@ -9760,8 +9770,16 @@ router.post('/contractors', async (req, res) => {
       existingContractor = await Contractor.findOne({ contractorId });
     } while (existingContractor);
 
+    let shortId;
+    try {
+      shortId = await allocateNextShortId();
+    } catch (allocErr) {
+      return res.status(400).json({ error: allocErr.message });
+    }
+
     const contractor = new Contractor({
       contractorId,
+      shortId,
       name: name.trim(),
       creationDate: new Date(),
       isdeleted: 0
@@ -9844,6 +9862,24 @@ async function generateNextBillNumber() {
     console.error('Error generating bill number:', error);
     throw error;
   }
+}
+
+/** Compose contractor bill ref: mm_yy_<shortId>_<enteredNo> using Asia/Kolkata payment date. */
+function buildContractorBillNo(paymentDate, shortId, enteredNo) {
+  const d = paymentDate instanceof Date ? paymentDate : new Date(paymentDate);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    month: '2-digit',
+    year: '2-digit',
+  }).formatToParts(d);
+  const mm = parts.find((p) => p.type === 'month')?.value;
+  const yy = parts.find((p) => p.type === 'year')?.value;
+  const id = Number(shortId);
+  const no = String(enteredNo || '').trim();
+  if (!mm || !yy || !Number.isFinite(id) || id < 1 || !no) {
+    throw new Error('Invalid contractor bill number inputs');
+  }
+  return `${mm}_${yy}_${id}_${no}`;
 }
 
 router.get('/bills', async (req, res) => {
@@ -10432,16 +10468,37 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
 router.patch('/bills/:billNumber/pay', async (req, res) => {
   try {
     const { billNumber } = req.params;
-    const { roomRent } = req.body;
+    const { roomRent, contractorBillNumber } = req.body;
+
+    const enteredNo = String(contractorBillNumber || '').trim();
+    if (!enteredNo) {
+      return res.status(400).json({ error: 'Contractor Bill Number is required' });
+    }
 
     const bill = await Bill.findOne({ billNumber });
     
     if (!bill) {
       return res.status(404).json({ error: 'Bill not found' });
     }
+
+    const contractor = await Contractor.findOne({
+      name: bill.contractorName.trim(),
+      isdeleted: 0,
+      shortId: { $ne: null },
+    }).select('shortId name').lean();
+
+    if (!contractor || !Number.isFinite(Number(contractor.shortId))) {
+      return res.status(400).json({
+        error: 'Contractor short ID not found. Please ensure this contractor has a 3-digit ID.',
+      });
+    }
+
+    const paymentDate = new Date();
+    const composedBillNo = buildContractorBillNo(paymentDate, contractor.shortId, enteredNo);
     
     bill.paymentStatus = 'Yes';
-    bill.paymentDate = new Date();
+    bill.paymentDate = paymentDate;
+    bill.contractorBillNo = composedBillNo;
 
     if (roomRent !== undefined && roomRent !== null) {
       const rentValue = Number(roomRent);
@@ -10457,7 +10514,7 @@ router.patch('/bills/:billNumber/pay', async (req, res) => {
     res.json(bill);
   } catch (error) {
     console.error('Error marking bill as paid:', error);
-    res.status(500).json({ error: 'Error marking bill as paid' });
+    res.status(500).json({ error: error.message || 'Error marking bill as paid' });
   }
 });
 

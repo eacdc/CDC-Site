@@ -6,6 +6,16 @@ function generateSixDigitPassword() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+/** Next free 3-digit ID in 1–999 (includes soft-deleted so IDs are not reused). */
+async function allocateNextShortId() {
+  const used = await Contractor.find({ shortId: { $ne: null } }).select('shortId').lean();
+  const usedSet = new Set(used.map((c) => Number(c.shortId)).filter((n) => Number.isFinite(n)));
+  for (let i = 1; i <= 999; i++) {
+    if (!usedSet.has(i)) return i;
+  }
+  throw new Error('No available 3-digit contractor IDs (001–999 are all used)');
+}
+
 async function findActiveContractorByName(name, excludeId = null) {
   const trimmed = name.trim();
   const query = {
@@ -54,8 +64,16 @@ router.post('/', async (req, res) => {
       existingContractor = await Contractor.findOne({ contractorId });
     } while (existingContractor); // Keep generating until unique
 
+    let shortId;
+    try {
+      shortId = await allocateNextShortId();
+    } catch (allocErr) {
+      return res.status(400).json({ error: allocErr.message });
+    }
+
     const contractor = new Contractor({
       contractorId,
+      shortId,
       name: name.trim(),
       creationDate: new Date(),
       password: generateSixDigitPassword(),
@@ -67,7 +85,7 @@ router.post('/', async (req, res) => {
   } catch (error) {
     console.error('Error creating contractor:', error);
     if (error.code === 11000) {
-      // Duplicate key error
+      // Duplicate key error (contractorId or shortId)
       return res.status(400).json({ error: 'Contractor ID already exists' });
     }
     res.status(500).json({ error: 'Error creating contractor' });

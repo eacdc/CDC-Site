@@ -17,7 +17,9 @@
     "backfill-jobops-unitprice": "node scripts/backfill-jobops-unitprice.js",
     "backfill-jobops-unitprice:dry-run": "node scripts/backfill-jobops-unitprice.js --dry-run",
     "backfill-jobops-product-category": "node scripts/backfill-jobops-product-category.js",
-    "backfill-jobops-product-category:dry-run": "node scripts/backfill-jobops-product-category.js --dry-run"
+    "backfill-jobops-product-category:dry-run": "node scripts/backfill-jobops-product-category.js --dry-run",
+    "backfill-contractor-short-ids": "node scripts/backfill-contractor-short-ids.js",
+    "backfill-contractor-short-ids:dry-run": "node scripts/backfill-contractor-short-ids.js --dry-run"
   },
   "keywords": [],
   "author": "",
