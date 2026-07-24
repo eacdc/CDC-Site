@@ -3422,6 +3422,82 @@ router.get('/inventory-summary/group', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: categorywise issued (stock out by business category)
+router.get('/inventory-summary/categorywise-issued', async (req, res) => {
+    try {
+        const { database, fromDate, toDate } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('StartDate', sql.Date, safeFromDate)
+            .input('EndDate', sql.Date, safeToDate)
+            .input('Category', sql.VarChar(20), null)
+            .execute('dbo.GetStockOutByBusinessCategory');
+
+        const detailRaw = (result.recordsets && result.recordsets[0]) || [];
+        const summaryRaw = (result.recordsets && result.recordsets[1]) || [];
+
+        const detail = detailRaw.map((row) => ({
+            businessCategory: row.BusinessCategory ?? row.businesscategory ?? '',
+            issueDate: row.IssueDate ?? row.issuedate ?? null,
+            voucherNo: row.VoucherNo ?? row.voucherno ?? '',
+            issueType: row.IssueType ?? row.issuetype ?? '',
+            jobBookingNo: row.JobBookingNo ?? row.jobbookingno ?? null,
+            jobName: row.JobName ?? row.jobname ?? null,
+            clientName: row.ClientName ?? row.clientname ?? null,
+            salesPerson: row.SalesPerson ?? row.salesperson ?? null,
+            segmentName: row.SegmentName ?? row.segmentname ?? null,
+            categoryId: row.CategoryID ?? row.categoryid ?? null,
+            itemId: row.ItemID ?? row.itemid ?? null,
+            itemName: row.ItemName ?? row.itemname ?? null,
+            quality: row.Quality ?? row.quality ?? '',
+            gsm: row.GSM ?? row.gsm ?? null,
+            sizeW: row.SizeW ?? row.sizew ?? null,
+            sizeL: row.SizeL ?? row.sizel ?? null,
+            stockUnit: row.StockUnit ?? row.stockunit ?? '',
+            itemGroup: row.ItemGroup ?? row.itemgroup ?? '',
+            stockOutQty: row.StockOut_Qty ?? row.stockout_qty ?? 0,
+            stockOutKg: row.StockOut_KG ?? row.stockout_kg ?? 0,
+            rate: row.Rate ?? row.rate ?? 0,
+            stockOutValue: row.StockOut_Value ?? row.stockout_value ?? 0,
+            isJobLinked: row.IsJobLinked ?? row.isjoblinked ?? 0
+        }));
+
+        const summary = summaryRaw.map((row) => ({
+            businessCategory: row.BusinessCategory ?? row.businesscategory ?? '',
+            issueLines: row.IssueLines ?? row.issuelines ?? 0,
+            jobs: row.Jobs ?? row.jobs ?? 0,
+            firstIssueDate: row.FirstIssueDate ?? row.firstissuedate ?? null,
+            lastIssueDate: row.LastIssueDate ?? row.lastissuedate ?? null,
+            stockOutKg: row.StockOut_KG ?? row.stockout_kg ?? 0,
+            stockOutValue: row.StockOut_Value ?? row.stockout_value ?? 0
+        }));
+
+        return res.json({ status: true, detail, summary });
+    } catch (err) {
+        console.error('Inventory summary categorywise-issued error:', err);
+        const msg = String(err?.message || '');
+        if (/StartDate|EndDate|mandatory|must not precede|cannot be after/i.test(msg)) {
+            return res.status(400).json({ status: false, error: msg || 'Invalid date range' });
+        }
+        return res.status(500).json({ status: false, error: 'Failed to fetch categorywise issued data' });
+    }
+});
+
 // Inventory Summary Tool: clientwise stock movement
 router.get('/inventory-summary/clientwise', async (req, res) => {
     try {
