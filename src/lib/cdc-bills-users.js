@@ -87,12 +87,14 @@ export async function verifyEmployeeCredentials(userKeyOrUsername, password, Use
   return { userKey: employee.userKey, displayName: employee.displayName, role: 'employee' };
 }
 
-export function issueToken(user) {
+/** `sessionId` pins the token to one device — see lib/cdc-bills-sessions.js. */
+export function issueToken(user, sessionId) {
   return jwt.sign(
     {
       userKey: user.userKey,
       displayName: user.displayName,
       role: user.role,
+      sid: sessionId,
     },
     jwtSecret(),
     { expiresIn: JWT_EXPIRY },
@@ -107,6 +109,7 @@ export function verifyToken(token) {
       userKey: String(payload.userKey),
       displayName: String(payload.displayName || payload.userKey),
       role: payload.role === 'admin' ? 'admin' : 'employee',
+      sessionId: payload.sid ? String(payload.sid) : null,
     };
   } catch {
     return null;

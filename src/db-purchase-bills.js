@@ -7,12 +7,14 @@ import mongoose from 'mongoose';
 import { purchaseBillSchema } from './models/PurchaseBill.js';
 import { cdcBillsUserPasswordSchema } from './models/CdcBillsUserPassword.js';
 import { cdcBillsActivityLogSchema } from './models/CdcBillsActivityLog.js';
+import { cdcBillsSessionSchema } from './models/CdcBillsSession.js';
 
 let billingConnection = null;
 /** Live binding: set after `ensurePurchaseBillsReady()` resolves. */
 export let PurchaseBill = null;
 export let CdcBillsUserPassword = null;
 export let CdcBillsActivityLog = null;
+export let CdcBillsSession = null;
 
 /** In-flight first connection; reset if connection fails. */
 let connecting = null;
@@ -22,7 +24,7 @@ let connecting = null;
  * @throws {Error} if MONGODB_URI_Billing is missing or connection fails
  */
 export async function ensurePurchaseBillsReady() {
-  if (PurchaseBill && CdcBillsUserPassword && CdcBillsActivityLog) return;
+  if (PurchaseBill && CdcBillsUserPassword && CdcBillsActivityLog && CdcBillsSession) return;
   const uri = process.env.MONGODB_URI_Billing;
   if (!uri || !String(uri).trim()) {
     throw new Error(
@@ -35,6 +37,7 @@ export async function ensurePurchaseBillsReady() {
       const Model = c.model('PurchaseBill', purchaseBillSchema);
       CdcBillsUserPassword = c.model('CdcBillsUserPassword', cdcBillsUserPasswordSchema);
       CdcBillsActivityLog = c.model('CdcBillsActivityLog', cdcBillsActivityLogSchema);
+      CdcBillsSession = c.model('CdcBillsSession', cdcBillsSessionSchema);
       await c.asPromise();
       billingConnection = c;
       PurchaseBill = Model;
@@ -52,6 +55,7 @@ export async function ensurePurchaseBillsReady() {
     PurchaseBill = null;
     CdcBillsUserPassword = null;
     CdcBillsActivityLog = null;
+    CdcBillsSession = null;
     if (billingConnection) {
       try { await billingConnection.close(); } catch { /* ignore */ }
       billingConnection = null;
@@ -67,6 +71,7 @@ export async function closePurchaseBillsMongo() {
     PurchaseBill = null;
     CdcBillsUserPassword = null;
     CdcBillsActivityLog = null;
+    CdcBillsSession = null;
     connecting = null;
   }
 }

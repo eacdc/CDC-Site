@@ -1,4 +1,5 @@
 import { verifyToken } from '../lib/cdc-bills-users.js';
+import { isSessionActive } from '../lib/cdc-bills-sessions.js';
 
 function bearerToken(req) {
   const h = req.headers.authorization || '';
@@ -6,7 +7,7 @@ function bearerToken(req) {
   return null;
 }
 
-export function requireCdcBillsAuth(req, res, next) {
+export async function requireCdcBillsAuth(req, res, next) {
   const token = bearerToken(req);
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -15,6 +16,26 @@ export function requireCdcBillsAuth(req, res, next) {
   if (!user) {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
+
+  // Tokens issued before single-session support have no sid.
+  if (!user.sessionId) {
+    return res.status(401).json({ error: 'Session expired. Please log in again.' });
+  }
+
+  // Only one device per account: a newer login rotates the stored session id.
+  try {
+    const active = await isSessionActive(user.userKey, user.sessionId);
+    if (!active) {
+      return res.status(401).json({
+        error: 'You were signed out because this account signed in on another device.',
+        code: 'session_superseded',
+      });
+    }
+  } catch (err) {
+    console.error('[cdc-bills-auth] session check failed:', err?.message || err);
+    return res.status(503).json({ error: 'Session store unavailable' });
+  }
+
   req.cdcBillsUser = user;
   next();
 }

@@ -7,6 +7,7 @@ import {
   ensurePurchaseBillsReady,
   CdcBillsUserPassword,
   CdcBillsActivityLog,
+  CdcBillsSession,
 } from './db-purchase-bills.js';
 import {
   CDC_BILLS_EMPLOYEES,
@@ -16,6 +17,7 @@ import {
   issueToken,
   hashPassword,
 } from './lib/cdc-bills-users.js';
+import { endSession, startSession } from './lib/cdc-bills-sessions.js';
 import { logActivity } from './lib/cdc-bills-activity.js';
 import {
   requireCdcBillsAuth,
@@ -55,7 +57,9 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = issueToken(user);
+    // Rotating the session id here signs the account out everywhere else.
+    const sessionId = await startSession(user, req);
+    const token = issueToken(user, sessionId);
     logActivity({ user, action: 'login' });
     return res.json({ token, user });
   } catch (err) {
@@ -66,12 +70,18 @@ router.post('/login', async (req, res) => {
 
 // GET /me
 router.get('/me', requireCdcBillsAuth, (req, res) => {
-  res.json({ user: req.cdcBillsUser });
+  const { userKey, displayName, role } = req.cdcBillsUser;
+  res.json({ user: { userKey, displayName, role } });
 });
 
-// POST /logout — client clears token; log for audit
-router.post('/logout', requireCdcBillsAuth, (req, res) => {
+// POST /logout — drop the active session; client clears its token
+router.post('/logout', requireCdcBillsAuth, async (req, res) => {
   logActivity({ req, action: 'logout' });
+  try {
+    await endSession(req.cdcBillsUser.userKey, req.cdcBillsUser.sessionId);
+  } catch (err) {
+    console.error('[cdc-bills-auth] logout session cleanup failed:', err?.message || err);
+  }
   res.json({ ok: true });
 });
 
@@ -118,6 +128,9 @@ router.post('/employees/set-password', requireCdcBillsAuth, requireCdcBillsAdmin
       },
       { upsert: true, new: true },
     );
+
+    // A password change should kick that employee off any device.
+    await CdcBillsSession.deleteMany({ userKey: employee.userKey });
 
     logActivity({
       req,
