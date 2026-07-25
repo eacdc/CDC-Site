@@ -109,6 +109,13 @@ export const purchaseBillSchema = new Schema({
   review_comment: String,
   manually_overridden: { type: Boolean, default: false },
 
+  // Placeholder rows created from the missing-voucher checker for Tally
+  // vouchers that were cancelled in Tally and will never be uploaded.
+  is_cancelled_voucher: { type: Boolean, default: false, index: true },
+  cancellation_note: String,
+  cancelled_by: String,
+  cancelled_at: Date,
+
   // Set when background extraction fails so the UI can surface it
   extraction_error: { type: String, default: null },
 

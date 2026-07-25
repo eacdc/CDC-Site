@@ -157,7 +157,7 @@ async function verifyAndStamp(bill) {
 // Body: { slot_type: "tally_voucher" | "supplier_invoice" | "eway_bill" | "grn_sheet" }
 // Returns signed params so the client can upload directly to Cloudinary.
 // ============================================================
-router.post('/cloudinary-sign', (req, res) => {
+router.post('/cloudinary-sign', requireCdcBillsAdmin, (req, res) => {
   try {
     const slotType = (req.body?.slot_type || '').toString();
     const allowed = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
@@ -190,7 +190,7 @@ router.post('/cloudinary-sign', (req, res) => {
 // POST /extract
 // Body: { cloudinary_url: string, slot_type: string }
 // ============================================================
-router.post('/extract', async (req, res) => {
+router.post('/extract', requireCdcBillsAdmin, async (req, res) => {
   const cloudinaryUrl = req.body?.cloudinary_url;
   const slotType = req.body?.slot_type;
   if (!cloudinaryUrl || !slotType) {
@@ -209,7 +209,7 @@ router.post('/extract', async (req, res) => {
 // POST /phash — generate perceptual hash for an image URL
 // Body: { url: string }
 // ============================================================
-router.post('/phash', async (req, res) => {
+router.post('/phash', requireCdcBillsAdmin, async (req, res) => {
   const url = req.body?.url;
   if (!url) return res.status(400).json({ error: 'url is required' });
   try {
@@ -225,7 +225,7 @@ router.post('/phash', async (req, res) => {
 // Body: { supplier_gstin?, invoice_number?, tally_voucher_number?,
 //         grand_total?, invoice_date? }
 // ============================================================
-router.post('/check-duplicate', async (req, res) => {
+router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
   try {
     const b = req.body || {};
     const supplier_gstin = b.supplier_gstin ? String(b.supplier_gstin).trim().toUpperCase() : null;
@@ -306,7 +306,7 @@ router.post('/check-duplicate', async (req, res) => {
 //   slots: { tally_voucher: { pages: [...] }, supplier_invoice: {...}, ... }
 // }
 // ============================================================
-router.post('/', async (req, res) => {
+router.post('/', requireCdcBillsAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const setType = body.set_type;
@@ -403,6 +403,24 @@ function parseSupplierNamesParam(value) {
     .filter(Boolean);
 }
 
+/** Regex that matches `<PREFIX>/<SERIAL>/<FY>` with optional spaces / leading zeros. */
+function voucherRangeRegex(prefix, fy) {
+  return new RegExp(
+    `^\\s*${escapeRegex(prefix)}\\s*/\\s*(\\d+)\\s*/\\s*${escapeRegex(fy)}\\s*$`,
+    'i',
+  );
+}
+
+function parseVoucherRangeQuery(query = {}) {
+  const fy = query.voucher_fy ? String(query.voucher_fy).trim() : '';
+  const prefix = query.voucher_prefix ? String(query.voucher_prefix).trim() : 'PUR';
+  const from = parseInt(query.voucher_from, 10);
+  const to = parseInt(query.voucher_to, 10);
+  if (!fy || !/^\d{2}-\d{2}$/.test(fy)) return null;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to < from) return null;
+  return { fy, prefix, from, to };
+}
+
 function buildSearchFilter(query = {}) {
   const { q, supplier_gstin, set_type, status, from, to, supplier_names } = query;
   const filter = {};
@@ -492,25 +510,79 @@ router.get('/suppliers', async (req, res) => {
   }
 });
 
+const ROW_PROJECTION =
+  '-check_results -slots.tally_voucher.pages -slots.supplier_invoice -slots.eway_bill -slots.grn_sheet';
+
+/**
+ * Voucher-range search: the serial lives inside the `PUR/<serial>/<FY>` string,
+ * so Mongo can't range-filter or sort on it. We resolve the ordered id list in
+ * application code, then page over it.
+ */
+async function findVoucherRangePage(range, filter, page, limit) {
+  const re = voucherRangeRegex(range.prefix, range.fy);
+  const candidates = await PurchaseBill.find({ tally_voucher_number: { $regex: re } })
+    .select('_id tally_voucher_number')
+    .lean();
+
+  const inRange = [];
+  for (const d of candidates) {
+    const m = String(d.tally_voucher_number || '').match(re);
+    if (!m) continue;
+    const serial = parseInt(m[1], 10);
+    if (serial < range.from || serial > range.to) continue;
+    inRange.push({ id: String(d._id), serial });
+  }
+  inRange.sort((a, b) => a.serial - b.serial);
+
+  if (inRange.length === 0) return { rawRows: [], total: 0 };
+
+  const allowedIds = inRange.map((r) => r.id);
+  const scopedFilter = { ...filter, _id: { $in: allowedIds } };
+  const matching = await PurchaseBill.find(scopedFilter).select('_id').lean();
+  const matchingIds = new Set(matching.map((d) => String(d._id)));
+
+  const orderedIds = allowedIds.filter((id) => matchingIds.has(id));
+  const pageIds = orderedIds.slice((page - 1) * limit, page * limit);
+  if (pageIds.length === 0) return { rawRows: [], total: orderedIds.length };
+
+  const docs = await PurchaseBill.find({ _id: { $in: pageIds } })
+    .select(ROW_PROJECTION)
+    .lean();
+  const byId = new Map(docs.map((d) => [String(d._id), d]));
+
+  return {
+    rawRows: pageIds.map((id) => byId.get(id)).filter(Boolean),
+    total: orderedIds.length,
+  };
+}
+
 // ============================================================
 // GET /
-// Query: q, supplier_gstin, supplier_names, set_type, status, from, to, page, limit
+// Query: q, supplier_gstin, supplier_names, set_type, status, from, to,
+//        voucher_prefix, voucher_fy, voucher_from, voucher_to, page, limit
 // ============================================================
 router.get('/', async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
     const filter = buildSearchFilter(req.query);
+    const voucherRange = parseVoucherRangeQuery(req.query);
 
-    const [rawRows, total] = await Promise.all([
-      PurchaseBill.find(filter)
-        .select('-check_results -slots.tally_voucher.pages -slots.supplier_invoice -slots.eway_bill -slots.grn_sheet')
-        .sort({ uploaded_at: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .lean(),
-      PurchaseBill.countDocuments(filter),
-    ]);
+    let rawRows;
+    let total;
+    if (voucherRange) {
+      ({ rawRows, total } = await findVoucherRangePage(voucherRange, filter, page, limit));
+    } else {
+      [rawRows, total] = await Promise.all([
+        PurchaseBill.find(filter)
+          .select(ROW_PROJECTION)
+          .sort({ uploaded_at: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean(),
+        PurchaseBill.countDocuments(filter),
+      ]);
+    }
 
     // Search table: supplier name from Tally voucher page only, uppercased
     const rows = rawRows.map((b) => {
@@ -635,30 +707,33 @@ router.get('/missing-vouchers', async (req, res) => {
       return res.status(400).json({ error: 'range too large (max 50,000 serials)' });
     }
 
-    const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const escapedFy = fy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     // Allow optional whitespace and leading zeros in the serial.
-    const re = new RegExp(`^\\s*${escapedPrefix}\\s*/\\s*(\\d+)\\s*/\\s*${escapedFy}\\s*$`, 'i');
+    const re = voucherRangeRegex(prefix, fy);
 
     const docs = await PurchaseBill.find({
       tally_voucher_number: { $regex: re },
     })
-      .select('_id tally_voucher_number')
+      .select('_id tally_voucher_number is_cancelled_voucher')
       .lean();
 
-    const presentMap = new Map(); // serial -> bill_id (first match wins)
+    const presentMap = new Map(); // serial -> { bill_id, cancelled } (first match wins)
     for (const d of docs) {
       const m = String(d.tally_voucher_number || '').match(re);
       if (!m) continue;
       const n = parseInt(m[1], 10);
-      if (!presentMap.has(n)) presentMap.set(n, String(d._id));
+      if (!presentMap.has(n)) {
+        presentMap.set(n, { bill_id: String(d._id), cancelled: !!d.is_cancelled_voucher });
+      }
     }
 
     const missing = [];
     const present = [];
+    const cancelled = [];
     for (let n = from; n <= to; n++) {
-      if (presentMap.has(n)) {
-        present.push({ serial: n, bill_id: presentMap.get(n) });
+      const hit = presentMap.get(n);
+      if (hit) {
+        present.push({ serial: n, bill_id: hit.bill_id, cancelled: hit.cancelled });
+        if (hit.cancelled) cancelled.push(n);
       } else {
         missing.push(n);
       }
@@ -672,12 +747,117 @@ router.get('/missing-vouchers', async (req, res) => {
       total_in_range: to - from + 1,
       present_count: present.length,
       missing_count: missing.length,
+      cancelled_count: cancelled.length,
       missing,
+      cancelled,
       present,
     });
   } catch (err) {
     console.error('[purchase-bills] missing-vouchers error:', err);
     return res.status(500).json({ error: err.message || 'missing-vouchers failed' });
+  }
+});
+
+// ============================================================
+// POST /missing-vouchers/cancel — record missing serials as cancelled
+// Body: { fy, prefix?, serials: number[], note }
+//
+// Creates placeholder bills (no images) so the voucher shows up as
+// "Cancelled" in search and stops being reported as missing.
+// ============================================================
+router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const fy = String(body.fy || '').trim();
+    const prefix = String(body.prefix || 'PUR').trim() || 'PUR';
+    const note = String(body.note || '').trim();
+    const serials = Array.isArray(body.serials) ? body.serials : [];
+
+    if (!/^\d{2}-\d{2}$/.test(fy)) {
+      return res.status(400).json({ error: 'fy must be in YY-YY format (e.g. 26-27)' });
+    }
+    if (!note) {
+      return res.status(400).json({ error: 'A cancellation note is required' });
+    }
+    const cleanSerials = [
+      ...new Set(
+        serials
+          .map((s) => parseInt(s, 10))
+          .filter((n) => Number.isInteger(n) && n >= 0),
+      ),
+    ].sort((a, b) => a - b);
+
+    if (cleanSerials.length === 0) {
+      return res.status(400).json({ error: 'Select at least one voucher serial to cancel' });
+    }
+    if (cleanSerials.length > 500) {
+      return res.status(400).json({ error: 'Maximum 500 vouchers can be cancelled at once' });
+    }
+
+    const re = voucherRangeRegex(prefix, fy);
+    const existing = await PurchaseBill.find({ tally_voucher_number: { $regex: re } })
+      .select('_id tally_voucher_number')
+      .lean();
+    const existingSerials = new Set();
+    for (const d of existing) {
+      const m = String(d.tally_voucher_number || '').match(re);
+      if (m) existingSerials.add(parseInt(m[1], 10));
+    }
+
+    const now = new Date();
+    const reviewer = req.cdcBillsUser?.displayName || 'admin';
+    const cancelled = [];
+    const skipped = [];
+
+    for (const serial of cleanSerials) {
+      if (existingSerials.has(serial)) {
+        skipped.push(serial);
+        continue;
+      }
+      const voucherNumber = `${prefix}/${serial}/${fy}`;
+      try {
+        await PurchaseBill.create({
+          set_type: 'non_grn',
+          uploaded_by: reviewer,
+          uploaded_at: now,
+          tally_voucher_number: voucherNumber,
+          verification_status: 'rejected',
+          is_cancelled_voucher: true,
+          cancellation_note: note,
+          cancelled_by: reviewer,
+          cancelled_at: now,
+          manually_overridden: true,
+          manually_reviewed_by: reviewer,
+          manually_reviewed_at: now,
+          blocking_failures_count: 0,
+          warning_failures_count: 0,
+        });
+        cancelled.push(serial);
+      } catch (err) {
+        // Duplicate voucher number (race) — treat as already present.
+        if (err?.code === 11000) skipped.push(serial);
+        else throw err;
+      }
+    }
+
+    logActivity({
+      req,
+      action: 'cancel_vouchers',
+      details: { fy, prefix, cancelled, skipped, note },
+    });
+
+    return res.json({
+      fy,
+      prefix,
+      note,
+      cancelled_count: cancelled.length,
+      skipped_count: skipped.length,
+      cancelled,
+      skipped,
+    });
+  } catch (err) {
+    console.error('[purchase-bills] cancel-vouchers error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to cancel vouchers' });
   }
 });
 
@@ -1060,6 +1240,11 @@ router.post('/:id/approve', requireCdcBillsModify, async (req, res) => {
     }
     const bill = await PurchaseBill.findById(req.params.id);
     if (!bill) return res.status(404).json({ error: 'not found' });
+    if (bill.is_cancelled_voucher) {
+      return res.status(400).json({
+        error: 'This is a cancelled voucher placeholder. Delete it to reopen the serial.',
+      });
+    }
 
     bill.manually_reviewed_by = req.cdcBillsUser?.displayName || reviewer || 'anonymous';
     bill.manually_reviewed_at = new Date();

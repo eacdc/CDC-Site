@@ -711,6 +711,102 @@ router.patch('/:billNumber/pay', async (req, res) => {
   }
 });
 
+/**
+ * Edit/add contractorBillNo on a paid bill.
+ * If the bill already shares a contractorBillNo with other paid bills for the
+ * same contractor, all of those shared bills get the new value too.
+ */
+router.patch('/:billNumber/contractor-bill-no', async (req, res) => {
+  try {
+    const { billNumber } = req.params;
+    const enteredNo = String(req.body?.contractorBillNumber || '').trim();
+    if (!enteredNo) {
+      return res.status(400).json({ error: 'Contractor Bill Number is required' });
+    }
+
+    const bill = await Bill.findOne({
+      billNumber,
+      $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }],
+    });
+    if (!bill) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    if (bill.paymentStatus !== 'Yes') {
+      return res.status(400).json({ error: 'Only paid bills can have contractor bill number edited' });
+    }
+    if (!bill.paymentDate) {
+      return res.status(400).json({ error: 'Bill has no payment date' });
+    }
+
+    const contractor = await Contractor.findOne({
+      name: bill.contractorName.trim(),
+      isdeleted: 0,
+      shortId: { $ne: null },
+    }).select('shortId name').lean();
+
+    if (!contractor || !Number.isFinite(Number(contractor.shortId))) {
+      return res.status(400).json({
+        error: 'Contractor short ID not found. Please ensure this contractor has a 3-digit ID.',
+      });
+    }
+
+    const oldValue = String(bill.contractorBillNo || '').trim();
+    // Keep existing mm_yy_shortId prefix when editing; only the last segment is user-editable.
+    // When adding (no existing value / invalid format), generate prefix from payment date + shortId.
+    const oldParts = oldValue.split('_');
+    let composedBillNo;
+    if (oldParts.length >= 4) {
+      composedBillNo = `${oldParts.slice(0, 3).join('_')}_${enteredNo}`;
+    } else {
+      const paymentDate = new Date(bill.paymentDate);
+      const dateParts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        month: '2-digit',
+        year: '2-digit',
+      }).formatToParts(paymentDate);
+      const mm = dateParts.find((p) => p.type === 'month')?.value;
+      const yy = dateParts.find((p) => p.type === 'year')?.value;
+      if (!mm || !yy) {
+        return res.status(500).json({ error: 'Could not derive payment month/year' });
+      }
+      composedBillNo = `${mm}_${yy}_${Number(contractor.shortId)}_${enteredNo}`;
+    }
+
+    // Default true: update all paid bills sharing the old contractorBillNo.
+    // When false, only this bill is updated.
+    const updateShared = req.body?.updateShared !== false && req.body?.updateShared !== 'false';
+
+    let updatedCount = 0;
+    if (oldValue && updateShared) {
+      const result = await Bill.updateMany(
+        {
+          contractorName: bill.contractorName,
+          contractorBillNo: oldValue,
+          paymentStatus: 'Yes',
+          $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }],
+        },
+        { $set: { contractorBillNo: composedBillNo } },
+      );
+      updatedCount = result.modifiedCount || 0;
+    } else {
+      bill.contractorBillNo = composedBillNo;
+      await bill.save();
+      updatedCount = 1;
+    }
+
+    const updatedBill = await Bill.findOne({ billNumber }).lean();
+    res.json({
+      bill: updatedBill,
+      contractorBillNo: composedBillNo,
+      updatedCount,
+      sharedUpdate: Boolean(oldValue) && updateShared && updatedCount > 1,
+    });
+  } catch (error) {
+    console.error('Error updating contractor bill number:', error);
+    res.status(500).json({ error: error.message || 'Error updating contractor bill number' });
+  }
+});
+
 // Soft delete bill (set isDeleted = 1 and update pending/completed quantities)
 router.delete('/:billNumber', async (req, res) => {
   try {
