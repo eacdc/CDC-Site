@@ -34,13 +34,36 @@ function legacyUrl(base, filename) {
 export function resolveProductImageUrl({ jobCardProductImg, productImgStringName, baseUrl }) {
 	const j = trimStr(jobCardProductImg);
 	if (j) {
-		if (isAbsoluteHttpUrl(j)) return j;
+		// An r2:// ref is returned verbatim; it is signed by the caller
+		// (see resolveJobImageUrl) and must never be treated as a filename.
+		if (isR2Ref(j) || isAbsoluteHttpUrl(j)) return j;
 		return legacyUrl(baseUrl, j);
 	}
 	const p = trimStr(productImgStringName);
 	if (!p) return null;
-	if (isAbsoluteHttpUrl(p)) return p;
+	if (isR2Ref(p) || isAbsoluteHttpUrl(p)) return p;
 	return legacyUrl(baseUrl, p);
+}
+
+/**
+ * Marker for an R2 object key stored in a column that otherwise holds either
+ * an absolute URL or a bare filename (dbo.JobBookingJobCard.Jobcardproductimg).
+ *
+ * A raw key would be indistinguishable from a bare filename and would get the
+ * ProductImages base URL glued onto it. The scheme prefix makes the three
+ * cases unambiguous. Values are stored as `r2://<key>`.
+ */
+export const R2_REF_PREFIX = 'r2://';
+
+export function isR2Ref(value) {
+	return trimStr(value).toLowerCase().startsWith(R2_REF_PREFIX);
+}
+
+/** `r2://a/b.jpg` → `a/b.jpg`; null when not an R2 ref. */
+export function r2KeyFromRef(value) {
+	const s = trimStr(value);
+	if (!isR2Ref(s)) return null;
+	return s.slice(R2_REF_PREFIX.length) || null;
 }
 
 /** res.cloudinary.com / *.cloudinary.com delivery URLs from upload API */

@@ -7,9 +7,17 @@
  *       — dbo.report_orders_missing_product_image
  * - POST /job-product-image/upload — multipart: file, database, jobBookingId (or jobBookingNo)
  *
- * Upload: Cloudinary (CLOUDINARY_*) then UPDATE dbo.JobBookingJobCard.Jobcardproductimg = secure_url.
+ * Upload: R2 when USE_R2=true (stores `r2://<key>` in
+ * dbo.JobBookingJobCard.Jobcardproductimg), else Cloudinary (stores secure_url).
  * POST /job-product-image/delete — JSON: clear Jobcardproductimg; destroy Cloudinary asset when URL is ours.
- * Lookup imageUrl uses job-product-image-utils (supports bare filename + https URLs).
+ * Lookup imageUrl uses job-product-image-utils (bare filename + https URLs + r2:// refs).
+ *
+ * PREREQUISITE before enabling USE_R2 for this route: the customer portal
+ * reads this same column via dbo.portal_orders_list and returns it to browsers
+ * as an absolute URL. It cannot sign an `r2://` ref and has no credentials to
+ * do so. That proc — and any other external reader — must handle the ref (or
+ * be fronted by a redirect endpoint) or portal product images will break.
+ * See scripts/portal_orders_list-alter-ImageUrl.sql.
  */
 import { Router } from 'express';
 import multer from 'multer';
@@ -20,8 +28,13 @@ import {
 	resolveProductImageUrl,
 	DEFAULT_PRODUCT_IMAGE_BASE_URL,
 	isLikelyCloudinaryDeliveryUrl,
-	cloudinaryPublicIdFromDeliveryUrl
+	cloudinaryPublicIdFromDeliveryUrl,
+	isR2Ref,
+	r2KeyFromRef,
+	R2_REF_PREFIX
 } from './job-product-image-utils.js';
+import { uploadBuffer, viewUrl } from './lib/r2-storage.js';
+import { isR2Enabled } from './lib/media-url.js';
 
 const router = Router();
 
@@ -203,7 +216,21 @@ async function fetchLookupRow(pool, { jobBookingId, jobBookingNo }) {
 	return result.recordset?.[0] ?? null;
 }
 
-function mapLookupResponse(row) {
+/**
+ * Sign an `r2://` ref into a short-lived URL; pass anything else through.
+ * Async because R2 view URLs are signed per request and never persisted.
+ *
+ * @param {string|null} resolved  output of resolveProductImageUrl
+ * @returns {Promise<string|null>}
+ */
+async function signJobImageUrl(resolved) {
+	if (!resolved || !isR2Ref(resolved)) return resolved ?? null;
+	const key = r2KeyFromRef(resolved);
+	if (!key) return null;
+	return viewUrl(key);
+}
+
+async function mapLookupResponse(row) {
 	if (!row) return null;
 	const baseUrl = getImageBaseUrl();
 	const jobCardProductImg =
@@ -218,11 +245,13 @@ function mapLookupResponse(row) {
 			: row.ImgStringName != null
 				? String(row.ImgStringName)
 				: '';
-	const imageUrl = resolveProductImageUrl({
-		jobCardProductImg,
-		productImgStringName,
-		baseUrl
-	});
+	const imageUrl = await signJobImageUrl(
+		resolveProductImageUrl({
+			jobCardProductImg,
+			productImgStringName,
+			baseUrl
+		})
+	);
 	const jobBookingId = row.JobBookingID ?? row.jobBookingId;
 	const jobBookingNo = row.JobBookingNo ?? row.jobBookingNo ?? '';
 	const jobName = row.JobName ?? row.jobName ?? '';
@@ -268,7 +297,7 @@ router.get('/job-product-image/lookup', async (req, res) => {
 		if (!row) {
 			return res.status(404).json({ error: 'Job card not found for this database and key' });
 		}
-		return res.json(mapLookupResponse(row));
+		return res.json(await mapLookupResponse(row));
 	} catch (err) {
 		const code = err.statusCode || 500;
 		console.error('[job-product-image] lookup failed:', err);
@@ -406,7 +435,8 @@ router.post(
 			return res.status(400).json({ error: 'database must be KOL or AHM' });
 		}
 
-		if (!ensureCloudinaryConfigured()) {
+		// When USE_R2 is off this stays on the Cloudinary path unchanged.
+		if (!isR2Enabled() && !ensureCloudinaryConfigured()) {
 			return res.status(503).json({
 				error:
 					'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.'
@@ -440,17 +470,44 @@ router.post(
 				return res.status(400).json({ error: 'jobBookingId must be a positive integer' });
 			}
 
-			const uploadResult = await uploadImageBufferToCloudinary(file.buffer, {
-				jobBookingId: idNum
-			});
-			const secureUrl = uploadResult?.secure_url;
-			if (!secureUrl || typeof secureUrl !== 'string') {
-				return res.status(502).json({ error: 'Cloudinary upload did not return a URL' });
+			// ---------------------------------------------------------------
+			// Upload. R2 when the gate is on, Cloudinary otherwise. Either way
+			// the original bytes are stored verbatim — no resize, no re-encode,
+			// no format conversion (MIGRATION.md section 2.3).
+			// ---------------------------------------------------------------
+			let storedValue;      // what goes into the SQL column
+			let uploadResult = null;
+			let r2Key = null;
+
+			if (isR2Enabled()) {
+				const contentType = (file.mimetype || '').toLowerCase();
+				try {
+					const put = await uploadBuffer({
+						folder: 'job-product-images',
+						buffer: file.buffer,
+						contentType
+					});
+					r2Key = put.key;
+				} catch (r2Err) {
+					// uploadBuffer rejects unknown content types and oversized
+					// buffers; both are client errors, not server faults.
+					return res.status(400).json({ error: r2Err?.message || 'R2 upload rejected' });
+				}
+				storedValue = `${R2_REF_PREFIX}${r2Key}`;
+			} else {
+				uploadResult = await uploadImageBufferToCloudinary(file.buffer, {
+					jobBookingId: idNum
+				});
+				const secureUrl = uploadResult?.secure_url;
+				if (!secureUrl || typeof secureUrl !== 'string') {
+					return res.status(502).json({ error: 'Cloudinary upload did not return a URL' });
+				}
+				storedValue = secureUrl;
 			}
 
 			const upd = pool.request();
 			upd.input('JobBookingId', sql.Int, idNum);
-			upd.input('ImageUrl', sql.NVarChar(sql.MAX), secureUrl);
+			upd.input('ImageUrl', sql.NVarChar(sql.MAX), storedValue);
 			const updateResult = await upd.query(`
 				UPDATE dbo.JobBookingJobCard
 				SET Jobcardproductimg = @ImageUrl
@@ -464,9 +521,14 @@ router.post(
 			if (affected === 0) {
 				return res.status(409).json({
 					error:
-						'No row updated (job missing, deleted, or cancelled). Cloudinary object was created; remove it manually if needed.',
-					cloudinaryPublicId: uploadResult.public_id,
-					cloudinaryUrl: secureUrl
+						'No row updated (job missing, deleted, or cancelled). The uploaded object was created; remove it manually if needed.',
+					...(r2Key
+						? { storage: 'r2', r2Key }
+						: {
+								storage: 'cloudinary',
+								cloudinaryPublicId: uploadResult?.public_id,
+								cloudinaryUrl: storedValue
+							})
 				});
 			}
 
@@ -474,12 +536,16 @@ router.post(
 			if (!refreshed) {
 				return res.status(500).json({ error: 'Update ran but job row could not be re-read' });
 			}
-			const payload = mapLookupResponse(refreshed);
+			const payload = await mapLookupResponse(refreshed);
 			return res.json({
 				success: true,
-				storage: 'cloudinary',
-				cloudinaryUrl: secureUrl,
-				cloudinaryPublicId: uploadResult.public_id || '',
+				...(r2Key
+					? { storage: 'r2', r2Key }
+					: {
+							storage: 'cloudinary',
+							cloudinaryUrl: storedValue,
+							cloudinaryPublicId: uploadResult?.public_id || ''
+						}),
 				...payload
 			});
 		} catch (err) {
@@ -556,6 +622,11 @@ router.post('/job-product-image/delete', async (req, res) => {
 		let cloudinaryDestroyed = false;
 		let cloudinaryPublicId = null;
 		let cloudinaryDestroyResult = null;
+		// r2-storage.js exposes no delete operation, and it is a shared module
+		// copied verbatim across repos — so an R2-backed image is unlinked from
+		// the job card but the object itself is retained. Reported explicitly
+		// rather than silently orphaned; sweep separately if storage matters.
+		const r2ObjectRetained = isR2Ref(rawJobImg) ? r2KeyFromRef(rawJobImg) : null;
 
 		if (isLikelyCloudinaryDeliveryUrl(rawJobImg)) {
 			if (!ensureCloudinaryConfigured()) {
@@ -601,7 +672,7 @@ router.post('/job-product-image/delete', async (req, res) => {
 		}
 
 		const refreshed = await fetchLookupRow(pool, { jobBookingId: idNum });
-		const payload = refreshed ? mapLookupResponse(refreshed) : null;
+		const payload = refreshed ? await mapLookupResponse(refreshed) : null;
 
 		return res.json({
 			success: true,
@@ -610,6 +681,7 @@ router.post('/job-product-image/delete', async (req, res) => {
 			cloudinaryDestroyed,
 			cloudinaryPublicId: cloudinaryPublicId || undefined,
 			cloudinaryDestroyResult: cloudinaryDestroyResult?.result || undefined,
+			r2ObjectRetained: r2ObjectRetained || undefined,
 			...(payload || {})
 		});
 	} catch (err) {
