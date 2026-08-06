@@ -29,6 +29,12 @@ const makeClient = (keyId, secret) =>
     region: 'auto',
     endpoint: ENDPOINT,
     credentials: { accessKeyId: keyId, secretAccessKey: secret },
+    // AWS SDK v3.729+ defaults to WHEN_SUPPORTED, which bakes an
+    // x-amz-checksum-crc32 into presigned PUT URLs. At signing time there is
+    // no body, so the value is the CRC32 of empty content — and the real
+    // upload then fails the integrity check. WHEN_REQUIRED keeps checksums for
+    // the operations that mandate them and leaves presigned PUTs alone.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
   });
 
 const rw = makeClient(process.env.R2_RW_ACCESS_KEY_ID, process.env.R2_RW_SECRET_ACCESS_KEY);
