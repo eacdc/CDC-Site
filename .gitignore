@@ -6,3 +6,7 @@
 
 # Dry-run output of scripts/map-cloudinary-urls-to-r2-keys.js
 r2-key-mapping.csv
+
+# Apply-step plans and generated revert scripts
+r2-apply-*.csv
+r2-revert-*.sql
