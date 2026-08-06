@@ -513,6 +513,7 @@ async function fetchMongoCompleted(db) {
     SODate: d.createdAt ?? null, // SO Date -> createdAt
     PWONO: d.tokenNumber ?? null, // PWO No -> tokenNumber (UN-XXXXX)
     RefPCC: d.reference ?? null, // Ref P.C.C... -> reference
+    Executive: d.executive ?? null, // Executive name from ArtworkUnordered.executive
 
     ClientName: d.client?.name ?? null,
     JobName: d.job?.jobName ?? null,

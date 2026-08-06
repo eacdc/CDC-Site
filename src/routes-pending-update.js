@@ -18,6 +18,10 @@ import { MongoClient, ObjectId } from 'mongodb';
 
 const router = Router();
 
+// Admin password used to authorize the Executive (sales person) reassignment.
+// Shared with the auth login flow in routes-pending.js.
+const ADMIN_PASSWORD = process.env.PREPRESS_ADMIN_PASSWORD || '933086';
+
 // ---------- Mongo config ----------
 // Prefer the dedicated approval URI, fall back to generic ones if present
 const MONGO_URI =
@@ -783,6 +787,11 @@ async function updateMongoRow(db, mongoId, mergedRow, updatedBy) {
     set['client.name'] = mergedRow.ClientName ?? null;
   }
 
+  // Executive (sales person) reassignment — admin-only, enforced by the caller.
+  if (mergedRow.Executive !== undefined) {
+    set.executive = mergedRow.Executive ?? null;
+  }
+
   if (mergedRow.RefPCC !== undefined) {
     set.reference = mergedRow.RefPCC ?? null;
   }
@@ -1067,6 +1076,7 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('RefPCC' in update) incoming.RefPCC = update.RefPCC ?? null;
     if ('RefProductMasterCode' in update) incoming.RefPCC = incoming.RefPCC ?? (update.RefProductMasterCode ?? null);
     if ('ClientName' in update) incoming.ClientName = update.ClientName ?? null;
+    if ('Executive' in update) incoming.Executive = update.Executive ? String(update.Executive).trim() : null;
     
     // user keys (for Mongo OR for mapping to SQL ledger IDs)
     if ('EmployeeUserKey' in update) incoming.EmployeeUserKey = update.EmployeeUserKey ? String(update.EmployeeUserKey) : null;
@@ -1087,6 +1097,14 @@ router.post('/artwork/pending/update', async (req, res) => {
     if (sourceDb === 'MONGO_UNORDERED') {
       const mongoId = payload.__MongoId || payload.__MongoID || payload.mongoId;
       if (!mongoId) throw new Error('__MongoId is required for MONGO_UNORDERED');
+
+      // Executive (sales person) reassignment is admin-only.
+      if ('Executive' in incoming) {
+        const adminPassword = payload.adminPassword;
+        if (!adminPassword || adminPassword !== ADMIN_PASSWORD) {
+          return res.status(403).json({ ok: false, error: 'Admin authentication required to change the Executive/Sales Person' });
+        }
+      }
 
       // Convert displayNames to userKeys for MongoDB updates
       // Always look up displayName in user collection to get the corresponding _id
