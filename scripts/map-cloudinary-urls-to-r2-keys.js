@@ -80,6 +80,20 @@ function transformationSegments(url) {
   return found;
 }
 
+/**
+ * Portal-facing URL that would be written into Jobcardproductimg.
+ *
+ * Mirrors portalViewUrlForKey in src/routes-job-product-image.js — kept inline
+ * so this read-only script does not import the route module (and with it
+ * multer, mssql and the cloudinary SDK). If the URL shape changes there,
+ * change it here too.
+ */
+function portalViewUrlForKey(key) {
+  const base = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!base) return null;
+  return `${base}/api/job-product-image/view/${Buffer.from(key, 'utf8').toString('base64url')}`;
+}
+
 function csvCell(v) {
   const s = v == null ? '' : String(v);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -234,6 +248,7 @@ async function collectFromMongo(rows) {
           field: 'cloudinary_url',
           old_value: url,
           new_key: key || '',
+          r2_key: key || '',
           public_id: pid,
           public_id_matches: key ? String(!pid || keyMinusExt === pid) : '',
           transformations: transformationSegments(url).join(' '),
@@ -278,9 +293,11 @@ async function collectFromMssql(rows) {
         location: String(r.JobBookingNo || ''),
         field: 'Jobcardproductimg',
         old_value: url,
-        // The column has no room for a separate key field, so the applied
-        // value would be the r2:// ref, not the bare key.
-        new_key: key ? `r2://${key}` : '',
+        // The column has no room for a separate key field, and the customer
+        // portal reads it directly and cannot sign R2 URLs — so the applied
+        // value is the portal redirect URL, not the bare key.
+        new_key: key ? (portalViewUrlForKey(key) || `r2://${key}`) : '',
+        r2_key: key || '',
         public_id: '',
         public_id_matches: '',
         transformations: transformationSegments(url).join(' '),
@@ -320,7 +337,7 @@ async function main() {
     console.log(`Inventory: ${inventory.size} keys loaded from ${INVENTORY_PATH}`);
     for (const row of rows) {
       if (row.status !== 'ok') continue;
-      const bare = row.new_key.replace(/^r2:\/\//, '');
+      const bare = (row.r2_key || row.new_key).replace(/^r2:\/\//, '');
       if (!inventory.has(bare)) row.status = 'MISSING_IN_BUCKET';
     }
   } else {
@@ -329,7 +346,7 @@ async function main() {
 
   const header = [
     'source', 'record_id', 'location', 'field', 'old_value',
-    'new_key', 'public_id', 'public_id_matches', 'transformations', 'status',
+    'new_key', 'r2_key', 'public_id', 'public_id_matches', 'transformations', 'status',
   ];
   const csv = [header.join(',')]
     .concat(rows.map((r) => header.map((h) => csvCell(r[h])).join(',')))
