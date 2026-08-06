@@ -296,12 +296,17 @@ async function collectFromMssql(rows) {
         // The column has no room for a separate key field, and the customer
         // portal reads it directly and cannot sign R2 URLs — so the applied
         // value is the portal redirect URL, not the bare key.
-        new_key: key ? (portalViewUrlForKey(key) || `r2://${key}`) : '',
+        // Without PUBLIC_API_BASE_URL the portal URL cannot be built. Rather
+        // than proposing an r2:// value the app would never write (and which
+        // would break the portal), mark the row so the run cannot read clean.
+        new_key: key ? (portalViewUrlForKey(key) || '') : '',
         r2_key: key || '',
         public_id: '',
         public_id_matches: '',
         transformations: transformationSegments(url).join(' '),
-        status: key ? 'ok' : isCloudinary ? 'UNPARSED' : 'SKIPPED_NOT_CLOUDINARY',
+        status: !key
+          ? (isCloudinary ? 'UNPARSED' : 'SKIPPED_NOT_CLOUDINARY')
+          : (portalViewUrlForKey(key) ? 'ok' : 'NO_PUBLIC_API_BASE_URL'),
       });
     }
   }
@@ -358,6 +363,7 @@ async function main() {
     return acc;
   }, {});
   const unparsed = rows.filter((r) => r.status === 'UNPARSED');
+  const noBase = rows.filter((r) => r.status === 'NO_PUBLIC_API_BASE_URL');
   const missing = rows.filter((r) => r.status === 'MISSING_IN_BUCKET');
   const mismatched = rows.filter((r) => r.public_id_matches === 'false');
   const transformed = rows.filter((r) => r.transformations);
@@ -380,6 +386,11 @@ async function main() {
       console.log(`   ${r.record_id}  key=${r.new_key}  public_id=${r.public_id}`);
     }
   }
+  if (noBase.length) {
+    console.log(`\nFAILED: PUBLIC_API_BASE_URL is not set, so the portal URL for`);
+    console.log(`  ${noBase.length} job-card row(s) could not be built. The CSV cannot show`);
+    console.log('  what would really be written. Set it in .env and re-run.');
+  }
   if (unparsed.length) {
     console.log(`\nFAILED: ${unparsed.length} URL(s) could not be parsed. Do not apply.`);
     for (const r of unparsed.slice(0, 50)) {
@@ -393,7 +404,7 @@ async function main() {
     }
   }
 
-  const failed = unparsed.length > 0 || missing.length > 0;
+  const failed = unparsed.length > 0 || missing.length > 0 || noBase.length > 0;
   console.log(
     failed
       ? '\nResult: FAILED — review the CSV before any apply step is written.'
