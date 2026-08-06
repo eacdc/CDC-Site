@@ -33,6 +33,7 @@ import {
   collectBillImageUrls,
 } from './lib/purchase-bill-pdf.js';
 import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
+import { resolveViewUrl, resolveViewUrlList } from './lib/media-url.js';
 import { enqueue, setQueueModel } from './lib/extraction-queue.js';
 import {
   requireCdcBillsAuth,
@@ -46,6 +47,31 @@ const router = Router();
 const SLOT_TYPES = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
 /** Image replacement allowed for 30 days after the bill was first uploaded. */
 const IMAGE_REPLACE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Attach a freshly signed `view_url` to every slot page of a bill.
+ *
+ * The client renders `view_url`; `r2_key` and `cloudinary_url` stay on the
+ * payload untouched so the frontend can fall back and so rollback is a flag
+ * flip. Signed URLs are minted per request and never written back to Mongo
+ * (MIGRATION.md section 5) — responses carrying them must not be cached
+ * beyond the signature lifetime.
+ *
+ * @param {Record<string, any>} bill  a lean() bill document
+ */
+async function attachPageViewUrls(billDoc) {
+  if (!billDoc) return billDoc;
+  // Accept both lean() results and hydrated mongoose documents.
+  const bill = typeof billDoc.toObject === 'function' ? billDoc.toObject() : billDoc;
+  if (!bill?.slots) return bill;
+  for (const slotType of SLOT_TYPES) {
+    const pages = bill.slots?.[slotType]?.pages;
+    if (!Array.isArray(pages) || pages.length === 0) continue;
+    const urls = await resolveViewUrlList(pages);
+    bill.slots[slotType].pages = pages.map((p, i) => ({ ...p, view_url: urls[i] }));
+  }
+  return bill;
+}
 
 function isWithinImageReplaceWindow(uploadedAt) {
   if (!uploadedAt) return false;
@@ -191,13 +217,15 @@ router.post('/cloudinary-sign', requireCdcBillsAdmin, (req, res) => {
 // Body: { cloudinary_url: string, slot_type: string }
 // ============================================================
 router.post('/extract', requireCdcBillsAdmin, async (req, res) => {
-  const cloudinaryUrl = req.body?.cloudinary_url;
   const slotType = req.body?.slot_type;
-  if (!cloudinaryUrl || !slotType) {
-    return res.status(400).json({ error: 'cloudinary_url and slot_type are required' });
+  const ref = { r2_key: req.body?.r2_key, cloudinary_url: req.body?.cloudinary_url };
+  if ((!ref.r2_key && !ref.cloudinary_url) || !slotType) {
+    return res.status(400).json({ error: 'r2_key (or cloudinary_url) and slot_type are required' });
   }
   try {
-    const result = await extractFromImage(cloudinaryUrl, slotType);
+    const imageUrl = await resolveViewUrl(ref);
+    if (!imageUrl) return res.status(400).json({ error: 'could not resolve image reference' });
+    const result = await extractFromImage(imageUrl, slotType);
     return res.json(result);
   } catch (err) {
     console.error('[purchase-bills] extract error:', err);
@@ -210,9 +238,13 @@ router.post('/extract', requireCdcBillsAdmin, async (req, res) => {
 // Body: { url: string }
 // ============================================================
 router.post('/phash', requireCdcBillsAdmin, async (req, res) => {
-  const url = req.body?.url;
-  if (!url) return res.status(400).json({ error: 'url is required' });
+  const ref = { r2_key: req.body?.r2_key, cloudinary_url: req.body?.url || req.body?.cloudinary_url };
+  if (!ref.r2_key && !ref.cloudinary_url) {
+    return res.status(400).json({ error: 'r2_key or url is required' });
+  }
   try {
+    const url = await resolveViewUrl(ref);
+    if (!url) return res.status(400).json({ error: 'could not resolve image reference' });
     const hash = await generatePhash(url);
     return res.json({ phash: hash });
   } catch (err) {
@@ -944,7 +976,7 @@ router.post('/scan-pdf/bulk', async (req, res) => {
     const usedNames = new Set();
     const entries = [];
     for (const bill of orderedBills) {
-      const urls = collectBillImageUrls(bill);
+      const urls = await collectBillImageUrls(bill);
       if (urls.length === 0) continue;
 
       const pdfBytes = await buildBillScanPdf(urls);
@@ -999,7 +1031,7 @@ router.get('/:id/scan-pdf', async (req, res) => {
     const bill = await PurchaseBill.findById(req.params.id).lean();
     if (!bill) return res.status(404).json({ error: 'not found' });
 
-    const urls = collectBillImageUrls(bill);
+    const urls = await collectBillImageUrls(bill);
     if (urls.length === 0) {
       return res.status(400).json({ error: 'No images on this bill' });
     }
@@ -1040,7 +1072,9 @@ router.get('/:id', async (req, res) => {
     const bill = await PurchaseBill.findById(req.params.id).lean();
     if (!bill) return res.status(404).json({ error: 'not found' });
     logActivity({ req, action: 'view_bill', billId: bill._id });
-    return res.json(bill);
+    // Signed per request; must not be cached longer than the signature.
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await attachPageViewUrls(bill));
   } catch (err) {
     return res.status(500).json({ error: err.message || 'lookup failed' });
   }
@@ -1128,7 +1162,8 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
       throw err;
     }
     logActivity({ req, action: 'edit_bill', billId: bill._id });
-    return res.json(bill);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await attachPageViewUrls(bill));
   } catch (err) {
     console.error('[purchase-bills] PATCH error:', err);
     return res.status(500).json({ error: err.message || 'update failed' });
@@ -1165,8 +1200,13 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
     if (!Number.isInteger(pageNo) || pageNo < 1) {
       return res.status(400).json({ error: 'page_no must be a positive integer' });
     }
-    if (!cloudinaryUrl || !cloudinaryPublicId) {
-      return res.status(400).json({ error: 'cloudinary_url and cloudinary_public_id are required' });
+    const r2Key = body.r2_key ? String(body.r2_key).trim() : '';
+    // Either storage backend is acceptable; R2 needs only the key, Cloudinary
+    // needs both URL and public_id (the public_id is required to destroy it).
+    if (!r2Key && !(cloudinaryUrl && cloudinaryPublicId)) {
+      return res.status(400).json({
+        error: 'r2_key, or both cloudinary_url and cloudinary_public_id, are required',
+      });
     }
 
     const slot = bill.slots?.[slotType];
@@ -1179,8 +1219,9 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
     const now = new Date();
     pages[pageIdx] = {
       page_no: pageNo,
-      cloudinary_url: cloudinaryUrl,
-      cloudinary_public_id: cloudinaryPublicId,
+      r2_key: r2Key || undefined,
+      cloudinary_url: cloudinaryUrl || undefined,
+      cloudinary_public_id: cloudinaryPublicId || undefined,
       uploaded_at: now,
       extracted_fields: {},
       extraction_model: undefined,
@@ -1200,9 +1241,10 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
 
     if (slotType === 'supplier_invoice' && pageNo === 1) {
       const firstPage = aggregatedSlots.supplier_invoice?.pages?.[0];
-      if (firstPage?.cloudinary_url) {
+      const phashUrl = await resolveViewUrl(firstPage);
+      if (phashUrl) {
         try {
-          bill.invoice_image_phash = await generatePhash(firstPage.cloudinary_url);
+          bill.invoice_image_phash = await generatePhash(phashUrl);
         } catch (phashErr) {
           console.warn('[purchase-bills] replace-image phash failed:', phashErr?.message);
         }
@@ -1221,7 +1263,8 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
     }
 
     logActivity({ req, action: 'replace_image', billId: bill._id, details: { slotType, pageNo } });
-    return res.json(bill);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await attachPageViewUrls(bill));
   } catch (err) {
     console.error('[purchase-bills] replace-image error:', err);
     return res.status(500).json({ error: err.message || 'image replacement failed' });
@@ -1256,7 +1299,8 @@ router.post('/:id/approve', requireCdcBillsModify, async (req, res) => {
     bill.verification_status = 'verified';
     await bill.save();
     logActivity({ req, action: 'approve_bill', billId: bill._id });
-    return res.json(bill);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await attachPageViewUrls(bill));
   } catch (err) {
     return res.status(500).json({ error: err.message || 'approval failed' });
   }
@@ -1289,7 +1333,8 @@ router.post('/:id/reject', requireCdcBillsModify, async (req, res) => {
     bill.verification_status = 'rejected';
     await bill.save();
     logActivity({ req, action: 'reject_bill', billId: bill._id });
-    return res.json(bill);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await attachPageViewUrls(bill));
   } catch (err) {
     return res.status(500).json({ error: err.message || 'reject failed' });
   }

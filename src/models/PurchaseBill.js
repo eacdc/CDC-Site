@@ -9,8 +9,13 @@ const { Schema } = mongoose;
  */
 const PageSchema = new Schema({
   page_no: Number,
+  // Legacy Cloudinary fields. Retained for the USE_R2 rollback path
+  // (MIGRATION.md section 9) — do not drop until R2 has run clean.
   cloudinary_public_id: String,
   cloudinary_url: String,
+  // R2 object key. Never a signed URL: signed URLs expire, so they are
+  // minted per read via lib/media-url.js and never persisted.
+  r2_key: String,
   uploaded_at: { type: Date, default: Date.now },
   extracted_fields: Schema.Types.Mixed,
   extraction_model: String,

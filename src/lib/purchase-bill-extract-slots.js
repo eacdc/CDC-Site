@@ -4,6 +4,7 @@
  */
 import { extractFromImage } from './openai-vision.js';
 import { preprocessForAI } from './preprocess-image.js';
+import { resolveViewUrl } from './media-url.js';
 
 const SLOT_TYPES = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
 
@@ -12,7 +13,7 @@ const SLOT_TYPES = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet
 const GREYSCALE_SLOTS = new Set(['tally_voucher', 'grn_sheet']);
 
 function pageNeedsExtraction(page) {
-  if (!page?.cloudinary_url) return false;
+  if (!page?.r2_key && !page?.cloudinary_url) return false;
   const ef = page.extracted_fields;
   if (!ef || typeof ef !== 'object') return true;
   return Object.keys(ef).length === 0;
@@ -38,14 +39,22 @@ export async function extractAllSlotPages(slots) {
         continue;
       }
 
+      // Resolve through the USE_R2 gate: a presigned R2 URL, or the legacy
+      // Cloudinary URL. Signed here and consumed immediately — never stored.
+      const sourceUrl = await resolveViewUrl(page);
+      if (!sourceUrl) {
+        pages.push(page);
+        continue;
+      }
+
       // Preprocess image (auto-rotate, crop, resize, normalise, sharpen) before
       // sending to OpenAI. Returns a base64 data URI so no re-upload is needed.
-      let imageSource = page.cloudinary_url;
+      let imageSource = sourceUrl;
       try {
-        imageSource = await preprocessForAI(page.cloudinary_url, { greyscale });
+        imageSource = await preprocessForAI(sourceUrl, { greyscale });
       } catch (prepErr) {
         console.warn(
-          `[extract-slots] preprocess failed for ${page.cloudinary_url}, falling back to raw URL:`,
+          `[extract-slots] preprocess failed for ${page.r2_key || page.cloudinary_url}, falling back to raw URL:`,
           prepErr?.message,
         );
       }

@@ -8,6 +8,7 @@
  */
 import { PDFDocument } from 'pdf-lib';
 import { preprocessForPDF } from './preprocess-image.js';
+import { resolveViewUrlList } from './media-url.js';
 
 const SLOT_ORDER = ['tally_voucher', 'supplier_invoice', 'eway_bill', 'grn_sheet'];
 
@@ -15,18 +16,38 @@ const A4_W = 595.28;
 const A4_H = 841.89;
 const MARGIN = 28;
 
-/** @param {import('../models/PurchaseBill.js').purchaseBillSchema | Record<string, unknown>} bill */
-export function collectBillImageUrls(bill) {
-  const urls = [];
+/**
+ * Page refs for a bill in display order (tally → invoice → e-way → GRN).
+ * Returns the raw records; call collectBillImageUrls to resolve them.
+ *
+ * @param {import('../models/PurchaseBill.js').purchaseBillSchema | Record<string, unknown>} bill
+ */
+export function collectBillImagePages(bill) {
+  const pages = [];
   for (const slot of SLOT_ORDER) {
-    const pages = bill.slots?.[slot]?.pages;
-    if (!Array.isArray(pages)) continue;
-    const sorted = [...pages].sort((a, b) => (a.page_no || 0) - (b.page_no || 0));
+    const slotPages = bill.slots?.[slot]?.pages;
+    if (!Array.isArray(slotPages)) continue;
+    const sorted = [...slotPages].sort((a, b) => (a.page_no || 0) - (b.page_no || 0));
     for (const p of sorted) {
-      if (p?.cloudinary_url) urls.push(String(p.cloudinary_url));
+      if (p?.r2_key || p?.cloudinary_url) pages.push(p);
     }
   }
-  return urls;
+  return pages;
+}
+
+/**
+ * Resolve every page of a bill to a fetchable URL.
+ *
+ * Async because R2 view URLs are signed per request (MIGRATION.md section 5).
+ * The signed URLs are consumed immediately by buildBillScanPdf and never
+ * stored.
+ *
+ * @param {import('../models/PurchaseBill.js').purchaseBillSchema | Record<string, unknown>} bill
+ * @returns {Promise<string[]>}
+ */
+export async function collectBillImageUrls(bill) {
+  const resolved = await resolveViewUrlList(collectBillImagePages(bill));
+  return resolved.filter(Boolean).map(String);
 }
 
 /** Safe for Windows/macOS filenames; keeps PUR/1881/26-27 readable as PUR-1881-26-27 */
@@ -42,7 +63,9 @@ export function billScanPdfFilename(bill) {
 }
 
 /**
- * @param {string[]} imageUrls  Cloudinary URLs of bill pages (in display order)
+ * @param {string[]} imageUrls  Resolved page URLs (in display order): presigned
+ *   R2 URLs when USE_R2 is on, else legacy Cloudinary URLs. Consume promptly —
+ *   signed URLs expire.
  * @returns {Promise<Uint8Array>}
  */
 export async function buildBillScanPdf(imageUrls) {

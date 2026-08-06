@@ -15,6 +15,7 @@ import { aggregateAllSlots, buildCanonicalFields } from './purchase-bill-aggrega
 import { runVerificationChecks, computeVerificationStatus } from './purchase-bill-verification.js';
 import { extractAllSlotPages } from './purchase-bill-extract-slots.js';
 import { generatePhash } from './phash.js';
+import { resolveViewUrl } from './media-url.js';
 import { buildDbHelpers } from './purchase-bill-db-helpers.js';
 
 // ---------- queue state ----------
@@ -91,8 +92,9 @@ async function processBill(billId) {
   let invoice_image_phash = bill.invoice_image_phash || null;
   if (!invoice_image_phash) {
     const firstPage = aggregatedSlots.supplier_invoice?.pages?.[0];
-    if (firstPage?.cloudinary_url) {
-      invoice_image_phash = await generatePhash(firstPage.cloudinary_url);
+    const phashUrl = await resolveViewUrl(firstPage);
+    if (phashUrl) {
+      invoice_image_phash = await generatePhash(phashUrl);
     }
   }
 
