@@ -5,7 +5,9 @@
  * `Bill` model (this module uses `PurchaseBill`).
  *
  * Routes:
- *   POST /cloudinary-sign       — return signed Cloudinary upload params
+ *   POST /cloudinary-sign       — legacy Cloudinary upload params (rollback path)
+ *   POST /upload-url            — presigned PUT direct to R2
+ *   POST /upload-complete       — confirm the object landed; returns its key
  *   POST /extract               — call OpenAI vision; return extracted JSON
  *   POST /check-duplicate       — early dedup lookup (3-way)
  *   POST /                      — aggregate + verify + save (409 on dedup)
@@ -34,6 +36,7 @@ import {
 } from './lib/purchase-bill-pdf.js';
 import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
 import { resolveViewUrl, resolveViewUrlList } from './lib/media-url.js';
+import { createUploadUrl, confirmUpload } from './lib/r2-storage.js';
 import { enqueue, setQueueModel } from './lib/extraction-queue.js';
 import {
   requireCdcBillsAuth,
@@ -209,6 +212,63 @@ router.post('/cloudinary-sign', requireCdcBillsAdmin, (req, res) => {
   } catch (err) {
     console.error('[purchase-bills] cloudinary-sign error:', err);
     return res.status(500).json({ error: err.message || 'sign failed' });
+  }
+});
+
+// ============================================================
+// POST /upload-url — mint a presigned PUT for direct-to-R2 upload.
+// Body: { slot_type, content_type, content_length }
+// Returns { key, url, expiresIn }.
+//
+// Replaces /cloudinary-sign when USE_R2 is on. The authorisation check is
+// this route's own middleware and happens BEFORE the URL is minted
+// (MIGRATION.md section 2.5) — once issued, the URL works for any holder.
+// The key is generated server-side; a client-supplied key would allow
+// overwriting an existing invoice (section 2.2). No R2 credential is
+// returned — only the signed URL.
+// ============================================================
+router.post('/upload-url', requireCdcBillsAdmin, async (req, res) => {
+  try {
+    const slotType = (req.body?.slot_type || '').toString();
+    if (!SLOT_TYPES.includes(slotType)) {
+      return res.status(400).json({ error: `slot_type must be one of ${SLOT_TYPES.join(', ')}` });
+    }
+    const contentType = (req.body?.content_type || '').toString();
+    const contentLength = Number(req.body?.content_length);
+
+    const { key, url, expiresIn } = await createUploadUrl({
+      folder: `cdc-bills/${slotType}`,
+      contentType,
+      contentLength,
+    });
+    return res.json({ key, url, expiresIn });
+  } catch (err) {
+    // createUploadUrl rejects disallowed content types and bad sizes; both
+    // are client errors and are refused before any byte is transferred.
+    console.error('[purchase-bills] upload-url error:', err?.message);
+    return res.status(400).json({ error: err?.message || 'could not create upload URL' });
+  }
+});
+
+// ============================================================
+// POST /upload-complete — confirm the object landed before it is referenced.
+// Body: { key, size? }
+// Returns { key, bytes, contentType }.
+//
+// Without this a failed PUT leaves a bill page pointing at nothing. The
+// client passes the confirmed key into POST / (or /:id/replace-image) as
+// `r2_key`.
+// ============================================================
+router.post('/upload-complete', requireCdcBillsAdmin, async (req, res) => {
+  const key = (req.body?.key || '').toString().trim();
+  if (!key) return res.status(400).json({ error: 'key is required' });
+  const size = req.body?.size == null ? undefined : Number(req.body.size);
+  try {
+    const meta = await confirmUpload(key, size);
+    return res.json(meta);
+  } catch (err) {
+    console.error('[purchase-bills] upload-complete error:', err?.message);
+    return res.status(400).json({ error: err?.message || 'upload confirmation failed' });
   }
 });
 
