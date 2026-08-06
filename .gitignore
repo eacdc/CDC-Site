@@ -3,3 +3,6 @@
 *.env
 **/.env
 **/*.env
+
+# Dry-run output of scripts/map-cloudinary-urls-to-r2-keys.js
+r2-key-mapping.csv
