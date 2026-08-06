@@ -5,6 +5,7 @@
  * `Bill` model (this module uses `PurchaseBill`).
  *
  * Routes:
+ *   GET  /upload-config         — which upload flow the client should use
  *   POST /cloudinary-sign       — legacy Cloudinary upload params (rollback path)
  *   POST /upload-url            — presigned PUT direct to R2
  *   POST /upload-complete       — confirm the object landed; returns its key
@@ -35,7 +36,7 @@ import {
   collectBillImageUrls,
 } from './lib/purchase-bill-pdf.js';
 import { extractAllSlotPages } from './lib/purchase-bill-extract-slots.js';
-import { resolveViewUrl, resolveViewUrlList } from './lib/media-url.js';
+import { resolveViewUrl, resolveViewUrlList, isR2Enabled } from './lib/media-url.js';
 import { createUploadUrl, confirmUpload } from './lib/r2-storage.js';
 import { enqueue, setQueueModel } from './lib/extraction-queue.js';
 import {
@@ -213,6 +214,18 @@ router.post('/cloudinary-sign', requireCdcBillsAdmin, (req, res) => {
     console.error('[purchase-bills] cloudinary-sign error:', err);
     return res.status(500).json({ error: err.message || 'sign failed' });
   }
+});
+
+// ============================================================
+// GET /upload-config — tell the client which upload flow to use.
+//
+// The client must not decide this from its own build-time config, or rolling
+// back would need a frontend redeploy. The server owns USE_R2, so the server
+// answers, and flipping the flag switches both halves at once.
+// ============================================================
+router.get('/upload-config', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ storage: isR2Enabled() ? 'r2' : 'cloudinary' });
 });
 
 // ============================================================
