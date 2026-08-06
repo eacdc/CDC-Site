@@ -85,29 +85,128 @@ function csvCell(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/**
+ * Field names that have been seen to hold the object key. Checked in order.
+ * Cloudinary exports tend to use public_id; S3/rclone listings use Key/Path.
+ */
+const KEY_FIELDS = [
+  'key', 'Key', 'object_key', 'objectKey', 'name', 'Name',
+  'path', 'Path', 'public_id', 'publicId', 'r2_key', 'object', 'file',
+];
+
+/**
+ * Returns every form of the key this record could represent.
+ *
+ * A Cloudinary-style export lists public_id WITHOUT the extension, while the
+ * R2 key has it appended (MIGRATION.md section 1). Where a format/extension
+ * field is present both forms are registered, so matching succeeds whichever
+ * convention the inventory used.
+ */
+function keysFromRecord(o) {
+  if (typeof o === 'string') return [o.trim()].filter(Boolean);
+  if (!o || typeof o !== 'object') return [];
+  let base = null;
+  for (const f of KEY_FIELDS) {
+    if (typeof o[f] === 'string' && o[f].trim()) { base = o[f].trim(); break; }
+  }
+  if (!base) return [];
+  const out = [base];
+  const fmt = o.format || o.ext || o.extension || o.resource_format;
+  if (typeof fmt === 'string' && fmt.trim() && !/\.[^/.]+$/.test(base)) {
+    out.push(`${base}.${fmt.trim().replace(/^\./, '')}`);
+  }
+  return out;
+}
+
+/**
+ * Accepts JSONL (one object or string per line), a single JSON array, or a
+ * plain text file with one key per line.
+ *
+ * Exits rather than returning an empty set: an inventory that parses to zero
+ * keys would mark every record MISSING_IN_BUCKET, which reads exactly like a
+ * catastrophic result but means only that the file was not understood.
+ */
 async function loadInventory(p) {
   if (!p) return null;
   if (!fs.existsSync(p)) {
     console.error(`inventory file not found: ${p}`);
     process.exit(1);
   }
+
   const keys = new Set();
-  const rl = readline.createInterface({
-    input: fs.createReadStream(p),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
-    const t = line.trim();
-    if (!t) continue;
+  const sampleFieldNames = new Set();
+  let lines = 0;
+  let parsedObjects = 0;
+
+  const raw = fs.readFileSync(p, 'utf8');
+  const trimmed = raw.trim();
+
+  // Whole-file JSON: an array, or an object wrapping one.
+  if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
     try {
-      const o = JSON.parse(t);
-      const k = o.key || o.Key || o.object_key || o.name;
-      if (k) keys.add(String(k));
+      const doc = JSON.parse(trimmed);
+      const arr = Array.isArray(doc)
+        ? doc
+        : Array.isArray(doc.objects) ? doc.objects
+        : Array.isArray(doc.keys) ? doc.keys
+        : Array.isArray(doc.items) ? doc.items
+        : Array.isArray(doc.results) ? doc.results
+        : null;
+      if (arr) {
+        for (const rec of arr) {
+          parsedObjects += 1;
+          if (rec && typeof rec === 'object') {
+            Object.keys(rec).forEach((k) => sampleFieldNames.add(k));
+          }
+          for (const k of keysFromRecord(rec)) keys.add(k);
+        }
+      }
     } catch {
-      // A plain-text key per line is also accepted.
+      // fall through to line-by-line
+    }
+  }
+
+  if (keys.size === 0) {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(p),
+      crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+      const t = line.trim();
+      if (!t) continue;
+      lines += 1;
+      if (t.startsWith('{') || t.startsWith('[')) {
+        try {
+          const o = JSON.parse(t);
+          parsedObjects += 1;
+          if (o && typeof o === 'object' && !Array.isArray(o)) {
+            Object.keys(o).forEach((k) => sampleFieldNames.add(k));
+          }
+          for (const k of keysFromRecord(o)) keys.add(k);
+          continue;
+        } catch {
+          // not valid JSON — fall through and treat as a plain key
+        }
+      }
       keys.add(t);
     }
   }
+
+  if (keys.size === 0) {
+    console.error(`\nFATAL: inventory file parsed but yielded 0 keys: ${p}`);
+    console.error(`  lines read: ${lines}, JSON records parsed: ${parsedObjects}`);
+    if (sampleFieldNames.size) {
+      console.error(`  field names present: ${[...sampleFieldNames].join(', ')}`);
+      console.error(`  none matched a known key field: ${KEY_FIELDS.join(', ')}`);
+      console.error('  Add the correct field name to KEY_FIELDS in this script.');
+    } else {
+      console.error('  No JSON records were parsed. Check the file format.');
+    }
+    console.error('\nAborting. Continuing would mark every record MISSING_IN_BUCKET,');
+    console.error('which would look like data loss but only means the file was not read.\n');
+    process.exit(1);
+  }
+
   return keys;
 }
 
