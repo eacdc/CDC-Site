@@ -19,6 +19,7 @@ import {
     normalizeDispatchLine
 } from './lib/dispatch-note-pdf.js';
 import { v2 as cloudinary } from 'cloudinary';
+import { isR2Enabled } from './lib/media-url.js';
 import User from './models/User.js';
 import getVoiceNoteModel from './models/VoiceNote.js';
 import getAudioModel from './models/Audio.js';
@@ -59,6 +60,53 @@ if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && proce
 // Test route to verify routes are loading
 router.get('/test-route', (req, res) => {
   res.json({ message: 'Routes are working!', timestamp: new Date().toISOString() });
+});
+
+// ---------------------------------------------------------------------------
+// Voice note audio delivery
+// ---------------------------------------------------------------------------
+//
+// Audio never needed to leave this app. `audioBlob` is a REQUIRED field on
+// every recording, so MongoDB already holds the authoritative bytes and the
+// Cloudinary copy was pure redundancy. Serving from Mongo therefore removes
+// the Cloudinary dependency for voice notes with no data migration and no
+// change to the shared r2-storage module (whose allowed content types are
+// images and PDFs only — audio was never uploadable there).
+
+/** Playable URL for a recording, gated by the same flag as everything else. */
+function resolveAudioUrl(recording) {
+  if (!recording) return '';
+  if (!isR2Enabled()) return recording.cloudinaryUrl || '';
+  const base = (process.env.PUBLIC_API_BASE_URL || '').trim().replace(/\/+$/, '');
+  if (!recording.audioId) return recording.cloudinaryUrl || '';
+  const stream = `/api/audio/${encodeURIComponent(recording.audioId)}/stream`;
+  return base ? `${base}${stream}` : stream;
+}
+
+// GET /audio/:audioId/stream — stream a recording straight from MongoDB.
+router.get('/audio/:audioId/stream', async (req, res) => {
+  try {
+    const Audio = await getAudioModel();
+    const audioId = String(req.params.audioId || '');
+    const doc = await Audio.findOne(
+      { 'recordings.audioId': audioId },
+      { 'recordings.$': 1 },
+    ).lean();
+    const rec = doc?.recordings?.[0];
+    if (!rec?.audioBlob) {
+      return res.status(404).json({ error: 'Recording not found' });
+    }
+    const buf = Buffer.isBuffer(rec.audioBlob) ? rec.audioBlob : Buffer.from(rec.audioBlob.buffer || rec.audioBlob);
+    res.setHeader('Content-Type', rec.audioMimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', String(buf.length));
+    // Immutable content, but keep it private — voice notes are internal.
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Accept-Ranges', 'none');
+    return res.send(buf);
+  } catch (err) {
+    console.error('[audio] stream failed:', err?.message);
+    return res.status(500).json({ error: 'Could not stream recording' });
+  }
 });
 
 // Test Cloudinary configuration
@@ -11524,7 +11572,12 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 		let cloudinaryUrl = '';
 		let cloudinaryPublicId = '';
 		
-		if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+		// With the gate on, audio is served from the Mongo blob below and the
+		// Cloudinary copy is skipped entirely. The blob is saved either way, so
+		// nothing depends on this succeeding.
+		if (isR2Enabled()) {
+			console.log('🎵 [AUDIO] USE_R2 on — serving audio from MongoDB; skipping Cloudinary upload.');
+		} else if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
 			try {
 				console.log('📤 [CLOUDINARY] Starting upload to Cloudinary...');
 				
@@ -11633,6 +11686,7 @@ router.post('/voice-note-tool/audio', async (req, res) => {
 			toDepartment: lastRecording.toDepartment,
 			audioMimeType: lastRecording.audioMimeType,
 			cloudinaryUrl: lastRecording.cloudinaryUrl || '',
+			audioUrl: resolveAudioUrl(lastRecording),
 			createdBy: audioDoc.createdBy,
 			createdAt: lastRecording.createdAt
 		});
@@ -11724,6 +11778,7 @@ router.get('/voice-note-tool/audio/job/:jobNumber', async (req, res) => {
 				toDepartment: recording.toDepartment,
 				audioMimeType: recording.audioMimeType,
 				cloudinaryUrl: recording.cloudinaryUrl || '',
+				audioUrl: resolveAudioUrl(recording),
 				summary: recording.summary || '',
 				createdBy: audioDoc.createdBy,
 				createdAt: recording.createdAt
@@ -11784,6 +11839,7 @@ router.get(/^\/voice-note-tool\/audio\/job\/(.+)\/all$/, async (req, res) => {
 						audioMimeType: recording.audioMimeType,
 						audioBlob: base64Audio, // Include audio data as base64
 						cloudinaryUrl: recording.cloudinaryUrl || '',
+				audioUrl: resolveAudioUrl(recording),
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						createdAt: recording.createdAt
@@ -11854,7 +11910,7 @@ router.post('/voice-note-tool/audio/jobs/batch', async (req, res) => {
 						toDepartment: recording.toDepartment,
 						department: recording.toDepartment, // Alias for clarity
 						audioMimeType: recording.audioMimeType,
-						audioUrl: recording.cloudinaryUrl || '', // Return Cloudinary URL instead of blob
+						audioUrl: resolveAudioUrl(recording), // Mongo stream when USE_R2 is on, else Cloudinary
 						summary: recording.summary || '',
 						createdBy: audioDoc.createdBy,
 						userId: audioDoc.userId ? audioDoc.userId.toString() : null,
@@ -11918,6 +11974,7 @@ router.get('/voice-note-tool/audio/:id', async (req, res) => {
 			audioBlob: base64Audio,
 			audioMimeType: recording.audioMimeType,
 			cloudinaryUrl: recording.cloudinaryUrl || '',
+				audioUrl: resolveAudioUrl(recording),
 			summary: recording.summary || '',
 			createdBy: audioDoc.createdBy,
 			createdAt: recording.createdAt
