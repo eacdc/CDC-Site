@@ -20,6 +20,7 @@
  * See scripts/portal_orders_list-alter-ImageUrl.sql.
  */
 import { Router } from 'express';
+import path from 'node:path';
 import multer from 'multer';
 import sql from 'mssql';
 import { v2 as cloudinary } from 'cloudinary';
@@ -163,6 +164,59 @@ function uploadImageBufferToCloudinary(buffer, { jobBookingId }) {
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Portal view redirect
+// ---------------------------------------------------------------------------
+
+/**
+ * The only R2 prefix this open endpoint will ever sign.
+ *
+ * This route is deliberately unauthenticated so the customer portal can embed
+ * it in an <img> tag. That makes it an anonymous reader for whatever key it is
+ * handed, so the key MUST be constrained: without this check, a caller could
+ * pass `cdc-bills/.../supplier_invoice/x.jpg` and be handed a signed URL to a
+ * tax invoice. Product photos only.
+ */
+const VIEWABLE_KEY_PREFIX = 'job-product-images/';
+
+/** Base URL of this API, used to build portal-facing image links. */
+function publicApiBaseUrl() {
+	const b = process.env.PUBLIC_API_BASE_URL;
+	return (b && String(b).trim().replace(/\/+$/, '')) || '';
+}
+
+const b64urlEncode = (s) => Buffer.from(s, 'utf8').toString('base64url');
+const b64urlDecode = (s) => Buffer.from(String(s), 'base64url').toString('utf8');
+
+/**
+ * Portal-facing URL for an R2 object key. Absolute and https, so
+ * dbo.portal_orders_list passes it through its "already a URL" branch
+ * untouched — no stored-procedure change is required.
+ */
+/**
+ * Recover the R2 key from whatever form is stored in the column: the portal
+ * view URL written by the upload route, or a bare `r2://` ref.
+ * Returns null for Cloudinary URLs, legacy filenames and anything else.
+ */
+export function r2KeyFromStoredValue(value) {
+	const s = String(value ?? '').trim();
+	if (!s) return null;
+	if (isR2Ref(s)) return r2KeyFromRef(s);
+	const m = s.match(/\/api\/job-product-image\/view\/([A-Za-z0-9_-]+)$/);
+	if (!m) return null;
+	try {
+		return b64urlDecode(m[1]) || null;
+	} catch {
+		return null;
+	}
+}
+
+export function portalViewUrlForKey(key) {
+	const base = publicApiBaseUrl();
+	if (!base) return null;
+	return `${base}/api/job-product-image/view/${b64urlEncode(key)}`;
+}
+
 function checkJobProductImageApiKey(req, res) {
 	const secret = process.env.JOB_PRODUCT_IMAGE_API_KEY;
 	if (!secret) return true;
@@ -281,6 +335,44 @@ async function mapLookupResponse(row) {
 /**
  * GET /api/job-product-image/lookup?database=KOL&jobBookingNo=...
  */
+/**
+ * GET /job-product-image/view/:token — redirect to a freshly signed R2 URL.
+ *
+ * Intentionally public: the customer portal renders this straight into an
+ * <img> tag and cannot authenticate against this API. Access control is by
+ * key prefix, not by session — see VIEWABLE_KEY_PREFIX. Anything outside the
+ * product-image prefix is refused, so this cannot be used to reach bills.
+ *
+ * No credential is exposed; the browser only ever receives a 302 to a
+ * short-lived signed URL.
+ */
+router.get('/job-product-image/view/:token', async (req, res) => {
+	let key;
+	try {
+		key = b64urlDecode(req.params.token);
+	} catch {
+		return res.status(400).json({ error: 'Malformed image token' });
+	}
+
+	// Normalise before checking so `job-product-images/../cdc-bills/x` cannot
+	// walk out of the allowed prefix.
+	const normalised = path.posix.normalize(String(key || '').replace(/^\/+/, ''));
+	if (!normalised || !normalised.startsWith(VIEWABLE_KEY_PREFIX) || normalised.includes('..')) {
+		return res.status(403).json({ error: 'Not a viewable product image' });
+	}
+
+	try {
+		const signed = await viewUrl(normalised);
+		// Cache well inside the signature lifetime so repeated portal loads do
+		// not re-sign on every image, but never long enough to outlive it.
+		res.setHeader('Cache-Control', 'private, max-age=300');
+		return res.redirect(302, signed);
+	} catch (err) {
+		console.error('[job-product-image] view redirect failed:', err?.message);
+		return res.status(502).json({ error: 'Could not produce image URL' });
+	}
+});
+
 router.get('/job-product-image/lookup', async (req, res) => {
 	const database = getDbFromQuery(req);
 	if (!database) {
@@ -493,7 +585,18 @@ router.post(
 					// buffers; both are client errors, not server faults.
 					return res.status(400).json({ error: r2Err?.message || 'R2 upload rejected' });
 				}
-				storedValue = `${R2_REF_PREFIX}${r2Key}`;
+				// Store the portal-facing redirect URL, not the bare key. It is
+				// absolute https, so dbo.portal_orders_list passes it through
+				// unchanged and needs no modification. Falling back to the
+				// r2:// ref would break portal images, so refuse instead.
+				storedValue = portalViewUrlForKey(r2Key);
+				if (!storedValue) {
+					return res.status(503).json({
+						error:
+							'PUBLIC_API_BASE_URL is not set. It is required to build portal image links ' +
+							'when USE_R2 is enabled; without it the customer portal cannot display this image.'
+					});
+				}
 			} else {
 				uploadResult = await uploadImageBufferToCloudinary(file.buffer, {
 					jobBookingId: idNum
@@ -626,7 +729,7 @@ router.post('/job-product-image/delete', async (req, res) => {
 		// copied verbatim across repos — so an R2-backed image is unlinked from
 		// the job card but the object itself is retained. Reported explicitly
 		// rather than silently orphaned; sweep separately if storage matters.
-		const r2ObjectRetained = isR2Ref(rawJobImg) ? r2KeyFromRef(rawJobImg) : null;
+		const r2ObjectRetained = r2KeyFromStoredValue(rawJobImg);
 
 		if (isLikelyCloudinaryDeliveryUrl(rawJobImg)) {
 			if (!ensureCloudinaryConfigured()) {
