@@ -1949,6 +1949,69 @@ router.get('/production/search-by-machine', async (req, res) => {
 	}
 });
 
+// Client master list (active clients only, from LedgerMaster)
+router.get('/clients/master-list', async (req, res) => {
+	try {
+		const { database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request().query(`
+			SELECT LedgerName
+			FROM dbo.LedgerMaster
+			WHERE LedgerType = 'Clients' AND IsDeleted = 0 AND IsDeletedTransaction = 0
+			ORDER BY LedgerName
+		`);
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Client master list error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
+// Production history search by client and date range (detail or summary mode)
+router.get('/production/search-by-client', async (req, res) => {
+	try {
+		const { startDate, endDate, clientName, summary, database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const start = (startDate || '').trim();
+		const end = (endDate || '').trim();
+		if (!start || !end) {
+			return res.status(400).json({ status: false, error: 'startDate and endDate are required' });
+		}
+
+		const startParsed = new Date(start);
+		const endParsed = new Date(end);
+		if (isNaN(startParsed.getTime()) || isNaN(endParsed.getTime())) {
+			return res.status(400).json({ status: false, error: 'Invalid date format for startDate or endDate' });
+		}
+
+		const clientText = (clientName != null ? String(clientName) : '').trim();
+		const isSummary = summary === '1' || String(summary).toLowerCase() === 'true';
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('StartDate', sql.DateTime, startParsed)
+			.input('EndDate', sql.DateTime, endParsed)
+			.input('ClientName', sql.NVarChar(200), clientText)
+			.input('Summary', sql.Bit, isSummary ? 1 : 0)
+			.execute('dbo.Production_Search_By_Client_DateRange');
+
+		return res.json({ status: true, rows: result.recordset || [], summary: isSummary });
+	} catch (err) {
+		console.error('Production search by client error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
 const PRODUCTION_REVERSE_SUCCESS = 'Success: Reversed';
 
 router.post('/production/reverse', async (req, res) => {
