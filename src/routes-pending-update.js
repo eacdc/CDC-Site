@@ -50,6 +50,36 @@ async function getMongoDb() {
 const APPROVAL_STATUSES = new Set(['Pending', 'Sent', 'Approved', 'Rejected', 'Redo']);
 const FILE_STATUSES = new Set(['Pending', 'Received', 'Old']);
 
+function normalizePlateOutput(v) {
+  if (v === undefined) return undefined;
+  if (v === null || v === '') return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  const upper = t.toUpperCase();
+  if (upper === 'PENDING') return 'Pending';
+  if (upper === 'DONE') return 'Done';
+  if (
+    upper === 'NOT REQUIRED' ||
+    upper === 'NOT REQD' ||
+    upper === 'NA' ||
+    upper === 'N/A' ||
+    upper === 'NO'
+  ) {
+    return 'Not Required';
+  }
+  return t;
+}
+
+/** Values treated as closed in Mongo $nin / $in filters */
+const PLATE_CLOSED_MONGO_VALUES = [
+  'DONE',
+  'Done',
+  'done',
+  'NOT REQUIRED',
+  'Not Required',
+  'not required',
+];
+
 // ---------- helpers ----------
 function normStr(v) {
   if (v === undefined) return undefined;
@@ -333,8 +363,10 @@ function applyRules(current, incoming) {
   }
 
   // 5) Plate dates (recalculate when deciding field changes)
-  if (row.PlateOutput) {
-    const po = String(row.PlateOutput).trim().toLowerCase();
+  if (row.PlateOutput !== undefined && row.PlateOutput !== null && row.PlateOutput !== '') {
+    const canonical = normalizePlateOutput(row.PlateOutput);
+    if (canonical) row.PlateOutput = canonical;
+    const po = String(row.PlateOutput || '').trim().toLowerCase();
 
     if (po === 'pending') {
       if (row.FinallyApprovedDate) {
@@ -345,8 +377,9 @@ function applyRules(current, incoming) {
       }
     }
 
-    if (po === 'done') {
-      if (!row.PlateActual) row.PlateActual = now; // ✅ only stamp once
+    // Backend stamps PlateActual for both Done and Not Required — UI must not send it
+    if (po === 'done' || po === 'not required') {
+      if (!row.PlateActual) row.PlateActual = now;
     }
   }
 
@@ -824,7 +857,7 @@ router.get('/artwork/unordered/pending-ids', async (req, res) => {
           { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
           { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
           { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-          { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done'] } },
+          { 'plate.output': { $exists: true, $nin: [null, ...PLATE_CLOSED_MONGO_VALUES] } },
         ],
       })
       .sort({ updatedAt: -1, createdAt: -1 })
@@ -1068,7 +1101,11 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('ToolingDie' in update) incoming.ToolingDie = update.ToolingDie ?? null;
     if ('ToolingBlock' in update) incoming.ToolingBlock = update.ToolingBlock ?? null;
     if ('Blanket' in update) incoming.Blanket = update.Blanket ?? null;
-    if ('PlateOutput' in update) incoming.PlateOutput = update.PlateOutput ?? null;
+    if ('PlateOutput' in update) {
+      const normalized = normalizePlateOutput(update.PlateOutput);
+      // Never persist blank/NULL plate output — default to Pending
+      incoming.PlateOutput = normalized === null || normalized === undefined ? 'Pending' : normalized;
+    }
     
     if ('PlateRemark' in update) incoming.PlateRemark = update.PlateRemark ?? null;
     if ('ToolingRemark' in update) incoming.ToolingRemark = update.ToolingRemark ?? null;

@@ -180,7 +180,33 @@ export async function insertUnorderedMinimal(input) {
     finalApproval: { approved: false, approvedDate: null },
 
     tooling: { die: null, block: null, blanket: null, planDate: null, actualDate: null, remark: input.toolingRemark || null },
-    plate: { output: null, planDate: null, actualDate: null, remark: input.plateRemark || null },
+    // Plate Output must never be blank/NULL — default Pending. Canonical: Pending | Done | Not Required
+    plate: (() => {
+      const raw = (input.plateOutput || '').toString().trim();
+      const upper = raw.toUpperCase();
+      let output = 'Pending';
+      if (upper === 'DONE') output = 'Done';
+      else if (
+        upper === 'NOT REQUIRED' ||
+        upper === 'NOT REQD' ||
+        upper === 'NA' ||
+        upper === 'N/A' ||
+        upper === 'NO'
+      ) {
+        output = 'Not Required';
+      } else if (upper === 'PENDING' || !raw) {
+        output = 'Pending';
+      } else if (raw) {
+        output = raw;
+      }
+      return {
+        output,
+        planDate: null,
+        // Stamp actual date when closed at insert time (Done / Not Required)
+        actualDate: output === 'Done' || output === 'Not Required' ? now : null,
+        remark: input.plateRemark || null,
+      };
+    })(),
 
     remarks: { artwork: input.artworkRemark || null },
 

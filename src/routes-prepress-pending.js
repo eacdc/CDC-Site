@@ -18,6 +18,20 @@ import { MongoClient, ObjectId } from 'mongodb';
 
 const router = Router();
 
+const PLATE_CLOSED_MONGO_VALUES = [
+  'DONE',
+  'Done',
+  'done',
+  'NOT REQUIRED',
+  'Not Required',
+  'not required',
+];
+
+function isPlateClosedValue(value) {
+  const upper = String(value || '').trim().toUpperCase();
+  return upper === 'DONE' || upper === 'NOT REQUIRED';
+}
+
 // ---------- Mongo config ----------
 const MONGO_URI =
   process.env.MONGODB_URI_Approval ||
@@ -349,13 +363,18 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
     });
   }
 
-  const plateOutput = (doc.plate?.output || '').toString().toLowerCase();
+  const plateOutputRaw = (doc.plate?.output || '').toString().trim();
+  const plateOutputUpper = plateOutputRaw.toUpperCase();
   const plateDate = doc.plate?.actualDate ?? null;
-  if (isPlate && plateOutput === 'done' && isDateInRange(plateDate, fromDate, toDate)) {
+  if (
+    isPlate &&
+    isPlateClosedValue(plateOutputRaw) &&
+    isDateInRange(plateDate, fromDate, toDate)
+  ) {
     rows.push({
       ...baseFields,
       Operation: 'Plate Output',
-      Status: 'Completed',
+      Status: plateOutputUpper === 'NOT REQUIRED' ? 'Not Required' : 'Completed',
       PlanDate: plateDate,
       ActualDate: plateDate,
       FinalApprovalStatus: doc.finalApproval?.approved ? 'Yes' : 'No',
@@ -405,7 +424,7 @@ async function fetchMongoCompletedByUser(db, username, fromDate, toDate) {
             { 'approvals.soft.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
             { 'approvals.hard.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
             { 'approvals.machineProof.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
-            { 'plate.output': { $in: ['DONE', 'Done', 'done'] } },
+            { 'plate.output': { $in: PLATE_CLOSED_MONGO_VALUES } },
           ],
         },
         {
@@ -450,8 +469,8 @@ async function fetchMongoPendingByUser(db, username) {
           { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
           { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
           
-          // plate pending
-          { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done'] } },
+          // plate pending — open unless Done or Not Required
+          { 'plate.output': { $exists: true, $nin: [null, ...PLATE_CLOSED_MONGO_VALUES] } },
         ],
       },
       {
@@ -513,9 +532,9 @@ async function fetchMongoPendingByUser(db, username) {
       PlateUserKey: d.assignedTo?.plateUserKey ?? null,
     };
     
-    // Check for plate output pending (only for plate assignee)
+    // Check for plate output pending (only for plate assignee; Done / Not Required are closed)
     const plateOutput = d.plate?.output;
-    if (isPlate && plateOutput && plateOutput !== 'DONE' && plateOutput !== 'Done') {
+    if (isPlate && plateOutput && !isPlateClosedValue(plateOutput)) {
       pendingOperations.push({
         ...baseFields,
         Operation: 'Plate Output',
@@ -890,10 +909,15 @@ async function updateMongoArtworkProcessStatus(db, mongoId, operation, remark, l
     appliedStatus = 'Sent';
     
   } else if (proc === 'PLATE OUTPUT') {
+    const currentPlate = String(doc.plate?.output || '').trim().toUpperCase();
+    if (currentPlate === 'DONE' || currentPlate === 'NOT REQUIRED') {
+      throw new Error('Plate Output step not present, or already closed (Done / Not Required).');
+    }
+
     // Check if plate output step exists (condition from SQL: PlatePlan IS NOT NULL OR PlatePersonID IS NOT NULL OR PlateOutput IS NOT NULL)
     const hasPlateStep = doc.plate?.planDate || doc.assignedTo?.plateUserKey || doc.plate?.output;
     if (!hasPlateStep) {
-      throw new Error('Plate Output step not present for this record.');
+      throw new Error('Plate Output step not present, or already closed (Done / Not Required).');
     }
     
     // Update plate output to 'Done' and set actual date
@@ -906,9 +930,27 @@ async function updateMongoArtworkProcessStatus(db, mongoId, operation, remark, l
     }
     
     appliedStatus = 'Done';
+
+  } else if (proc === 'PLATE NOT REQUIRED') {
+    const currentPlate = String(doc.plate?.output || '').trim().toUpperCase();
+    if (currentPlate === 'DONE') {
+      throw new Error('Plate Output is already marked Done - it cannot be set to Not Required.');
+    }
+    if (currentPlate === 'NOT REQUIRED') {
+      throw new Error('Plate Output step not present, or already closed (Done / Not Required).');
+    }
+
+    updateFields['plate.output'] = 'Not Required';
+    updateFields['plate.actualDate'] = now;
+
+    if (remark) {
+      updateFields['plate.remark'] = remark;
+    }
+
+    appliedStatus = 'Not Required';
     
   } else {
-    throw new Error(`Unsupported @Process "${operation}". Use: Soft Copy Approval | Hard Copy Approval | Machine Proof | Plate Output.`);
+    throw new Error(`Unsupported @Process "${operation}". Use: Soft Copy Approval | Hard Copy Approval | Machine Proof | Plate Output | Plate Not Required.`);
   }
   
   // Perform the update
@@ -1112,9 +1154,10 @@ router.post('/prepress/pending/update', async (req, res) => {
       ok: true,
       success: successCount,
       skipped: skippedCount,
-      errors: errorCount,
+      errorCount,
       results,
-      errors: errors.length > 0 ? errors : undefined
+      // Array of per-item failures (surface SP messages to the UI)
+      errors: errors.length > 0 ? errors : [],
     });
     
   } catch (e) {

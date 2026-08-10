@@ -309,8 +309,8 @@ async function fetchMongoPending(db) {
         { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
         { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
 
-        // plate pending (FIXED)
-        { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done'] } },
+        // plate pending — open unless Done or Not Required
+        { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done', 'done', 'NOT REQUIRED', 'Not Required', 'not required'] } },
       ],
     })
     .sort({ updatedAt: -1, createdAt: -1 })
@@ -488,11 +488,11 @@ async function fetchMongoCompleted(db) {
             { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
             { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
             { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-            // Plate pending (reversed) - exists and is not DONE/Done
+            // Plate pending (reversed) - exists and is not Done / Not Required
             {
               $and: [
                 { 'plate.output': { $exists: true } },
-                { 'plate.output': { $nin: [null, 'DONE', 'Done'] } }
+                { 'plate.output': { $nin: [null, 'DONE', 'Done', 'done', 'NOT REQUIRED', 'Not Required', 'not required'] } }
               ]
             },
           ],
