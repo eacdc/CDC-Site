@@ -1048,7 +1048,7 @@ router.get('/job-card', async (req, res) => {
         erpCode: '',
         salesPerson: jobInfo.salesPerson || '-',
         jobCardRemarks: str(get(row, 'Remark')) || str(get(row, 'JobCardRemark')) || '',
-        salesOrderRemarks: ''
+        salesOrderRemarks: str(get(row, 'JobBookingRemark')) || ''
       };
 
       console.log("#############4",JSON.stringify(jobInfo));
