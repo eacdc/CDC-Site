@@ -106,15 +106,57 @@ async function checkKey(role, { accountId, bucket, keyId, secret }) {
     );
   }
 
-  const put = results.find((r) => r.label === 'put object');
-  if (!put.ok && role === 'R2_RW') {
-    console.log(
-      '\n  This is why server-side uploads fail. In the Cloudflare dashboard,\n' +
-        '  R2 → Manage API Tokens: the token needs "Object Read & Write"\n' +
-        '  permission and must be scoped to this bucket (or to all buckets).'
+  console.log(`\n  ${diagnose(role, results)}`);
+  return results;
+}
+
+/**
+ * Turn the pass/fail pattern into a cause. The distinction that matters is
+ * whether reads work: a token that can read but not write is a permission
+ * level, while a token that can do nothing at all is not attached to this
+ * bucket in the first place — different fix, same "Access Denied" string.
+ */
+function diagnose(role, results) {
+  const by = (label) => results.find((r) => r.label === label);
+  const get = by('get object');
+  const put = by('put object');
+  const denied = (r) => r && !r.ok && /AccessDenied|Forbidden|403/i.test(`${r.code} ${r.message}`);
+  const signature = results.find((r) => /SignatureDoesNotMatch/i.test(r?.code || ''));
+
+  if (signature) {
+    return (
+      'The access key ID and secret do not match. They must come from the same\n' +
+      '  R2 API token — re-copy both from one token, or issue a new one.'
     );
   }
-  return results;
+
+  if (results.every((r) => r.ok)) {
+    return role === 'R2_RO'
+      ? 'Full access. Note this key is meant to be read-only but can also write.'
+      : 'Full read+write access. This key is working correctly.';
+  }
+
+  if (denied(get) && denied(put)) {
+    return (
+      'Denied on reads AND writes — so this is not a read-only-token problem.\n' +
+      '  A token with no access at all to this bucket means one of:\n' +
+      '    • the token is not scoped to this bucket (most common — check its\n' +
+      '      bucket list, or reissue it as "Apply to all buckets")\n' +
+      '    • the token was deleted or revoked in the dashboard\n' +
+      '    • the token belongs to a different Cloudflare account\n' +
+      '  Cloudflare dashboard → R2 → Manage API Tokens, find the token whose\n' +
+      '  Access Key ID matches the one above.'
+    );
+  }
+
+  if (get?.ok && denied(put)) {
+    return role === 'R2_RO'
+      ? 'Read-only, as intended. Nothing to fix.'
+      : 'Reads work, writes are denied — this token was issued with "Object Read\n' +
+          '  only". Reissue it with "Object Read & Write" permission.';
+  }
+
+  return 'Mixed result — see the per-operation errors above.';
 }
 
 async function main() {
