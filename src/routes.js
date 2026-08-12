@@ -2960,6 +2960,80 @@ router.get('/grn/processed-delivery-notes', async (req, res) => {
     }
 });
 
+// GRN: GPNs pending for Delivery Note (no DN against the barcode yet)
+router.get('/grn/pending-gpns-for-delivery-note', async (req, res) => {
+    try {
+        const { database, fromDate, toDate, companyId } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const fromDateStr = parseGrnIsoDate(fromDate, 'fromDate');
+        const toDateStr = parseGrnIsoDate(toDate, 'toDate');
+        const companyParsed = Number(companyId);
+        const companyIdNum = Number.isInteger(companyParsed) && companyParsed > 0 ? companyParsed : 2;
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('CompanyID', sql.Int, companyIdNum)
+            .input('FromDate', sql.Date, fromDateStr)
+            .input('ToDate', sql.Date, toDateStr)
+            .query(`
+                SELECT
+                    d.Barcode                                   AS BarcodeNo,
+                    b.JobBookingNo                              AS JobNumber,
+                    b.JobName                                   AS JobName,
+                    l.LedgerName                                AS ClientName,
+                    m.VoucherNo                                 AS GPNNo,
+                    d.CreatedDate                               AS GPNDate,
+                    DATEDIFF(DAY, d.CreatedDate, GETDATE())     AS DaysPending
+                FROM FinishGoodsTransactionDetail  AS d
+                INNER JOIN FinishGoodsTransactionMain AS m ON d.FGTransactionID = m.FGTransactionID
+                INNER JOIN JobBookingJobCard          AS b ON d.JobBookingID    = b.JobBookingID
+                                                          AND b.CompanyID       = @CompanyID
+                LEFT  JOIN LedgerMaster               AS l ON b.LedgerID        = l.LedgerID
+                WHERE ISNULL(d.ParentFGTransactionID, 0) = 0
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(m.IsDeletedTransaction, 0) = 0
+                  AND CAST(d.CreatedDate AS DATE) >= @FromDate
+                  AND CAST(d.CreatedDate AS DATE) <= @ToDate
+                  AND NOT EXISTS (
+                        SELECT 1
+                        FROM FinishGoodsTransactionDetail  AS dn
+                        INNER JOIN FinishGoodsTransactionMain AS dm ON dn.FGTransactionID = dm.FGTransactionID
+                        WHERE dn.Barcode = d.Barcode
+                          AND ISNULL(dn.ParentFGTransactionID, 0) > 0
+                          AND ISNULL(dn.IsDeletedTransaction, 0) = 0
+                          AND ISNULL(dm.IsDeletedTransaction, 0) = 0
+                  )
+                ORDER BY d.CreatedDate DESC
+            `);
+
+        const records = (result.recordset || []).map((row) => ({
+            barcodeNo: pickGrnRowField(row, 'BarcodeNo', 'Barcode'),
+            jobNumber: pickGrnRowField(row, 'JobNumber', 'JobBookingNo'),
+            jobName: pickGrnRowField(row, 'JobName'),
+            clientName: pickGrnRowField(row, 'ClientName', 'LedgerName'),
+            gpnNo: pickGrnRowField(row, 'GPNNo', 'VoucherNo'),
+            gpnDate: pickGrnRowField(row, 'GPNDate', 'CreatedDate'),
+            daysPending: (() => {
+                const raw = pickGrnRowField(row, 'DaysPending');
+                return raw != null && Number.isFinite(Number(raw)) ? Number(raw) : null;
+            })()
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN pending GPNs for delivery note error:', err);
+        const msg = err?.message || String(err);
+        if (msg.includes('Invalid or missing fromDate') || msg.includes('Invalid or missing toDate')) {
+            return res.status(400).json({ status: false, error: msg });
+        }
+        return res.status(500).json({ status: false, error: 'Failed to fetch pending GPNs' });
+    }
+});
+
 // GRN: Delivery note challan header for Update Challan Details screen
 router.get('/grn/delivery-note-challan-details', async (req, res) => {
     try {
