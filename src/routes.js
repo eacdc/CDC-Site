@@ -8628,7 +8628,7 @@ router.get('/operations/:id', async (req, res) => {
 
 router.post('/operations', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit, categories: categoriesBody, isAdhocOp } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody, isAdhocOp, link } = req.body;
     const normalizedIsAdhocOp = !!isAdhocOp;
     const finalType = normalizedIsAdhocOp ? '1:1' : type;
 
@@ -8662,6 +8662,7 @@ router.post('/operations', async (req, res) => {
       ratePerUnit: ratePerUnitNum,
       isAdhocOp: normalizedIsAdhocOp,
       categories,
+      link: link != null ? String(link).trim() : '',
       isdeleted: 0
     });
 
@@ -8675,7 +8676,7 @@ router.post('/operations', async (req, res) => {
 
 router.put('/operations/:id', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit, categories: categoriesBody, isAdhocOp } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody, isAdhocOp, link } = req.body;
     const normalizedIsAdhocOp = !!isAdhocOp;
     const finalType = normalizedIsAdhocOp ? '1:1' : type;
     
@@ -8695,6 +8696,9 @@ router.put('/operations/:id', async (req, res) => {
     const updateFields = { opsName, type: finalType, ratePerUnit: ratePerUnitNum };
     if (isAdhocOp !== undefined) {
       updateFields.isAdhocOp = normalizedIsAdhocOp;
+    }
+    if (link !== undefined) {
+      updateFields.link = link != null ? String(link).trim() : '';
     }
     if (categoriesBody !== undefined) {
       updateFields.categories = Array.isArray(categoriesBody)

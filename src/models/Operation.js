@@ -25,6 +25,11 @@ const operationSchema = new mongoose.Schema({
     type: [String],
     default: [],
   },
+  link: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   isdeleted: {
     type: Number,
     default: 0,

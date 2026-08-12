@@ -57,7 +57,7 @@ router.get('/:id', async (req, res) => {
 // Create new operation
 router.post('/', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit, categories: categoriesBody } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody, link } = req.body;
 
     // Validate required fields
     if (!opsName || !type) {
@@ -90,6 +90,7 @@ router.post('/', async (req, res) => {
       type,
       ratePerUnit: ratePerUnitNum,
       categories,
+      link: link != null ? String(link).trim() : '',
       isdeleted: 0
     });
 
@@ -104,7 +105,7 @@ router.post('/', async (req, res) => {
 // Update operation
 router.put('/:id', async (req, res) => {
   try {
-    const { opsName, type, ratePerUnit, categories: categoriesBody } = req.body;
+    const { opsName, type, ratePerUnit, categories: categoriesBody, link } = req.body;
     
     // Validate required fields
     if (!opsName || !type) {
@@ -122,6 +123,9 @@ router.put('/:id', async (req, res) => {
     }
 
     const updateFields = { opsName, type, ratePerUnit: ratePerUnitNum };
+    if (link !== undefined) {
+      updateFields.link = link != null ? String(link).trim() : '';
+    }
     if (categoriesBody !== undefined) {
       updateFields.categories = Array.isArray(categoriesBody)
         ? categoriesBody.map(c => String(c).trim()).filter(Boolean)
