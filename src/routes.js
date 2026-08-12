@@ -3609,6 +3609,80 @@ router.get('/inventory-summary/categorywise-issued', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: jobwise issued (job issue register)
+router.get('/inventory-summary/jobwise-issued', async (req, res) => {
+    try {
+        const { database, fromDate, toDate } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, safeFromDate)
+            .input('ToDate', sql.Date, safeToDate)
+            .input('Mode', sql.VarChar(20), 'JOB')
+            .execute('dbo.rpt_job_issue_register_v6');
+
+        const pick = (row, ...names) => {
+            for (let i = 0; i < names.length; i += 1) {
+                const want = String(names[i]).toLowerCase();
+                if (Object.prototype.hasOwnProperty.call(row, names[i]) && row[names[i]] !== undefined) {
+                    return row[names[i]];
+                }
+                const keys = Object.keys(row);
+                for (let j = 0; j < keys.length; j += 1) {
+                    if (String(keys[j]).toLowerCase() === want) return row[keys[j]];
+                }
+            }
+            return null;
+        };
+
+        const records = (result.recordset || []).map((row) => ({
+            issueDate: pick(row, 'Date', 'IssueDate', 'issueDate'),
+            itemName: pick(row, 'Item', 'ItemName', 'itemName') ?? '',
+            itemGroup: pick(row, 'item Group', 'ItemGroup', 'itemGroup') ?? '',
+            jobNum: pick(row, 'JobNUm', 'JobNum', 'JobNo', 'JobBookingNo', 'jobNum') ?? '',
+            jobName: pick(row, 'Job Name', 'JobName', 'jobName') ?? '',
+            clientName: pick(row, 'Client', 'ClientName', 'clientName') ?? '',
+            requiredQty: pick(row, 'Required as per Job', 'RequiredQty', 'requiredQty') ?? 0,
+            issuedQty: pick(row, 'Issued Qty (In same unit as required)', 'IssuedQty', 'issuedQty') ?? 0,
+            unit: pick(row, 'Unit', 'unit') ?? '',
+            excessShort: pick(row, 'Excess/(Short)', 'ExcessShort', 'excessShort') ?? 0,
+            varPct: pick(row, 'Var %', 'VarPct', 'varPct') ?? 0,
+            reqGsm: pick(row, 'Req GSM', 'ReqGSM', 'reqGsm') ?? null,
+            issuedGsm: pick(row, 'Issued GSM', 'IssuedGSM', 'issuedGsm') ?? null,
+            reqJobTotal: pick(row, 'Req Job Total', 'ReqJobTotal', 'reqJobTotal') ?? 0,
+            specMatch: pick(row, 'Spec Match', 'SpecMatch', 'specMatch') ?? '',
+            issuedQtyStock: pick(row, 'Issued Qty (Stock Unit)', 'IssuedQtyStock', 'issuedQtyStock') ?? 0,
+            stockUnit: pick(row, 'Stock Unit', 'StockUnit', 'stockUnit') ?? '',
+            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0,
+            reqSource: pick(row, 'Req Source', 'ReqSource', 'reqSource') ?? '',
+            unplannedIssue: pick(row, 'Unplanned Issue', 'UnplannedIssue', 'unplannedIssue') ?? 0
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('Inventory summary jobwise-issued error:', err);
+        const msg = String(err?.message || '');
+        if (/FromDate|ToDate|mandatory|must not precede|cannot be after/i.test(msg)) {
+            return res.status(400).json({ status: false, error: msg || 'Invalid date range' });
+        }
+        return res.status(500).json({ status: false, error: 'Failed to fetch jobwise issued data' });
+    }
+});
+
 // Inventory Summary Tool: clientwise stock movement
 router.get('/inventory-summary/clientwise', async (req, res) => {
     try {
