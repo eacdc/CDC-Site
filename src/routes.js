@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from "axios";
 import nodemailer from "nodemailer";
-import { getPool, sql } from './db.js';
+import { getPool, getLongQueryPool, sql } from './db.js';
 import multer from 'multer';
 import QrCode from 'qrcode-reader';
 import * as jimp from 'jimp';
@@ -2974,40 +2974,59 @@ router.get('/grn/pending-gpns-for-delivery-note', async (req, res) => {
         const companyParsed = Number(companyId);
         const companyIdNum = Number.isInteger(companyParsed) && companyParsed > 0 ? companyParsed : 2;
 
-        const pool = await getPool(selectedDatabase);
-        const result = await pool.request()
+        // Anti-join + sargable date range (avoids CAST/correlated NOT EXISTS timeouts)
+        const pool = await getLongQueryPool(selectedDatabase);
+        const request = pool.request();
+        request.timeout = 180000;
+        const result = await request
             .input('CompanyID', sql.Int, companyIdNum)
             .input('FromDate', sql.Date, fromDateStr)
             .input('ToDate', sql.Date, toDateStr)
             .query(`
+                ;WITH GpnRows AS (
+                    SELECT
+                        d.Barcode,
+                        d.JobBookingID,
+                        d.CreatedDate,
+                        m.VoucherNo
+                    FROM FinishGoodsTransactionDetail AS d WITH (NOLOCK)
+                    INNER JOIN FinishGoodsTransactionMain AS m WITH (NOLOCK)
+                        ON d.FGTransactionID = m.FGTransactionID
+                    WHERE ISNULL(d.ParentFGTransactionID, 0) = 0
+                      AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                      AND ISNULL(m.IsDeletedTransaction, 0) = 0
+                      AND d.CreatedDate >= @FromDate
+                      AND d.CreatedDate < DATEADD(DAY, 1, @ToDate)
+                ),
+                DnBarcodes AS (
+                    SELECT DISTINCT dn.Barcode
+                    FROM FinishGoodsTransactionDetail AS dn WITH (NOLOCK)
+                    INNER JOIN FinishGoodsTransactionMain AS dm WITH (NOLOCK)
+                        ON dn.FGTransactionID = dm.FGTransactionID
+                    INNER JOIN GpnRows AS g
+                        ON g.Barcode = dn.Barcode
+                    WHERE ISNULL(dn.ParentFGTransactionID, 0) > 0
+                      AND ISNULL(dn.IsDeletedTransaction, 0) = 0
+                      AND ISNULL(dm.IsDeletedTransaction, 0) = 0
+                )
                 SELECT
-                    d.Barcode                                   AS BarcodeNo,
+                    g.Barcode                                   AS BarcodeNo,
                     b.JobBookingNo                              AS JobNumber,
                     b.JobName                                   AS JobName,
                     l.LedgerName                                AS ClientName,
-                    m.VoucherNo                                 AS GPNNo,
-                    d.CreatedDate                               AS GPNDate,
-                    DATEDIFF(DAY, d.CreatedDate, GETDATE())     AS DaysPending
-                FROM FinishGoodsTransactionDetail  AS d
-                INNER JOIN FinishGoodsTransactionMain AS m ON d.FGTransactionID = m.FGTransactionID
-                INNER JOIN JobBookingJobCard          AS b ON d.JobBookingID    = b.JobBookingID
-                                                          AND b.CompanyID       = @CompanyID
-                LEFT  JOIN LedgerMaster               AS l ON b.LedgerID        = l.LedgerID
-                WHERE ISNULL(d.ParentFGTransactionID, 0) = 0
-                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
-                  AND ISNULL(m.IsDeletedTransaction, 0) = 0
-                  AND CAST(d.CreatedDate AS DATE) >= @FromDate
-                  AND CAST(d.CreatedDate AS DATE) <= @ToDate
-                  AND NOT EXISTS (
-                        SELECT 1
-                        FROM FinishGoodsTransactionDetail  AS dn
-                        INNER JOIN FinishGoodsTransactionMain AS dm ON dn.FGTransactionID = dm.FGTransactionID
-                        WHERE dn.Barcode = d.Barcode
-                          AND ISNULL(dn.ParentFGTransactionID, 0) > 0
-                          AND ISNULL(dn.IsDeletedTransaction, 0) = 0
-                          AND ISNULL(dm.IsDeletedTransaction, 0) = 0
-                  )
-                ORDER BY d.CreatedDate DESC
+                    g.VoucherNo                                 AS GPNNo,
+                    g.CreatedDate                               AS GPNDate,
+                    DATEDIFF(DAY, g.CreatedDate, GETDATE())     AS DaysPending
+                FROM GpnRows AS g
+                INNER JOIN JobBookingJobCard AS b WITH (NOLOCK)
+                    ON g.JobBookingID = b.JobBookingID
+                   AND b.CompanyID = @CompanyID
+                LEFT JOIN LedgerMaster AS l WITH (NOLOCK)
+                    ON b.LedgerID = l.LedgerID
+                LEFT JOIN DnBarcodes AS dn
+                    ON dn.Barcode = g.Barcode
+                WHERE dn.Barcode IS NULL
+                ORDER BY g.CreatedDate DESC
             `);
 
         const records = (result.recordset || []).map((row) => ({
@@ -3030,7 +3049,11 @@ router.get('/grn/pending-gpns-for-delivery-note', async (req, res) => {
         if (msg.includes('Invalid or missing fromDate') || msg.includes('Invalid or missing toDate')) {
             return res.status(400).json({ status: false, error: msg });
         }
-        return res.status(500).json({ status: false, error: 'Failed to fetch pending GPNs' });
+        return res.status(500).json({
+            status: false,
+            error: 'Failed to fetch pending GPNs',
+            detail: msg
+        });
     }
 });
 
