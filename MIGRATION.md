@@ -212,6 +212,45 @@ in step 1.** It is signed into the URL; a mismatch returns 403.
 For server-side sources (WhatsApp webhooks, scheduled imports, scanner drop
 folders) skip the presigned flow entirely and call `uploadBuffer()`.
 
+### 6.1 The bucket needs its own CORS policy
+
+The PUT above goes from the browser straight to
+`https://<account>.r2.cloudflarestorage.com` — it never reaches Express, so
+the `cors()` middleware in `src/server.js` has no bearing on it. The only
+thing that can permit it is a CORS policy stored on the bucket.
+
+A fresh R2 bucket has none, and answers the browser's preflight `OPTIONS`
+with `403` and no `Access-Control-Allow-Origin`:
+
+```
+Access to fetch at 'https://<account>.r2.cloudflarestorage.com/cdc-bills/...'
+from origin 'https://cdc-bills.onrender.com' has been blocked by CORS policy:
+No 'Access-Control-Allow-Origin' header is present on the requested resource.
+PUT https://... net::ERR_FAILED 403 (Forbidden)
+```
+
+This is a bucket-configuration failure, not a signing failure. The presigned
+URL is valid — the browser is simply never allowed to send it. Uploads through
+`uploadBuffer()` and reads by OpenAI keep working throughout, because neither
+is a browser.
+
+Apply the policy with:
+
+```bash
+npm run set-r2-cors          # dry run — prints current and proposed policy
+npm run set-r2-cors:apply    # writes it
+```
+
+The script needs `R2_RW_*`; the read-only key cannot change bucket
+configuration. Origins default to the production frontend plus localhost dev
+ports and can be overridden with `R2_CORS_ORIGINS` or `--origins`. Add every
+frontend origin explicitly rather than using `*` — an origin is scheme + host
++ port and must match exactly, so `https://cdc-bills.onrender.com` covers
+neither a `www.` variant nor a custom domain.
+
+Preflight responses are cached by the browser (`MaxAgeSeconds: 3600`), so
+hard-reload the UI before retesting after a policy change.
+
 ---
 
 ## 7. Database migration
@@ -263,6 +302,8 @@ Before merging, verify all of these:
 - [ ] Calling `/api/upload-url` without a session returns 401
 - [ ] A signed URL still works after 1 minute and fails after its expiry
 - [ ] Bucket Public Access is still Disabled
+- [ ] `npm run set-r2-cors` lists the deployed frontend origin in the bucket policy,
+      and a browser upload from that origin completes without a console CORS error
 
 ---
 
