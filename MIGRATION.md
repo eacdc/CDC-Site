@@ -77,6 +77,17 @@ R2_RO_ACCESS_KEY_ID=
 R2_RO_SECRET_ACCESS_KEY=
 ```
 
+**Issue R2 API tokens with TTL "Forever."** Cloudflare offers a time-limited
+token, and an expired one is refused on reads *and* writes with a bare
+`Access Denied` — indistinguishable at a glance from a misconfigured
+permission. Worse, presigning happens offline and never checks the
+credential, so the server keeps minting upload URLs that look valid and fail
+only when the browser sends them. If you do want scheduled rotation, put a
+calendar reminder against the expiry date; nothing in the code can warn you.
+
+`npm run check-r2-access` reports which operations a key can actually
+perform, and names expiry as a candidate when everything is denied.
+
 ---
 
 ## 4. Find every Cloudinary usage

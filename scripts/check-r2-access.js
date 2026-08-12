@@ -140,12 +140,16 @@ function diagnose(role, results) {
     return (
       'Denied on reads AND writes — so this is not a read-only-token problem.\n' +
       '  A token with no access at all to this bucket means one of:\n' +
-      '    • the token is not scoped to this bucket (most common — check its\n' +
-      '      bucket list, or reissue it as "Apply to all buckets")\n' +
+      '    • the token has EXPIRED — R2 tokens can be issued with a TTL, and an\n' +
+      '      expired one fails exactly like this. Issue the replacement with\n' +
+      '      TTL "Forever" unless you have a reason to rotate on a schedule.\n' +
+      '    • the token is not scoped to this bucket (check its bucket list, or\n' +
+      '      reissue it as "Apply to all buckets")\n' +
       '    • the token was deleted or revoked in the dashboard\n' +
       '    • the token belongs to a different Cloudflare account\n' +
       '  Cloudflare dashboard → R2 → Manage API Tokens, find the token whose\n' +
-      '  Access Key ID matches the one above.'
+      '  Access Key ID matches the one above; an expired token still appears in\n' +
+      '  the list, so check its status and expiry date, not just its presence.'
     );
   }
 
