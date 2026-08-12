@@ -24,7 +24,8 @@
     "backfill-contractor-short-ids": "node scripts/backfill-contractor-short-ids.js",
     "backfill-contractor-short-ids:dry-run": "node scripts/backfill-contractor-short-ids.js --dry-run",
     "set-r2-cors": "node scripts/set-r2-cors.js",
-    "set-r2-cors:apply": "node scripts/set-r2-cors.js --apply"
+    "set-r2-cors:apply": "node scripts/set-r2-cors.js --apply",
+    "check-r2-access": "node scripts/check-r2-access.js"
   },
   "keywords": [],
   "author": "",
