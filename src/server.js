@@ -19,6 +19,7 @@ import shipmentEtaRoutes from './routes-shipment-eta.js';
 import concernPersonRoutes from './routes-concern-person.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
+import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
 import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
 import { closeAllPools } from './db.js';
@@ -92,6 +93,7 @@ app.use('/api', shipmentEtaRoutes);
 app.use('/api', concernPersonRoutes);
 app.use('/api', previousItemsByClientRoutes);
 app.use('/api', jobProductImageRoutes);
+app.use('/api', jobWiseProfitabilityRoutes);
 
 // CDC Bills Digitization Platform
 app.use('/api/cdc-bills/auth', cdcBillsAuthRoutes);
