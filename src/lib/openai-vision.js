@@ -189,18 +189,19 @@ export const GrnSheetSchema = z.object({
 const TALLY_VOUCHER_PROMPT = `You are extracting structured data from a CDC Printers Pvt Ltd Tally Purchase Voucher.
 
 A Tally Purchase Voucher has these fields:
-- Header: CDC PRINTERS PVT LTD address, PAN, GSTIN
-- Voucher number (format: PUR/XXX/YY-YY or similar)
-- Ref field (supplier's bill number and bill date)
+- Header: CDC PRINTERS PVT LTD address, PAN, GSTIN — these are the BUYER (CDC), never the supplier
+- Voucher number (format: PUR/XXX/YY-YY, PUR/O/XXX/YY-YY, or similar). Copy it exactly, including any letter between slashes.
+- Ref field (supplier's bill number and bill date), e.g. "07 dt. 18-May-26" → ref_bill_number "07"
 - Voucher date (Dated: DD-Mon-YY)
 - Party's Name (supplier)
-- Supplier GSTIN/UIN, PAN/IT No
-- Particulars section (e.g., "Ink & Chemicals", "Packing Materials", with CDC unit name like "Tangra Unit" or "Panchla Unit")
+- Supplier GSTIN/UIN and PAN/IT No — only if shown for the PARTY, not CDC's header GSTIN/PAN
+- Unregistered suppliers (URP / Bill of Supply) often have no GSTIN; still extract their PAN if present. Return null for supplier_gstin in that case.
+- Particulars section (e.g., "Ink & Chemicals", "Packing Materials", "Brokerage & Commission (URP)", with CDC unit name like "Tangra Unit" or "Panchla Unit")
 - Amount column with values
 - CGST, SGST, IGST, Round Off
 - Total amount (top right)
 - Amount in words
-- Buyer's PAN
+- Buyer's PAN (CDC) — put this in buyer_pan, never supplier_pan
 
 Extract the following fields. Return null for any field not present.
 All dates must be normalized to ISO format YYYY-MM-DD.
@@ -233,9 +234,15 @@ Return JSON in this exact schema:
   "page_quality": "good" | "fair" | "poor"
 }`;
 
-const SUPPLIER_INVOICE_PROMPT = `You are extracting structured data from a vendor's tax invoice issued to CDC Printers Pvt Ltd.
+const SUPPLIER_INVOICE_PROMPT = `You are extracting structured data from a vendor document issued to CDC Printers Pvt Ltd.
 
-This may be a printed invoice, handwritten, or partly both. It may be rotated 90 degrees or upside down. Handle all orientations — mentally rotate to read.
+This may be a tax invoice, bill of supply, handwritten bill, or partly both. It may be rotated 90 degrees or upside down. Handle all orientations — mentally rotate to read.
+
+Rules:
+- invoice_number is BILL NO / Invoice No / Bill No — not the Tally voucher number (PUR/...).
+- supplier_gstin is the SELLER's GSTIN only. CDC's GSTIN (buyer) goes in buyer_gstin.
+- Unregistered persons (URP) and Bills of Supply often have no seller GSTIN — return null. Still extract supplier_pan (PAN/IT No). Never copy CDC's PAN into supplier_pan.
+- document_type should be bill_of_supply when the heading is BILL OF SUPPLY.
 
 All dates must be normalized to ISO format YYYY-MM-DD.
 All amounts must be numbers (no commas, no currency symbols).

@@ -27,7 +27,8 @@ import * as XLSX from 'xlsx';
 import { v2 as cloudinary } from 'cloudinary';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { extractFromImage } from './lib/openai-vision.js';
-import { aggregateAllSlots, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
+import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
+import { buildBillDedupKey, listDedupKeys } from './lib/purchase-bill-dedup.js';
 import { runVerificationChecks, computeVerificationStatus } from './lib/purchase-bill-verification.js';
 import { generatePhash, hammingDistance } from './lib/phash.js';
 import {
@@ -136,6 +137,11 @@ function buildDbHelpers(excludeId) {
     findExistingByDedupKey: async (key) => {
       if (!key) return null;
       return PurchaseBill.findOne({ bill_dedup_key: key, ...exclude }).lean();
+    },
+    findExistingByDedupKeys: async (keys) => {
+      const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
+      if (list.length === 0) return null;
+      return PurchaseBill.findOne({ bill_dedup_key: { $in: list }, ...exclude }).lean();
     },
     findByTallyVoucher: async (no) => {
       if (!no) return null;
@@ -334,6 +340,7 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
   try {
     const b = req.body || {};
     const supplier_gstin = b.supplier_gstin ? String(b.supplier_gstin).trim().toUpperCase() : null;
+    const supplier_pan = b.supplier_pan ? String(b.supplier_pan).trim().toUpperCase() : null;
     const invoice_number = b.invoice_number ? String(b.invoice_number).trim() : null;
     const tally_voucher_number = b.tally_voucher_number ? String(b.tally_voucher_number).trim() : null;
     const grand_total = b.grand_total != null ? Number(b.grand_total) : null;
@@ -343,9 +350,9 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
     let voucher_duplicate = null;
     let similar_matches = [];
 
-    if (supplier_gstin && invoice_number) {
-      const dedupKey = `${supplier_gstin}_${invoice_number.toUpperCase()}`;
-      const hit = await PurchaseBill.findOne({ bill_dedup_key: dedupKey })
+    const dedupKeys = listDedupKeys({ supplier_gstin, supplier_pan, invoice_number });
+    if (dedupKeys.length) {
+      const hit = await PurchaseBill.findOne({ bill_dedup_key: { $in: dedupKeys } })
         .select('_id uploaded_by uploaded_at tally_voucher_number invoice_number');
       if (hit) {
         exact_duplicate = {
@@ -1192,8 +1199,7 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
         bill.slots = aggregatedSlots;
         bill.markModified('slots');
       }
-      const canonical = buildCanonicalFields(bill.slots, { setType: bill.set_type });
-      Object.assign(bill, canonical);
+      applyCanonicalFields(bill, buildCanonicalFields(bill.slots, { setType: bill.set_type }));
     }
     if (body.canonical && typeof body.canonical === 'object') {
       // Allow direct overrides of canonical fields (manual correction)
@@ -1213,9 +1219,15 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
           bill[k] = body.canonical[k];
         }
       }
-      // Re-compute dedup key when supplier_gstin or invoice_number change.
-      if (bill.supplier_gstin && bill.invoice_number) {
-        bill.bill_dedup_key = `${String(bill.supplier_gstin).trim().toUpperCase()}_${String(bill.invoice_number).trim().toUpperCase()}`;
+      // Re-compute dedup key when supplier identity or invoice number change.
+      bill.bill_dedup_key = buildBillDedupKey({
+        supplier_gstin: bill.supplier_gstin,
+        supplier_pan: bill.supplier_pan,
+        invoice_number: bill.invoice_number,
+      });
+      if (!bill.bill_dedup_key) {
+        bill.set('bill_dedup_key', undefined);
+        if (bill._doc) delete bill._doc.bill_dedup_key;
       }
     }
 
@@ -1310,7 +1322,7 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
     bill.markModified('slots');
 
     const canonical = buildCanonicalFields(bill.slots, { setType: bill.set_type });
-    Object.assign(bill, canonical);
+    applyCanonicalFields(bill, canonical);
 
     if (slotType === 'supplier_invoice' && pageNo === 1) {
       const firstPage = aggregatedSlots.supplier_invoice?.pages?.[0];
@@ -1425,7 +1437,15 @@ router.post('/:id/reprocess', requireCdcBillsModify, async (req, res) => {
     bill.check_results = [];
     bill.blocking_failures_count = 0;
     bill.warning_failures_count = 0;
+    bill.set('bill_dedup_key', undefined);
+    if (bill._doc) delete bill._doc.bill_dedup_key;
     await bill.save();
+    if (!bill.bill_dedup_key) {
+      await PurchaseBill.collection.updateOne(
+        { _id: bill._id },
+        { $unset: { bill_dedup_key: 1 } },
+      );
+    }
     enqueue(bill._id);
     logActivity({ req, action: 'reprocess_bill', billId: bill._id });
     return res.json({ _id: String(bill._id), verification_status: 'pending_extraction' });

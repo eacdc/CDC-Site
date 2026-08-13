@@ -13,6 +13,7 @@
 
 import { CDC_CONFIG, TOLERANCES, EWAY_THRESHOLDS, isCdcGstin, panFromGstin } from '../config/cdc.js';
 import { hammingDistance } from './phash.js';
+import { listDedupKeys } from './purchase-bill-dedup.js';
 
 const PASS = 'pass';
 const FAIL = 'fail';
@@ -617,15 +618,22 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
   // ================================================================
   const excludeId = bill._id || bill.id || null;
 
-  // #46 — exact (supplier_gstin + invoice_number)
+  // #46 — exact (GSTIN+invoice, or PAN+invoice when GSTIN is missing)
   {
-    if (!bill.bill_dedup_key) {
-      results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, SKIP,
-        'Supplier GSTIN or invoice number missing — cannot dedup.'));
+    const keys = listDedupKeys(bill);
+    if (!keys.length) {
+      results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, FAIL,
+        'Cannot build dedup key: supplier GSTIN and PAN both missing, or invoice number missing.',
+        'GSTIN or PAN + invoice number', {
+          supplier_gstin: bill.supplier_gstin || null,
+          supplier_pan: bill.supplier_pan || null,
+          invoice_number: bill.invoice_number || null,
+        }));
     } else {
       let existing = null;
       try {
-        existing = await dbHelpers.findExistingByDedupKey?.(bill.bill_dedup_key, excludeId);
+        existing = await dbHelpers.findExistingByDedupKeys?.(keys, excludeId)
+          ?? await dbHelpers.findExistingByDedupKey?.(keys[0], excludeId);
       } catch (err) {
         console.warn('[verify] dedup lookup failed:', err?.message);
       }
@@ -635,7 +643,7 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
           'unique', { existing_bill_id: String(existing._id) }));
       } else {
         results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, PASS,
-          'No existing bill found with this supplier GSTIN + invoice number.'));
+          'No existing bill found with this supplier GSTIN/PAN + invoice number.'));
       }
     }
   }

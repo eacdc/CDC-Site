@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 
 const { Schema } = mongoose;
 
+const UNIQUE_OPTIONAL_FIELDS = ['bill_dedup_key', 'tally_voucher_number'];
+
 /**
  * One uploaded image page belonging to a slot. We store the Cloudinary URL,
  * the slot-specific extracted JSON, plus minimal classification metadata
@@ -125,12 +127,24 @@ export const purchaseBillSchema = new Schema({
   extraction_error: { type: String, default: null },
 
   // ---------- dedup ----------
-  // Form: `${UPPERCASE supplier_gstin}_${UPPERCASE invoice_number}`
-  bill_dedup_key: { type: String, unique: true, sparse: true },
+  // Uniqueness is a partial index in repairPurchaseBillUniqueIndexes —
+  // never store null (Mongo unique indexes treat null as a real value).
+  bill_dedup_key: { type: String },
   invoice_image_phash: String,
 }, {
   collection: 'PurchaseBills',
   timestamps: true,
+  autoIndex: false,
+});
+
+purchaseBillSchema.pre('save', function unsetEmptyUniqueKeys() {
+  for (const field of UNIQUE_OPTIONAL_FIELDS) {
+    const v = this[field];
+    if (v == null || (typeof v === 'string' && !v.trim())) {
+      this.set(field, undefined);
+      if (this._doc) delete this._doc[field];
+    }
+  }
 });
 
 // ---------- Search & lookup indexes ----------
@@ -143,8 +157,14 @@ purchaseBillSchema.index({
 purchaseBillSchema.index({ supplier_gstin: 1, invoice_number: 1 });
 purchaseBillSchema.index({ uploaded_at: -1 });
 
-// Unique constraint for tally voucher dedup (check #47).
-purchaseBillSchema.index({ tally_voucher_number: 1 }, { unique: true, sparse: true });
+purchaseBillSchema.index(
+  { bill_dedup_key: 1 },
+  { unique: true, partialFilterExpression: { bill_dedup_key: { $type: 'string' } } },
+);
+purchaseBillSchema.index(
+  { tally_voucher_number: 1 },
+  { unique: true, partialFilterExpression: { tally_voucher_number: { $type: 'string' } } },
+);
 
 // Compound index supports the similar-bill query in check #49.
 purchaseBillSchema.index({ supplier_gstin: 1, invoice_date: 1, grand_total: 1 });

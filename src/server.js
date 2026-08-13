@@ -26,19 +26,29 @@ import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 import { closePurchaseBillsMongo } from './db-purchase-bills.js';
 
-dotenv.config();
-
 // Create require function for CommonJS modules
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+dotenv.config({ path: join(__dirname, '..', '.env') });
+
 const app = express();
 const port = process.env.PORT || 3001;
 
-// Enable CORS for all routes
+// Enable CORS for all routes, including file:// (Origin: null) and
+// Chrome Private Network Access preflights to localhost.
+app.use((req, res, next) => {
+	res.setHeader('Access-Control-Allow-Private-Network', 'true');
+	next();
+});
 app.use(cors({
-	origin: true, // Allow all origins for development
+	origin: (origin, callback) => {
+		if (!origin || origin === 'null') {
+			return callback(null, '*');
+		}
+		return callback(null, origin);
+	},
 	credentials: true
 }));
 

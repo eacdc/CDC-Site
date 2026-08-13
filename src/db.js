@@ -1,7 +1,10 @@
 import sql from 'mssql';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-dotenv.config();
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: join(__dirname, '..', '.env') });
 
 // MSSQL connection env: DB_SERVER, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME_KOL (and DB_NAME_AHM for AHM).
 // Optional previous fallbacks: DB_HOST (for server), DB_NAME (for database when DB_NAME_KOL not set).

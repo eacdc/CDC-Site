@@ -3,6 +3,7 @@
  * Uses MONGODB_URI_Billing — not the main MONGODB_URI used by the rest of
  * the backend.
  */
+import { repairPurchaseBillUniqueIndexes } from './lib/purchase-bill-unique-keys.js';
 import mongoose from 'mongoose';
 import { purchaseBillSchema } from './models/PurchaseBill.js';
 import { cdcBillsUserPasswordSchema } from './models/CdcBillsUserPassword.js';
@@ -33,7 +34,7 @@ export async function ensurePurchaseBillsReady() {
   }
   if (!connecting) {
     connecting = (async () => {
-      const c = mongoose.createConnection(uri.trim());
+      const c = mongoose.createConnection(uri.trim(), { autoIndex: false });
       const Model = c.model('PurchaseBill', purchaseBillSchema);
       CdcBillsUserPassword = c.model('CdcBillsUserPassword', cdcBillsUserPasswordSchema);
       CdcBillsActivityLog = c.model('CdcBillsActivityLog', cdcBillsActivityLogSchema);
@@ -42,6 +43,8 @@ export async function ensurePurchaseBillsReady() {
       billingConnection = c;
       PurchaseBill = Model;
       console.log('✅ Billing MongoDB connected (PurchaseBills / MONGODB_URI_Billing)');
+      await repairPurchaseBillUniqueIndexes(Model);
+      await Model.ensureIndexes();
       // Recover bills that were stuck in pending_extraction on last run
       const { setQueueModel, recoverPendingOnStartup } = await import('./lib/extraction-queue.js');
       setQueueModel(Model);

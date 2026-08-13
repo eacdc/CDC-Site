@@ -1,3 +1,10 @@
+import {
+  buildBillDedupKey,
+  normalizeGstin,
+  normalizeInvoiceNumber,
+  supplierPanFromFields,
+} from './purchase-bill-dedup.js';
+
 /**
  * Multi-page aggregation per slot.
  *
@@ -132,8 +139,16 @@ export function buildCanonicalFields(slots, { setType }) {
   const eway = slots?.eway_bill?.aggregated_fields || {};
   const grn = slots?.grn_sheet?.aggregated_fields || {};
 
-  const supplier_gstin = (invoice.supplier_gstin || voucher.supplier_gstin || grn.supplier_gstin || null);
-  const invoice_number = (invoice.invoice_number || voucher.ref_bill_number || grn.bill_number || null);
+  const supplier_gstin = normalizeGstin(
+    invoice.supplier_gstin || voucher.supplier_gstin || grn.supplier_gstin,
+  );
+  const invoice_number = normalizeInvoiceNumber(
+    invoice.invoice_number || voucher.ref_bill_number || grn.bill_number,
+  );
+  const supplier_pan = supplierPanFromFields({
+    supplier_gstin,
+    supplier_pan: invoice.supplier_pan || voucher.supplier_pan,
+  });
 
   const cdc_unit = voucher.cdc_unit || grn.cdc_unit || null;
 
@@ -145,16 +160,17 @@ export function buildCanonicalFields(slots, { setType }) {
   if (i > 0 && (c === 0 || c == null) && (s === 0 || s == null)) tax_type = 'inter_state';
   else if ((c > 0 || s > 0) && (i === 0 || i == null)) tax_type = 'intra_state';
 
-  const dedupKey =
-    supplier_gstin && invoice_number
-      ? `${String(supplier_gstin).trim().toUpperCase()}_${String(invoice_number).trim().toUpperCase()}`
-      : null;
+  const dedupKey = buildBillDedupKey({
+    supplier_gstin,
+    supplier_pan,
+    invoice_number,
+  });
 
   return {
     set_type: setType,
     cdc_unit,
 
-    tally_voucher_number: voucher.voucher_number || null,
+    tally_voucher_number: voucher.voucher_number || undefined,
     tally_voucher_date: parseDate(voucher.voucher_date),
     tally_ref_bill_no: voucher.ref_bill_number || null,
     tally_ref_bill_date: parseDate(voucher.ref_bill_date),
@@ -168,8 +184,8 @@ export function buildCanonicalFields(slots, { setType }) {
     supplier_name: voucher.supplier_name
       ? String(voucher.supplier_name).trim().toUpperCase()
       : null,
-    supplier_gstin: supplier_gstin ? String(supplier_gstin).trim().toUpperCase() : null,
-    supplier_pan: invoice.supplier_pan || voucher.supplier_pan || null,
+    supplier_gstin,
+    supplier_pan,
     supplier_state: invoice.supplier_state || null,
 
     buyer_gstin: invoice.buyer_gstin || voucher.buyer_gstin || null,
@@ -195,6 +211,19 @@ export function buildCanonicalFields(slots, { setType }) {
 
     bill_dedup_key: dedupKey,
   };
+}
+
+const UNIQUE_OPTIONAL_FIELDS = ['bill_dedup_key', 'tally_voucher_number'];
+
+export function applyCanonicalFields(bill, canonical) {
+  Object.assign(bill, canonical);
+  for (const field of UNIQUE_OPTIONAL_FIELDS) {
+    const v = bill[field];
+    if (v == null || (typeof v === 'string' && !String(v).trim())) {
+      bill.set?.(field, undefined);
+      if (bill._doc) delete bill._doc[field];
+    }
+  }
 }
 
 function num(v) {

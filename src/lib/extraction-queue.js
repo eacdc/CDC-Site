@@ -11,12 +11,13 @@
  * "pending_extraction" at startup are picked up via recoverPendingOnStartup().
  */
 
-import { aggregateAllSlots, buildCanonicalFields } from './purchase-bill-aggregation.js';
+import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './purchase-bill-aggregation.js';
 import { runVerificationChecks, computeVerificationStatus } from './purchase-bill-verification.js';
 import { extractAllSlotPages } from './purchase-bill-extract-slots.js';
 import { generatePhash } from './phash.js';
 import { resolveViewUrl } from './media-url.js';
 import { buildDbHelpers } from './purchase-bill-db-helpers.js';
+import { saveBillWithoutNullUniqueKeys } from './purchase-bill-unique-keys.js';
 
 // ---------- queue state ----------
 
@@ -99,9 +100,12 @@ async function processBill(billId) {
   }
 
   // 4. Apply extracted data to bill document
-  Object.assign(bill, canonical);
+  applyCanonicalFields(bill, canonical);
   bill.slots = aggregatedSlots;
   bill.invoice_image_phash = invoice_image_phash;
+  bill.extraction_error = canonical.bill_dedup_key
+    ? null
+    : 'Cannot build dedup key: supplier GSTIN and PAN both missing, or invoice number missing.';
 
   // 5. Verification
   const helpers = buildDbHelpers(bill._id);
@@ -112,8 +116,8 @@ async function processBill(billId) {
   bill.blocking_failures_count = blocking;
   bill.warning_failures_count = warning;
 
-  await bill.save();
-  console.log('[extraction-queue] done bill', billId, '->', status);
+  await saveBillWithoutNullUniqueKeys(bill);
+  console.log('[extraction-queue] done bill', billId, '->', bill.verification_status);
 }
 
 // ---------- startup recovery ----------

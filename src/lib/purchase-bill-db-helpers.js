@@ -11,6 +11,11 @@ export function buildDbHelpers(excludeId) {
       if (!key) return null;
       return PurchaseBill.findOne({ bill_dedup_key: key, ...exclude }).lean();
     },
+    findExistingByDedupKeys: async (keys) => {
+      const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
+      if (list.length === 0) return null;
+      return PurchaseBill.findOne({ bill_dedup_key: { $in: list }, ...exclude }).lean();
+    },
     findByTallyVoucher: async (no) => {
       if (!no) return null;
       return PurchaseBill.findOne({ tally_voucher_number: no, ...exclude }).lean();
