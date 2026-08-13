@@ -3737,7 +3737,7 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             .input('VoucherID', sql.Int, -19)
             .input('MatchLevel', sql.VarChar(20), 'JOB')
             .input('GsmTolerance', sql.Int, 10)
-            .execute('dbo.rpt_job_issue_register_v8');
+            .execute('dbo.rpt_job_issue_register_v9');
 
         const pick = (row, ...names) => {
             for (let i = 0; i < names.length; i += 1) {
@@ -3755,13 +3755,14 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
 
         const records = (result.recordset || []).map((row) => ({
             issueDate: pick(row, 'Date', 'IssueDate', 'issueDate'),
-            issuedItems: pick(row, 'Issued Items', 'IssuedItems', 'issuedItems', 'Item', 'ItemName') ?? '',
+            issuedItems: pick(row, 'Issued Items', 'IssuedItems', 'issuedItems') ?? '',
             itemGroup: pick(row, 'item Group', 'ItemGroup', 'itemGroup') ?? '',
             jobNum: pick(row, 'JobNUm', 'JobNum', 'JobNo', 'JobBookingNo', 'jobNum') ?? '',
             jobName: pick(row, 'Job Name', 'JobName', 'jobName') ?? '',
             clientName: pick(row, 'Client', 'ClientName', 'clientName') ?? '',
             requiredQty: pick(row, 'Required as per Job', 'RequiredQty', 'requiredQty') ?? 0,
             issuedQty: pick(row, 'Issued Qty (In same unit as required)', 'IssuedQty', 'issuedQty') ?? 0,
+            openingIssued: pick(row, 'Opening Issued', 'OpeningIssued', 'openingIssued') ?? 0,
             cumulativeIssued: pick(row, 'Cumulative Issued', 'CumulativeIssued', 'cumulativeIssued') ?? 0,
             unit: pick(row, 'Unit', 'unit') ?? '',
             excessShort: pick(row, 'Excess/(Short)', 'ExcessShort', 'excessShort') ?? 0,
