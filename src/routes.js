@@ -3525,6 +3525,7 @@ router.post('/grn/pending-po-expected-delivery-date', async (req, res) => {
               AND LTRIM(RTRIM(ISNULL(IM.ItemCode, ''))) = LTRIM(RTRIM(@ItemCode))
               AND ITM_PO.VoucherID = -11
               AND ISNULL(ITD_PO.IsDeletedTransaction, 0) = 0
+              AND ISNULL(ITD_PO.IsCompleted, 0) = 0
               AND ISNULL(ITM_PO.IsDeletedTransaction, 0) = 0
               AND ISNULL(ITD_PO.IsCancelled, 0) = 0;
         `);
