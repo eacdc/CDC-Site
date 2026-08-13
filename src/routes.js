@@ -3729,8 +3729,15 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
         const result = await pool.request()
             .input('FromDate', sql.Date, safeFromDate)
             .input('ToDate', sql.Date, safeToDate)
-            .input('Mode', sql.VarChar(20), 'JOB')
-            .execute('dbo.rpt_job_issue_register_v6');
+            .input('CompanyID', sql.Int, 2)
+            .input('JobBookingID', sql.Int, null)
+            .input('Mode', sql.VarChar(20), 'DATEJOB')
+            .input('IncludeUnissued', sql.Bit, 0)
+            .input('ApplyGangPaper', sql.Bit, 1)
+            .input('VoucherID', sql.Int, -19)
+            .input('MatchLevel', sql.VarChar(20), 'JOB')
+            .input('GsmTolerance', sql.Int, 10)
+            .execute('dbo.rpt_job_issue_register_v8');
 
         const pick = (row, ...names) => {
             for (let i = 0; i < names.length; i += 1) {
@@ -3748,25 +3755,18 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
 
         const records = (result.recordset || []).map((row) => ({
             issueDate: pick(row, 'Date', 'IssueDate', 'issueDate'),
-            itemName: pick(row, 'Item', 'ItemName', 'itemName') ?? '',
+            issuedItems: pick(row, 'Issued Items', 'IssuedItems', 'issuedItems', 'Item', 'ItemName') ?? '',
             itemGroup: pick(row, 'item Group', 'ItemGroup', 'itemGroup') ?? '',
             jobNum: pick(row, 'JobNUm', 'JobNum', 'JobNo', 'JobBookingNo', 'jobNum') ?? '',
             jobName: pick(row, 'Job Name', 'JobName', 'jobName') ?? '',
             clientName: pick(row, 'Client', 'ClientName', 'clientName') ?? '',
             requiredQty: pick(row, 'Required as per Job', 'RequiredQty', 'requiredQty') ?? 0,
             issuedQty: pick(row, 'Issued Qty (In same unit as required)', 'IssuedQty', 'issuedQty') ?? 0,
+            cumulativeIssued: pick(row, 'Cumulative Issued', 'CumulativeIssued', 'cumulativeIssued') ?? 0,
             unit: pick(row, 'Unit', 'unit') ?? '',
             excessShort: pick(row, 'Excess/(Short)', 'ExcessShort', 'excessShort') ?? 0,
             varPct: pick(row, 'Var %', 'VarPct', 'varPct') ?? 0,
-            reqGsm: pick(row, 'Req GSM', 'ReqGSM', 'reqGsm') ?? null,
-            issuedGsm: pick(row, 'Issued GSM', 'IssuedGSM', 'issuedGsm') ?? null,
-            reqJobTotal: pick(row, 'Req Job Total', 'ReqJobTotal', 'reqJobTotal') ?? 0,
-            specMatch: pick(row, 'Spec Match', 'SpecMatch', 'specMatch') ?? '',
-            issuedQtyStock: pick(row, 'Issued Qty (Stock Unit)', 'IssuedQtyStock', 'issuedQtyStock') ?? 0,
-            stockUnit: pick(row, 'Stock Unit', 'StockUnit', 'stockUnit') ?? '',
-            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0,
-            reqSource: pick(row, 'Req Source', 'ReqSource', 'reqSource') ?? '',
-            unplannedIssue: pick(row, 'Unplanned Issue', 'UnplannedIssue', 'unplannedIssue') ?? 0
+            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0
         }));
 
         return res.json({ status: true, records });

@@ -42,6 +42,50 @@ const RATE_COST_COLUMNS = new Set([
 	'GP %'
 ]);
 
+/** Keep 2 decimal places; all other numeric columns round to 0. */
+const TWO_DECIMAL_COLUMNS = new Set(['Unit Price', 'GP/Imp']);
+
+function isTwoDecimalColumn(colName) {
+	if (!colName) return false;
+	if (TWO_DECIMAL_COLUMNS.has(colName)) return true;
+	const lower = String(colName).toLowerCase();
+	return lower === 'unit price' || lower === 'gp/imp';
+}
+
+const DATE_COLUMNS = new Set(['Date of Final Del']);
+
+function isDateColumn(colName) {
+	if (!colName) return false;
+	if (DATE_COLUMNS.has(colName)) return true;
+	return String(colName).toLowerCase() === 'date of final del';
+}
+
+function toDateYmd(raw) {
+	if (raw == null || raw === '') return '';
+	if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+		const y = raw.getFullYear();
+		const m = String(raw.getMonth() + 1).padStart(2, '0');
+		const d = String(raw.getDate()).padStart(2, '0');
+		return `${y}-${m}-${d}`;
+	}
+	const s = String(raw).trim();
+	const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+	if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+	const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+	if (dmy) {
+		return `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+	}
+	const t = Date.parse(s);
+	if (!Number.isNaN(t)) {
+		const dt = new Date(t);
+		const y = dt.getFullYear();
+		const m = String(dt.getMonth() + 1).padStart(2, '0');
+		const d = String(dt.getDate()).padStart(2, '0');
+		return `${y}-${m}-${d}`;
+	}
+	return s;
+}
+
 function findColumnKey(keys, wanted) {
 	const want = String(wanted).toLowerCase();
 	for (const k of keys) {
@@ -59,8 +103,8 @@ function toNumber(value) {
 
 function formatCell(colName, raw) {
 	if (raw == null) return '';
-	if (raw instanceof Date) {
-		return raw.toISOString().slice(0, 10);
+	if (isDateColumn(colName) || raw instanceof Date) {
+		return toDateYmd(raw);
 	}
 
 	const num = toNumber(raw);
@@ -68,16 +112,18 @@ function formatCell(colName, raw) {
 		return typeof raw === 'string' ? raw : String(raw);
 	}
 
-	if (QTY_COLUMNS.has(colName)) {
-		return Math.round(num);
-	}
-	if (RATE_COST_COLUMNS.has(colName)) {
+	if (isTwoDecimalColumn(colName)) {
 		return Number(num.toFixed(2));
 	}
 
-	if (typeof raw === 'number') {
-		return Number.isInteger(raw) ? raw : Number(num.toFixed(4));
+	if (
+		QTY_COLUMNS.has(colName) ||
+		RATE_COST_COLUMNS.has(colName) ||
+		typeof raw === 'number'
+	) {
+		return Math.round(num);
 	}
+
 	return String(raw);
 }
 
