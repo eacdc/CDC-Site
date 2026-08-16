@@ -9543,12 +9543,31 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
 
     const updates = [];
     const contractorWDOps = [];
-    // Cap each operation the same way work-done.html does. Without this the
-    // browser is the only thing enforcing the limit: pendingOpsQty just floors
-    // at 0 while Contractor_WD records whatever was posted, so the recorded
-    // work silently exceeds the job.
+    // Cap each operation so the recorded work cannot pass what the job holds.
+    // Without this the browser is the only thing enforcing the limit:
+    // pendingOpsQty just floors at 0 while Contractor_WD records whatever was
+    // posted, so the recorded work silently exceeds the job.
+    //
+    // The cap is measured against work already recorded, not against
+    // pendingOpsQty. Once pending floors at 0 it stops tracking the overshoot,
+    // so "pending + allowance" hands out the full allowance again on every
+    // later save — two contractors on one operation could take it repeatedly.
+    // Recorded work also stays right when pendingOpsQty has drifted.
     const allowance = packagingAllowanceFor(jobOpsMaster);
     const rejected = [];
+
+    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
+    const recordedByOp = {};
+    (wdDocsForJob || []).forEach(doc => {
+      (doc.opsDone || []).forEach(od => {
+        if (od.opsId == null) return;
+        const k = String(od.opsId);
+        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
+      });
+    });
+    // Several operations can arrive in one request, so count what this request
+    // has already claimed for an operation as well.
+    const claimedByOp = {};
 
     for (const op of operations) {
       const { opId, opsName, valuePerBook, qtyToAdd } = op;
@@ -9577,18 +9596,22 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       const qtyToDeduct = Number(qtyToAdd);
       if (isNaN(qtyToDeduct) || qtyToDeduct <= 0) continue;
 
-      const maxAllowed = Number(jobOp.pendingOpsQty || 0) + allowance;
+      const opKey = String(jobOp.opId);
+      const alreadyRecorded = (recordedByOp[opKey] || 0) + (claimedByOp[opKey] || 0);
+      const maxAllowed = Math.max(0, Number(jobOp.totalOpsQty || 0) + allowance - alreadyRecorded);
       if (qtyToDeduct > maxAllowed + QTY_TOL) {
         rejected.push({
-          opId: String(jobOp.opId),
+          opId: opKey,
           opsName: normalizedOpsName,
           qtyToAdd: qtyToDeduct,
-          pendingOpsQty: Number(jobOp.pendingOpsQty || 0),
+          totalOpsQty: Number(jobOp.totalOpsQty || 0),
+          alreadyRecorded,
           packagingAllowance: allowance,
           maxAllowed
         });
         continue;
       }
+      claimedByOp[opKey] = (claimedByOp[opKey] || 0) + qtyToDeduct;
 
       jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
       jobOp.lastUpdatedDate = new Date();
@@ -9613,9 +9636,10 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       return res.status(400).json({
         error:
           `Quantity too large for ${rejected.length} operation(s). ` +
-          `"${first.opsName}": pending ${first.pendingOpsQty}` +
+          `"${first.opsName}": job holds ${first.totalOpsQty}` +
           (first.packagingAllowance ? ` (+${first.packagingAllowance} packaging allowance)` : '') +
-          `, so at most ${first.maxAllowed} can be added — ${first.qtyToAdd} was sent.`,
+          `, ${first.alreadyRecorded} already recorded, so at most ${first.maxAllowed} can be added — ` +
+          `${first.qtyToAdd} was sent.`,
         rejected
       });
     }
