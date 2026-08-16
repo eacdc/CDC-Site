@@ -6702,6 +6702,50 @@ function isOpsDoneBilled(od) {
   return !isOpsDoneUnsaved(od);
 }
 
+// Packaging jobs may record up to this much of the job quantity beyond an
+// operation's total. work-done.html caps entry at the same figure
+// (packagingTotalQty * 0.05 + pending), and the bill delete reversal uses it
+// too, so the server has to allow exactly as much as the client does.
+const PACKAGING_ALLOWANCE_PCT = 5;
+const QTY_TOL = 0.5;
+
+function packagingAllowanceFor(jobOpsMaster) {
+  if (!jobOpsMaster) return 0;
+  if (String(jobOpsMaster.segmentName || '').trim() !== 'Packaging') return 0;
+  const basis = Number(jobOpsMaster.totalQty || 0);
+  return basis > 0 ? Math.round(basis * PACKAGING_ALLOWANCE_PCT / 100) : 0;
+}
+
+// How much of each operation is already covered by live (non-deleted) bills.
+// Bills identify an operation by name and rate, not by opId, so that is the
+// key used here. Pass excludeBillNumber to leave one bill out — needed when
+// re-checking a bill that is itself being edited.
+async function getLiveBilledQtyByOp(jobNumbers, excludeBillNumber) {
+  const list = Array.isArray(jobNumbers) ? jobNumbers.filter(Boolean) : [];
+  if (list.length === 0) return {};
+
+  const query = {
+    'jobs.jobNumber': { $in: list },
+    $or: [{ isDeleted: { $ne: 1 } }, { isDeleted: { $exists: false } }]
+  };
+  if (excludeBillNumber) query.billNumber = { $ne: excludeBillNumber };
+
+  const bills = await Bill.find(query).lean();
+  const billed = {};
+  bills.forEach(b => {
+    (b.jobs || []).forEach(j => {
+      if (j.isAdhoc) return;
+      const jn = String(j.jobNumber || '').trim();
+      if (!list.includes(jn)) return;
+      (j.ops || []).forEach(op => {
+        const key = [jn, String(op.opsName || '').trim(), parseFloat(Number(op.rate || 0).toFixed(2))].join('|');
+        billed[key] = (billed[key] || 0) + Number(op.qtyCompleted || 0);
+      });
+    });
+  });
+  return billed;
+}
+
 // Flip the Contractor_WD opsDone entries covered by a bill to savedInBill:'Yes'.
 // Shared by POST /bills and POST /work/mark-billed: creating a bill and marking
 // its work as billed used to be two separate round trips, so a failure of the
@@ -7417,6 +7461,46 @@ router.post('/jobs/jobopsmaster', async (req, res) => {
         ops
       });
     } else {
+      // Changing the job quantity leaves every existing operation's
+      // totalOpsQty at the figure derived from the old quantity, so the job
+      // silently ends up describing two different quantities. Refuse once work
+      // has been recorded; before that, recompute the existing operations.
+      const previousTotalQty = Number(jobOpsMaster.totalQty || 0);
+      if (totalQty !== previousTotalQty && (jobOpsMaster.ops || []).length > 0) {
+        const workedOps = (jobOpsMaster.ops || []).filter(
+          o => Number(o.pendingOpsQty || 0) < Number(o.totalOpsQty || 0) - 0.5
+        );
+        if (workedOps.length > 0) {
+          return res.status(400).json({
+            error:
+              `Job quantity cannot be changed from ${previousTotalQty} to ${totalQty}: work has ` +
+              `already been recorded against ${workedOps.length} operation(s) of this job, and ` +
+              `their quantities were derived from ${previousTotalQty}.`
+          });
+        }
+        // No work recorded yet — rescale the existing operations to match.
+        const existingOpDocs = await Operation.find({
+          _id: {
+            $in: (jobOpsMaster.ops || []).map(o => {
+              try { return new mongoose.Types.ObjectId(o.opId); } catch { return null; }
+            }).filter(Boolean)
+          }
+        }).lean();
+        const existingTypeMap = {};
+        existingOpDocs.forEach(o => { existingTypeMap[o._id.toString()] = o.type; });
+
+        jobOpsMaster.ops.forEach(o => {
+          const type = existingTypeMap[String(o.opId)];
+          const newTotalOpsQty = (type === '1/x' || type === '1*x')
+            ? totalQty
+            : Number(o.qtyPerBook || 0) * totalQty;
+          o.totalOpsQty = newTotalOpsQty;
+          o.pendingOpsQty = newTotalOpsQty;
+          o.lastUpdatedDate = new Date();
+        });
+        jobOpsMaster.markModified('ops');
+      }
+
       jobOpsMaster.totalQty = totalQty;
       if (clientName !== undefined) {
         jobOpsMaster.clientName = clientName || '';
@@ -9191,6 +9275,11 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       jobNumber,
       clientName: jobOpsMaster.clientName || '',
       jobTitle: jobOpsMaster.jobTitle || '',
+      // Returned so the client can apply the packaging cap from this one call
+      // and stays in step with the limit the server enforces on save.
+      segmentName: jobOpsMaster.segmentName || '',
+      totalQty: Number(jobOpsMaster.totalQty || 0),
+      packagingAllowance: packagingAllowanceFor(jobOpsMaster),
       operations: operationsWithNames
     });
   } catch (error) {
@@ -9266,291 +9355,22 @@ router.get('/work/pending/:contractor/:jobNumber', async (req, res) => {
   }
 });
 
+// Retired. This wrote Contractor_WD without the savedInBill discipline the
+// current flow depends on, and nothing calls it any more. Kept as an explicit
+// error so an old client fails loudly instead of writing inconsistent data.
 router.post('/work/update/jobopsmaster', async (req, res) => {
-  try {
-    const { contractorId, jobNumber, operations } = req.body;
-
-    if (!contractorId || !jobNumber || !operations || !Array.isArray(operations)) {
-      return res.status(400).json({ error: 'Missing required fields: contractorId, jobNumber, and operations are required' });
-    }
-
-    // Find job in JobOpsMaster
-    const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber });
-    
-    if (!jobOpsMaster) {
-      return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
-    }
-
-    // Fetch operation names for all operations in JobOpsMaster and incoming operations
-    const allOpIds = [...new Set([
-      ...jobOpsMaster.ops.map(jop => jop.opId),
-      ...operations.map(op => op.opId).filter(Boolean)
-    ])];
-    
-    // Convert string IDs to ObjectIds for MongoDB query
-    const opObjectIds = allOpIds.map(opId => {
-      try {
-        return new mongoose.Types.ObjectId(opId);
-      } catch (error) {
-        console.error(`Invalid ObjectId format: ${opId}`, error);
-        return null;
-      }
-    }).filter(Boolean);
-    
-    const operationDocs = await Operation.find({ _id: { $in: opObjectIds } });
-    const operationNameMap = {};
-    operationDocs.forEach(op => {
-      const idStr = op._id.toString();
-      operationNameMap[idStr] = op.opsName;
-    });
-
-    const updates = [];
-    const contractorWDOps = [];
-
-    for (const op of operations) {
-      const { opId, opsName, valuePerBook, qtyToAdd } = op;
-
-      // Validate required fields - more strict validation
-      if (!opId || !opsName || opsName.trim() === '' || 
-          valuePerBook === undefined || valuePerBook === null || 
-          isNaN(Number(valuePerBook)) || 
-          qtyToAdd === undefined || qtyToAdd === null || 
-          isNaN(Number(qtyToAdd)) || Number(qtyToAdd) <= 0) {
-        console.warn('Skipping invalid operation:', { opId, opsName, valuePerBook, qtyToAdd });
-        continue;
-      }
-
-      // Find the operation in the ops array using opsName + valuePerBook as unique key
-      // Since JobOpsMaster doesn't store opsName, we need to fetch it from Operation collection
-      const normalizedOpsName = opsName.trim();
-      const normalizedValuePerBook = parseFloat(Number(valuePerBook).toFixed(2));
-      
-      // Validate numeric conversion
-      if (isNaN(normalizedValuePerBook)) {
-        console.warn('Invalid valuePerBook for operation:', { opId, opsName, valuePerBook });
-        continue;
-      }
-      
-      const jobOp = jobOpsMaster.ops.find(jop => {
-        const jopOpsName = operationNameMap[String(jop.opId)] || 'Unknown';
-        const jopValuePerBook = parseFloat(Number(jop.valuePerBook).toFixed(2));
-        return jopOpsName === normalizedOpsName && jopValuePerBook === normalizedValuePerBook;
-      });
-      
-      if (!jobOp) {
-        console.warn('Job operation not found for:', { opId, opsName, normalizedOpsName, normalizedValuePerBook });
-        continue;
-      }
-
-      // Deduct qtyToAdd from pendingOpsQty
-      const qtyToDeduct = Number(qtyToAdd);
-      if (isNaN(qtyToDeduct) || qtyToDeduct <= 0) {
-        console.warn('Invalid qtyToDeduct:', qtyToDeduct);
-        continue;
-      }
-      
-      jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
-      jobOp.lastUpdatedDate = new Date();
-
-      updates.push({
-        opId: jobOp.opId,
-        opsName: normalizedOpsName,
-        valuePerBook: jobOp.valuePerBook,
-        pendingOpsQty: jobOp.pendingOpsQty
-      });
-
-      // Prepare Contractor_WD operation entry - use values from jobOp as authoritative source
-      // Ensure all required fields are properly set with validated values
-      const contractorWDOp = {
-        opsId: String(jobOp.opId).trim(),
-        opsName: normalizedOpsName,
-        valuePerBook: Number(jobOp.valuePerBook),
-        opsDoneQty: qtyToDeduct,
-        savedInBill: 'No',
-        completionDate: new Date()
-      };
-      
-      // Final validation before pushing - double check all required fields
-      if (!contractorWDOp.opsId || contractorWDOp.opsId === '' ||
-          !contractorWDOp.opsName || contractorWDOp.opsName === '' || 
-          contractorWDOp.valuePerBook === undefined || contractorWDOp.valuePerBook === null ||
-          isNaN(contractorWDOp.valuePerBook) || 
-          contractorWDOp.opsDoneQty === undefined || contractorWDOp.opsDoneQty === null ||
-          isNaN(contractorWDOp.opsDoneQty) || contractorWDOp.opsDoneQty <= 0) {
-        console.error('Invalid Contractor_WD operation entry - validation failed:', contractorWDOp);
-        console.error('Source operation data:', { opId, opsName, valuePerBook, qtyToAdd });
-        console.error('JobOp data:', jobOp);
-        continue;
-      }
-      
-      contractorWDOps.push(contractorWDOp);
-    }
-
-    if (updates.length === 0) {
-      return res.status(400).json({ error: 'No valid operations to update' });
-    }
-
-    // Save JobOpsMaster
-    await jobOpsMaster.save();
-
-    // Update or create Contractor_WD document
-    let contractorWD = await ContractorWD.findOne({
-      contractorId: contractorId,
-      jobId: jobNumber
-    });
-
-    if (contractorWD) {
-      // For each operation, check if entry with same opsName + valuePerBook exists
-      for (const newOp of contractorWDOps) {
-        // Round valuePerBook to 2 decimal places for comparison
-        const newOpValuePerBook = parseFloat(Number(newOp.valuePerBook).toFixed(2));
-        // Find existing entry with same opsName + valuePerBook
-        const existingOp = contractorWD.opsDone.find(od => {
-          if (isOpsDoneBilled(od)) return false;
-          const odValuePerBook = parseFloat(Number(od.valuePerBook).toFixed(2));
-          const idMatch = newOp.opsId && String(od.opsId) === String(newOp.opsId);
-          return idMatch || (od.opsName === newOp.opsName && odValuePerBook === newOpValuePerBook);
-        });
-        
-        if (existingOp) {
-          // Update existing entry: add to opsDoneQty
-          existingOp.opsDoneQty += newOp.opsDoneQty;
-          existingOp.completionDate = new Date(); // Update completion date
-        } else {
-          // Add new entry
-          contractorWD.opsDone.push(newOp);
-        }
-      }
-    } else {
-      // Create new Contractor_WD document
-      contractorWD = new ContractorWD({
-        contractorId: contractorId,
-        jobId: jobNumber,
-        opsDone: contractorWDOps
-      });
-    }
-
-    await contractorWD.save();
-
-    res.json({ 
-      message: 'Work updated successfully', 
-      updates,
-      jobNumber,
-      contractorId
-    });
-  } catch (error) {
-    console.error('Error updating work in JobOpsMaster and Contractor_WD:', error);
-    res.status(500).json({ error: 'Error updating work', details: error.message });
-  }
+  res.status(410).json({
+    error: 'This endpoint has been retired. Use POST /work/save/jobopsmaster instead.'
+  });
 });
 
+// Retired. This wrote Contractor_WD without the savedInBill discipline the
+// current flow depends on, and nothing calls it any more. Kept as an explicit
+// error so an old client fails loudly instead of writing inconsistent data.
 router.post('/work/update/adhoc', async (req, res) => {
-  try {
-    const { adhocOrderId, contractorId, operations } = req.body;
-
-    if (!adhocOrderId || !contractorId || !Array.isArray(operations) || operations.length === 0) {
-      return res.status(400).json({ error: 'Missing required fields: adhocOrderId, contractorId, operations' });
-    }
-
-    const order = await AdhocWorkOrder.findById(adhocOrderId);
-    if (!order) {
-      return res.status(404).json({ error: 'Ad-hoc order not found' });
-    }
-
-    const updates = [];
-    const contractorWDOps = [];
-
-    for (const op of operations) {
-      const opId = String(op.opId || '').trim();
-      const qtyToAdd = Number(op.qtyToAdd);
-      const incomingOpsName = String(op.opsName || '').trim();
-
-      if (!opId || Number.isNaN(qtyToAdd) || qtyToAdd <= 0) {
-        continue;
-      }
-
-      const orderOp = order.ops.find((o) => String(o.opId) === opId);
-      if (!orderOp) {
-        continue;
-      }
-
-      const deduct = Math.min(Number(orderOp.pendingOpsQty || 0), qtyToAdd);
-      if (deduct <= 0) {
-        continue;
-      }
-
-      orderOp.pendingOpsQty = Math.max(0, Number(orderOp.pendingOpsQty || 0) - deduct);
-      orderOp.lastUpdatedDate = new Date();
-
-      const opsName = incomingOpsName || orderOp.opsName || 'Unknown';
-      const valuePerBook = Number(orderOp.rate || 0);
-
-      updates.push({
-        opId: String(orderOp.opId),
-        opsName,
-        valuePerBook,
-        pendingOpsQty: Number(orderOp.pendingOpsQty || 0),
-      });
-
-      contractorWDOps.push({
-        opsId: String(orderOp.opId),
-        opsName,
-        valuePerBook,
-        opsDoneQty: deduct,
-        completionDate: new Date(),
-      });
-    }
-
-    if (updates.length === 0) {
-      return res.status(400).json({ error: 'No valid operations to update' });
-    }
-
-    await order.save();
-
-    let contractorWD = await ContractorWD.findOne({
-      contractorId: contractorId,
-      isAdhoc: true,
-      adhocOrderId: String(order._id),
-    });
-
-    if (contractorWD) {
-      contractorWD.adhocLabel = order.adhocId || contractorWD.adhocLabel || '';
-      for (const newOp of contractorWDOps) {
-        const existingOp = contractorWD.opsDone.find(od => (
-          String(od.opsId) === String(newOp.opsId) &&
-          od.opsName === newOp.opsName &&
-          Number(od.valuePerBook) === Number(newOp.valuePerBook)
-        ));
-        if (existingOp) {
-          existingOp.opsDoneQty += newOp.opsDoneQty;
-          existingOp.completionDate = new Date();
-        } else {
-          contractorWD.opsDone.push(newOp);
-        }
-      }
-    } else {
-      contractorWD = new ContractorWD({
-        contractorId: contractorId,
-        jobId: '',
-        isAdhoc: true,
-        adhocOrderId: String(order._id),
-        adhocLabel: order.adhocId || '',
-        opsDone: contractorWDOps,
-      });
-    }
-
-    await contractorWD.save();
-
-    res.json({
-      message: 'Ad-hoc work updated successfully',
-      updates,
-      adhocOrderId: String(order._id),
-      contractorId,
-    });
-  } catch (error) {
-    console.error('Error updating ad-hoc work:', error);
-    res.status(500).json({ error: 'Error updating ad-hoc work', details: error.message });
-  }
+  res.status(410).json({
+    error: 'This endpoint has been retired. Use POST /work/save/adhoc instead.'
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -9723,6 +9543,12 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
 
     const updates = [];
     const contractorWDOps = [];
+    // Cap each operation the same way work-done.html does. Without this the
+    // browser is the only thing enforcing the limit: pendingOpsQty just floors
+    // at 0 while Contractor_WD records whatever was posted, so the recorded
+    // work silently exceeds the job.
+    const allowance = packagingAllowanceFor(jobOpsMaster);
+    const rejected = [];
 
     for (const op of operations) {
       const { opId, opsName, valuePerBook, qtyToAdd } = op;
@@ -9751,6 +9577,19 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       const qtyToDeduct = Number(qtyToAdd);
       if (isNaN(qtyToDeduct) || qtyToDeduct <= 0) continue;
 
+      const maxAllowed = Number(jobOp.pendingOpsQty || 0) + allowance;
+      if (qtyToDeduct > maxAllowed + QTY_TOL) {
+        rejected.push({
+          opId: String(jobOp.opId),
+          opsName: normalizedOpsName,
+          qtyToAdd: qtyToDeduct,
+          pendingOpsQty: Number(jobOp.pendingOpsQty || 0),
+          packagingAllowance: allowance,
+          maxAllowed
+        });
+        continue;
+      }
+
       jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
       jobOp.lastUpdatedDate = new Date();
       updates.push({ opId: jobOp.opId, opsName: normalizedOpsName, valuePerBook: jobOp.valuePerBook, pendingOpsQty: jobOp.pendingOpsQty });
@@ -9765,6 +9604,20 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       };
       if (!wdOp.opsId || !wdOp.opsName || isNaN(wdOp.valuePerBook) || isNaN(wdOp.opsDoneQty) || wdOp.opsDoneQty <= 0) continue;
       contractorWDOps.push(wdOp);
+    }
+
+    // Nothing is written when any operation is over the cap, so a partly
+    // accepted save can never leave the job half-updated.
+    if (rejected.length > 0) {
+      const first = rejected[0];
+      return res.status(400).json({
+        error:
+          `Quantity too large for ${rejected.length} operation(s). ` +
+          `"${first.opsName}": pending ${first.pendingOpsQty}` +
+          (first.packagingAllowance ? ` (+${first.packagingAllowance} packaging allowance)` : '') +
+          `, so at most ${first.maxAllowed} can be added — ${first.qtyToAdd} was sent.`,
+        rejected
+      });
     }
 
     if (updates.length === 0) {
@@ -10075,59 +9928,13 @@ router.post('/work/mark-billed', async (req, res) => {
   }
 });
 
+// Retired. This wrote Contractor_WD without the savedInBill discipline the
+// current flow depends on, and nothing calls it any more. Kept as an explicit
+// error so an old client fails loudly instead of writing inconsistent data.
 router.post('/work/update', async (req, res) => {
-  try {
-    const { contractor, jobNumber, operations } = req.body;
-
-    if (!contractor || !jobNumber || !operations || !Array.isArray(operations)) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const job = await Job.findOne({ jobNumber });
-    if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-
-    const updates = [];
-
-    for (const op of operations) {
-      const { jobOperationId, qtyToAdd } = op;
-
-      if (!jobOperationId || qtyToAdd === undefined) {
-        continue;
-      }
-
-      const jobOperation = await JobOperation.findById(jobOperationId);
-      if (!jobOperation) {
-        continue;
-      }
-
-      let contractorWork = jobOperation.contractorWork.find(
-        cw => cw.contractor === contractor
-      );
-
-      if (contractorWork) {
-        contractorWork.completedQty += qtyToAdd;
-        contractorWork.completedQty = Math.min(
-          contractorWork.completedQty,
-          jobOperation.qtyPerBook
-        );
-      } else {
-        jobOperation.contractorWork.push({
-          contractor,
-          completedQty: Math.min(qtyToAdd, jobOperation.qtyPerBook)
-        });
-      }
-
-      await jobOperation.save();
-      updates.push(jobOperation);
-    }
-
-    res.json({ message: 'Work updated successfully', updates });
-  } catch (error) {
-    console.error('Error updating work:', error);
-    res.status(500).json({ error: 'Error updating work' });
-  }
+  res.status(410).json({
+    error: 'This endpoint has been retired. Use POST /work/save/jobopsmaster instead.'
+  });
 });
 
 // Contractors routes
@@ -10381,13 +10188,98 @@ router.post('/bills', async (req, res) => {
         }
 
         if (
-          Number(op.qtyBook) < 0 || 
-          Number(op.rate) < 0 || 
-          Number(op.qtyCompleted) < 0 || 
+          Number(op.qtyBook) < 0 ||
+          Number(op.rate) < 0 ||
+          Number(op.qtyCompleted) < 0 ||
           Number(op.totalValue) < 0
         ) {
-          return res.status(400).json({ 
-            error: 'All operation values must be non-negative' 
+          return res.status(400).json({
+            error: 'All operation values must be non-negative'
+          });
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Refuse to bill more of an operation than the job holds.
+    // Nothing else stops the same work being billed twice: pendingOpsQty is
+    // the only guard on re-recording, and when it drifts the work looks
+    // outstanding again and gets billed a second time. Set allowOverBilling
+    // to override deliberately.
+    // -----------------------------------------------------------------------
+    if (req.body?.allowOverBilling !== true) {
+      const jobNumbers = [...new Set(
+        jobs.filter(j => !j.isAdhoc && j.jobNumber).map(j => String(j.jobNumber).trim())
+      )];
+
+      if (jobNumbers.length > 0) {
+        const alreadyBilled = await getLiveBilledQtyByOp(jobNumbers);
+        const masters = await JobOpsMaster.find({ jobId: { $in: jobNumbers } }).lean();
+        const masterByJob = {};
+        masters.forEach(m => { masterByJob[String(m.jobId).trim()] = m; });
+
+        // Operation names, so a jobOp can be matched when opId is absent
+        const masterOpIds = [];
+        masters.forEach(m => (m.ops || []).forEach(o => { if (o.opId) masterOpIds.push(o.opId); }));
+        const masterOpDocs = await Operation.find({
+          _id: { $in: masterOpIds.map(id => { try { return new mongoose.Types.ObjectId(id); } catch { return null; } }).filter(Boolean) }
+        }).lean();
+        const masterOpName = {};
+        masterOpDocs.forEach(o => { masterOpName[o._id.toString()] = String(o.opsName || '').trim(); });
+
+        const violations = [];
+        for (const job of jobs) {
+          if (job.isAdhoc || !job.jobNumber) continue;
+          const jn = String(job.jobNumber).trim();
+          const master = masterByJob[jn];
+          if (!master) continue;                       // no master: nothing to compare against
+          const allowance = packagingAllowanceFor(master);
+
+          for (const op of (job.ops || [])) {
+            const opsName = String(op.opsName || '').trim();
+            const rate = parseFloat(Number(op.rate || 0).toFixed(2));
+
+            let jobOp = op.opId
+              ? (master.ops || []).find(jop => String(jop.opId) === String(op.opId))
+              : null;
+            if (!jobOp) {
+              jobOp = (master.ops || []).find(jop =>
+                masterOpName[String(jop.opId)] === opsName &&
+                parseFloat(Number(jop.valuePerBook || 0).toFixed(2)) === rate
+              );
+            }
+            if (!jobOp) continue;
+
+            const allowedMax = Number(jobOp.totalOpsQty || 0) + allowance;
+            const prior = alreadyBilled[[jn, opsName, rate].join('|')] || 0;
+            const after = prior + Number(op.qtyCompleted || 0);
+
+            if (after > allowedMax + QTY_TOL) {
+              violations.push({
+                jobNumber: jn,
+                opsName,
+                rate,
+                totalOpsQty: Number(jobOp.totalOpsQty || 0),
+                packagingAllowance: allowance,
+                alreadyBilled: prior,
+                thisBill: Number(op.qtyCompleted || 0),
+                wouldBeBilled: after,
+                excess: parseFloat((after - allowedMax).toFixed(2))
+              });
+            }
+          }
+        }
+
+        if (violations.length > 0) {
+          const first = violations[0];
+          return res.status(400).json({
+            error:
+              `This bill would charge more than the job allows for ${violations.length} operation(s). ` +
+              `For example job ${first.jobNumber}, "${first.opsName}": total ${first.totalOpsQty}` +
+              (first.packagingAllowance ? ` (+${first.packagingAllowance} packaging allowance)` : '') +
+              `, already billed ${first.alreadyBilled}, this bill adds ${first.thisBill} — ` +
+              `${first.excess} too many. This work has most likely been billed already.`,
+            overBilling: violations
           });
         }
       }
@@ -10447,9 +10339,21 @@ router.post('/bills', async (req, res) => {
     }
 
     // Create bill (include clientName and jobTitle per job for display/print)
+    // Resolve the contractor up front so the bill carries a stable id, not just
+    // a name that can be duplicated or renamed later.
+    let billContractorId = '';
+    try {
+      const matches = await Contractor.find({
+        name: contractorName.trim(),
+        $or: [{ isdeleted: 0 }, { isdeleted: { $exists: false } }]
+      }).select('contractorId').lean();
+      if (matches.length === 1) billContractorId = String(matches[0].contractorId || '');
+    } catch (_) { /* fall back to name-only, as before */ }
+
     const bill = new Bill({
       billNumber,
       contractorName: contractorName.trim(),
+      contractorId: billContractorId,
       jobs: jobs.map(job => {
         const isAdhoc = !!job.isAdhoc;
         const normalizedJobNumber = (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '';
@@ -10540,11 +10444,24 @@ router.post('/bills', async (req, res) => {
   }
 });
 
-// Generic bill update (kept for compatibility, but does NOT touch JobopsMaster/Contractor_WD)
+// Generic bill update. This route does NOT touch JobopsMaster or
+// Contractor_WD, so rewriting the billed operations through it would leave the
+// recorded work and pending quantities describing a bill that no longer
+// exists. Only the contractor name can be changed here; quantities go through
+// PUT /bills/:billNumber/edit-qty, which adjusts both collections.
 router.put('/bills/:billNumber', async (req, res) => {
   try {
     const { billNumber } = req.params;
     const { contractorName, jobs } = req.body;
+
+    if (jobs !== undefined) {
+      return res.status(400).json({
+        error:
+          'Billed operations cannot be changed through this endpoint, because it does not ' +
+          'adjust JobopsMaster pending quantities or Contractor_WD. ' +
+          'Use PUT /bills/:billNumber/edit-qty to change quantities.'
+      });
+    }
 
     const bill = await Bill.findOne({ billNumber });
     if (!bill) {
@@ -10558,76 +10475,6 @@ router.put('/bills/:billNumber', async (req, res) => {
       bill.contractorName = contractorName.trim();
     }
 
-    if (jobs !== undefined) {
-      if (!Array.isArray(jobs) || jobs.length === 0) {
-        return res.status(400).json({ error: 'At least one job is required' });
-      }
-
-      const nonAdhocJobNumbers = [...new Set(
-        jobs
-          .filter(j => !j.isAdhoc && j.jobNumber != null && String(j.jobNumber).trim())
-          .map(j => String(j.jobNumber).trim())
-      )];
-      const jobDetailsFallbackMap = {};
-      if (nonAdhocJobNumbers.length > 0) {
-        const jobDocs = await JobOpsMaster.find({ jobId: { $in: nonAdhocJobNumbers } }).lean();
-        jobDocs.forEach(doc => {
-          const key = String(doc.jobId || '').trim();
-          if (key) {
-            jobDetailsFallbackMap[key] = {
-              clientName: String(doc.clientName || '').trim(),
-              jobTitle: String(doc.jobTitle || '').trim()
-            };
-          }
-        });
-      }
-
-      const existingJobDetailsMap = {};
-      (bill.jobs || []).forEach(j => {
-        const key = j.isAdhoc
-          ? `adhoc:${String(j.adhocOrderId || '').trim()}`
-          : `job:${String(j.jobNumber || '').trim()}`;
-        if (key !== 'adhoc:' && key !== 'job:') {
-          existingJobDetailsMap[key] = {
-            clientName: String(j.clientName || '').trim(),
-            jobTitle: String(j.jobTitle || '').trim(),
-          };
-        }
-      });
-
-      bill.jobs = jobs.map(job => {
-        const isAdhoc = !!job.isAdhoc;
-        const normalizedJobNumber = (job.jobNumber != null && String(job.jobNumber).trim()) ? String(job.jobNumber).trim() : '';
-        const existingKey = isAdhoc
-          ? `adhoc:${String(job.adhocOrderId || '').trim()}`
-          : `job:${normalizedJobNumber}`;
-        const fallback = (!isAdhoc && normalizedJobNumber) ? (jobDetailsFallbackMap[normalizedJobNumber] || {}) : {};
-        const existing = existingJobDetailsMap[existingKey] || {};
-        const clientName = (job.clientName != null && String(job.clientName).trim())
-          ? String(job.clientName).trim()
-          : (String(fallback.clientName || '').trim() || String(existing.clientName || ''));
-        const jobTitle = (job.jobTitle != null && String(job.jobTitle).trim())
-          ? String(job.jobTitle).trim()
-          : (String(fallback.jobTitle || '').trim() || String(existing.jobTitle || ''));
-
-        return {
-        jobNumber: normalizedJobNumber,
-        clientName,
-        jobTitle,
-        isAdhoc,
-        adhocOrderId: (job.adhocOrderId != null && String(job.adhocOrderId).trim()) ? String(job.adhocOrderId).trim() : '',
-        adhocLabel: (job.adhocLabel != null && String(job.adhocLabel).trim()) ? String(job.adhocLabel).trim() : '',
-        ops: job.ops.map(op => ({
-          opId: (op.opId != null && String(op.opId).trim()) ? String(op.opId).trim() : '',
-          opsName: String(op.opsName || '').trim(),
-          qtyBook: Number(op.qtyBook ?? 0),
-          rate: Number(op.rate ?? 0),
-          qtyCompleted: Number(op.qtyCompleted ?? 0),
-          totalValue: Number(op.totalValue ?? 0)
-        }))
-      };
-      });
-    }
 
     await bill.save();
     res.json(bill);
@@ -10683,12 +10530,16 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       return `${jn}|${name}|${roundedRate}`;
     }
 
+    // A bill can list the same job, operation and rate more than once. Keeping
+    // only the last match would edit one line and silently leave the others,
+    // so ambiguous keys are rejected rather than half-applied.
     const billOpsMap = new Map();
     bill.jobs.forEach(job => {
       const jobNumber = job.jobNumber;
       (job.ops || []).forEach(op => {
         const key = buildKey(jobNumber, op.opsName, op.rate);
-        billOpsMap.set(key, { job, op });
+        if (!billOpsMap.has(key)) billOpsMap.set(key, []);
+        billOpsMap.get(key).push({ job, op });
       });
     });
 
@@ -10716,14 +10567,24 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       }
 
       const key = buildKey(jobNumber, opsName, rate);
-      const entry = billOpsMap.get(key);
-      if (!entry) {
+      const entries = billOpsMap.get(key);
+      if (!entries || entries.length === 0) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({ error: `Operation not found in bill for job ${jobNumber}, operation ${opsName}` });
       }
+      if (entries.length > 1) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          error:
+            `Job ${jobNumber} lists operation "${opsName}" at rate ${rate} ${entries.length} times in ` +
+            `this bill, so it is not clear which line should change. Delete the bill and re-create it ` +
+            `with the correct lines instead.`
+        });
+      }
 
-      const { job, op } = entry;
+      const { job, op } = entries[0];
       const oldQty = Number(op.qtyCompleted || 0);
       const newQty = Number(newQtyCompleted);
 
@@ -10743,6 +10604,9 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         deltasByJob.set(job.jobNumber, []);
       }
       deltasByJob.get(job.jobNumber).push({
+        // Carried through so the operation can be matched by id rather than by
+        // name and rate, which are not a reliable key.
+        opId: String(op.opId || '').trim(),
         opsName: String(op.opsName || '').trim(),
         rate: Number(op.rate || 0),
         deltaQty: delta
@@ -10791,15 +10655,22 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       // Apply each delta to JobopsMaster.ops and prepare Contractor_WD adjustments
       const contractorWDAdjustments = []; // { opsName, valuePerBook, deltaQty }
 
-      for (const { opsName, rate, deltaQty } of deltas) {
+      for (const { opId, opsName, rate, deltaQty } of deltas) {
         const normalizedName = String(opsName || '').trim();
         const normalizedRate = round2(rate);
+        const normalizedOpId = String(opId || '').trim();
 
-        const jobOp = jobOpsMaster.ops.find(jop => {
-          const jopName = operationNameMap[String(jop.opId)] || 'Unknown';
-          const jopValue = round2(jop.valuePerBook);
-          return jopName === normalizedName && jopValue === normalizedRate;
-        });
+        // opId first; name and rate only for bills saved before opId was stored.
+        let jobOp = normalizedOpId
+          ? jobOpsMaster.ops.find(jop => String(jop.opId) === normalizedOpId)
+          : null;
+        if (!jobOp) {
+          jobOp = jobOpsMaster.ops.find(jop => {
+            const jopName = operationNameMap[String(jop.opId)] || 'Unknown';
+            const jopValue = round2(jop.valuePerBook);
+            return jopName === normalizedName && jopValue === normalizedRate;
+          });
+        }
 
         if (!jobOp) {
           await session.abortTransaction();
@@ -10814,12 +10685,18 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         let newPending = currentPending - deltaQty;
 
         // For increases in completed qty (delta > 0), pending cannot go below 0
-        // For decreases (delta < 0), pending cannot exceed totalOpsQty
-        if (newPending < 0 - 1e-6) {
+        // For decreases (delta < 0), pending cannot exceed totalOpsQty.
+        // Packaging jobs may run past the total by the usual allowance, so the
+        // same headroom the entry screen grants applies here.
+        const editAllowance = packagingAllowanceFor(jobOpsMaster);
+        if (newPending < -editAllowance - 1e-6) {
           await session.abortTransaction();
           session.endSession();
           return res.status(400).json({
-            error: `Insufficient pending quantity for job ${jobNumber}, operation ${normalizedName} to increase completed quantity by ${deltaQty}`
+            error:
+              `Insufficient pending quantity for job ${jobNumber}, operation ${normalizedName} ` +
+              `to increase completed quantity by ${deltaQty}` +
+              (editAllowance ? ` (pending ${currentPending} + packaging allowance ${editAllowance})` : ` (pending ${currentPending})`)
           });
         }
 
@@ -11066,6 +10943,13 @@ router.patch('/bills/:billNumber/contractor-bill-no', async (req, res) => {
 });
 
 router.delete('/bills/:billNumber', async (req, res) => {
+  // The reversal touches JobopsMaster, Contractor_WD and the bill itself. Run
+  // it in one transaction: a partial reversal leaves the bill undeleted, and
+  // deleting again would reverse the same work a second time.
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  const abort = async () => { try { await session.abortTransaction(); } catch (_) {} session.endSession(); };
+
   try {
     const { billNumber } = req.params;
     const bill = await Bill.findOne({
@@ -11074,28 +10958,60 @@ router.delete('/bills/:billNumber', async (req, res) => {
         { isDeleted: { $ne: 1 } },
         { isDeleted: { $exists: false } }
       ]
-    });
+    }).session(session);
 
     if (!bill) {
+      await abort();
       return res.status(404).json({ error: 'Bill not found or already deleted' });
     }
 
-    // Find the non-deleted contractor by name
-    const contractorName = bill.contractorName.trim();
-    const contractor = await Contractor.findOne({
-      name: contractorName,
-      $or: [ { isdeleted: 0 }, { isdeleted: { $exists: false } } ]
-    });
-    if (!contractor) {
-      return res.status(404).json({ error: `Contractor not found for name: ${bill.contractorName}` });
+    // A paid bill has money against it, so deleting one has to be deliberate.
+    // Pass force=true (query or body) to go ahead anyway.
+    const forceDelete = req.query?.force === 'true' || req.query?.force === true ||
+                        req.body?.force === true || req.body?.force === 'true';
+    if (bill.paymentStatus === 'Yes' && !forceDelete) {
+      await abort();
+      return res.status(400).json({
+        error:
+          `Bill ${billNumber} is marked PAID. Deleting it reverses the recorded work and ` +
+          `restores pending quantities, but does not undo the payment. ` +
+          `Re-send with force=true if that is intended.`,
+        requiresForce: true
+      });
     }
-    const contractorId = contractor.contractorId;
+
+    // Prefer the contractorId stored on the bill. Resolving by name picks an
+    // arbitrary contractor when two share a name, and then the reversal writes
+    // to the wrong Contractor_WD document while pending is still restored.
+    let contractorId = String(bill.contractorId || '').trim();
+    if (!contractorId) {
+      const contractorName = bill.contractorName.trim();
+      const matches = await Contractor.find({
+        name: contractorName,
+        $or: [ { isdeleted: 0 }, { isdeleted: { $exists: false } } ]
+      }).session(session);
+
+      if (matches.length === 0) {
+        await abort();
+        return res.status(404).json({ error: `Contractor not found for name: ${bill.contractorName}` });
+      }
+      if (matches.length > 1) {
+        await abort();
+        return res.status(409).json({
+          error:
+            `${matches.length} contractors are named "${contractorName}", so this bill cannot be ` +
+            `matched to one of them. Give them distinct names before deleting this bill.`,
+          contractorIds: matches.map(c => c.contractorId)
+        });
+      }
+      contractorId = matches[0].contractorId;
+    }
 
     // Reverse all work from this bill: restore JobopsMaster pending and reduce Contractor_WD opsDone
     for (const job of bill.jobs) {
       // Ad-hoc reversal path
       if (job.isAdhoc && job.adhocOrderId) {
-        const adhocOrder = await AdhocWorkOrder.findById(job.adhocOrderId);
+        const adhocOrder = await AdhocWorkOrder.findById(job.adhocOrderId).session(session);
 
         if (adhocOrder) {
           for (const op of (job.ops || [])) {
@@ -11124,14 +11040,14 @@ router.delete('/bills/:billNumber', async (req, res) => {
             orderOp.lastUpdatedDate = new Date();
           }
           adhocOrder.markModified('ops');
-          await adhocOrder.save();
+          await adhocOrder.save({ session });
         }
 
         const adhocContractorWD = await ContractorWD.findOne({
           contractorId: contractorId,
           isAdhoc: true,
           adhocOrderId: String(job.adhocOrderId),
-        });
+        }).session(session);
 
         if (adhocContractorWD) {
           for (const op of (job.ops || [])) {
@@ -11170,22 +11086,22 @@ router.delete('/bills/:billNumber', async (req, res) => {
           }
           adhocContractorWD.markModified('opsDone');
           if (adhocContractorWD.opsDone.length > 0) {
-            await adhocContractorWD.save();
+            await adhocContractorWD.save({ session });
           } else {
-            await ContractorWD.deleteOne({ _id: adhocContractorWD._id });
+            await ContractorWD.deleteOne({ _id: adhocContractorWD._id }).session(session);
           }
         }
         continue;
       }
 
-      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber });
+      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber }).session(session);
 
       if (jobOpsMaster) {
         const isPackaging = (jobOpsMaster.segmentName || '').trim() === 'Packaging';
         const jobTotalQty = Number(jobOpsMaster.totalQty) || 0;
 
         // Total completed qty per op for this job (all contractors)
-        const contractorWDDocsForJob = await ContractorWD.find({ jobId: job.jobNumber }).lean();
+        const contractorWDDocsForJob = await ContractorWD.find({ jobId: job.jobNumber }).session(session).lean();
         const totalCompletedByOp = {};
         (contractorWDDocsForJob || []).forEach(doc => {
           (doc.opsDone || []).forEach(od => {
@@ -11200,7 +11116,7 @@ router.delete('/bills/:billNumber', async (req, res) => {
           // restores pending on an arbitrary operation whenever two share a name.
           let opIdStr = String(op.opId || '').trim();
           if (!opIdStr) {
-            const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+            const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
             opIdStr = operation ? operation._id.toString() : '';
           }
           if (opIdStr) {
@@ -11223,14 +11139,14 @@ router.delete('/bills/:billNumber', async (req, res) => {
           }
         }
         jobOpsMaster.markModified('ops');
-        await jobOpsMaster.save();
+        await jobOpsMaster.save({ session });
       }
 
       // Reverse Contractor_WD: subtract each op's qtyCompleted from opsDone
       const contractorWD = await ContractorWD.findOne({
         contractorId: contractorId,
         jobId: job.jobNumber
-      });
+      }).session(session);
 
       if (contractorWD) {
         for (const op of job.ops) {
@@ -11240,7 +11156,7 @@ router.delete('/bills/:billNumber', async (req, res) => {
           const opIdFromBill = String(op.opId || '').trim();
           let opIdStr = opIdFromBill;
           if (!opIdStr) {
-            const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+            const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
             opIdStr = operation ? operation._id.toString() : '';
           }
           if (opIdStr) {
@@ -11260,20 +11176,24 @@ router.delete('/bills/:billNumber', async (req, res) => {
         }
         contractorWD.markModified('opsDone');
         if (contractorWD.opsDone.length > 0) {
-          await contractorWD.save();
+          await contractorWD.save({ session });
         } else {
-          await ContractorWD.deleteOne({ _id: contractorWD._id });
+          await ContractorWD.deleteOne({ _id: contractorWD._id }).session(session);
         }
       }
     }
 
     // Soft delete the bill
     bill.isDeleted = 1;
-    await bill.save();
+    await bill.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     res.json({ message: 'Bill deleted successfully' });
   } catch (error) {
     console.error('Error deleting bill:', error);
+    await abort();
     res.status(500).json({ error: 'Error deleting bill', details: error.message });
   }
 });

@@ -89,6 +89,15 @@ const billSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
+  // Stable link to the contractor. contractorName alone is ambiguous when two
+  // contractors share a name, and it breaks when one is renamed — which left
+  // bill reversals resolving to the wrong Contractor_WD document. Bills
+  // created before this field exists fall back to matching by name.
+  contractorId: {
+    type: String,
+    trim: true,
+    default: '',
+  },
   // Payment status for the bill: "Yes" (paid) / "No" (unpaid - default)
   paymentStatus: {
     type: String,
