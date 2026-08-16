@@ -6702,6 +6702,72 @@ function isOpsDoneBilled(od) {
   return !isOpsDoneUnsaved(od);
 }
 
+// Flip the Contractor_WD opsDone entries covered by a bill to savedInBill:'Yes'.
+// Shared by POST /bills and POST /work/mark-billed: creating a bill and marking
+// its work as billed used to be two separate round trips, so a failure of the
+// second left the bill in place with its work still looking pending — it would
+// then reload into Bill Details on the next search and could be billed twice.
+// Returns how many entries were marked.
+async function markContractorWDEntriesBilled(contractorId, items) {
+  const jobGroups = {};
+  const adhocGroups = {};
+
+  for (const item of (items || [])) {
+    if (item && item.isAdhoc && item.adhocOrderId) {
+      if (!adhocGroups[item.adhocOrderId]) adhocGroups[item.adhocOrderId] = [];
+      adhocGroups[item.adhocOrderId].push(item);
+    } else if (item && item.jobNumber) {
+      if (!jobGroups[item.jobNumber]) jobGroups[item.jobNumber] = [];
+      jobGroups[item.jobNumber].push(item);
+    }
+  }
+
+  const applyToDoc = (contractorWD, opsToMark) => {
+    let marked = 0;
+    for (const markItem of opsToMark) {
+      const vpb = parseFloat(Number(markItem.valuePerBook || 0).toFixed(2));
+      const opsId = String(markItem.opsId || '');
+      for (const od of contractorWD.opsDone) {
+        if (isOpsDoneBilled(od)) continue;
+        const odVpb = parseFloat(Number(od.valuePerBook || 0).toFixed(2));
+        const idMatch = opsId && String(od.opsId) === opsId;
+        const nameMatch = od.opsName === markItem.opsName && odVpb === vpb;
+        if (idMatch || nameMatch) {
+          od.savedInBill = 'Yes';
+          marked++;
+        }
+      }
+    }
+    return marked;
+  };
+
+  let totalMarked = 0;
+
+  for (const jobNumber of Object.keys(jobGroups)) {
+    const contractorWD = await ContractorWD.findOne({ contractorId, jobId: jobNumber, isAdhoc: { $ne: true } });
+    if (!contractorWD) continue;
+    const marked = applyToDoc(contractorWD, jobGroups[jobNumber]);
+    if (marked > 0) {
+      contractorWD.markModified('opsDone');
+      await contractorWD.save();
+      totalMarked += marked;
+    }
+  }
+
+  for (const adhocOrderId of Object.keys(adhocGroups)) {
+    const contractorWD = await ContractorWD.findOne({ contractorId, isAdhoc: true, adhocOrderId });
+    if (!contractorWD) continue;
+    const marked = applyToDoc(contractorWD, adhocGroups[adhocOrderId]);
+    if (marked > 0) {
+      contractorWD.markModified('opsDone');
+      await contractorWD.save();
+      totalMarked += marked;
+    }
+  }
+
+  return totalMarked;
+}
+
 /*
 
 async function getContractorConnection() {
@@ -9501,14 +9567,57 @@ router.post('/work/unsave', async (req, res) => {
       return res.status(400).json({ error: 'contractorId and items array are required' });
     }
 
+    // Per-item outcome so the caller can tell a real reversal from a no-op.
+    // IMPORTANT: the Contractor_WD entry is removed FIRST and pending is only
+    // restored when that actually happened. Restoring pending for an entry we
+    // could not find would inflate pending while leaving the row in place, and
+    // the row would then reappear in Bill Details on the next search.
+    const results = [];
+
     for (const item of items) {
       const { isAdhoc, jobNumber, adhocOrderId, opsId, opsName, valuePerBook, qtyToRestore } = item;
       const qty = Number(qtyToRestore || 0);
-      if (qty <= 0) continue;
+      const outcome = {
+        jobNumber: jobNumber || '',
+        adhocOrderId: adhocOrderId || '',
+        opsId: opsId || '',
+        opsName: opsName || '',
+        removed: false,
+        restored: false,
+        error: ''
+      };
+
+      if (qty <= 0) {
+        outcome.error = 'qtyToRestore must be greater than 0';
+        results.push(outcome);
+        continue;
+      }
+
+      const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
+      const matchesWdOp = od => {
+        if (isOpsDoneBilled(od)) return false;
+        return (opsId && String(od.opsId) === String(opsId)) ||
+               (od.opsName === opsName && parseFloat(Number(od.valuePerBook || 0).toFixed(2)) === vpb);
+      };
 
       try {
         if (isAdhoc && adhocOrderId) {
-          // Restore pending in AdhocWorkOrder
+          // 1. Remove / reduce the unsaved Contractor_WD entry
+          const cwdAdhoc = await ContractorWD.findOne({ contractorId, isAdhoc: true, adhocOrderId: String(adhocOrderId) });
+          const wdOp = cwdAdhoc ? cwdAdhoc.opsDone.find(matchesWdOp) : null;
+          if (!wdOp) {
+            outcome.error = 'No unsaved Contractor_WD entry found for this ad-hoc operation';
+            results.push(outcome);
+            continue;
+          }
+          wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - qty);
+          if (wdOp.opsDoneQty <= 0) cwdAdhoc.opsDone = cwdAdhoc.opsDone.filter(od => od !== wdOp);
+          cwdAdhoc.markModified('opsDone');
+          if (cwdAdhoc.opsDone.length > 0) await cwdAdhoc.save();
+          else await ContractorWD.deleteOne({ _id: cwdAdhoc._id });
+          outcome.removed = true;
+
+          // 2. Only now restore pending in AdhocWorkOrder
           const order = await AdhocWorkOrder.findById(adhocOrderId);
           if (order) {
             const orderOp = order.ops.find(o => String(o.opId) === String(opsId));
@@ -9517,27 +9626,26 @@ router.post('/work/unsave', async (req, res) => {
               orderOp.lastUpdatedDate = new Date();
               order.markModified('ops');
               await order.save();
-            }
-          }
-          // Reduce / remove from Contractor_WD (only unsaved entries)
-          const cwdAdhoc = await ContractorWD.findOne({ contractorId, isAdhoc: true, adhocOrderId: String(adhocOrderId) });
-          if (cwdAdhoc) {
-            const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
-            const wdOp = cwdAdhoc.opsDone.find(od => {
-              if (isOpsDoneBilled(od)) return false;
-              return (opsId && String(od.opsId) === String(opsId)) ||
-                     (od.opsName === opsName && parseFloat(Number(od.valuePerBook || 0).toFixed(2)) === vpb);
-            });
-            if (wdOp) {
-              wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - qty);
-              if (wdOp.opsDoneQty <= 0) cwdAdhoc.opsDone = cwdAdhoc.opsDone.filter(od => od !== wdOp);
-              cwdAdhoc.markModified('opsDone');
-              if (cwdAdhoc.opsDone.length > 0) await cwdAdhoc.save();
-              else await ContractorWD.deleteOne({ _id: cwdAdhoc._id });
+              outcome.restored = true;
             }
           }
         } else if (jobNumber) {
-          // Restore pending in JobOpsMaster
+          // 1. Remove / reduce the unsaved Contractor_WD entry
+          const cwdJob = await ContractorWD.findOne({ contractorId, jobId: jobNumber, isAdhoc: { $ne: true } });
+          const wdOp = cwdJob ? cwdJob.opsDone.find(matchesWdOp) : null;
+          if (!wdOp) {
+            outcome.error = 'No unsaved Contractor_WD entry found for this operation';
+            results.push(outcome);
+            continue;
+          }
+          wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - qty);
+          if (wdOp.opsDoneQty <= 0) cwdJob.opsDone = cwdJob.opsDone.filter(od => od !== wdOp);
+          cwdJob.markModified('opsDone');
+          if (cwdJob.opsDone.length > 0) await cwdJob.save();
+          else await ContractorWD.deleteOne({ _id: cwdJob._id });
+          outcome.removed = true;
+
+          // 2. Only now restore pending in JobOpsMaster
           const jobOpsMaster = await JobOpsMaster.findOne({ jobId: jobNumber });
           if (jobOpsMaster) {
             let jobOp = opsId ? jobOpsMaster.ops.find(jop => String(jop.opId) === String(opsId)) : null;
@@ -9548,7 +9656,6 @@ router.post('/work/unsave', async (req, res) => {
               const opDocs = await Operation.find({ _id: { $in: opObjectIds } }).lean();
               const nameMap = {};
               opDocs.forEach(op => { nameMap[op._id.toString()] = op.opsName; });
-              const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
               jobOp = jobOpsMaster.ops.find(jop =>
                 nameMap[String(jop.opId)] === opsName && parseFloat(Number(jop.valuePerBook || 0).toFixed(2)) === vpb
               );
@@ -9558,32 +9665,27 @@ router.post('/work/unsave', async (req, res) => {
               jobOp.lastUpdatedDate = new Date();
               jobOpsMaster.markModified('ops');
               await jobOpsMaster.save();
+              outcome.restored = true;
             }
           }
-          // Reduce / remove from Contractor_WD (only unsaved entries)
-          const cwdJob = await ContractorWD.findOne({ contractorId, jobId: jobNumber, isAdhoc: { $ne: true } });
-          if (cwdJob) {
-            const vpb = parseFloat(Number(valuePerBook || 0).toFixed(2));
-            const wdOp = cwdJob.opsDone.find(od => {
-              if (isOpsDoneBilled(od)) return false;
-              return (opsId && String(od.opsId) === String(opsId)) ||
-                     (od.opsName === opsName && parseFloat(Number(od.valuePerBook || 0).toFixed(2)) === vpb);
-            });
-            if (wdOp) {
-              wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - qty);
-              if (wdOp.opsDoneQty <= 0) cwdJob.opsDone = cwdJob.opsDone.filter(od => od !== wdOp);
-              cwdJob.markModified('opsDone');
-              if (cwdJob.opsDone.length > 0) await cwdJob.save();
-              else await ContractorWD.deleteOne({ _id: cwdJob._id });
-            }
-          }
+        } else {
+          outcome.error = 'Either jobNumber or adhocOrderId is required';
         }
       } catch (itemErr) {
         console.error('Error unsaving item:', item, itemErr);
+        outcome.error = itemErr.message || 'Error unsaving item';
       }
+
+      results.push(outcome);
     }
 
-    res.json({ message: 'Unsave completed' });
+    const failed = results.filter(r => !r.removed);
+    res.json({
+      message: failed.length ? 'Unsave completed with errors' : 'Unsave completed',
+      removed: results.length - failed.length,
+      failed: failed.length,
+      results
+    });
   } catch (error) {
     console.error('Error unsaving work:', error);
     res.status(500).json({ error: 'Error unsaving work', details: error.message });
@@ -9633,10 +9735,17 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       const normalizedVPB = parseFloat(Number(valuePerBook).toFixed(2));
       if (isNaN(normalizedVPB)) continue;
 
-      const jobOp = jobOpsMaster.ops.find(jop => {
-        const jopName = operationNameMap[String(jop.opId)] || 'Unknown';
-        return jopName === normalizedOpsName && parseFloat(Number(jop.valuePerBook).toFixed(2)) === normalizedVPB;
-      });
+      // Match on opId first — it is unique and the client always sends it.
+      // Only fall back to opsName + rate for legacy callers that omit opId,
+      // because operation names are NOT unique (duplicates exist in the
+      // operations collection) and name matching hits the wrong row.
+      let jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === String(opId));
+      if (!jobOp) {
+        jobOp = jobOpsMaster.ops.find(jop => {
+          const jopName = operationNameMap[String(jop.opId)] || 'Unknown';
+          return jopName === normalizedOpsName && parseFloat(Number(jop.valuePerBook).toFixed(2)) === normalizedVPB;
+        });
+      }
       if (!jobOp) continue;
 
       const qtyToDeduct = Number(qtyToAdd);
@@ -9806,7 +9915,8 @@ router.get('/work/unsaved/all/:contractorId', async (req, res) => {
             valuePerBook: Number(od.valuePerBook || 0),
             qtyCompleted: Number(od.opsDoneQty || 0),
             totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
-            qtyBook: 1
+            qtyBook: 1,
+            completionDate: od.completionDate || null
           }))
         });
       } else if (doc.jobId) {
@@ -9833,7 +9943,8 @@ router.get('/work/unsaved/all/:contractorId', async (req, res) => {
               valuePerBook: Number(od.valuePerBook || 0),
               qtyCompleted: Number(od.opsDoneQty || 0),
               totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
-              qtyBook
+              qtyBook,
+              completionDate: od.completionDate || null
             };
           })
         });
@@ -9880,7 +9991,8 @@ router.get('/work/unsaved/:contractorId/:jobNumber', async (req, res) => {
         qtyCompleted: Number(od.opsDoneQty || 0),
         totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
         qtyBook,
-        savedInBill: 'No'
+        savedInBill: 'No',
+        completionDate: od.completionDate || null
       };
     });
 
@@ -9927,7 +10039,8 @@ router.get('/work/unsaved/adhoc/:contractorId/:adhocOrderId', async (req, res) =
         qtyCompleted: Number(od.opsDoneQty || 0),
         totalValue: Number(od.opsDoneQty || 0) * Number(od.valuePerBook || 0),
         qtyBook,
-        savedInBill: 'No'
+        savedInBill: 'No',
+        completionDate: od.completionDate || null
       };
     });
 
@@ -9951,73 +10064,11 @@ router.post('/work/mark-billed', async (req, res) => {
       return res.status(400).json({ error: 'contractorId and items array are required' });
     }
 
-    // Group by Contractor_WD document key
-    const jobGroups = {};   // key: jobNumber
-    const adhocGroups = {}; // key: adhocOrderId
+    // POST /bills already marks these entries, so on the normal path this call
+    // finds nothing left to do and marks 0 — that is success, not a failure.
+    const marked = await markContractorWDEntriesBilled(contractorId, items);
 
-    for (const item of items) {
-      if (item.isAdhoc && item.adhocOrderId) {
-        if (!adhocGroups[item.adhocOrderId]) adhocGroups[item.adhocOrderId] = [];
-        adhocGroups[item.adhocOrderId].push(item);
-      } else if (item.jobNumber) {
-        if (!jobGroups[item.jobNumber]) jobGroups[item.jobNumber] = [];
-        jobGroups[item.jobNumber].push(item);
-      }
-    }
-
-    // Mark job-based entries
-    for (const jobNumber of Object.keys(jobGroups)) {
-      const opsToMark = jobGroups[jobNumber];
-      const contractorWD = await ContractorWD.findOne({ contractorId, jobId: jobNumber, isAdhoc: { $ne: true } });
-      if (!contractorWD) continue;
-      let changed = false;
-      for (const markItem of opsToMark) {
-        const vpb = parseFloat(Number(markItem.valuePerBook || 0).toFixed(2));
-        const opsId = String(markItem.opsId || '');
-        for (const od of contractorWD.opsDone) {
-          if (isOpsDoneBilled(od)) continue;
-          const odVpb = parseFloat(Number(od.valuePerBook || 0).toFixed(2));
-          const idMatch = opsId && String(od.opsId) === opsId;
-          const nameMatch = od.opsName === markItem.opsName && odVpb === vpb;
-          if (idMatch || nameMatch) {
-            od.savedInBill = 'Yes';
-            changed = true;
-          }
-        }
-      }
-      if (changed) {
-        contractorWD.markModified('opsDone');
-        await contractorWD.save();
-      }
-    }
-
-    // Mark ad-hoc entries
-    for (const adhocOrderId of Object.keys(adhocGroups)) {
-      const opsToMark = adhocGroups[adhocOrderId];
-      const contractorWD = await ContractorWD.findOne({ contractorId, isAdhoc: true, adhocOrderId });
-      if (!contractorWD) continue;
-      let changed = false;
-      for (const markItem of opsToMark) {
-        const vpb = parseFloat(Number(markItem.valuePerBook || 0).toFixed(2));
-        const opsId = String(markItem.opsId || '');
-        for (const od of contractorWD.opsDone) {
-          if (isOpsDoneBilled(od)) continue;
-          const odVpb = parseFloat(Number(od.valuePerBook || 0).toFixed(2));
-          const idMatch = opsId && String(od.opsId) === opsId;
-          const nameMatch = od.opsName === markItem.opsName && odVpb === vpb;
-          if (idMatch || nameMatch) {
-            od.savedInBill = 'Yes';
-            changed = true;
-          }
-        }
-      }
-      if (changed) {
-        contractorWD.markModified('opsDone');
-        await contractorWD.save();
-      }
-    }
-
-    res.json({ message: 'Entries marked as billed successfully' });
+    res.json({ message: 'Entries marked as billed successfully', marked });
   } catch (error) {
     console.error('Error marking entries as billed:', error);
     res.status(500).json({ error: 'Error marking entries as billed', details: error.message });
@@ -10443,7 +10494,43 @@ router.post('/bills', async (req, res) => {
     });
 
     await bill.save();
-    res.status(201).json(bill);
+
+    // Mark the underlying Contractor_WD work as billed in the same request.
+    // The client also calls /work/mark-billed afterwards, but that is a second
+    // round trip that can fail on its own; doing it here means a saved bill
+    // never leaves its work looking like pending work in Work Done.
+    let wdMarked = 0;
+    let wdMarkError = '';
+    try {
+      const contractor = await Contractor.findOne({
+        name: bill.contractorName.trim(),
+        $or: [ { isdeleted: 0 }, { isdeleted: { $exists: false } } ]
+      });
+      if (contractor) {
+        const markItems = [];
+        bill.jobs.forEach(job => {
+          (job.ops || []).forEach(op => {
+            markItems.push({
+              jobNumber: job.jobNumber || '',
+              isAdhoc: !!job.isAdhoc,
+              adhocOrderId: job.adhocOrderId || '',
+              opsId: op.opId || '',
+              opsName: op.opsName || '',
+              valuePerBook: Number(op.rate || 0)
+            });
+          });
+        });
+        wdMarked = await markContractorWDEntriesBilled(contractor.contractorId, markItems);
+      } else {
+        wdMarkError = `Contractor not found for name: ${bill.contractorName}`;
+      }
+    } catch (markErr) {
+      // The bill itself is saved, so do not fail the request — report it instead.
+      console.error('Bill saved but marking Contractor_WD as billed failed:', markErr);
+      wdMarkError = markErr.message || 'Error marking work as billed';
+    }
+
+    res.status(201).json({ ...bill.toObject(), wdMarked, wdMarkError });
   } catch (error) {
     console.error('Error creating bill:', error);
     if (error.code === 11000) {
@@ -10741,6 +10828,7 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         jobOp.lastUpdatedDate = new Date();
 
         contractorWDAdjustments.push({
+          opId: String(jobOp.opId || '').trim(),
           opsName: normalizedName,
           valuePerBook: jobOp.valuePerBook,
           deltaQty
@@ -10764,11 +10852,18 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       }
 
       for (const adj of contractorWDAdjustments) {
-        const { opsName, valuePerBook, deltaQty } = adj;
+        const { opId, opsName, valuePerBook, deltaQty } = adj;
         const adjName = String(opsName || '').trim();
         const adjValue = round2(valuePerBook);
+        const adjOpId = String(opId || '').trim();
 
+        // Only ever touch entries that are already part of a bill. An entry
+        // with savedInBill:'No' is work that has been saved but not yet
+        // submitted — folding a bill edit into it would both inflate that
+        // pending row and bill the same quantity twice.
         const existingOp = contractorWD.opsDone.find(od => {
+          if (isOpsDoneUnsaved(od)) return false;
+          if (adjOpId && String(od.opsId || '').trim() === adjOpId) return true;
           const odName = String(od.opsName || '').trim();
           const odVal = round2(od.valuePerBook);
           return odName === adjName && odVal === adjValue;
@@ -10780,11 +10875,16 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
             existingOp.opsDoneQty += deltaQty;
             existingOp.completionDate = new Date();
           } else {
+            // This quantity is going straight onto an existing bill, so the
+            // entry must be created as already billed. Leaving savedInBill
+            // unset would fall back to the schema default of 'No' and make it
+            // show up as pending work in Work Done.
             contractorWD.opsDone.push({
-              opsId: null, // opsId is not used for matching here
+              opsId: adjOpId,
               opsName: adjName,
               valuePerBook: adjValue,
               opsDoneQty: deltaQty,
+              savedInBill: 'Yes',
               completionDate: new Date()
             });
           }
@@ -11042,23 +11142,30 @@ router.delete('/bills/:billNumber', async (req, res) => {
             const opNameFromBill = String(op.opsName || '').trim();
             const opRateFromBill = Number(op.rate || 0);
 
+            // Only billed entries belong to this bill. An entry with
+            // savedInBill:'No' is newer work that was saved after the bill and
+            // must not be touched by the reversal.
             let wdOp = null;
             if (opIdFromBill) {
-              wdOp = adhocContractorWD.opsDone.find(od => String(od.opsId) === opIdFromBill);
+              wdOp = adhocContractorWD.opsDone.find(od =>
+                isOpsDoneBilled(od) && String(od.opsId) === opIdFromBill
+              );
             }
             if (!wdOp) {
               wdOp = adhocContractorWD.opsDone.find(od =>
+                isOpsDoneBilled(od) &&
                 String(od.opsName || '').trim() === opNameFromBill &&
                 Number(od.valuePerBook || 0) === opRateFromBill
               );
             }
             if (!wdOp) continue;
 
+            // Remove only this entry. Whatever quantity is left over belongs to
+            // other bills, so it stays billed — flipping it back to 'No' would
+            // make it reappear in Work Done as pending work.
             wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - qtyCompleted);
             if (wdOp.opsDoneQty <= 0) {
               adhocContractorWD.opsDone = adhocContractorWD.opsDone.filter(od => od !== wdOp);
-            } else {
-              wdOp.savedInBill = 'No';
             }
           }
           adhocContractorWD.markModified('opsDone');
@@ -11089,9 +11196,14 @@ router.delete('/bills/:billNumber', async (req, res) => {
         });
 
         for (const op of job.ops) {
-          const operation = await Operation.findOne({ opsName: op.opsName.trim() });
-          if (operation) {
-            const opIdStr = operation._id.toString();
+          // Prefer the opId stored on the bill — resolving by name alone
+          // restores pending on an arbitrary operation whenever two share a name.
+          let opIdStr = String(op.opId || '').trim();
+          if (!opIdStr) {
+            const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+            opIdStr = operation ? operation._id.toString() : '';
+          }
+          if (opIdStr) {
             const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
             if (jobOp) {
               const qtyCompleted = Number(op.qtyCompleted || 0);
@@ -11122,17 +11234,26 @@ router.delete('/bills/:billNumber', async (req, res) => {
 
       if (contractorWD) {
         for (const op of job.ops) {
-          const operation = await Operation.findOne({ opsName: op.opsName.trim() });
-          if (operation) {
-            const opIdStr = operation._id.toString();
-            const wdOp = contractorWD.opsDone.find(od => String(od.opsId) === opIdStr);
+          // Prefer the opId stored on the bill. Looking the operation up by
+          // name picks an arbitrary document whenever two operations share a
+          // name, and then the wrong Contractor_WD row gets reversed.
+          const opIdFromBill = String(op.opId || '').trim();
+          let opIdStr = opIdFromBill;
+          if (!opIdStr) {
+            const operation = await Operation.findOne({ opsName: op.opsName.trim() });
+            opIdStr = operation ? operation._id.toString() : '';
+          }
+          if (opIdStr) {
+            // Only billed entries belong to this bill — an entry with
+            // savedInBill:'No' is newer work saved after the bill was created.
+            const wdOp = contractorWD.opsDone.find(od => isOpsDoneBilled(od) && String(od.opsId) === opIdStr);
             if (wdOp) {
               const qtyCompleted = Number(op.qtyCompleted || 0);
               wdOp.opsDoneQty = Math.max(0, wdOp.opsDoneQty - qtyCompleted);
+              // Remove only this entry, and leave any remaining quantity marked
+              // as billed: it belongs to another bill, not to pending work.
               if (wdOp.opsDoneQty <= 0) {
-                contractorWD.opsDone = contractorWD.opsDone.filter(od => String(od.opsId) !== opIdStr);
-              } else {
-                wdOp.savedInBill = 'No';
+                contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== wdOp);
               }
             }
           }
