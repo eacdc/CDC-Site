@@ -9254,17 +9254,31 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       };
     });
 
+    // Work already recorded per operation, across every contractor. The save
+    // cap is measured against this, so returning it lets the entry screen show
+    // the same limit instead of accepting a number the server will reject.
+    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
+    const recordedByOp = {};
+    (wdDocsForJob || []).forEach(doc => {
+      (doc.opsDone || []).forEach(od => {
+        if (od.opsId == null) return;
+        const k = String(od.opsId);
+        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
+      });
+    });
+
     // Build response with operation name, totalOpsQty, pendingOpsQty, qtyPerBook, rate, and valuePerBook
     const operationsWithNames = pendingOps.map(op => {
       // Get rate from Operation collection by mapping opId
       const operationData = opsMap[op.opId] || {};
       const rate = operationData.ratePerUnit || 0;
-      
+
       return {
         opId: op.opId,
         opsName: operationData.opsName || 'Unknown',
         totalOpsQty: op.totalOpsQty,
         pendingOpsQty: op.pendingOpsQty,
+        recordedOpsQty: recordedByOp[String(op.opId)] || 0,
         qtyPerBook: op.qtyPerBook,
         rate: rate,
         valuePerBook: op.valuePerBook || 0
