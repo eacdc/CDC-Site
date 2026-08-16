@@ -11097,10 +11097,8 @@ router.delete('/bills/:billNumber', async (req, res) => {
       const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber }).session(session);
 
       if (jobOpsMaster) {
-        const isPackaging = (jobOpsMaster.segmentName || '').trim() === 'Packaging';
-        const jobTotalQty = Number(jobOpsMaster.totalQty) || 0;
-
-        // Total completed qty per op for this job (all contractors)
+        // Total completed qty per op for this job, across every contractor,
+        // taken before anything is reversed.
         const contractorWDDocsForJob = await ContractorWD.find({ jobId: job.jobNumber }).session(session).lean();
         const totalCompletedByOp = {};
         (contractorWDDocsForJob || []).forEach(doc => {
@@ -11111,6 +11109,9 @@ router.delete('/bills/:billNumber', async (req, res) => {
           });
         });
 
+        // Sum this bill's quantity per operation first, so a bill that lists
+        // the same operation on more than one line is reversed once.
+        const billQtyByOp = {};
         for (const op of job.ops) {
           // Prefer the opId stored on the bill — resolving by name alone
           // restores pending on an arbitrary operation whenever two share a name.
@@ -11119,24 +11120,25 @@ router.delete('/bills/:billNumber', async (req, res) => {
             const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
             opIdStr = operation ? operation._id.toString() : '';
           }
-          if (opIdStr) {
-            const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
-            if (jobOp) {
-              const qtyCompleted = Number(op.qtyCompleted || 0);
-              const totalOpsQty = Number(jobOp.totalOpsQty) || 0;
-              const totalCompletedForOp = totalCompletedByOp[opIdStr] || 0;
-              const usePackagingRule = isPackaging && totalCompletedForOp > totalOpsQty;
-              let restored;
-              if (usePackagingRule) {
-                const addBack = Math.max(0, qtyCompleted - jobTotalQty * 0.05);
-                restored = jobOp.pendingOpsQty + addBack;
-              } else {
-                restored = jobOp.pendingOpsQty + qtyCompleted;
-              }
-              jobOp.pendingOpsQty = Math.min(totalOpsQty, Math.max(0, restored));
-              jobOp.lastUpdatedDate = new Date();
-            }
-          }
+          if (!opIdStr) continue;
+          billQtyByOp[opIdStr] = (billQtyByOp[opIdStr] || 0) + Number(op.qtyCompleted || 0);
+        }
+
+        // Recompute pending from the work that remains recorded once this
+        // bill's quantity is taken out, rather than adding the quantity back
+        // to whatever pending happens to hold. Adding back drifts whenever
+        // pending is already wrong, and the previous packaging branch
+        // withheld a flat 5% of the job quantity regardless of how far the
+        // operation had actually overshot, so a delete left pending short by
+        // the difference. Clamping to [0, totalOpsQty] covers the overshoot
+        // case on its own, so no packaging branch is needed here.
+        for (const opIdStr of Object.keys(billQtyByOp)) {
+          const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
+          if (!jobOp) continue;
+          const totalOpsQty = Number(jobOp.totalOpsQty) || 0;
+          const recordedAfter = Math.max(0, (totalCompletedByOp[opIdStr] || 0) - billQtyByOp[opIdStr]);
+          jobOp.pendingOpsQty = Math.min(totalOpsQty, Math.max(0, totalOpsQty - recordedAfter));
+          jobOp.lastUpdatedDate = new Date();
         }
         jobOpsMaster.markModified('ops');
         await jobOpsMaster.save({ session });
