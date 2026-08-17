@@ -10727,6 +10727,27 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       // Apply each delta to JobopsMaster.ops and prepare Contractor_WD adjustments
       const contractorWDAdjustments = []; // { opsName, valuePerBook, deltaQty }
 
+      // Work already recorded per operation, across every contractor, before
+      // this edit. pendingOpsQty clamps at 0, so once an operation has run past
+      // its total the overshoot is no longer visible there — moving pending by
+      // the delta then carries that gap forward. Deriving it from the recorded
+      // work instead keeps the figure right, the same way the delete reversal
+      // now does.
+      const wdDocsForEdit = await ContractorWD.find({
+        jobId: jobNumber,
+        isAdhoc: { $ne: true }
+      }).session(session).lean();
+      const recordedByOpForEdit = {};
+      (wdDocsForEdit || []).forEach(doc => {
+        (doc.opsDone || []).forEach(od => {
+          if (od.opsId == null) return;
+          const k = String(od.opsId);
+          recordedByOpForEdit[k] = (recordedByOpForEdit[k] || 0) + Number(od.opsDoneQty || 0);
+        });
+      });
+      // Several changes can land on one operation, so the deltas accumulate.
+      const appliedDeltaByOp = {};
+
       for (const { opId, opsName, rate, deltaQty } of deltas) {
         const normalizedName = String(opsName || '').trim();
         const normalizedRate = round2(rate);
@@ -10750,29 +10771,30 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
           return res.status(400).json({ error: `Operation ${normalizedName} (rate ${normalizedRate}) not found in JobopsMaster for job ${jobNumber}` });
         }
 
-        const currentPending = Number(jobOp.pendingOpsQty || 0);
         const totalOpsQty = Number(jobOp.totalOpsQty || 0);
+        const opKey = String(jobOp.opId);
 
-        // Apply delta to pendingOpsQty: pending = pending - delta
-        let newPending = currentPending - deltaQty;
+        // Where the recorded work lands once this change is applied.
+        const recordedBefore = (recordedByOpForEdit[opKey] || 0) + (appliedDeltaByOp[opKey] || 0);
+        const recordedAfter = Math.max(0, recordedBefore + deltaQty);
 
-        // For increases in completed qty (delta > 0), pending cannot go below 0
-        // For decreases (delta < 0), pending cannot exceed totalOpsQty.
         // Packaging jobs may run past the total by the usual allowance, so the
         // same headroom the entry screen grants applies here.
         const editAllowance = packagingAllowanceFor(jobOpsMaster);
-        if (newPending < -editAllowance - 1e-6) {
+        if (recordedAfter > totalOpsQty + editAllowance + 1e-6) {
           await session.abortTransaction();
           session.endSession();
           return res.status(400).json({
             error:
               `Insufficient pending quantity for job ${jobNumber}, operation ${normalizedName} ` +
-              `to increase completed quantity by ${deltaQty}` +
-              (editAllowance ? ` (pending ${currentPending} + packaging allowance ${editAllowance})` : ` (pending ${currentPending})`)
+              `to increase completed quantity by ${deltaQty}: the job holds ${totalOpsQty}` +
+              (editAllowance ? ` (+${editAllowance} packaging allowance)` : '') +
+              ` and ${recordedBefore} is already recorded.`
           });
         }
+        appliedDeltaByOp[opKey] = (appliedDeltaByOp[opKey] || 0) + deltaQty;
 
-        newPending = Math.max(0, Math.min(totalOpsQty, newPending));
+        const newPending = Math.max(0, Math.min(totalOpsQty, totalOpsQty - recordedAfter));
         jobOp.pendingOpsQty = newPending;
         jobOp.lastUpdatedDate = new Date();
 
