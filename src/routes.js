@@ -9670,7 +9670,14 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
       }
       claimedByOp[opKey] = (claimedByOp[opKey] || 0) + qtyToDeduct;
 
-      jobOp.pendingOpsQty = Math.max(0, jobOp.pendingOpsQty - qtyToDeduct);
+      // Pending comes from the work that will be recorded once this save lands,
+      // not from subtracting the quantity off whatever pending holds. The two
+      // agree while pending is accurate; where it has drifted, subtracting keeps
+      // the drift, and this is the figure the cap above and the pending endpoint
+      // both measure against.
+      const totalOpsQtyForSave = Number(jobOp.totalOpsQty || 0);
+      const recordedAfterSave = alreadyRecorded + qtyToDeduct;
+      jobOp.pendingOpsQty = Math.max(0, Math.min(totalOpsQtyForSave, totalOpsQtyForSave - recordedAfterSave));
       jobOp.lastUpdatedDate = new Date();
       updates.push({ opId: jobOp.opId, opsName: normalizedOpsName, valuePerBook: jobOp.valuePerBook, pendingOpsQty: jobOp.pendingOpsQty });
 
@@ -10873,13 +10880,14 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         // with savedInBill:'No' is work that has been saved but not yet
         // submitted — folding a bill edit into it would both inflate that
         // pending row and bill the same quantity twice.
-        const existingOp = contractorWD.opsDone.find(od => {
+        const matchesAdj = (od) => {
           if (isOpsDoneUnsaved(od)) return false;
           if (adjOpId && String(od.opsId || '').trim() === adjOpId) return true;
           const odName = String(od.opsName || '').trim();
           const odVal = round2(od.valuePerBook);
           return odName === adjName && odVal === adjValue;
-        });
+        };
+        const existingOp = contractorWD.opsDone.find(matchesAdj);
 
         if (deltaQty > 0) {
           // Increase completed quantity
@@ -10900,19 +10908,27 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
               completionDate: new Date()
             });
           }
-        } else if (deltaQty < 0 && existingOp) {
-          // Decrease completed quantity
-          const newDone = Number(existingOp.opsDoneQty || 0) + deltaQty; // deltaQty is negative
-          if (newDone <= 0) {
-            // Remove entry if fully reversed
-            contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== existingOp);
-          } else {
-            existingOp.opsDoneQty = newDone;
-            existingOp.completionDate = new Date();
+        } else if (deltaQty < 0) {
+          // Decrease completed quantity, spread across the billed rows for this
+          // operation. Two bills for the same contractor and operation leave two
+          // of them, and taking the whole decrease out of the first floors that
+          // row at 0 while the rest stays recorded.
+          let remaining = -deltaQty;
+          for (const row of contractorWD.opsDone.filter(matchesAdj)) {
+            if (remaining <= 0) break;
+            const take = Math.min(Number(row.opsDoneQty || 0), remaining);
+            row.opsDoneQty = Number(row.opsDoneQty || 0) - take;
+            row.completionDate = new Date();
+            remaining -= take;
+            if (row.opsDoneQty <= 0) {
+              // Remove entry if fully reversed
+              contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== row);
+            }
           }
         }
       }
 
+      contractorWD.markModified('opsDone');
       await contractorWD.save({ session });
 
       // Pending is set from the Contractor_WD state the adjustment above left
@@ -11290,13 +11306,27 @@ router.delete('/bills/:billNumber', async (req, res) => {
         for (const opIdStr of Object.keys(billQtyByOp)) {
           // Only billed entries belong to this bill — an entry with
           // savedInBill:'No' is newer work saved after the bill was created.
-          const wdOp = contractorWD.opsDone.find(od => isOpsDoneBilled(od) && String(od.opsId) === opIdStr);
-          if (!wdOp) continue;
-          wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - billQtyByOp[opIdStr]);
-          // Remove only this entry, and leave any remaining quantity marked
-          // as billed: it belongs to another bill, not to pending work.
-          if (wdOp.opsDoneQty <= 0) {
-            contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== wdOp);
+          //
+          // Two bills for the same contractor and operation leave two billed
+          // rows: work saved after a bill is submitted only folds into an
+          // unbilled row, so it is pushed as a new one. Taking the quantity out
+          // of the first match alone floors that row at 0 and leaves the rest of
+          // the bill's quantity recorded, so it is spread across every billed
+          // row for the operation, in the order they were recorded.
+          let remaining = Number(billQtyByOp[opIdStr] || 0);
+          if (!(remaining > 0)) continue;
+          const billedRows = contractorWD.opsDone.filter(
+            od => isOpsDoneBilled(od) && String(od.opsId) === opIdStr);
+          for (const wdOp of billedRows) {
+            if (remaining <= 0) break;
+            const take = Math.min(Number(wdOp.opsDoneQty || 0), remaining);
+            wdOp.opsDoneQty = Number(wdOp.opsDoneQty || 0) - take;
+            remaining -= take;
+            // Remove only emptied entries, and leave any remaining quantity
+            // marked as billed: it belongs to another bill, not to pending work.
+            if (wdOp.opsDoneQty <= 0) {
+              contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== wdOp);
+            }
           }
         }
         contractorWD.markModified('opsDone');
