@@ -10790,6 +10790,9 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       });
       // Several changes can land on one operation, so the deltas accumulate.
       const appliedDeltaByOp = {};
+      // The operations this edit touches, so pending can be set for them once
+      // the Contractor_WD adjustment below has actually gone in.
+      const touchedJobOps = new Map();
 
       for (const { opId, opsName, rate, deltaQty } of deltas) {
         const normalizedName = String(opsName || '').trim();
@@ -10836,10 +10839,7 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
           });
         }
         appliedDeltaByOp[opKey] = (appliedDeltaByOp[opKey] || 0) + deltaQty;
-
-        const newPending = Math.max(0, Math.min(totalOpsQty, totalOpsQty - recordedAfter));
-        jobOp.pendingOpsQty = newPending;
-        jobOp.lastUpdatedDate = new Date();
+        touchedJobOps.set(opKey, jobOp);
 
         contractorWDAdjustments.push({
           opId: String(jobOp.opId || '').trim(),
@@ -10848,8 +10848,6 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
           deltaQty
         });
       }
-
-      await jobOpsMaster.save({ session });
 
       // Apply adjustments to Contractor_WD
       let contractorWD = await ContractorWD.findOne({
@@ -10916,6 +10914,34 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       }
 
       await contractorWD.save({ session });
+
+      // Pending is set from the Contractor_WD state the adjustment above left
+      // behind, not from the delta this request asked for. A decrease can only
+      // come out of a billed row that exists: where none matched, or it held
+      // less than the bill claimed, Contractor_WD keeps the quantity while a
+      // delta-based pending would hand it back as work to do. The save cap
+      // measures against Contractor_WD, so that pending was unusable anyway.
+      const wdDocsAfterEdit = await ContractorWD.find({
+        jobId: jobNumber,
+        isAdhoc: { $ne: true }
+      }).session(session).lean();
+      const recordedAfterByOpForEdit = {};
+      (wdDocsAfterEdit || []).forEach(doc => {
+        (doc.opsDone || []).forEach(od => {
+          if (od.opsId == null) return;
+          const k = String(od.opsId);
+          recordedAfterByOpForEdit[k] = (recordedAfterByOpForEdit[k] || 0) + Number(od.opsDoneQty || 0);
+        });
+      });
+
+      for (const [opKey, jobOp] of touchedJobOps.entries()) {
+        const totalOpsQty = Number(jobOp.totalOpsQty || 0);
+        const recordedAfter = Math.max(0, recordedAfterByOpForEdit[opKey] || 0);
+        jobOp.pendingOpsQty = Math.max(0, Math.min(totalOpsQty, totalOpsQty - recordedAfter));
+        jobOp.lastUpdatedDate = new Date();
+      }
+      jobOpsMaster.markModified('ops');
+      await jobOpsMaster.save({ session });
     }
 
     // After adjustments, clean up bill jobs:
@@ -11231,86 +11257,46 @@ router.delete('/bills/:billNumber', async (req, res) => {
         continue;
       }
 
-      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber }).session(session);
-
-      if (jobOpsMaster) {
-        // Total completed qty per op for this job, across every contractor,
-        // taken before anything is reversed.
-        const contractorWDDocsForJob = await ContractorWD.find({ jobId: job.jobNumber }).session(session).lean();
-        const totalCompletedByOp = {};
-        (contractorWDDocsForJob || []).forEach(doc => {
-          (doc.opsDone || []).forEach(od => {
-            if (od.opsId == null || od.opsDoneQty == null) return;
-            const opKey = String(od.opsId);
-            totalCompletedByOp[opKey] = (totalCompletedByOp[opKey] || 0) + od.opsDoneQty;
-          });
-        });
-
-        // Sum this bill's quantity per operation first, so a bill that lists
-        // the same operation on more than one line is reversed once.
-        const billQtyByOp = {};
-        for (const op of job.ops) {
-          // Prefer the opId stored on the bill — resolving by name alone
-          // restores pending on an arbitrary operation whenever two share a name.
-          let opIdStr = String(op.opId || '').trim();
-          if (!opIdStr) {
-            const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
-            opIdStr = operation ? operation._id.toString() : '';
-          }
-          if (!opIdStr) continue;
-          billQtyByOp[opIdStr] = (billQtyByOp[opIdStr] || 0) + Number(op.qtyCompleted || 0);
+      // Sum this bill's quantity per operation first, so a bill that lists the
+      // same operation on more than one line is reversed once. The opId stored
+      // on the bill is preferred — resolving by name alone picks an arbitrary
+      // operation whenever two share a name, and then the wrong row is reversed.
+      const billQtyByOp = {};
+      for (const op of job.ops) {
+        let opIdStr = String(op.opId || '').trim();
+        if (!opIdStr) {
+          const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
+          opIdStr = operation ? operation._id.toString() : '';
         }
-
-        // Recompute pending from the work that remains recorded once this
-        // bill's quantity is taken out, rather than adding the quantity back
-        // to whatever pending happens to hold. Adding back drifts whenever
-        // pending is already wrong, and the previous packaging branch
-        // withheld a flat 5% of the job quantity regardless of how far the
-        // operation had actually overshot, so a delete left pending short by
-        // the difference. Clamping to [0, totalOpsQty] covers the overshoot
-        // case on its own, so no packaging branch is needed here.
-        for (const opIdStr of Object.keys(billQtyByOp)) {
-          const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
-          if (!jobOp) continue;
-          const totalOpsQty = Number(jobOp.totalOpsQty) || 0;
-          const recordedAfter = Math.max(0, (totalCompletedByOp[opIdStr] || 0) - billQtyByOp[opIdStr]);
-          jobOp.pendingOpsQty = Math.min(totalOpsQty, Math.max(0, totalOpsQty - recordedAfter));
-          jobOp.lastUpdatedDate = new Date();
-        }
-        jobOpsMaster.markModified('ops');
-        await jobOpsMaster.save({ session });
+        if (!opIdStr) continue;
+        billQtyByOp[opIdStr] = (billQtyByOp[opIdStr] || 0) + Number(op.qtyCompleted || 0);
       }
 
-      // Reverse Contractor_WD: subtract each op's qtyCompleted from opsDone
+      // Reverse Contractor_WD first, then read pending off what the reversal
+      // actually left behind. Subtracting the bill's quantity from the earlier
+      // total assumes the reversal removed all of it, and it often cannot: the
+      // row may hold less than the bill claims, carry savedInBill:'No', or sit
+      // under a different contractor, and each subtraction floors at 0. Pending
+      // then reads lower than the work Contractor_WD still holds, while the save
+      // cap measures against Contractor_WD — so Work Done showed pending the
+      // entry screen would not let anyone use.
       const contractorWD = await ContractorWD.findOne({
         contractorId: contractorId,
-        jobId: job.jobNumber
+        jobId: job.jobNumber,
+        isAdhoc: { $ne: true }
       }).session(session);
 
       if (contractorWD) {
-        for (const op of job.ops) {
-          // Prefer the opId stored on the bill. Looking the operation up by
-          // name picks an arbitrary document whenever two operations share a
-          // name, and then the wrong Contractor_WD row gets reversed.
-          const opIdFromBill = String(op.opId || '').trim();
-          let opIdStr = opIdFromBill;
-          if (!opIdStr) {
-            const operation = await Operation.findOne({ opsName: op.opsName.trim() }).session(session);
-            opIdStr = operation ? operation._id.toString() : '';
-          }
-          if (opIdStr) {
-            // Only billed entries belong to this bill — an entry with
-            // savedInBill:'No' is newer work saved after the bill was created.
-            const wdOp = contractorWD.opsDone.find(od => isOpsDoneBilled(od) && String(od.opsId) === opIdStr);
-            if (wdOp) {
-              const qtyCompleted = Number(op.qtyCompleted || 0);
-              wdOp.opsDoneQty = Math.max(0, wdOp.opsDoneQty - qtyCompleted);
-              // Remove only this entry, and leave any remaining quantity marked
-              // as billed: it belongs to another bill, not to pending work.
-              if (wdOp.opsDoneQty <= 0) {
-                contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== wdOp);
-              }
-            }
+        for (const opIdStr of Object.keys(billQtyByOp)) {
+          // Only billed entries belong to this bill — an entry with
+          // savedInBill:'No' is newer work saved after the bill was created.
+          const wdOp = contractorWD.opsDone.find(od => isOpsDoneBilled(od) && String(od.opsId) === opIdStr);
+          if (!wdOp) continue;
+          wdOp.opsDoneQty = Math.max(0, Number(wdOp.opsDoneQty || 0) - billQtyByOp[opIdStr]);
+          // Remove only this entry, and leave any remaining quantity marked
+          // as billed: it belongs to another bill, not to pending work.
+          if (wdOp.opsDoneQty <= 0) {
+            contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== wdOp);
           }
         }
         contractorWD.markModified('opsDone');
@@ -11319,6 +11305,43 @@ router.delete('/bills/:billNumber', async (req, res) => {
         } else {
           await ContractorWD.deleteOne({ _id: contractorWD._id }).session(session);
         }
+      }
+
+      const jobOpsMaster = await JobOpsMaster.findOne({ jobId: job.jobNumber }).session(session);
+
+      if (jobOpsMaster) {
+        // The work still recorded against this job now that the reversal is
+        // saved, across every contractor. Same query the pending endpoint and
+        // the save cap use, so the three cannot disagree.
+        const wdDocsAfterDelete = await ContractorWD.find({
+          jobId: job.jobNumber,
+          isAdhoc: { $ne: true }
+        }).session(session).lean();
+        const recordedAfterByOp = {};
+        (wdDocsAfterDelete || []).forEach(doc => {
+          (doc.opsDone || []).forEach(od => {
+            if (od.opsId == null) return;
+            const opKey = String(od.opsId);
+            recordedAfterByOp[opKey] = (recordedAfterByOp[opKey] || 0) + Number(od.opsDoneQty || 0);
+          });
+        });
+
+        // Pending is recomputed rather than having the quantity added back:
+        // adding back drifts whenever pending is already wrong, and the previous
+        // packaging branch withheld a flat 5% of the job quantity regardless of
+        // how far the operation had actually overshot, so a delete left pending
+        // short by the difference. Clamping to [0, totalOpsQty] covers the
+        // overshoot case on its own, so no packaging branch is needed here.
+        for (const opIdStr of Object.keys(billQtyByOp)) {
+          const jobOp = jobOpsMaster.ops.find(jop => String(jop.opId) === opIdStr);
+          if (!jobOp) continue;
+          const totalOpsQty = Number(jobOp.totalOpsQty) || 0;
+          const recordedAfter = Math.max(0, recordedAfterByOp[opIdStr] || 0);
+          jobOp.pendingOpsQty = Math.min(totalOpsQty, Math.max(0, totalOpsQty - recordedAfter));
+          jobOp.lastUpdatedDate = new Date();
+        }
+        jobOpsMaster.markModified('ops');
+        await jobOpsMaster.save({ session });
       }
     }
 
