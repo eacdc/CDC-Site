@@ -9495,7 +9495,25 @@ router.post('/work/unsave', async (req, res) => {
               );
             }
             if (jobOp) {
-              jobOp.pendingOpsQty = Math.min(Number(jobOp.totalOpsQty || 0), Math.max(0, Number(jobOp.pendingOpsQty || 0) + qty));
+              // unsave: pending is recomputed from the work still recorded for
+              // this operation, not by adding the quantity back to whatever
+              // pending holds. A Packaging save may run past the job quantity by
+              // the 5% allowance, and pending floors at 0 while it does, so
+              // adding back handed the overshoot out as fresh pending — an
+              // operation with 100000 left, saved at 106000, came back as
+              // 106000. The Contractor_WD row was already removed above, so this
+              // read is the state after the reversal.
+              const wdDocsAfterUnsave = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
+              const unsaveOpKey = String(jobOp.opId);
+              let recordedAfterUnsave = 0;
+              (wdDocsAfterUnsave || []).forEach(doc => {
+                (doc.opsDone || []).forEach(od => {
+                  if (od.opsId == null || String(od.opsId) !== unsaveOpKey) return;
+                  recordedAfterUnsave += Number(od.opsDoneQty || 0);
+                });
+              });
+              const totalOpsQtyForUnsave = Number(jobOp.totalOpsQty || 0);
+              jobOp.pendingOpsQty = Math.min(totalOpsQtyForUnsave, Math.max(0, totalOpsQtyForUnsave - recordedAfterUnsave));
               jobOp.lastUpdatedDate = new Date();
               jobOpsMaster.markModified('ops');
               await jobOpsMaster.save();
