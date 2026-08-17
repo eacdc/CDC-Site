@@ -9220,12 +9220,43 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
     }
 
-    // Filter operations where pendingOpsQty > 0
-    const pendingOps = jobOpsMaster.ops.filter(op => op.pendingOpsQty > 0);
+    // Work already recorded per operation, across every contractor. The save
+    // cap is measured against this, so returning it lets the entry screen show
+    // the same limit instead of accepting a number the server will reject.
+    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
+    const recordedByOp = {};
+    (wdDocsForJob || []).forEach(doc => {
+      (doc.opsDone || []).forEach(od => {
+        if (od.opsId == null) return;
+        const k = String(od.opsId);
+        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
+      });
+    });
+
+    const allowance = packagingAllowanceFor(jobOpsMaster);
+
+    // pendingOpsQty reaching 0 means the job's own quantity is covered, which
+    // is the end of the road for an ordinary job. A Packaging job may
+    // legitimately run past it by the allowance — spoilage and re-packing are
+    // real work — and the save cap already accepts that quantity, so an
+    // operation still holding allowance has to stay on the screen or there is
+    // no way to enter it. Its pending reads 0, and allowanceRoom carries what
+    // is left so the entry screen can say why the row is there.
+    const pendingOps = (jobOpsMaster.ops || []).filter(op => {
+      if (Number(op.pendingOpsQty || 0) > 0) return true;
+      if (allowance <= 0) return false;
+      const recorded = recordedByOp[String(op.opId)] || 0;
+      return Number(op.totalOpsQty || 0) + allowance - recorded > QTY_TOL;
+    });
 
     if (pendingOps.length === 0) {
       return res.json({
         jobNumber,
+        clientName: jobOpsMaster.clientName || '',
+        jobTitle: jobOpsMaster.jobTitle || '',
+        segmentName: jobOpsMaster.segmentName || '',
+        totalQty: Number(jobOpsMaster.totalQty || 0),
+        packagingAllowance: allowance,
         operations: []
       });
     }
@@ -9254,31 +9285,25 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       };
     });
 
-    // Work already recorded per operation, across every contractor. The save
-    // cap is measured against this, so returning it lets the entry screen show
-    // the same limit instead of accepting a number the server will reject.
-    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
-    const recordedByOp = {};
-    (wdDocsForJob || []).forEach(doc => {
-      (doc.opsDone || []).forEach(od => {
-        if (od.opsId == null) return;
-        const k = String(od.opsId);
-        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
-      });
-    });
-
     // Build response with operation name, totalOpsQty, pendingOpsQty, qtyPerBook, rate, and valuePerBook
     const operationsWithNames = pendingOps.map(op => {
       // Get rate from Operation collection by mapping opId
       const operationData = opsMap[op.opId] || {};
       const rate = operationData.ratePerUnit || 0;
+      const recordedOpsQty = recordedByOp[String(op.opId)] || 0;
 
       return {
         opId: op.opId,
         opsName: operationData.opsName || 'Unknown',
         totalOpsQty: op.totalOpsQty,
         pendingOpsQty: op.pendingOpsQty,
-        recordedOpsQty: recordedByOp[String(op.opId)] || 0,
+        recordedOpsQty,
+        // What the allowance still holds once the job's own quantity is spent.
+        // 0 on every non-Packaging job, and on a Packaging operation that has
+        // used the allowance up.
+        allowanceRoom: allowance > 0
+          ? Math.max(0, Number(op.totalOpsQty || 0) + allowance - recordedOpsQty - Math.max(0, Number(op.pendingOpsQty || 0)))
+          : 0,
         qtyPerBook: op.qtyPerBook,
         rate: rate,
         valuePerBook: op.valuePerBook || 0
@@ -9293,7 +9318,7 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       // and stays in step with the limit the server enforces on save.
       segmentName: jobOpsMaster.segmentName || '',
       totalQty: Number(jobOpsMaster.totalQty || 0),
-      packagingAllowance: packagingAllowanceFor(jobOpsMaster),
+      packagingAllowance: allowance,
       operations: operationsWithNames
     });
   } catch (error) {
