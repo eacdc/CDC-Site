@@ -9781,16 +9781,50 @@ router.post('/work/save/adhoc', async (req, res) => {
 router.get('/work/unsaved/all/:contractorId', async (req, res) => {
   try {
     const { contractorId } = req.params;
-    const wdDocs = await ContractorWD.find({ contractorId }).lean();
+    // Only documents that actually hold unsaved work — a contractor can have
+    // hundreds of Contractor_WD documents and most are fully billed.
+    // The pattern tolerates surrounding whitespace so this matches exactly what
+    // isOpsDoneUnsaved accepts; savedInBill has no trim in the schema, and a
+    // value written outside mongoose could carry spaces.
+    const wdDocs = await ContractorWD.find({
+      contractorId,
+      'opsDone.savedInBill': { $regex: /^\s*No\s*$/ }
+    }).lean();
+
+    const docsWithUnsaved = wdDocs
+      .map(doc => ({ doc, unsavedOps: (doc.opsDone || []).filter(isOpsDoneUnsaved) }))
+      .filter(x => x.unsavedOps.length > 0);
+
+    // Fetch the referenced jobs and ad-hoc orders in one query each. This used
+    // to be a findOne per document, run sequentially, which on a contractor
+    // with a long history made the call slow enough to time out — and the
+    // client swallowed that, so Bill Details silently stayed empty until a job
+    // search loaded the same rows through the per-job endpoint.
+    const jobIds = [...new Set(docsWithUnsaved.filter(x => !x.doc.isAdhoc && x.doc.jobId).map(x => x.doc.jobId))];
+    const adhocIds = [...new Set(docsWithUnsaved.filter(x => x.doc.isAdhoc && x.doc.adhocOrderId).map(x => String(x.doc.adhocOrderId)))];
+
+    const masterByJob = {};
+    if (jobIds.length > 0) {
+      const masters = await JobOpsMaster.find({ jobId: { $in: jobIds } }).lean();
+      masters.forEach(m => { masterByJob[String(m.jobId)] = m; });
+    }
+
+    const orderById = {};
+    if (adhocIds.length > 0) {
+      const validIds = adhocIds
+        .map(id => { try { return new mongoose.Types.ObjectId(id); } catch { return null; } })
+        .filter(Boolean);
+      if (validIds.length > 0) {
+        const orders = await AdhocWorkOrder.find({ _id: { $in: validIds } }).lean();
+        orders.forEach(o => { orderById[String(o._id)] = o; });
+      }
+    }
 
     const result = [];
 
-    for (const doc of wdDocs) {
-      const unsavedOps = (doc.opsDone || []).filter(isOpsDoneUnsaved);
-      if (unsavedOps.length === 0) continue;
-
+    for (const { doc, unsavedOps } of docsWithUnsaved) {
       if (doc.isAdhoc && doc.adhocOrderId) {
-        const order = await AdhocWorkOrder.findById(doc.adhocOrderId).lean();
+        const order = orderById[String(doc.adhocOrderId)] || null;
         const adhocLabel = doc.adhocLabel || (order ? order.adhocId : '') || String(doc.adhocOrderId);
 
         result.push({
@@ -9811,7 +9845,7 @@ router.get('/work/unsaved/all/:contractorId', async (req, res) => {
           }))
         });
       } else if (doc.jobId) {
-        const jobOpsMaster = await JobOpsMaster.findOne({ jobId: doc.jobId }).lean();
+        const jobOpsMaster = masterByJob[String(doc.jobId)] || null;
         const clientName = jobOpsMaster ? (jobOpsMaster.clientName || '') : '';
         const jobTitle  = jobOpsMaster ? (jobOpsMaster.jobTitle  || '') : '';
 
