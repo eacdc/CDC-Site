@@ -1,0 +1,198 @@
+
+====================================================================================================
+  CONTRACTOR_WD DIAGNOSTIC  —  db: Contractor_PO   (sob job)
+====================================================================================================
+  Contractor_WD documents : 6309
+  opsDone rows (mot)      : 17552
+  savedInBill = "No"      : 119   <-- egulo Work Done page e Bill Details e dekha jay
+  savedInBill field nei   : 0   (legacy row, backend egulo ke billed dhore)
+  Bills documents         : 414
+
+----------------------------------------------------------------------------------------------------
+A)  ALREADY BILLED, TOBU PENDING  ->  DOUBLE BILLING RISK  [SOBCHEYE JORURI]
+----------------------------------------------------------------------------------------------------
+  rows: 8   total qty: 334330   total value: 39013.1
+  Ei operation gulo ekta active (delete hoyni) bill e ache, tobu Contractor_WD te savedInBill:"No".
+  Karon #2 (bill edit-qty) othoba #3 (mark-billed fail). Abar SUBMIT korle dubar taka jabe.
+
+  2026-05-22  J06364_25_26       Md.  Sajid Ali(Sakib)  Wiro Binding Promo  Table Ca qty=39700    rate=0.7      val=27790
+        bill: 00000210(PAID) qty=40000 2026-04-28
+  2026-08-11  J03376_26_27       Dharmendra Enterprises Inner Stripping (0.012)      qty=114700   rate=0.01     val=1147
+        bill: 00000383(PAID) qty=204000 2026-07-20
+  2026-08-11  J03376_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=114700   rate=0.05     val=5735
+        bill: 00000383(PAID) qty=375250 2026-07-20
+  2026-08-13  J04759_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=5540     rate=0.06     val=332.4
+        bill: 00000419 qty=2340 2026-08-08
+  2026-08-13  J04759_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=5540     rate=0.07     val=387.8
+        bill: 00000419 qty=2340 2026-08-08
+  2026-08-12  J04671_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=20230    rate=0.07     val=1416.1
+        bill: 00000419 qty=480 2026-08-08
+  2026-08-13  J04667_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=16960    rate=0.06     val=1017.6
+        bill: 00000419 qty=5440 2026-08-08
+  2026-08-13  J04667_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=16960    rate=0.07     val=1187.2
+        bill: 00000419 qty=5440 2026-08-08
+
+----------------------------------------------------------------------------------------------------
+B)  DELETED BILL THEKE RESURRECT HOYECHE
+----------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+----------------------------------------------------------------------------------------------------
+C)  KONO BILL NEI  —  sotti kar pending kaj (othoba purono orphan)
+----------------------------------------------------------------------------------------------------
+  rows: 111   total qty: 3036540   total value: 80800.15
+  Date jodi onek purono hoy, tahole keu save kore submit korte bhule geche.
+
+  2026-08-06  J02686_26_27       Vikash Kumar ( Packagi 2nd Pass-Top Bottom/Madhu Ja qty=2000     rate=0.06     val=120
+  2026-08-06  J04121_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=55500    rate=0.01     val=555
+  2026-08-06  J04136_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=150000   rate=0.01     val=1500
+  2026-08-06  J04307_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=20000    rate=0.01     val=200
+  2026-08-06  J02113_26_27       Vikash Kumar ( Packagi Inner Sorting & Packing (0.0 qty=95600    rate=0.02     val=1912
+  2026-08-06  J02113_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=95600    rate=0.01     val=956
+  2026-08-06  J02650_26_27       Vikash Kumar ( Packagi 2nd Pass -Corrugated Inner / qty=2000     rate=0.06     val=120
+  2026-08-06  J02659_26_27       Vikash Kumar ( Packagi 2nd Pass -Corrugated Inner / qty=2000     rate=0.06     val=120
+  2026-08-06  J02662_26_27       Vikash Kumar ( Packagi 2nd Pass -Corrugated Inner / qty=2000     rate=0.06     val=120
+  2026-08-06  J03521_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=50000    rate=0.01     val=500
+  2026-08-06  J03250_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=30000    rate=0.01     val=300
+  2026-08-06  J01685_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=15000    rate=0.01     val=150
+  2026-08-06  J02361_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=15750    rate=0.01     val=157.5
+  2026-08-06  J03507_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=25600    rate=0.01     val=256
+  2026-08-06  J04199_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=15750    rate=0.01     val=157.5
+  2026-08-06  J03239_26_27       Vikash Kumar ( Packagi Inner Stripping (0.012)      qty=85000    rate=0.01     val=850
+  2026-08-12  J04671_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=20230    rate=0.06     val=1213.8
+  2026-08-11  J04753_26_27       Shyam (Packaging)      Inner Sorting & Packing (0.0 qty=151200   rate=0.02     val=3024
+  2026-08-11  J05105_26_27       Shyam (Packaging)      Inner Sorting & Packing (0.0 qty=21000    rate=0.02     val=420
+  2026-08-11  J03136_26_27       Shyam (Packaging)      Inner Stripping (0.012)      qty=3400     rate=0.01     val=34
+  2026-08-11  J03315_26_27       Shyam (Packaging)      Lock Bottom / Big Inner/Dot  qty=4800     rate=0.05     val=240
+  2026-08-11  J03318_26_27       Shyam (Packaging)      Corrugated Inner / Roosh Sor qty=5200     rate=0.07     val=364
+  2026-08-11  J03318_26_27       Shyam (Packaging)      Corrugated Inner / Roosh Str qty=5200     rate=0.06     val=312
+  2026-08-11  J03141_26_27       Shyam (Packaging)      Inner Stripping (0.012)      qty=3400     rate=0.01     val=34
+  2026-08-11  J03136_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=3330     rate=0.05     val=166.5
+  2026-08-11  J03724_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=21960    rate=0.07     val=1537.2
+  2026-08-11  J03724_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=21960    rate=0.06     val=1317.6
+  2026-08-11  J04817_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=9925     rate=0.07     val=694.75
+  2026-08-11  J04817_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=9925     rate=0.06     val=595.5
+  2026-08-11  J03651_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Sor qty=1400     rate=0.07     val=98
+  2026-08-11  J03651_26_27       Dharmendra Enterprises Corrugated Inner / Roosh Str qty=1400     rate=0.06     val=84
+  2026-08-11  J05208_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=25000    rate=0.05     val=1250
+  2026-08-11  J05208_26_27       Dharmendra Enterprises Inner Stripping (0.012)      qty=25000    rate=0.01     val=250
+  2026-08-11  J03550_26_27       Dharmendra Enterprises Inner Stripping (0.012)      qty=15950    rate=0.01     val=159.5
+  2026-08-11  J03550_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=11450    rate=0.05     val=572.5
+  2026-08-11  J03550_26_27       Dharmendra Enterprises Fitment-Inner Sorting & Pack qty=4500     rate=0.02     val=90
+  2026-08-11  J05228_26_27       Dharmendra Enterprises Inner Sorting & Packing (0.0 qty=177200   rate=0.02     val=3544
+  2026-08-11  J05228_26_27       Dharmendra Enterprises Inner Stripping (0.012)      qty=177200   rate=0.01     val=1772
+  2026-08-11  J03315_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=3800     rate=0.05     val=190
+  2026-08-11  J04812_26_27       Dharmendra Enterprises Lock Bottom / Big Inner/Dot  qty=62000    rate=0.05     val=3100
+  ... aro 71 ta (SHOW_ROWS baran othoba CSV mode use korun)
+
+----------------------------------------------------------------------------------------------------
+D)  opsId NEI / null  —  bill edit-qty route er signature (routes.js:10784)
+----------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+----------------------------------------------------------------------------------------------------
+E)  EKEI opsId EKADHIK BAR EKEI DOCUMENT E  (data corruption)
+----------------------------------------------------------------------------------------------------
+  J04069_25_26      MASUDA BIBI            Gathering(0.028)             ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J04069_25_26      MASUDA BIBI            Book-Shrink Wrap             ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J04069_25_26      MASUDA BIBI            Box packing                  ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J04069_25_26      MASUDA BIBI            Box Wraping                  ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J04069_25_26      MASUDA BIBI            Box Labeling                 ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J04069_25_26      MASUDA BIBI            Halpatti                     ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,8000]
+  J06010_25_26      Robihl Sk              Insertion-                   ekei opsId 2 bar  states=[Yes,Yes]  qtys=[1500,1500]
+  J02956_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[46500,3200]
+  J02952_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[85700,4700]
+  J02955_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 3 bar  states=[Yes,Yes,Yes]  qtys=[24550,39000,3900]
+  J02957_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 3 bar  states=[Yes,Yes,Yes]  qtys=[149800,66500,6300]
+  J02725_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[3000,236]
+  J02876_25_26      Niroj Molla            Wall Calendar  Gathering(0.4 ekei opsId 2 bar  states=[Yes,Yes]  qtys=[30000,780]
+  J02876_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[30000,780]
+  J02719_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[22000,155]
+  J02722_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[27500,1480]
+  J02718_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[18500,900]
+  J02723_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[19500,1000]
+  J02724_25_26      Niroj Molla            Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[4500,165]
+  J02918_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[128700,10000]
+  J02912_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[106500,8800]
+  J02958_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[134900,9000]
+  J02917_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[55800,1600]
+  J02959_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[90100,4700]
+  J02916_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 3 bar  states=[Yes,Yes,Yes]  qtys=[71900,54200,2000]
+  J06276_25_26      MASUDA BIBI            Book-Counting                ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J06276_25_26      MASUDA BIBI            Book-Shrink Wrap             ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J06276_25_26      MASUDA BIBI            Box packing                  ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J06276_25_26      MASUDA BIBI            Box Wraping                  ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J06276_25_26      MASUDA BIBI            Box Labeling                 ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J06276_25_26      MASUDA BIBI            Halpatti                     ekei opsId 2 bar  states=[Yes,Yes]  qtys=[12500,12500]
+  J02720_25_26      Saddam Hussian         Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[7500,212]
+  J02723_25_26      Saddam Hussian         Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[43500,1860]
+  J02876_25_26      Saddam Hussian         Wall Calendar  Gathering(0.4 ekei opsId 2 bar  states=[Yes,Yes]  qtys=[16000,259]
+  J02876_25_26      Saddam Hussian         Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[16000,259]
+  J02718_25_26      Saddam Hussian         Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[9000,1490]
+  J02722_25_26      Saddam Hussian         Back linning Sheeting & Bind ekei opsId 2 bar  states=[Yes,Yes]  qtys=[28500,919]
+  J06361_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[26000,14200]
+  J06364_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[29200,3350]
+  J06359_25_26      Robihl Sk              Table Calendar Gathering@35/ ekei opsId 2 bar  states=[Yes,Yes]  qtys=[42700,2100]
+  ... aro 239 ta
+
+----------------------------------------------------------------------------------------------------
+F)  JobopsMaster pending qty  vs  Contractor_WD e joma kaj  —  mismatch
+----------------------------------------------------------------------------------------------------
+  expectedDone = totalOpsQty - pendingOpsQty,  actualDone = sob contractor er opsDoneQty er jog
+  Packaging segment e 5% overshoot allowed, tai oi gulo te choto diff normal hote pare.
+
+  J03747_25_26      -            4 side Pining              total=5000000  pending=3155900  expDone=1844100  actDone=1980900  diff=136800
+  J03747_25_26      -            Insertion 2 ups -Momta boo total=5000000  pending=3155900  expDone=1844100  actDone=1980900  diff=136800
+  J03747_25_26      -            Folding - 1 Fold FBB       total=5000000  pending=4766000  expDone=234000   actDone=254000   diff=20000
+  J03362/25-26      Commercial   Book Checking  for Perfect total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03362/25-26      Commercial   Book-Counting              total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03362/25-26      Commercial   Book-Shrink Wrap           total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03362/25-26      Commercial   Box packing                total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J04070_25_26      -            Gathering(0.028)           total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J04070_25_26      -            Book-Shrink Wrap           total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J04070_25_26      -            Box packing                total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J04070_25_26      -            Box Wraping                total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J04070_25_26      -            Box Labeling               total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J04070_25_26      -            Halpatti                   total=30000    pending=30000    expDone=0        actDone=22000    diff=22000
+  J03204/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03172/25-26      Commercial   Form Pustaini Pasting      total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03205/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03163/25-26      Commercial   Form Pustaini Pasting      total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03165/25-26      Commercial   Form Pustaini Pasting      total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03197/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03199/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03178/25-26      Commercial   Form Pustaini Pasting      total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03203/25-26      -            Book-Shrink Wrap           total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03174/25-26      Commercial   Form Pustaini Pasting      total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03364/25-26      -            Book Checking  for Perfect total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03364/25-26      -            Book-Counting              total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03364/25-26      -            Book-Shrink Wrap           total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03364/25-26      -            Box packing                total=7000     pending=7000     expDone=0        actDone=5000     diff=5000
+  J03624_25_26      -            Book Checking( Hard Case)  total=2300     pending=2300     expDone=0        actDone=1100     diff=1100
+  J03624_25_26      -            Card Insert                total=2300     pending=2300     expDone=0        actDone=1100     diff=1100
+  J03624_25_26      -            Book-Shrink Wrap           total=2300     pending=2300     expDone=0        actDone=1100     diff=1100
+  J03624_25_26      -            Box packing                total=2300     pending=2300     expDone=0        actDone=1100     diff=1100
+  J03624_25_26      -            Box Labeling               total=2300     pending=2300     expDone=0        actDone=1100     diff=1100
+  J03167/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03169/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03179/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03180/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03202/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03196/25-26      -            Book-Counting              total=1550     pending=1550     expDone=0        actDone=3100     diff=3100
+  J03176/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  J03185/25-26      Commercial   Book-Counting              total=1550     pending=1550     expDone=0        actDone=1550     diff=1550
+  ... aro 5243 ta
+
+====================================================================================================
+  SUMMARY
+====================================================================================================
+  A) double billing risk        : 8 row,  value 39013.1
+  B) deleted bill theke fire ase: 0 row,  value 0
+  C) kono bill nei              : 111 row,  value 80800.15
+  D) opsId missing              : 0 row
+  E) duplicate opsId            : 279 khetre
+  F) pending mismatch           : 5283 operation
+
+  NOTE: ei script kichui change kore na — sudhu pore ar report dey.
+====================================================================================================
+

@@ -1,0 +1,108 @@
+
+========================================================================================================
+  JobopsMaster pendingOpsQty CLEANUP   db: Contractor_PO   (sob job)
+  MODE: DRY RUN — kichui bodlabe na
+========================================================================================================
+  kaj hoyeche hisheb              : max(Contractor_WD, live bill)
+  JobopsMaster operations scanned : 19328
+  live bill > Contractor_WD       : 2549 operation, 24194035 qty
+     ^ ei qty ta purono delete bug e Contractor_WD theke hariye gechhilo.
+       Bill dhora na hole ei tuku abar pending hoye jeto — othocho already bill hoye gechhe.
+  ekei naam+rate er ekadhik op    : 4  (ei gulo te bill bad diye sudhu WD dhora hoyeche)
+  pending KOMANO dorkar           : 5425
+  pending BARANO dorkar           : 6  (apply hobe NA — FIX_INCREASES = false)
+  mot je gulo bodlano hobe        : 5425
+
+--------------------------------------------------------------------------------------------------------
+A)  PENDING KOMANO HOBE  —  kaj hoye geche kintu pending kome ni
+--------------------------------------------------------------------------------------------------------
+  Ei gulo i asol somossa: pending beshi dekhacche, tai ekei kaj abar record ar bill kora jachhe.
+
+  J03747_25_26     4 side Pining               total=5000000   pending 3155900   -> 2871900   done=1980900   bill[live=2128100 del=1636800]  <- bill>wd, bill er hisheb dhora holo
+  J03747_25_26     Insertion 2 ups -Momta boo  total=5000000   pending 3155900   -> 2871900   done=1980900   bill[live=2128100 del=1636800]  <- bill>wd, bill er hisheb dhora holo
+  J03747_25_26     Folding - 1 Fold FBB        total=5000000   pending 4766000   -> 4746000   done=254000    bill[live=234000 del=1563000]
+  J04080/25-26     Book-Counting               total=70000     pending 9520      -> 0         done=60480     bill[live=70000 del=60480]  <- bill>wd, bill er hisheb dhora holo
+  J04080/25-26     Book-Shrink Wrap            total=70000     pending 9520      -> 0         done=60480     bill[live=70000 del=60480]  <- bill>wd, bill er hisheb dhora holo
+  J04080/25-26     Box packing                 total=70000     pending 9520      -> 0         done=60480     bill[live=70000 del=60480]  <- bill>wd, bill er hisheb dhora holo
+  J04080/25-26     Box Wraping                 total=70000     pending 9520      -> 0         done=60480     bill[live=70000 del=60480]  <- bill>wd, bill er hisheb dhora holo
+  J04080/25-26     Halpatti                    total=70000     pending 9520      -> 0         done=60480     bill[live=70000 del=60480]  <- bill>wd, bill er hisheb dhora holo
+  J04080/25-26     Book Checking  for Perfect  total=70000     pending 70000     -> 60480     done=0         bill[live=9520 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03022/25-26     Book Checking  for Perfect  total=10000     pending 10000     -> 0         done=0         bill[live=10000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03022/25-26     Book-Counting               total=10000     pending 10000     -> 0         done=0         bill[live=10000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03022/25-26     Book-Shrink Wrap            total=10000     pending 10000     -> 0         done=0         bill[live=10000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03022/25-26     Box packing                 total=10000     pending 10000     -> 0         done=0         bill[live=10000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03022/25-26     Box Labeling                total=10000     pending 10000     -> 0         done=0         bill[live=10000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Book Checking( Hard Case)   total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Book-Counting               total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Box packing                 total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Box Labeling                total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Box Wraping                 total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Halpatti                    total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04084_25_26     Polybag Insert (per Book)   total=4000      pending 4000      -> 0         done=0         bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J03362/25-26     Book Checking  for Perfect  total=7000      pending 7000      -> 0         done=5000      bill[live=7000 del=5000]  <- bill>wd, bill er hisheb dhora holo
+  J03362/25-26     Book-Counting               total=7000      pending 7000      -> 0         done=5000      bill[live=7000 del=5000]  <- bill>wd, bill er hisheb dhora holo
+  J03362/25-26     Book-Shrink Wrap            total=7000      pending 7000      -> 0         done=5000      bill[live=7000 del=5000]  <- bill>wd, bill er hisheb dhora holo
+  J03362/25-26     Box packing                 total=7000      pending 7000      -> 0         done=5000      bill[live=7000 del=5000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Book-Shrink Wrap            total=30000     pending 8000      -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Box packing                 total=30000     pending 8000      -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Box Wraping                 total=30000     pending 8000      -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Box Labeling                total=30000     pending 8000      -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Halpatti                    total=30000     pending 8000      -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04073_25_26     Book-Checking For Center    total=30000     pending 30000     -> 22000     done=0         bill[live=8000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Gathering(0.028)            total=30000     pending 30000     -> 8000      done=22000     bill[live=22000 del=22000]
+  J04070_25_26     Book-Shrink Wrap            total=30000     pending 30000     -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Box packing                 total=30000     pending 30000     -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Box Wraping                 total=30000     pending 30000     -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Box Labeling                total=30000     pending 30000     -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Halpatti                    total=30000     pending 30000     -> 0         done=22000     bill[live=30000 del=22000]  <- bill>wd, bill er hisheb dhora holo
+  J04070_25_26     Book-Checking For Center    total=30000     pending 30000     -> 22000     done=0         bill[live=8000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Book Checking( Hard Case)   total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Book-Counting               total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Book-Shrink Wrap            total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Box packing                 total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Box labeling 2 side         total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Box Wraping                 total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04163_25_26     Halpatti                    total=30000     pending 30000     -> 0         done=0         bill[live=30000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Book Checking( Hard Case)   total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Book-Counting               total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Slip Case Making+Inserting  total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Slipcase Die Braking        total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Box packing                 total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Box Labeling                total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     Book-Shrink Wrap            total=2050      pending 2050      -> 0         done=0         bill[live=2050 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04191_25_26     End Paper Pasting Two Side  total=2050      pending 50        -> 0         done=2000      bill[live=4000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Insertion-                  total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Book Checking( Hard Case)   total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Book-Counting               total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Book-Shrink Wrap            total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Box packing                 total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Box Labeling                total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  J04246_25_26     Box Wraping                 total=1000      pending 1000      -> 0         done=0         bill[live=1000 del=0]  <- bill>wd, bill er hisheb dhora holo
+  ... aro 5365 ta
+
+--------------------------------------------------------------------------------------------------------
+B)  PENDING BARANO DORKAR  —  pending dorkarer cheye beshi kome geche
+--------------------------------------------------------------------------------------------------------
+  Ei gulo te boidho kaj thakleo pending kom dekhabe. Pending BARANO mane notun kaj record
+  korar sujog toiri kora, tai ei ta default e apply kora hoy NA. Hate dekhe nishchit hoye
+  tarpor FIX_INCREASES = true korun.
+
+  J06144_25_26     Cotton Threading(0.20)      total=5000      pending 4950      -> 5000      done=0         bill[live=0 del=5200]
+  J06650_25_26     Cotton Threading(0.20)      total=2860      pending 2732      -> 2860      done=0         bill[live=0 del=2875]
+  J07086_25_26     Cotton Threading(0.20)      total=9000      pending 8725      -> 9000      done=0         bill[live=0 del=9175]
+  J07078_25_26     Cotton Threading(0.20)      total=8000      pending 7920      -> 8000      done=0         bill[live=0 del=8320]
+  J07076_25_26     Cotton Threading(0.20)      total=9000      pending 8720      -> 9000      done=0         bill[live=0 del=9170]
+  J05276_25_26     Packaging Cutter Fixing     total=10000     pending 9923      -> 10000     done=0         bill[live=0 del=10423]
+
+========================================================================================================
+  DRY RUN sesh — DATABASE E KICHUI BODLANO HOYNI.
+
+  Upor er list ta dekhe santushto hole:
+    1. Atlas e ekta snapshot niye rakhun
+    2. keu jeno system use na kore seta nishchit korun
+    3. ei file e APPLY = true korun, tarpor abar cholan
+
+  Apply korle purono value gulo "JobopsMaster_pending_backup" collection e rakha hobe,
+  jate ROLLBACK = true diye phire asa jay.
+========================================================================================================
+

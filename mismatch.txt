@@ -1,0 +1,191 @@
+
+================================================================================================================
+  JobopsMaster PENDING MISMATCH DRILL-DOWN   db: Contractor_PO   (sob job)
+================================================================================================================
+  JobopsMaster operations scanned : 19328
+  Operation doc missing (opId er) : 0
+  operations collection e naam    : 284  (er moddhe DUPLICATE naam: 0)
+  Bills documents                 : 415
+
+----------------------------------------------------------------------------------------------------------------
+1)  operations COLLECTION E DUPLICATE opsName  —  ei gulo naam-based matching ke bhange
+----------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+----------------------------------------------------------------------------------------------------------------
+2)  EKEI JOB NUMBER, ALADA FORMAT  (J03362/25-26  vs  J03362_25_26)
+----------------------------------------------------------------------------------------------------------------
+  J03047_26_27   <->   J03047/26-27
+
+----------------------------------------------------------------------------------------------------------------
+3.MISSING_OP_DOC   —   0 operation,  mot diff qty 0
+----------------------------------------------------------------------------------------------------------------
+  JobopsMaster er opId er jonno Operation document nei -> opsName "Unknown" hoye jay. save/jobopsmaster (routes.js:9636) ar bill delete (routes.js:11094) dutoi naam diye match kore, tai duto i vul row e lage.
+
+  (kichu nei)
+
+----------------------------------------------------------------------------------------------------------------
+3.DUP_OPS_NAME   —   0 operation,  mot diff qty 0
+----------------------------------------------------------------------------------------------------------------
+  Ei opsName operations collection e ekadhik bar ache. Bill delete route Operation.findOne({opsName}) kore (routes.js:11094) -> ARBITRARY opId paay -> vul op e pending restore hoy ar Contractor_WD row khuje pay na.
+
+  (kichu nei)
+
+----------------------------------------------------------------------------------------------------------------
+3.DELETED_BILL   —   3210 operation,  mot diff qty 50011557
+----------------------------------------------------------------------------------------------------------------
+  Ei job+op er ekta DELETED bill ache. Delete route pending restore korechhe kintu Contractor_WD row ta thik moto komay ni.
+
+  J03747_25_26     4 side Pining               total=5000000   pend=3155900   expDone=1844100   actDone=1980900   diff=136800    
+        wd[billed=1980900 unsaved=0 rows=5]  bill[live=2128100 deleted=1636800 #00000001,00000003]  created=2026-01-02 updated=2026-01-20  [Siraj Molla, Robihl Sk]
+  J03747_25_26     Insertion 2 ups -Momta boo  total=5000000   pend=3155900   expDone=1844100   actDone=1980900   diff=136800    
+        wd[billed=1980900 unsaved=0 rows=5]  bill[live=2128100 deleted=1636800 #00000001,00000003]  created=2026-01-02 updated=2026-01-20  [Siraj Molla, Robihl Sk]
+  J03747_25_26     Folding - 1 Fold FBB        total=5000000   pend=4766000   expDone=234000    actDone=254000    diff=20000     
+        wd[billed=254000 unsaved=0 rows=4]  bill[live=234000 deleted=1563000 #00000001,00000003,00000039]  created=2026-01-02 updated=2026-01-20  [Siraj Molla, Robihl Sk]
+  J03362/25-26     Book Checking  for Perfect  total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  J03362/25-26     Book-Counting               total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  J03362/25-26     Book-Shrink Wrap            total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  J03362/25-26     Box packing                 total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  J04070_25_26     Gathering(0.028)            total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=22000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-01-05  [MASUDA BIBI]
+  J04070_25_26     Book-Shrink Wrap            total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=30000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-05-18  [MASUDA BIBI]
+  J04070_25_26     Box packing                 total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=30000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-05-18  [MASUDA BIBI]
+  J04070_25_26     Box Wraping                 total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=30000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-05-18  [MASUDA BIBI]
+  J04070_25_26     Box Labeling                total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=30000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-05-18  [MASUDA BIBI]
+  J04070_25_26     Halpatti                    total=30000     pend=30000     expDone=0         actDone=22000     diff=22000     
+        wd[billed=22000 unsaved=0 rows=1]  bill[live=30000 deleted=22000 #00000003]  created=2026-01-02 updated=2026-05-18  [MASUDA BIBI]
+  J03204/25-26     Book-Counting               total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-05 updated=2026-05-18  [Rouson Ali 2]
+  J03172/25-26     Form Pustaini Pasting       total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-03 updated=2026-05-18  [Rouson Ali 2]
+  J03205/25-26     Book-Counting               total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-05 updated=2026-05-18  [Rouson Ali 2]
+  J03163/25-26     Form Pustaini Pasting       total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-03 updated=2026-05-18  [Rouson Ali 2]
+  J03165/25-26     Form Pustaini Pasting       total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-03 updated=2026-05-18  [Rouson Ali 2]
+  J03197/25-26     Book-Counting               total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-05 updated=2026-05-18  [Rouson Ali 2]
+  J03199/25-26     Book-Counting               total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-05 updated=2026-05-18  [Rouson Ali 2]
+  J03178/25-26     Form Pustaini Pasting       total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-03 updated=2026-05-18  [Rouson Ali 2]
+  J03203/25-26     Book-Shrink Wrap            total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-05 updated=2026-05-18  [Rouson Ali 2]
+  J03174/25-26     Form Pustaini Pasting       total=1550      pend=1550      expDone=0         actDone=1550      diff=1550      
+        wd[billed=1550 unsaved=0 rows=1]  bill[live=1550 deleted=1550 #00000261]  created=2026-01-03 updated=2026-05-18  [Rouson Ali 2]
+  J03364/25-26     Book Checking  for Perfect  total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  J03364/25-26     Book-Counting               total=7000      pend=7000      expDone=0         actDone=5000      diff=5000      
+        wd[billed=5000 unsaved=0 rows=1]  bill[live=7000 deleted=5000 #00000261]  created=2026-01-14 updated=2026-05-18  [Rouson Ali 2]
+  ... aro 3185 ta
+
+----------------------------------------------------------------------------------------------------------------
+3.PENDING_NEVER_REDUCED   —   11 operation,  mot diff qty 433800
+----------------------------------------------------------------------------------------------------------------
+  pending == total, othocho kaj record ache. Op ta abar toiri/re-add hoyeche (POST /jobs/jobopsmaster e pendingOpsQty = totalOpsQty boshiye dey, routes.js:7325), othoba pending puro restore hoye geche.
+
+  J06010_25_26     Insertion-                  total=1500      pend=1500      expDone=0         actDone=4500      diff=4500      
+        wd[billed=4500 unsaved=0 rows=3]  bill[live=4500 deleted=0]  created=2026-01-31 updated=2026-01-31  [Robihl Sk, Niroj Molla]
+  J00930/26-27     Book Bundle                 total=25000     pend=25000     expDone=0         actDone=25000     diff=25000     
+        wd[billed=25000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00933/26-27     Book Bundle                 total=25000     pend=25000     expDone=0         actDone=25000     diff=25000     
+        wd[billed=25000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00926/26-27     Book Bundle                 total=30000     pend=30000     expDone=0         actDone=30000     diff=30000     
+        wd[billed=30000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00927/26-27     Book Bundle                 total=30000     pend=30000     expDone=0         actDone=30000     diff=30000     
+        wd[billed=30000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00928/26-27     Book Bundle                 total=30000     pend=30000     expDone=0         actDone=30000     diff=30000     
+        wd[billed=30000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00929/26-27     Book Bundle                 total=30000     pend=30000     expDone=0         actDone=30000     diff=30000     
+        wd[billed=30000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-15 updated=2026-06-16  [Rouson Ali 2]
+  J00931/26-27     Book Bundle                 total=25000     pend=25000     expDone=0         actDone=25000     diff=25000     
+        wd[billed=25000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-16 updated=2026-06-16  [Rouson Ali 2]
+  J00932/26-27     Book Bundle                 total=25000     pend=25000     expDone=0         actDone=25000     diff=25000     
+        wd[billed=25000 unsaved=0 rows=1]  bill[live=0 deleted=0]  created=2026-06-16 updated=2026-06-16  [Rouson Ali 2]
+  J02454_26_27     Inner Sorting & Packing (0  total=102000    pend=102000    expDone=0         actDone=104650    diff=104650    
+        wd[billed=104650 unsaved=0 rows=1]  bill[live=104650 deleted=0]  created=2026-07-03 updated=2026-07-07  [Shyam (Packaging)]
+  J02454_26_27     Inner Sorting & Packing (0  total=102000    pend=102000    expDone=0         actDone=104650    diff=104650    
+        wd[billed=104650 unsaved=0 rows=1]  bill[live=104650 deleted=0]  created=2026-07-03 updated=2026-07-03  [Shyam (Packaging)]
+
+----------------------------------------------------------------------------------------------------------------
+3.PARTIAL_OFF   —   2064 operation,  mot diff qty 1557763
+----------------------------------------------------------------------------------------------------------------
+  Onno kono karone pending ar record kora kaj mile na.
+
+  J06010_25_26     Insertion-                  total=1500      pend=0         expDone=1500      actDone=4500      diff=3000      
+        wd[billed=4500 unsaved=0 rows=3]  bill[live=4500 deleted=0]  created=2026-01-31 updated=2026-02-09  [Robihl Sk, Niroj Molla]
+  J06323_25_26     Card Counting packaging (0  total=54000     pend=0         expDone=54000     actDone=56700     diff=2700      
+        wd[billed=56700 unsaved=0 rows=1]  bill[live=56700 deleted=0]  created=2026-03-05 updated=2026-03-05  [Fulsari Khatun (Mamud)]
+  J06933_25_26     Box Wraping                 total=60000     pend=0         expDone=60000     actDone=60500     diff=500       
+        wd[billed=60500 unsaved=0 rows=1]  bill[live=60500 deleted=0]  created=2026-03-16 updated=2026-03-16  [MASUDA BIBI]
+  J06933_25_26     Box Labeling                total=60000     pend=0         expDone=60000     actDone=60500     diff=500       
+        wd[billed=60500 unsaved=0 rows=1]  bill[live=60500 deleted=0]  created=2026-03-16 updated=2026-03-16  [MASUDA BIBI]
+  J06933_25_26     Halpatti                    total=60000     pend=0         expDone=60000     actDone=60500     diff=500       
+        wd[billed=60500 unsaved=0 rows=1]  bill[live=60500 deleted=0]  created=2026-03-16 updated=2026-03-16  [MASUDA BIBI]
+  J07444_25_26     Manual Pasting(0.60)-Packa  total=30000     pend=0         expDone=30000     actDone=30300     diff=300       
+        wd[billed=30300 unsaved=0 rows=1]  bill[live=30300 deleted=0]  created=2026-04-07 updated=2026-04-07  [Majid Iqbal Khan (Packaging)]
+  J07645_25_26     Cotton Threading(0.20)      total=4750      pend=0         expDone=4750      actDone=4900      diff=150       
+        wd[billed=4900 unsaved=0 rows=1]  bill[live=9800 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J08002_25_26     Cotton Threading(0.20)      total=5000      pend=0         expDone=5000      actDone=5250      diff=250       
+        wd[billed=5250 unsaved=0 rows=1]  bill[live=10500 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J06385_25_26     Cotton Threading(0.20)      total=5000      pend=0         expDone=5000      actDone=5100      diff=100       
+        wd[billed=5100 unsaved=0 rows=1]  bill[live=10200 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J06949_25_26     Cotton Threading(0.20)      total=6000      pend=0         expDone=6000      actDone=6300      diff=300       
+        wd[billed=6300 unsaved=0 rows=1]  bill[live=12600 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J06386_25_26     Cotton Threading(0.20)      total=5000      pend=0         expDone=5000      actDone=5250      diff=250       
+        wd[billed=5250 unsaved=0 rows=1]  bill[live=10500 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J07847_25_26     Cotton Threading(0.20)      total=6600      pend=0         expDone=6600      actDone=6900      diff=300       
+        wd[billed=6900 unsaved=0 rows=1]  bill[live=13800 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J07650_25_26     Cotton Threading(0.20)      total=7000      pend=0         expDone=7000      actDone=7300      diff=300       
+        wd[billed=7300 unsaved=0 rows=1]  bill[live=14600 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J07678_25_26     Cotton Threading(0.20)      total=4900      pend=0         expDone=4900      actDone=4950      diff=50        
+        wd[billed=4950 unsaved=0 rows=1]  bill[live=9900 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J07511_25_26     Packaging  Box Formation(0  total=10000     pend=0         expDone=10000     actDone=10350     diff=350       
+        wd[billed=10350 unsaved=0 rows=1]  bill[live=20700 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J06751_25_26     Packaging  Box Formation(0  total=40000     pend=0         expDone=40000     actDone=40508     diff=508       
+        wd[billed=40508 unsaved=0 rows=1]  bill[live=81016 deleted=0]  created=2026-04-17 updated=2026-04-20  [Swapan Kumar Khanra]
+  J06753_25_26     Packaging  Box Formation(0  total=10000     pend=0         expDone=10000     actDone=10244     diff=244       
+        wd[billed=10244 unsaved=0 rows=1]  bill[live=20488 deleted=0]  created=2026-04-17 updated=2026-04-17  [Swapan Kumar Khanra]
+  J06752_25_26     Packaging  Box Formation(0  total=130000    pend=0         expDone=130000    actDone=130156    diff=156       
+        wd[billed=130156 unsaved=0 rows=1]  bill[live=260312 deleted=0]  created=2026-04-17 updated=2026-04-20  [Swapan Kumar Khanra]
+  J07238_25_26     Packaging Cutter Fixing     total=10000     pend=0         expDone=10000     actDone=10500     diff=500       
+        wd[billed=10500 unsaved=0 rows=2]  bill[live=16506 deleted=0]  created=2026-04-17 updated=2026-05-21  [Swapan Kumar Khanra]
+  J08060/25-26     Book Gathering(0.030)       total=10000     pend=5000      expDone=5000      actDone=9000      diff=4000      
+        wd[billed=9000 unsaved=0 rows=2]  bill[live=5000 deleted=0]  created=2026-04-30 updated=2026-06-16  [Moyna  Ali  Molla, Rouson Ali 2]
+  J08060/25-26     Book-Shrink Wrap            total=10000     pend=5000      expDone=5000      actDone=9000      diff=4000      
+        wd[billed=9000 unsaved=0 rows=2]  bill[live=5000 deleted=0]  created=2026-04-30 updated=2026-06-16  [Moyna  Ali  Molla, Rouson Ali 2]
+  J08060/25-26     Halpatti                    total=10000     pend=5000      expDone=5000      actDone=9000      diff=4000      
+        wd[billed=9000 unsaved=0 rows=2]  bill[live=5000 deleted=0]  created=2026-04-30 updated=2026-06-16  [Moyna  Ali  Molla, Rouson Ali 2]
+  J06808_25_26     Cotton Threading(0.20)      total=5000      pend=0         expDone=5000      actDone=5200      diff=200       
+        wd[billed=5200 unsaved=0 rows=1]  bill[live=5200 deleted=0]  created=2026-05-08 updated=2026-05-08  [Swapan Kumar Khanra]
+  J07760_25_26     Cotton Threading(0.20)      total=5000      pend=0         expDone=5000      actDone=5200      diff=200       
+        wd[billed=5200 unsaved=0 rows=1]  bill[live=5200 deleted=0]  created=2026-05-08 updated=2026-05-08  [Swapan Kumar Khanra]
+  J00018_26_27     Cotton Threading(0.20)      total=2000      pend=0         expDone=2000      actDone=2100      diff=100       
+        wd[billed=2100 unsaved=0 rows=1]  bill[live=2100 deleted=0]  created=2026-05-08 updated=2026-05-08  [Swapan Kumar Khanra]
+  ... aro 2039 ta
+
+================================================================================================================
+  SUMMARY  —  kon karon ta dominant
+================================================================================================================
+  DELETED_BILL                3210 operation      diff qty 50011557
+  PARTIAL_OFF                 2064 operation      diff qty 1557763
+  PENDING_NEVER_REDUCED         11 operation      diff qty 433800
+  MISSING_OP_DOC                 0 operation      diff qty 0
+  DUP_OPS_NAME                   0 operation      diff qty 0
+
+  duplicate opsName (operations)  : 0
+  jobId format clash              : 1
+  Operation doc missing           : 0
+
+  NOTE: ei script kichui change kore na — sudhu pore ar report dey.
+================================================================================================================
+

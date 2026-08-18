@@ -10,6 +10,23 @@
 
 export const UNIQUE_OPTIONAL_FIELDS = ['bill_dedup_key', 'tally_voucher_number'];
 
+const UNIQUE_FIELD_LABEL = {
+  tally_voucher_number: 'Tally voucher',
+  bill_dedup_key: 'Supplier invoice (GSTIN/PAN + bill number)',
+};
+
+export function uniqueConflictInfo(err) {
+  const keyValue = err?.keyValue || {};
+  const keyPattern = err?.keyPattern || {};
+  const field = Object.keys(keyPattern)[0] || Object.keys(keyValue)[0] || null;
+  const value = field ? keyValue[field] : undefined;
+  return {
+    field,
+    value,
+    label: (field && UNIQUE_FIELD_LABEL[field]) || field || 'unique field',
+  };
+}
+
 function isEmptyUniqueValue(v) {
   return v == null || (typeof v === 'string' && !v.trim());
 }

@@ -1,0 +1,57 @@
+
+================================================================================================================
+  JOB INSPECT:  J04307_26_27     db: Contractor_PO
+================================================================================================================
+
+  clientName   : Dollar Industries Ltd - Kolkata
+  jobTitle     : BB FLEXI TRK F/O PRT SPP (75004125)
+  segmentName  : "Packaging"   -> Packaging
+  totalQty     : 120000
+  allowance    : 6000  (5% of totalQty)
+  ops count    : 2
+
+----------------------------------------------------------------------------------------------------------------
+1)  "OPERATIONS PENDING" panel e ja dekhabe   (pendingOpsQty > 0 hole)
+----------------------------------------------------------------------------------------------------------------
+  Operation                         total     pending   joma kaj   pending howa uchit  Qty to Add cap
+  Inner Sorting & Packing (0.023)   120000    37910     82090      37910               43910
+  Inner Stripping (0.012)           120000    100000    20000      100000              106000
+
+----------------------------------------------------------------------------------------------------------------
+2)  Contractor_WD er SOB row  (ei job e)
+----------------------------------------------------------------------------------------------------------------
+  contractor                Operation                       qty       rate    savedInBill  kobe save hoyeche
+  Dharmendra Enterprises (  Inner Sorting & Packing (0.023  74390     0.02    Yes          2026-08-06 07:01:37
+  Vikash Kumar ( Packaging  Inner Stripping (0.012)         20000     0.01    Yes          2026-08-06 05:51:21
+  Shyam (Packaging)         Inner Sorting & Packing (0.023  7700      0.02    No           2026-08-17 10:11:44
+
+----------------------------------------------------------------------------------------------------------------
+3)  Ei job er BILL gulo
+----------------------------------------------------------------------------------------------------------------
+  bill 00000419           unpaid  2026-08-08  Dharmendra Enterprises (Packaging)
+        Inner Sorting & Packing (0.023)     qty=74390     rate=0.02
+  bill 00000429           unpaid  2026-08-17  Vikash Kumar ( Packaging)
+        Inner Stripping (0.012)             qty=20000     rate=0.01
+
+================================================================================================================
+4)  "BILL DETAILS" e ja dekhabe, ar KENO
+================================================================================================================
+  Bill Details sudhu savedInBill = "No" row gulo dekhay. Onno kichu noy.
+
+  [1]  Inner Sorting & Packing (0.023)   qty=7700  rate=0.02  value=154
+       contractor : Shyam (Packaging)  (CTR1778235761555ESXMV5)
+       save hoyeche: 2026-08-17 10:11:44   (0 din age)
+       ei op e live bill e ache: 74390
+       live bill: 00000419 2026-08-08
+       >>> SANDEHOJONOK: ei op ekta LIVE BILL eo ache. Ekei kaj duibar bill hote pare.
+           Amake janan.
+
+  mot 1 ta row,  value 154
+
+  Ki korben:
+    - Boidho kaj hole  : Bill Details e rekhe SUBMIT korun
+    - Bhul kore hoyeche: oi row er "Delete" tipun (pending qty ferot chole jabe)
+
+  NOTE: ei script kichui change kore ni.
+================================================================================================================
+

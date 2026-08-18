@@ -170,7 +170,9 @@ export function buildCanonicalFields(slots, { setType }) {
     set_type: setType,
     cdc_unit,
 
-    tally_voucher_number: voucher.voucher_number || undefined,
+    tally_voucher_number: voucher.voucher_number
+      ? String(voucher.voucher_number).trim()
+      : undefined,
     tally_voucher_date: parseDate(voucher.voucher_date),
     tally_ref_bill_no: voucher.ref_bill_number || null,
     tally_ref_bill_date: parseDate(voucher.ref_bill_date),

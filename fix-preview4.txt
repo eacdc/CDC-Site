@@ -1,0 +1,301 @@
+
+================================================================================================================
+  JobopsMaster pendingOpsQty CLEANUP   db: Contractor_PO   (sob job)
+  MODE: DRY RUN — kichui bodlabe na
+================================================================================================================
+  NIYOM: pending = totalOpsQty - (live bill er qty) - (save hoyeche kintu bill hoyni)
+
+  JobopsMaster operations scanned : 19328
+  ekei naam+rate er ekadhik op    : 4  (ei gulo te bill bad diye Contractor_WD dhora hoyeche)
+
+  A) pending komano dorkar        : 5351  (apply hobe)
+  B) pending barano dorkar        : 146  (apply hobe NA — FIX_INCREASES = false)
+  ---------------------------------------------------
+  mot je gulo bodlano hobe        : 5351
+
+  C) OVER-BILLED (live bill > totalOpsQty) : 2372  <-- ei tai asol vul
+
+----------------------------------------------------------------------------------------------------------------
+A)  PENDING KOMANO HOBE
+----------------------------------------------------------------------------------------------------------------
+  Bill + ekhono bill na hoya kaj mile totalOpsQty er kachakachi chole gechhe, kintu
+  pending seta dekhachhe na. Tai ekei kaj abar record ar bill kora jachhe.
+
+  J03747_25_26     4 side Pining               total=5000000   pending 3155900   -> 2871900   billed=2128100   notyetbilled=0         
+  J03747_25_26     Insertion 2 ups -Momta boo  total=5000000   pending 3155900   -> 2871900   billed=2128100   notyetbilled=0         
+  J04080/25-26     Book-Counting               total=70000     pending 9520      -> 0         billed=70000     notyetbilled=0         
+  J04080/25-26     Book-Shrink Wrap            total=70000     pending 9520      -> 0         billed=70000     notyetbilled=0         
+  J04080/25-26     Box packing                 total=70000     pending 9520      -> 0         billed=70000     notyetbilled=0         
+  J04080/25-26     Box Wraping                 total=70000     pending 9520      -> 0         billed=70000     notyetbilled=0         
+  J04080/25-26     Halpatti                    total=70000     pending 9520      -> 0         billed=70000     notyetbilled=0         
+  J04080/25-26     Book Checking  for Perfect  total=70000     pending 70000     -> 60480     billed=9520      notyetbilled=0         
+  J03022/25-26     Book Checking  for Perfect  total=10000     pending 10000     -> 0         billed=10000     notyetbilled=0         
+  J03022/25-26     Book-Counting               total=10000     pending 10000     -> 0         billed=10000     notyetbilled=0         
+  J03022/25-26     Book-Shrink Wrap            total=10000     pending 10000     -> 0         billed=10000     notyetbilled=0         
+  J03022/25-26     Box packing                 total=10000     pending 10000     -> 0         billed=10000     notyetbilled=0         
+  J03022/25-26     Box Labeling                total=10000     pending 10000     -> 0         billed=10000     notyetbilled=0         
+  J04084_25_26     Book Checking( Hard Case)   total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Book-Counting               total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Box packing                 total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Box Labeling                total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Box Wraping                 total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Halpatti                    total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J04084_25_26     Polybag Insert (per Book)   total=4000      pending 4000      -> 0         billed=4000      notyetbilled=0         
+  J03362/25-26     Book Checking  for Perfect  total=7000      pending 7000      -> 0         billed=7000      notyetbilled=0         
+  J03362/25-26     Book-Counting               total=7000      pending 7000      -> 0         billed=7000      notyetbilled=0         
+  J03362/25-26     Book-Shrink Wrap            total=7000      pending 7000      -> 0         billed=7000      notyetbilled=0         
+  J03362/25-26     Box packing                 total=7000      pending 7000      -> 0         billed=7000      notyetbilled=0         
+  J04073_25_26     Book-Shrink Wrap            total=30000     pending 8000      -> 0         billed=30000     notyetbilled=0         
+  J04073_25_26     Box packing                 total=30000     pending 8000      -> 0         billed=30000     notyetbilled=0         
+  J04073_25_26     Box Wraping                 total=30000     pending 8000      -> 0         billed=30000     notyetbilled=0         
+  J04073_25_26     Box Labeling                total=30000     pending 8000      -> 0         billed=30000     notyetbilled=0         
+  J04073_25_26     Halpatti                    total=30000     pending 8000      -> 0         billed=30000     notyetbilled=0         
+  J04073_25_26     Book-Checking For Center    total=30000     pending 30000     -> 22000     billed=8000      notyetbilled=0         
+  J04070_25_26     Gathering(0.028)            total=30000     pending 30000     -> 8000      billed=22000     notyetbilled=0         
+  J04070_25_26     Book-Shrink Wrap            total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04070_25_26     Box packing                 total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04070_25_26     Box Wraping                 total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04070_25_26     Box Labeling                total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04070_25_26     Halpatti                    total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04070_25_26     Book-Checking For Center    total=30000     pending 30000     -> 22000     billed=8000      notyetbilled=0         
+  J04163_25_26     Book Checking( Hard Case)   total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Book-Counting               total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Book-Shrink Wrap            total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Box packing                 total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Box labeling 2 side         total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Box Wraping                 total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04163_25_26     Halpatti                    total=30000     pending 30000     -> 0         billed=30000     notyetbilled=0         
+  J04191_25_26     Book Checking( Hard Case)   total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Book-Counting               total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Slip Case Making+Inserting  total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Slipcase Die Braking        total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Box packing                 total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Box Labeling                total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     Book-Shrink Wrap            total=2050      pending 2050      -> 0         billed=2050      notyetbilled=0         
+  J04191_25_26     End Paper Pasting Two Side  total=2050      pending 50        -> 0         billed=4000      notyetbilled=0         
+  J04246_25_26     Insertion-                  total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Book Checking( Hard Case)   total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Book-Counting               total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Book-Shrink Wrap            total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Box packing                 total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Box Labeling                total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Box Wraping                 total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  J04246_25_26     Halpatti                    total=1000      pending 1000      -> 0         billed=1000      notyetbilled=0         
+  ... aro 5291 ta
+
+----------------------------------------------------------------------------------------------------------------
+B)  PENDING BARANO DORKAR   [apply hobe NA]
+----------------------------------------------------------------------------------------------------------------
+  Pending barano mane notun kaj record korar sujog toiri kora, tai default e apply hoy na.
+  Packaging segment e bill delete korle 5% icche kore rekhe deoa hoy — oi gulo ekhane ashbe,
+  kintu segulo bug noy, design onujayi thik.
+
+  J03362/25-26     Sticker Pasting in Box/Shr  total=7000      pending 2000      -> 7000      billed=0         notyetbilled=0         
+  J03364/25-26     Sticker Pasting in Box/Shr  total=7000      pending 2000      -> 7000      billed=0         notyetbilled=0         
+  J03363/25-26     Sticker Pasting in Box/Shr  total=7000      pending 2000      -> 7000      billed=0         notyetbilled=0         
+  J03361/25-26     Sticker Pasting in Box/Shr  total=7000      pending 2000      -> 7000      billed=0         notyetbilled=0         
+  J04960_25_26     Bundle/Halpati Packaging (  total=171600    pending 71600     -> 171600    billed=0         notyetbilled=0         
+  J04628_25_26     Hard Book Repairing(5)      total=5000      pending 4700      -> 5000      billed=0         notyetbilled=0         
+  J04001/25-26     Sticker Pasting in Box/Shr  total=10000     pending 0         -> 10000     billed=0         notyetbilled=0         
+  J04949_25_26     Hard Book Repairing(5)      total=100000    pending 99500     -> 100000    billed=0         notyetbilled=0         
+  J04000/25-26     Sticker Pasting in Box/Shr  total=10000     pending 0         -> 10000     billed=0         notyetbilled=0         
+  J03766/25-26     Sticker Pasting in Box/Shr  total=20000     pending 0         -> 20000     billed=0         notyetbilled=0         
+  J04763/25-26     Sticker Pasting in Box/Shr  total=1000      pending 0         -> 1000      billed=0         notyetbilled=0         
+  J04762/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J03803/25-26     Sticker Pasting in Box/Shr  total=15000     pending 0         -> 15000     billed=0         notyetbilled=0         
+  J03804/25-26     Sticker Pasting in Box/Shr  total=15000     pending 0         -> 15000     billed=0         notyetbilled=0         
+  J05308/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J02267/25-26     Sticker Pasting in Box/Shr  total=20000     pending 0         -> 20000     billed=0         notyetbilled=0         
+  J02268/25-26     Sticker Pasting in Box/Shr  total=20000     pending 0         -> 20000     billed=0         notyetbilled=0         
+  J06323_25_26     Bundle/Halpati Packaging (  total=54000     pending 0         -> 54000     billed=0         notyetbilled=0         
+  J06069_25_26     Manual Pasting(0.60)-Packa  total=81000     pending 0         -> 81000     billed=0         notyetbilled=0         
+  J04643_25_26     Stripping +packing  (0.018  total=5000      pending 0         -> 2000      billed=3000      notyetbilled=0         
+  J03519_25_26     Sticker Pasting in Box/Shr  total=30000     pending 0         -> 30000     billed=0         notyetbilled=0         
+  J03521_25_26     Sticker Pasting in Box/Shr  total=50000     pending 0         -> 50000     billed=0         notyetbilled=0         
+  J05827/25-26     Sticker Pasting in Box/Shr  total=4000      pending 0         -> 4000      billed=0         notyetbilled=0         
+  J05309/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06099/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06101/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06100/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06098/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06102/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06105/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06104/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J06103/25-26     Sticker Pasting in Box/Shr  total=3000      pending 0         -> 3000      billed=0         notyetbilled=0         
+  J05394/25-26     Sticker Pasting in Box/Shr  total=30124     pending 0         -> 30124     billed=0         notyetbilled=0         
+  J05393/25-26     Sticker Pasting in Box/Shr  total=22593     pending 0         -> 22593     billed=0         notyetbilled=0         
+  J05395/25-26     Sticker Pasting in Box/Shr  total=15062     pending 0         -> 15062     billed=0         notyetbilled=0         
+  J05392/25-26     Sticker Pasting in Box/Shr  total=30124     pending 0         -> 30124     billed=0         notyetbilled=0         
+  J05396/25-26     Sticker Pasting in Box/Shr  total=22593     pending 0         -> 22593     billed=0         notyetbilled=0         
+  J05397/25-26     Sticker Pasting in Box/Shr  total=30124     pending 0         -> 30124     billed=0         notyetbilled=0         
+  J05423/25-26     Sticker Pasting in Box/Shr  total=4204      pending 0         -> 4204      billed=0         notyetbilled=0         
+  J05425/25-26     Sticker Pasting in Box/Shr  total=4204      pending 0         -> 4204      billed=0         notyetbilled=0         
+  J05324_25_26     Sticker Pasting in Box/Shr  total=2000      pending 0         -> 2000      billed=0         notyetbilled=0         
+  J05428/25-26     Sticker Pasting in Box/Shr  total=4204      pending 0         -> 4204      billed=0         notyetbilled=0         
+  J05427/25-26     Sticker Pasting in Box/Shr  total=3153      pending 0         -> 3153      billed=0         notyetbilled=0         
+  J05426/25-26     Sticker Pasting in Box/Shr  total=2102      pending 0         -> 2102      billed=0         notyetbilled=0         
+  J05436/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05437/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05438/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05435/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05440/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05439/25-26     Sticker Pasting in Box/Shr  total=896       pending 0         -> 896       billed=0         notyetbilled=0         
+  J05421/25-26     Sticker Pasting in Box/Shr  total=4164      pending 0         -> 4164      billed=0         notyetbilled=0         
+  J05419/25-26     Sticker Pasting in Box/Shr  total=4164      pending 0         -> 4164      billed=0         notyetbilled=0         
+  J05414/25-26     Sticker Pasting in Box/Shr  total=3734      pending 0         -> 3734      billed=0         notyetbilled=0         
+  J05418/25-26     Sticker Pasting in Box/Shr  total=4164      pending 0         -> 4164      billed=0         notyetbilled=0         
+  J05413/25-26     Sticker Pasting in Box/Shr  total=3734      pending 0         -> 3734      billed=0         notyetbilled=0         
+  J05430/25-26     Sticker Pasting in Box/Shr  total=1114      pending 0         -> 1114      billed=0         notyetbilled=0         
+  J05415/25-26     Sticker Pasting in Box/Shr  total=3734      pending 0         -> 3734      billed=0         notyetbilled=0         
+  J05411/25-26     Sticker Pasting in Box/Shr  total=3734      pending 0         -> 3734      billed=0         notyetbilled=0         
+  J05434/25-26     Sticker Pasting in Box/Shr  total=1114      pending 0         -> 1114      billed=0         notyetbilled=0         
+  J05432/25-26     Sticker Pasting in Box/Shr  total=1114      pending 0         -> 1114      billed=0         notyetbilled=0         
+  ... aro 86 ta
+
+----------------------------------------------------------------------------------------------------------------
+C)  OVER-BILLED  —  totalOpsQty er cheye BESHI bill hoye payment hoye gechhe
+----------------------------------------------------------------------------------------------------------------
+  EI SCRIPT EI GULO THIK KORE NA — eta accounting er siddhanto, code er noy.
+  Packaging segment e 5% porjonto overshoot boidho, tai excessPct dekhe bujhben.
+
+  mot over-billed operation     : 2372
+  5% er BESHI overshoot          : 457  <-- packaging allowance diyeo bakhya kora jay na
+  mot excess value               : 1505539.59
+
+  J02918_25_26     Wiro Binding Promo  Table   total=273000    billed=511950    excess=238950    (87.53%)  value=167265
+        segment=Commercial  bills=00000135,00000210,00000274,00000371
+  J02722_25_26     Back linning Sheeting & Bi  total=162750    billed=224899    excess=62149     (38.19%)  value=102545.85
+        segment=Commercial  bills=00000049,00000056,00000064,00000082,00000084,00000116,00000128,00000172,00000181,00000183,00000199,00000207,00000226,00000258,00000365,00000366
+  J02719_25_26     Back linning Sheeting & Bi  total=110250    billed=152255    excess=42005     (38.1%)  value=69308.25
+        segment=Commercial  bills=00000049,00000056,00000064,00000073,00000082,00000084,00000168,00000258,00000365,00000366
+  J06752_25_26     Packaging  Box Formation(0  total=130000    billed=260312    excess=130312    (100.24%)  value=65156
+        segment=Packaging  bills=00000197,00000209,00000252
+  J02721_25_26     Back linning Sheeting & Bi  total=126000    billed=164500    excess=38500     (30.56%)  value=63525
+        segment=Commercial  bills=00000049,00000056,00000064,00000073,00000116,00000121,00000128,00000199,00000207,00000226,00000258
+  J08207_25_26     T.M.C Folding (ZigZag Last  total=5000000   billed=5900000   excess=900000    (18%)  value=45000
+        segment=Commercial  bills=00000171,00000174,00000182,00000184,00000188,00000258
+  J02723_25_26     Back linning Sheeting & Bi  total=99750     billed=120860    excess=21110     (21.16%)  value=34831.5
+        segment=Commercial  bills=00000049,00000056,00000064,00000116,00000121,00000128,00000161,00000258,00000365,00000366
+  J02718_25_26     Back linning Sheeting & Bi  total=99750     billed=120390    excess=20640     (20.69%)  value=34056
+        segment=Commercial  bills=00000049,00000056,00000064,00000116,00000121,00000128,00000166,00000258,00000365,00000366
+  J02720_25_26     Back linning Sheeting & Bi  total=52500     billed=70212     excess=17712     (33.74%)  value=29224.8
+        segment=Commercial  bills=00000049,00000056,00000064,00000116,00000121,00000128,00000258,00000365
+  J06364_25_26     Wiro Binding Promo  Table   total=57750     billed=97450     excess=39700     (68.74%)  value=27790
+        segment=Commercial  bills=00000210,00000371,00000427
+  J07542_25_26     Case Makng                  total=18000     billed=36000     excess=18000     (100%)  value=27000
+        segment=Commercial  bills=00000226,00000258
+  J02952_25_26     Table Calendar Checking(0.  total=168000    billed=332800    excess=164800    (98.1%)  value=24720
+        segment=Commercial  bills=00000198,00000263
+  J04372_25_26     Back linning Sheeting & Bi  total=29400     billed=43750     excess=14350     (48.81%)  value=23677.5
+        segment=Commercial  bills=00000221,00000226,00000258,00000259,00000366
+  J06751_25_26     Packaging  Box Formation(0  total=40000     billed=81016     excess=41016     (102.54%)  value=20508
+        segment=Packaging  bills=00000197,00000209,00000252
+  J06671_25_26     DELICA Folder  Full Comple  total=1250      billed=1850      excess=600       (48%)  value=18000
+        segment=Commercial  bills=00000171,00000187,00000258
+  J06670_25_26     DELICA Folder  Full Comple  total=1250      billed=1850      excess=600       (48%)  value=18000
+        segment=Commercial  bills=00000171,00000187,00000258
+  J02876_25_26     Back linning Sheeting & Bi  total=73500     billed=83539     excess=10039     (13.66%)  value=16564.35
+        segment=Commercial  bills=00000056,00000064,00000073,00000116,00000121,00000128,00000258,00000365,00000366
+  J06358_25_26     Back linning Sheeting & Bi  total=10500     billed=20000     excess=9500      (90.48%)  value=15675
+        segment=Commercial  bills=00000168,00000258
+  J05869_25_26     Back linning Sheeting & Bi  total=26250     billed=35700     excess=9450      (36%)  value=15592.5
+        segment=Commercial  bills=00000221,00000223,00000226,00000258,00000365
+  J03941_25_26     Back Lineing(0.50)          total=10500     billed=20600     excess=10100     (96.19%)  value=15150
+        segment=Commercial  bills=00000226,00000258
+  J03941_25_26     Duplex Pasting (0.50)       total=10500     billed=20600     excess=10100     (96.19%)  value=15150
+        segment=Commercial  bills=00000226,00000258
+  J05867_25_26     Back linning Sheeting & Bi  total=26250     billed=34699     excess=8449      (32.19%)  value=13940.85
+        segment=Commercial  bills=00000172,00000180,00000199,00000258,00000365,00000366
+  J04057_25_26     Back linning Sheeting & Bi  total=26250     billed=34500     excess=8250      (31.43%)  value=13612.5
+        segment=Commercial  bills=00000221,00000223,00000226,00000258,00000310,00000365
+  J05136_25_26     40 pc Sheets Counting(0.05  total=50000     billed=70000     excess=20000     (40%)  value=13400
+        segment=-  bills=00000038,00000040,00000041,00000258
+  J05844_25_26     Back 2 Back Pasting@0.25    total=5000      billed=10000     excess=5000      (100%)  value=12500
+        segment=-  bills=00000050,00000258
+  J02951_25_26     Back linning Sheeting & Bi  total=42000     billed=49500     excess=7500      (17.86%)  value=12375
+        segment=Commercial  bills=00000082,00000084,00000121,00000258
+  J03941_25_26     Calendar Pasing Per Part(0  total=10500     billed=20600     excess=10100     (96.19%)  value=12120
+        segment=Commercial  bills=00000226,00000258
+  J05928_25_26     Back 2 Back Pasting@0.25    total=5000      billed=10000     excess=5000      (100%)  value=11250
+        segment=-  bills=00000050,00000258
+  J04373_25_26     Back linning Sheeting & Bi  total=18900     billed=25674     excess=6774      (35.84%)  value=11177.1
+        segment=Commercial  bills=00000221,00000223,00000226,00000258,00000365,00000366
+  J05844_25_26     Case In (Big Size -2.00)    total=5000      billed=10000     excess=5000      (100%)  value=10000
+        segment=-  bills=00000050,00000258
+  J05928_25_26     Case In (Big Size -2.00)    total=5000      billed=10000     excess=5000      (100%)  value=10000
+        segment=-  bills=00000050,00000258
+  J04628_25_26     Case In (Big Size -2.00)    total=5000      billed=10000     excess=5000      (100%)  value=10000
+        segment=-  bills=00000050,00000258
+  J03941_25_26     Two Side Pining             total=10500     billed=20600     excess=10100     (96.19%)  value=9090
+        segment=Commercial  bills=00000226,00000258
+  J05469_25_26     Case MakIng-Big Size Book   total=2500      billed=5000      excess=2500      (100%)  value=8750
+        segment=-  bills=00000050,00000258
+  J03750_25_26     Case in                     total=5400      billed=10800     excess=5400      (100%)  value=8100
+        segment=-  bills=00000018,00000258
+  J02309_25_26     Case in                     total=5000      billed=10000     excess=5000      (100%)  value=7500
+        segment=Commercial  bills=00000121,00000258
+  J07655_25_26     Case in                     total=5000      billed=10000     excess=5000      (100%)  value=7500
+        segment=Commercial  bills=00000171,00000258
+  J07486_25_26     Packaging  Box Formation(0  total=15000     billed=30000     excess=15000     (100%)  value=7500
+        segment=Packaging  bills=00000197,00000209,00000252
+  J08634_25_26     Case in                     total=5000      billed=10000     excess=5000      (100%)  value=7500
+        segment=Commercial  bills=00000225,00000258
+  J04638_25_26     Back 2 Back Pasting@0.25    total=1100      billed=2200      excess=1100      (100%)  value=7150
+        segment=-  bills=00000041,00000122,00000258
+  J04192_25_26     Case Making (A3)            total=6500      billed=10000     excess=3500      (53.85%)  value=7000
+        segment=-  bills=00000010,00000018,00000258
+  J06455_25_26     Case In (Big Size -2.00)    total=3428      billed=6856      excess=3428      (100%)  value=6856
+        segment=Commercial  bills=00000121,00000258
+  J08015_25_26     Case Makng                  total=4500      billed=9000      excess=4500      (100%)  value=6750
+        segment=Commercial  bills=00000171,00000258
+  J02725_25_26     Back linning Sheeting & Bi  total=12600     billed=16646     excess=4046      (32.11%)  value=6675.9
+        segment=Commercial  bills=00000049,00000056,00000064,00000258,00000365,00000366
+  J04190_25_26     Case In (Big Size -2.00)    total=3250      billed=6500      excess=3250      (100%)  value=6500
+        segment=Commercial  bills=00000018,00000258
+  J08007_25_26     Box Making(12)-The Padma M  total=1000      billed=1500      excess=500       (50%)  value=6000
+        segment=Commercial  bills=00000167,00000171,00000258
+  J07241_25_26     Back 2 Back Pasting@0.25    total=500       billed=1000      excess=500       (100%)  value=5750
+        segment=Commercial  bills=00000122,00000258
+  J07511_25_26     Packaging  Box Formation(0  total=10000     billed=20700     excess=10700     (107%)  value=5350
+        segment=Packaging  bills=00000197,00000252
+  J06753_25_26     Packaging  Box Formation(0  total=10000     billed=20488     excess=10488     (104.88%)  value=5244
+        segment=Packaging  bills=00000197,00000252
+  J05469_25_26     Case In (Big Size -2.00)    total=2500      billed=5000      excess=2500      (100%)  value=5000
+        segment=-  bills=00000050,00000258
+  J08635_25_26     Back to Back Pasting - Big  total=5000      billed=10000     excess=5000      (100%)  value=5000
+        segment=Commercial  bills=00000225,00000258
+  J02952_25_26     Box packing                 total=168000    billed=332800    excess=164800    (98.1%)  value=4944
+        segment=Commercial  bills=00000198,00000263
+  J06358_25_26     Wall Calendar  Gathering(0  total=10500     billed=20000     excess=9500      (90.48%)  value=4940
+        segment=Commercial  bills=00000168,00000258
+  J02876_25_26     Wall Calendar  Gathering(0  total=73500     billed=83539     excess=10039     (13.66%)  value=4818.72
+        segment=Commercial  bills=00000056,00000064,00000073,00000116,00000121,00000128,00000258,00000365,00000366
+  J03784_25_26     Case Makng                  total=3000      billed=6000      excess=3000      (100%)  value=4500
+        segment=-  bills=00000018,00000258
+  J06243_25_26     Case in                     total=3000      billed=6000      excess=3000      (100%)  value=4500
+        segment=Commercial  bills=00000121,00000258
+  J07914_25_26     Case in                     total=3000      billed=6000      excess=3000      (100%)  value=4500
+        segment=Commercial  bills=00000171,00000258
+  J07915_25_26     Case in                     total=3000      billed=6000      excess=3000      (100%)  value=4500
+        segment=Commercial  bills=00000171,00000258
+  J08652_25_26     Case in                     total=3000      billed=6000      excess=3000      (100%)  value=4500
+        segment=Commercial  bills=00000225,00000258
+  J06057_25_26     40 pc Sheets Counting(0.05  total=11500     billed=18000     excess=6500      (56.52%)  value=4355
+        segment=-  bills=00000050,00000057,00000064,00000258
+  ... aro 2312 ta
+
+================================================================================================================
+  DRY RUN sesh — DATABASE E KICHUI BODLANO HOYNI.
+
+  Section A dekhe santushto hole:
+    1. Atlas e ekta snapshot niye rakhun
+    2. keu jeno system use na kore seta nishchit korun
+    3. ei file e APPLY = true korun, tarpor abar cholan
+
+  Apply korle purono value gulo "JobopsMaster_pending_backup" collection e rakha hobe,
+  jate ROLLBACK = true diye phire asa jay.
+
+  Je kaj gulo save hoyeche kintu bill hoyni, tader qty niye suggestion pete cholan:
+    mongosh "<URI>" --file scripts/suggest-unsaved-adjustments.js
+================================================================================================================
+

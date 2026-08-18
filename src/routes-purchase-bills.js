@@ -29,6 +29,7 @@ import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { extractFromImage } from './lib/openai-vision.js';
 import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
 import { buildBillDedupKey, listDedupKeys } from './lib/purchase-bill-dedup.js';
+import { stripEmptyUniqueKeys, uniqueConflictInfo } from './lib/purchase-bill-unique-keys.js';
 import { runVerificationChecks, computeVerificationStatus } from './lib/purchase-bill-verification.js';
 import { generatePhash, hammingDistance } from './lib/phash.js';
 import {
@@ -186,6 +187,30 @@ async function verifyAndStamp(bill) {
   bill.blocking_failures_count = blocking;
   bill.warning_failures_count = warning;
   return bill;
+}
+
+async function duplicateEditError(err, excludeId) {
+  const { field, value, label } = uniqueConflictInfo(err);
+  let existing = null;
+  if (field && value != null && String(value).trim() !== '') {
+    existing = await PurchaseBill.findOne({ [field]: value, _id: { $ne: excludeId } })
+      .select('_id tally_voucher_number invoice_number supplier_name')
+      .lean();
+  }
+  const shown = value == null || value === '' ? 'empty' : String(value);
+  const other = existing
+    ? ` already exists on bill ${existing._id}${existing.supplier_name ? ` (${existing.supplier_name})` : ''}.`
+    : ' already exists on another bill.';
+  const hint = field === 'tally_voucher_number'
+    ? ' Use the exact unique voucher number, or open the other bill if this upload is a duplicate.'
+    : ' Change the invoice number / supplier identity, or open the other bill if this is a duplicate.';
+  console.warn('[purchase-bills] unique conflict on edit', { field, value, existing: existing?._id });
+  return {
+    error: `${label} "${shown}"${other}${hint}`,
+    conflict_field: field,
+    conflict_value: value ?? null,
+    existing_bill_id: existing ? String(existing._id) : null,
+  };
 }
 
 // ============================================================
@@ -1237,12 +1262,13 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
 
     // Re-run verification.
     await verifyAndStamp(bill);
+    stripEmptyUniqueKeys(bill);
 
     try {
       await bill.save();
     } catch (err) {
       if (err && err.code === 11000) {
-        return res.status(409).json({ error: 'duplicate after edit', keyPattern: err.keyPattern });
+        return res.status(409).json(await duplicateEditError(err, bill._id));
       }
       throw err;
     }
@@ -1342,7 +1368,7 @@ router.post('/:id/replace-image', requireCdcBillsModify, async (req, res) => {
       await bill.save();
     } catch (err) {
       if (err && err.code === 11000) {
-        return res.status(409).json({ error: 'duplicate after image replacement', keyPattern: err.keyPattern });
+        return res.status(409).json(await duplicateEditError(err, bill._id));
       }
       throw err;
     }

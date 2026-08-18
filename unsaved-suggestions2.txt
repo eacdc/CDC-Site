@@ -1,0 +1,120 @@
+
+========================================================================================================================
+  SAVE HOYECHE KINTU BILL HOYNI — qty adjustment SUGGESTION   db: Contractor_PO   (sob job)
+========================================================================================================================
+  NIYOM: delete na kora bill i final truth.
+         jaega baki = totalOpsQty + Packaging allowance (5% of job qty) - live bill er qty
+
+  savedInBill:"No" row (job)     : 118   mot value 92023.25
+  ad-hoc row (ekhane dhora hoyni): 0
+
+  OK        — jaegar moddhei                    : 72   value 66006.15
+  ALLOWANCE — totalOpsQty chariyeche kintu
+              Packaging allowance er moddhe     : 46   value 26017.1
+  REVIEW    — 5% er moddhe, kintu segment
+              "Packaging" lekha nei             : 0   value 0
+  TRIM      — allowance diyeo bakhya hoy na     : 0   kombe value 0
+  DROP      — puro row baad deoa uchit          : 0   kombe value 0
+  UNKNOWN   — hate dekhte hobe                  : 0
+
+  Sob submit kore dile PROKRITO over-billing hobe: 0
+  (REVIEW gulo Packaging hole seta 0 i thakbe)
+
+------------------------------------------------------------------------------------------------------------------------
+1)  DROP  —  jaega puro sesh, ar ek tao bill kora jabe na
+------------------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+2)  TRIM  —  Packaging allowance dhorleo dabi beshi
+------------------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+3)  REVIEW  —  overshoot 5% er moddhe, kintu JobopsMaster e segmentName "Packaging" nei
+------------------------------------------------------------------------------------------------------------------------
+  Job ta sotti Packaging hole ei gulo thik ache, kichu korte hobe na.
+  Na hole TRIM hisebe dhorun. Ekbar segmentName ta thik kore dile ei section fnaka hoye jabe.
+
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+4)  ALLOWANCE  —  totalOpsQty chariyeche, kintu Packaging allowance er moddhei (thik ache)
+------------------------------------------------------------------------------------------------------------------------
+  2026-08-06  Vikash Kumar ( Packagi  J04121_26_27     Inner Stripping (0.012)     qty 55500    +1200 (1.6%) allowance 3740
+  2026-08-06  Vikash Kumar ( Packagi  J02361_26_27     Inner Stripping (0.012)     qty 15750    +750 (5%) allowance 750
+  2026-08-06  Vikash Kumar ( Packagi  J03507_26_27     Inner Stripping (0.012)     qty 25600    +600 (2.4%) allowance 1250
+  2026-08-06  Vikash Kumar ( Packagi  J04199_26_27     Inner Stripping (0.012)     qty 15750    +750 (5%) allowance 750
+  2026-08-12  Dharmendra Enterprises  J04671_26_27     Corrugated Inner / Roosh S  qty 20230    +410 (0.86%) allowance 2375
+  2026-08-12  Dharmendra Enterprises  J04671_26_27     Corrugated Inner / Roosh S  qty 20230    +890 (1.87%) allowance 2375
+  2026-08-11  Shyam (Packaging)       J04753_26_27     Inner Sorting & Packing (0  qty 151200   +1200 (0.8%) allowance 7500
+  2026-08-11  Shyam (Packaging)       J05105_26_27     Inner Sorting & Packing (0  qty 21000    +1000 (5%) allowance 1000
+  2026-08-11  Shyam (Packaging)       J03318_26_27     Corrugated Inner / Roosh S  qty 5200     +200 (4%) allowance 250
+  2026-08-11  Shyam (Packaging)       J03318_26_27     Corrugated Inner / Roosh S  qty 5200     +200 (4%) allowance 250
+  2026-08-11  Dharmendra Enterprises  J03550_26_27     Inner Stripping (0.012)     qty 15950    +7250 (5%) allowance 7250
+  2026-08-12  Shyam (Packaging)       J04565_26_27     Lock Bottom / Big Inner/Do  qty 10070    +490 (2.39%) allowance 1025
+  2026-08-12  Shyam (Packaging)       J04565_26_27     Inner Stripping (0.012)     qty 10070    +490 (2.39%) allowance 1025
+  2026-08-12  Shyam (Packaging)       J03565_26_27     Inner Stripping (0.012)     qty 20000    +2900 (1.81%) allowance 8000
+  2026-08-12  Shyam (Packaging)       J03565_26_27     Inner Sorting & Packing (0  qty 162900   +2900 (1.81%) allowance 8000
+  2026-08-12  Shyam (Packaging)       J03550_26_27     Inner Stripping (0.012)     qty 80300    +7250 (5%) allowance 7250
+  2026-08-12  Shyam (Packaging)       J03611_26_27     Lock Bottom / Big Inner/Do  qty 3150     +150 (5%) allowance 150
+  2026-08-12  Shyam (Packaging)       J03611_26_27     Inner Stripping (0.012)     qty 3150     +150 (5%) allowance 150
+  2026-08-12  Shyam (Packaging)       J02656_26_27     Inner Stripping (0.012)     qty 4200     +200 (5%) allowance 200
+  2026-08-12  Shyam (Packaging)       J02656_26_27     Lock Bottom / Big Inner/Do  qty 4200     +200 (5%) allowance 200
+  2026-08-12  Shyam (Packaging)       J02662_26_27     Corrugated Inner / Roosh S  qty 2100     +100 (5%) allowance 100
+  2026-08-12  Shyam (Packaging)       J02662_26_27     Corrugated Inner / Roosh S  qty 2100     +100 (5%) allowance 100
+  2026-08-12  Shyam (Packaging)       J02667_26_27     Corrugated Inner / Roosh S  qty 4200     +200 (5%) allowance 200
+  2026-08-12  Shyam (Packaging)       J02667_26_27     Corrugated Inner / Roosh S  qty 4200     +200 (5%) allowance 200
+  2026-08-12  Vikash Kumar ( Packagi  J03565_26_27     Inner Stripping (0.012)     qty 142900   +2900 (1.81%) allowance 8000
+  2026-08-12  Vikash Kumar ( Packagi  J03550_26_27     Inner Stripping (0.012)     qty 34400    +7250 (5%) allowance 7250
+  2026-08-12  Vikash Kumar ( Packagi  J04235_26_27     Corrugated Inner / Roosh S  qty 2750     +50 (1.85%) allowance 135
+  2026-08-12  Vikash Kumar ( Packagi  J04235_26_27     Corrugated Inner / Roosh S  qty 2750     +50 (1.85%) allowance 135
+  2026-08-12  Vikash Kumar ( Packagi  J03902_26_27     Top Bottom/Madhu Jayanti 1  qty 4000     +1460 (4.29%) allowance 1700
+  2026-08-12  Dharmendra Enterprises  J03548_26_27     Lock Bottom / Big Inner/Do  qty 34200    +2000 (4.24%) allowance 2360
+  2026-08-12  Dharmendra Enterprises  J04565_26_27     Lock Bottom / Big Inner/Do  qty 10920    +490 (2.39%) allowance 1025
+  2026-08-12  Dharmendra Enterprises  J04565_26_27     Inner Stripping (0.012)     qty 10920    +490 (2.39%) allowance 1025
+  2026-08-13  Dharmendra Enterprises  J03902_26_27     Top Bottom/Madhu Jayanti 1  qty 31460    +1460 (4.29%) allowance 1700
+  2026-08-13  Dharmendra Enterprises  J03902_26_27     Corrugated Inner / Roosh S  qty 35460    +1460 (4.29%) allowance 1700
+  2026-08-13  Shyam (Packaging)       J04275_26_27     Inner Stripping (0.012)     qty 5250     +250 (5%) allowance 250
+  2026-08-13  Shyam (Packaging)       J04275_26_27     Lock Bottom / Big Inner/Do  qty 5250     +250 (5%) allowance 250
+  2026-08-13  Shyam (Packaging)       J03898_26_27     Lock Bottom / Big Inner/Do  qty 46200    +4000 (5%) allowance 4000
+  2026-08-13  Vikash Kumar ( Packagi  J03865_26_27     Corrugated Inner / Roosh S  qty 1050     +50 (5%) allowance 50
+  2026-08-13  Shyam (Packaging)       J05009_26_27     Inner Sorting & Packing (0  qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05009_26_27     Inner Stripping (0.012)     qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05010_26_27     Inner Sorting & Packing (0  qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05010_26_27     Inner Stripping (0.012)     qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05011_26_27     Inner Sorting & Packing (0  qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05011_26_27     Inner Stripping (0.012)     qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05012_26_27     Inner Sorting & Packing (0  qty 525      +25 (5%) allowance 25
+  2026-08-13  Shyam (Packaging)       J05012_26_27     Inner Stripping (0.012)     qty 525      +25 (5%) allowance 25
+
+------------------------------------------------------------------------------------------------------------------------
+5)  UNKNOWN  —  JobopsMaster e job+op paoa jayni
+------------------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+6)  OK + ALLOWANCE  —  ei gulo nirbighne submit kora jay
+------------------------------------------------------------------------------------------------------------------------
+  Dharmendra Enterprises (Packag  39 row,  value 48889.85
+  Shyam (Packaging)               44 row,  value 31267.4
+  Vikash Kumar ( Packaging)       35 row,  value 11866
+
+========================================================================================================================
+  KIVABE ADJUST KORBEN
+========================================================================================================================
+  Direct DB edit korben NA — tahole pendingOpsQty ar Contractor_WD abar besamal hobe.
+  Work Done page theke korun, tahole backend nijei pending thik kore debe:
+
+    DROP er jonno :  contractor + job search korun -> Bill Details e oi row er
+                     "Delete" tipun. Eta /work/unsave call kore, row muche debe
+                     ar pending qty ferot debe.
+    TRIM er jonno :  age oi bhabe Delete korun (pending phire ashbe), tarpor
+                     Operations Pending e suggested qty ta likhe abar SAVE korun.
+
+  Sob adjust hoye gele fix-pending-qty.js abar ekbar dry run cholan — tokhon
+  pending er hisheb notun obostha onujayi mile jabe.
+
+  NOTE: ei script kichui change kore ni.
+========================================================================================================================
+

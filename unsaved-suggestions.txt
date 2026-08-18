@@ -1,0 +1,147 @@
+
+========================================================================================================================
+  SAVE HOYECHE KINTU BILL HOYNI — qty adjustment SUGGESTION   db: Contractor_PO   (sob job)
+========================================================================================================================
+  NIYOM: delete na kora bill i final truth.  jaega baki = totalOpsQty - live bill er qty
+
+  savedInBill:"No" row (job)     : 118   mot value 92023.25
+  ad-hoc row (ekhane dhora hoyni): 0
+
+  OK      — jemon ache temon i thakuk : 72   value 66006.15
+  TRIM    — qty kombe                 : 46   kombe value 956.24
+  DROP    — puro row baad deoa uchit  : 0   kombe value 0
+  UNKNOWN — hate dekhte hobe          : 0
+
+  jodi kichui na kora hoy ar sob submit kore deoa hoy, tahole OVER-BILLING hobe: 956.24
+
+------------------------------------------------------------------------------------------------------------------------
+1)  DROP  —  ei op e live bill diye totalOpsQty sesh, ar ek tao bill kora jabe na
+------------------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+2)  TRIM  —  jaega ache kintu dabi tar cheye beshi
+------------------------------------------------------------------------------------------------------------------------
+  2026-08-06  Vikash Kumar ( Packagi  J04121_26_27     Inner Stripping (0.012)     qty 55500    -> 54300    kombe 1200     value 12
+        billed 20500/74800, jaega baki 54300, kintu dabi 55500
+  2026-08-06  Vikash Kumar ( Packagi  J02361_26_27     Inner Stripping (0.012)     qty 15750    -> 15000    kombe 750      value 7.5
+        billed 0/15000, jaega baki 15000, kintu dabi 15750
+  2026-08-06  Vikash Kumar ( Packagi  J03507_26_27     Inner Stripping (0.012)     qty 25600    -> 25000    kombe 600      value 6
+        billed 0/25000, jaega baki 25000, kintu dabi 25600
+  2026-08-06  Vikash Kumar ( Packagi  J04199_26_27     Inner Stripping (0.012)     qty 15750    -> 15000    kombe 750      value 7.5
+        billed 0/15000, jaega baki 15000, kintu dabi 15750
+  2026-08-12  Dharmendra Enterprises  J04671_26_27     Corrugated Inner / Roosh S  qty 20230    -> 19820    kombe 410      value 24.6
+        billed 27680/47500, jaega baki 19820, kintu dabi 20230
+  2026-08-12  Dharmendra Enterprises  J04671_26_27     Corrugated Inner / Roosh S  qty 20230    -> 19340    kombe 890      value 62.3
+        billed 28160/47500, jaega baki 19340, kintu dabi 20230
+  2026-08-11  Shyam (Packaging)       J04753_26_27     Inner Sorting & Packing (0  qty 151200   -> 150000   kombe 1200     value 24
+        billed 0/150000, jaega baki 150000, kintu dabi 151200
+  2026-08-11  Shyam (Packaging)       J05105_26_27     Inner Sorting & Packing (0  qty 21000    -> 20000    kombe 1000     value 20
+        billed 0/20000, jaega baki 20000, kintu dabi 21000
+  2026-08-11  Shyam (Packaging)       J03318_26_27     Corrugated Inner / Roosh S  qty 5200     -> 5000     kombe 200      value 14
+        billed 0/5000, jaega baki 5000, kintu dabi 5200
+  2026-08-11  Shyam (Packaging)       J03318_26_27     Corrugated Inner / Roosh S  qty 5200     -> 5000     kombe 200      value 12
+        billed 0/5000, jaega baki 5000, kintu dabi 5200
+  2026-08-11  Dharmendra Enterprises  J03550_26_27     Inner Stripping (0.012)     qty 15950    -> 15064    kombe 886      value 8.86
+        billed 21600/145000, jaega baki 123400, kintu dabi 130650 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Shyam (Packaging)       J04565_26_27     Lock Bottom / Big Inner/Do  qty 10070    -> 9834     kombe 236      value 11.8
+        billed 0/20500, jaega baki 20500, kintu dabi 20990 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Shyam (Packaging)       J04565_26_27     Inner Stripping (0.012)     qty 10070    -> 9834     kombe 236      value 2.36
+        billed 0/20500, jaega baki 20500, kintu dabi 20990 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Shyam (Packaging)       J03565_26_27     Inner Stripping (0.012)     qty 20000    -> 19643    kombe 357      value 3.57
+        billed 0/160000, jaega baki 160000, kintu dabi 162900 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Shyam (Packaging)       J03565_26_27     Inner Sorting & Packing (0  qty 162900   -> 160000   kombe 2900     value 58
+        billed 0/160000, jaega baki 160000, kintu dabi 162900
+  2026-08-12  Shyam (Packaging)       J03550_26_27     Inner Stripping (0.012)     qty 80300    -> 75844    kombe 4456     value 44.56
+        billed 21600/145000, jaega baki 123400, kintu dabi 130650 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Shyam (Packaging)       J03611_26_27     Lock Bottom / Big Inner/Do  qty 3150     -> 3000     kombe 150      value 7.5
+        billed 0/3000, jaega baki 3000, kintu dabi 3150
+  2026-08-12  Shyam (Packaging)       J03611_26_27     Inner Stripping (0.012)     qty 3150     -> 3000     kombe 150      value 1.5
+        billed 0/3000, jaega baki 3000, kintu dabi 3150
+  2026-08-12  Shyam (Packaging)       J02656_26_27     Inner Stripping (0.012)     qty 4200     -> 4000     kombe 200      value 2
+        billed 0/4000, jaega baki 4000, kintu dabi 4200
+  2026-08-12  Shyam (Packaging)       J02656_26_27     Lock Bottom / Big Inner/Do  qty 4200     -> 4000     kombe 200      value 10
+        billed 0/4000, jaega baki 4000, kintu dabi 4200
+  2026-08-12  Shyam (Packaging)       J02662_26_27     Corrugated Inner / Roosh S  qty 2100     -> 2000     kombe 100      value 7
+        billed 0/2000, jaega baki 2000, kintu dabi 2100
+  2026-08-12  Shyam (Packaging)       J02662_26_27     Corrugated Inner / Roosh S  qty 2100     -> 2000     kombe 100      value 6
+        billed 0/2000, jaega baki 2000, kintu dabi 2100
+  2026-08-12  Shyam (Packaging)       J02667_26_27     Corrugated Inner / Roosh S  qty 4200     -> 4000     kombe 200      value 14
+        billed 0/4000, jaega baki 4000, kintu dabi 4200
+  2026-08-12  Shyam (Packaging)       J02667_26_27     Corrugated Inner / Roosh S  qty 4200     -> 4000     kombe 200      value 12
+        billed 0/4000, jaega baki 4000, kintu dabi 4200
+  2026-08-12  Vikash Kumar ( Packagi  J03565_26_27     Inner Stripping (0.012)     qty 142900   -> 140356   kombe 2544     value 25.44
+        billed 0/160000, jaega baki 160000, kintu dabi 162900 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Vikash Kumar ( Packagi  J03550_26_27     Inner Stripping (0.012)     qty 34400    -> 32491    kombe 1909     value 19.09
+        billed 21600/145000, jaega baki 123400, kintu dabi 130650 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Vikash Kumar ( Packagi  J04235_26_27     Corrugated Inner / Roosh S  qty 2750     -> 2700     kombe 50       value 3.5
+        billed 0/2700, jaega baki 2700, kintu dabi 2750
+  2026-08-12  Vikash Kumar ( Packagi  J04235_26_27     Corrugated Inner / Roosh S  qty 2750     -> 2700     kombe 50       value 3
+        billed 0/2700, jaega baki 2700, kintu dabi 2750
+  2026-08-12  Vikash Kumar ( Packagi  J03902_26_27     Top Bottom/Madhu Jayanti 1  qty 4000     -> 3835     kombe 165      value 9.9
+        billed 0/34000, jaega baki 34000, kintu dabi 35460 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Dharmendra Enterprises  J03548_26_27     Lock Bottom / Big Inner/Do  qty 34200    -> 32200    kombe 2000     value 100
+        billed 15000/47200, jaega baki 32200, kintu dabi 34200
+  2026-08-12  Dharmendra Enterprises  J04565_26_27     Lock Bottom / Big Inner/Do  qty 10920    -> 10665    kombe 255      value 12.75
+        billed 0/20500, jaega baki 20500, kintu dabi 20990 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-12  Dharmendra Enterprises  J04565_26_27     Inner Stripping (0.012)     qty 10920    -> 10665    kombe 255      value 2.55
+        billed 0/20500, jaega baki 20500, kintu dabi 20990 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-13  Dharmendra Enterprises  J03902_26_27     Top Bottom/Madhu Jayanti 1  qty 31460    -> 30164    kombe 1296     value 77.76
+        billed 0/34000, jaega baki 34000, kintu dabi 35460 (ekadhik contractor — anupate bhag kora holo)
+  2026-08-13  Dharmendra Enterprises  J03902_26_27     Corrugated Inner / Roosh S  qty 35460    -> 34000    kombe 1460     value 102.2
+        billed 0/34000, jaega baki 34000, kintu dabi 35460
+  2026-08-13  Shyam (Packaging)       J04275_26_27     Inner Stripping (0.012)     qty 5250     -> 5000     kombe 250      value 2.5
+        billed 0/5000, jaega baki 5000, kintu dabi 5250
+  2026-08-13  Shyam (Packaging)       J04275_26_27     Lock Bottom / Big Inner/Do  qty 5250     -> 5000     kombe 250      value 12.5
+        billed 0/5000, jaega baki 5000, kintu dabi 5250
+  2026-08-13  Shyam (Packaging)       J03898_26_27     Lock Bottom / Big Inner/Do  qty 46200    -> 42200    kombe 4000     value 200
+        billed 37800/80000, jaega baki 42200, kintu dabi 46200
+  2026-08-13  Vikash Kumar ( Packagi  J03865_26_27     Corrugated Inner / Roosh S  qty 1050     -> 1000     kombe 50       value 3
+        billed 0/1000, jaega baki 1000, kintu dabi 1050
+  2026-08-13  Shyam (Packaging)       J05009_26_27     Inner Sorting & Packing (0  qty 525      -> 500      kombe 25       value 0.5
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05009_26_27     Inner Stripping (0.012)     qty 525      -> 500      kombe 25       value 0.25
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05010_26_27     Inner Sorting & Packing (0  qty 525      -> 500      kombe 25       value 0.5
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05010_26_27     Inner Stripping (0.012)     qty 525      -> 500      kombe 25       value 0.25
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05011_26_27     Inner Sorting & Packing (0  qty 525      -> 500      kombe 25       value 0.5
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05011_26_27     Inner Stripping (0.012)     qty 525      -> 500      kombe 25       value 0.25
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05012_26_27     Inner Sorting & Packing (0  qty 525      -> 500      kombe 25       value 0.5
+        billed 0/500, jaega baki 500, kintu dabi 525
+  2026-08-13  Shyam (Packaging)       J05012_26_27     Inner Stripping (0.012)     qty 525      -> 500      kombe 25       value 0.25
+        billed 0/500, jaega baki 500, kintu dabi 525
+
+------------------------------------------------------------------------------------------------------------------------
+3)  UNKNOWN  —  JobopsMaster e job+op paoa jayni
+------------------------------------------------------------------------------------------------------------------------
+  (kichu nei)
+
+------------------------------------------------------------------------------------------------------------------------
+4)  OK  —  ei gulo nirbighne submit kora jay
+------------------------------------------------------------------------------------------------------------------------
+  Dharmendra Enterprises (Packag  31 row,  value 39365.45
+  Shyam (Packaging)               16 row,  value 18334.2
+  Vikash Kumar ( Packaging)       25 row,  value 8306.5
+
+========================================================================================================================
+  KIVABE ADJUST KORBEN
+========================================================================================================================
+  Direct DB edit korben NA — tahole pendingOpsQty ar Contractor_WD abar besamal hobe.
+  Work Done page theke korun, tahole backend nijei pending thik kore debe:
+
+    DROP er jonno :  contractor + job search korun -> Bill Details e oi row er
+                     "Delete" tipun. Eta /work/unsave call kore, row muche debe
+                     ar pending qty ferot debe.
+    TRIM er jonno :  age oi bhabe Delete korun (pending phire ashbe), tarpor
+                     Operations Pending e suggested qty ta likhe abar SAVE korun.
+
+  Sob adjust hoye gele fix-pending-qty.js abar ekbar dry run cholan — tokhon
+  pending er hisheb notun obostha onujayi mile jabe.
+
+  NOTE: ei script kichui change kore ni.
+========================================================================================================================
+
