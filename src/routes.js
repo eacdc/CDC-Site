@@ -3584,6 +3584,57 @@ router.post('/grn/pending-po-expected-delivery-date', async (req, res) => {
     }
 });
 
+// GRN: Close pending PO manually via dbo.usp_ClosePO
+router.post('/grn/pending-po-close', async (req, res) => {
+    try {
+        const { database, poTransactionId, reason, completedBy, dryRun } = req.body || {};
+        const selectedDatabase = String(database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const txId = Number(poTransactionId || 0);
+        if (!(Number.isInteger(txId) && txId > 0)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing poTransactionId' });
+        }
+
+        let completedByNum = Number(completedBy);
+        if (!Number.isInteger(completedByNum) || completedByNum <= 0) {
+            completedByNum = 2;
+        }
+
+        const safeReason = String(reason || 'closed manually').trim().slice(0, 500) || 'closed manually';
+        const dryRunBit = dryRun === true || dryRun === 1 || dryRun === '1' ? 1 : 0;
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('POTransactionID', sql.Int, txId)
+            .input('CompletedBy', sql.Int, completedByNum)
+            .input('Reason', sql.NVarChar(500), safeReason)
+            .input('DryRun', sql.Bit, dryRunBit)
+            .execute('dbo.usp_ClosePO');
+
+        const recordset = result.recordset || [];
+        const recordsets = result.recordsets || [];
+
+        return res.json({
+            status: true,
+            message: 'PO closed successfully.',
+            poTransactionId: txId,
+            recordset,
+            recordsets
+        });
+    } catch (err) {
+        console.error('GRN pending PO close error:', err);
+        const msg = String(err?.originalError?.info?.message || err?.message || 'Failed to close PO');
+        const isClientError = /PO|already|invalid|cannot|must|not found|permission|dry.?run/i.test(msg);
+        return res.status(isClientError ? 400 : 500).json({
+            status: false,
+            error: msg
+        });
+    }
+});
+
 // Inventory Summary Tool: itemwise by item group
 router.get('/inventory-summary/group', async (req, res) => {
     try {
