@@ -108,6 +108,15 @@ export const ExtractedQuoteLineSchema = z.object({
    * supplier's quotes the brightness is the only thing separating the blocks.
    */
   brightness: printed().optional(),
+  /**
+   * How the board is supplied — "Mill order", "from stock".
+   *
+   * A second price on the same product, not a duplicate of it. AKT's note
+   * prices every board twice, fifty paise apart; without this field one row
+   * silently overwrites the other and which one survives depends on the order
+   * they happened to be read in.
+   */
+  supplyMode: printed().optional(),
   width: printed(),
   micron: printed(),
   /**

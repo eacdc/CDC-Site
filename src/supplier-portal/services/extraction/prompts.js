@@ -173,6 +173,13 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
      - gsmFrom / gsmTo from the GSM band, per rule 4.
    Put the full quality string in "productName" as well: "NR POWER FOLD - FBB".
 
+   MILL ORDER AND EX-STOCK ARE TWO PRICES, NOT ONE. Many board quotes price
+   every item twice — "Devpriya PGB (Mill order) -> 48.25" against a "from
+   stock" column reading 48.75. Emit a separate line for each and set
+   "supplyMode" to what the document says ("Mill order", "from stock"). The
+   heading often sits above a whole block; it applies to every row under it.
+   Merging the two, or reporting only one, loses a real price.
+
    THE HEADING BAND IS NOT A PRODUCT. A block is often introduced by a line
    above or below the table — "NR MAXIMA SS (REEL) - 84B", "FOR KOLKATA -
    REEL" — and the table itself then shows only GSM and rate. Those headings

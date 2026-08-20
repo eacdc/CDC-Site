@@ -25,6 +25,7 @@ import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { planPlantSplit, groupLinesByPlant } from './quote-split.js';
+import { resolveSupplyMode } from '../config/board-grades.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
 
@@ -1041,6 +1042,17 @@ async function storeLines(doc, rawLines) {
       shade: line.shade ?? null,
       bulk: line.bulk ?? null,
       brightness: line.brightness ?? null,
+      /*
+        Read from the field when the extractor set one, otherwise recovered
+        from the words around the row. On a handwritten note "mill order" and
+        "from stock" are section headings rather than a column, so the
+        extractor often folds them into the product name — and a rate filed
+        without its supply mode is one of two prices with no way to tell which.
+      */
+      supplyMode: resolveSupplyMode(line.supplyMode)
+        || resolveSupplyMode(line.productName)
+        || resolveSupplyMode(line.notes)
+        || null,
       notes: line.notes ?? null,
     };
 

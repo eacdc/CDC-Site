@@ -58,6 +58,7 @@ import { Router } from 'express';
 import authRoutes from './auth.js';
 import erpRoutes from './erp.js';
 import supplierRoutes from './suppliers.js';
+import boardRoutes from './boards.js';
 import quoteRoutes from './quotes.js';
 import itemRoutes from './items.js';
 import mappingRoutes from './mappings.js';
@@ -90,6 +91,7 @@ router.get('/health', (req, res) => res.json({ status: 'ok', module: 'supplier-p
 router.use('/auth', authRoutes);
 router.use('/erp', erpRoutes);
 router.use('/suppliers', supplierRoutes);
+router.use('/boards', boardRoutes);
 router.use('/quotes', quoteRoutes);
 router.use('/items', itemRoutes);
 router.use('/mappings', mappingRoutes);

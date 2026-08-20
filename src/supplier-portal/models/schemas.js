@@ -383,6 +383,14 @@ export const quoteLineSchema = new Schema({
      * brightness is the only thing that separates the blocks.
      */
     brightness: String,
+    /**
+     * MILL_ORDER or EX_STOCK, where the quote distinguishes them.
+     *
+     * Two prices for one board, typically 50 paise apart. Stored so both
+     * survive: without it the second row read overwrites the first, and which
+     * price the portal ends up believing is decided by read order.
+     */
+    supplyMode: String,
     notes: String,
   },
 
