@@ -17,6 +17,7 @@ import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
   runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument, setDocumentUom,
   deleteDocument,
+  requoteFromDocument,
 } from '../services/quotes.js';
 import { matchDocument } from '../services/matching.js';
 import { uomOverridesFrom } from '../lib/uom.js';
@@ -268,6 +269,46 @@ router.post('/:id/extract', requireSite, requireRole('BUYER', 'APPROVER'), async
       hints: { ...(req.body || {}) },
     });
     return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Read an approved quote's file again as a new document that supersedes it.
+ *
+ * The way out of a dead end: an approved quote cannot be deleted, because its
+ * rates are live, and re-uploading the identical file is caught as a duplicate
+ * of that same approved quote. Without this, the only way to re-read a quote
+ * with a better extractor was to have never approved it.
+ *
+ * The original is untouched. Approving the replacement closes it, through the
+ * same path a real re-quote from the supplier would take.
+ */
+router.post('/:id/requote', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const { documentId, supersedes } = await requoteFromDocument({
+      documentId: req.params.id,
+      actor: req.sp.actor,
+      reason: req.body?.reason || null,
+    });
+
+    const doc = await QuoteDocument.findById(documentId).lean();
+    const keys = [doc.storageKey, ...(doc.pageKeys || [])].filter(Boolean);
+    const pages = await Promise.all(keys.map(async (key, i) => ({
+      url: await viewUrl(key), pageNo: i + 1, mimeType: doc.mimeType,
+    })));
+
+    const isWorksheet = doc.docType === 'WORKSHEET'
+      || /spreadsheet|excel|\.xlsx?$|\.csv$/i.test(`${doc.mimeType || ''} ${doc.originalFilename || ''}`);
+    const buffer = isWorksheet ? await downloadKey(doc.storageKey) : null;
+
+    const result = await extractDocument(documentId, {
+      site: req.sp.site,
+      pages,
+      buffer,
+      hints: { ...(req.body || {}) },
+    });
+
+    return res.status(201).json({ documentId, supersedes, ...result });
   } catch (err) { return next(err); }
 });
 

@@ -1254,6 +1254,105 @@ export async function runMagnitudeChecks(site, documentId) {
  * the wrong page: these are mistakes, and a mistake you cannot undo becomes a
  * permanent row in a list somebody has to read past forever.
  */
+/**
+ * Read an already-stored file again, as a new document that supersedes the old.
+ *
+ * The gap this fills: an approved quote cannot be deleted, because its rates
+ * are in `rateHistory` and deleting it would orphan them. The refusal pointed
+ * at uploading a replacement "as a re-quote" — a workflow that existed in the
+ * service layer and had no way to reach it. Re-uploading the same file did not
+ * work either: an identical file is caught as a duplicate of the live approved
+ * one. So an approved quote was a dead end, and the only way to re-read it with
+ * improved extraction was to have never approved it.
+ *
+ * The distinction that makes this safe: **the old document is not touched.**
+ * Its lines and its rate rows stand exactly as approved. This creates a second
+ * document over the same stored file, extracts it fresh, and points
+ * `supersedesDocId` at the original — so approving the new one closes the old
+ * one through the same path a genuine re-quote from the supplier would.
+ *
+ * Two reasons to run it, and they behave identically:
+ *   - the supplier sent the same prices again and you want them re-read by a
+ *     better extractor
+ *   - you want to correct an approved document you can no longer edit
+ *
+ * The file is not re-uploaded; `storageKey` is shared. The hashes are
+ * deliberately NOT copied — see below.
+ */
+export async function requoteFromDocument({ documentId, actor, reason }) {
+  await ensureSupplierPortalReady();
+  const original = await QuoteDocument.findById(documentId).lean();
+  if (!original) throw new Error('Quote document not found.');
+
+  if (!original.storageKey && !original.cloudinaryUrl) {
+    const error = new Error(
+      'This quote has no stored file to read again — it was registered without one. Upload the file instead.',
+    );
+    error.status = 409;
+    throw error;
+  }
+
+  const existing = await QuoteDocument.findOne({
+    supersedesDocId: original._id,
+    status: { $nin: ['REJECTED', 'SUPERSEDED'] },
+  }).lean();
+  if (existing) {
+    const error = new Error('A re-read of this quote is already open. Finish or reject that one first.');
+    error.status = 409;
+    error.documentId = String(existing._id);
+    throw error;
+  }
+
+  const replacement = await QuoteDocument.create({
+    storageKey: original.storageKey,
+    cloudinaryUrl: original.cloudinaryUrl,
+    pageKeys: original.pageKeys,
+    originalFilename: original.originalFilename,
+    mimeType: original.mimeType,
+    docType: original.docType,
+
+    /*
+      sha256 and perceptualHashes are left unset on purpose.
+
+      They are the duplicate detector's index, and copying them would make this
+      document collide with the original — the very block that made an approved
+      quote impossible to re-read. The stored file is still reachable through
+      storageKey, which is what the extractor needs; the hashes exist to stop
+      somebody uploading the same file twice by accident, and this is not that.
+    */
+
+    supersedesDocId: original._id,
+    // The supplier and plant were settled on the original by a person. Making
+    // them answer again would be asking a question they have already answered,
+    // and re-reading the letterhead could disagree with their decision.
+    supplierGroupId: original.supplierGroupId,
+    ledgerRef: original.ledgerRef,
+    plantScope: original.plantScope,
+    plantScopeBasis: original.plantScopeBasis,
+    splitPlant: original.splitPlant,
+    splitFrom: original.splitFrom,
+    defaultUom: original.defaultUom,
+
+    status: 'UPLOADED',
+    uploadedBy: actor,
+  });
+
+  await AuditLog.create({
+    action: 'QUOTE_REQUOTED',
+    entity: 'quoteDocument',
+    entityId: String(replacement._id),
+    actor,
+    before: { documentId: String(original._id), status: original.status },
+    after: { documentId: String(replacement._id), reason: reason || null },
+  });
+
+  return {
+    documentId: String(replacement._id),
+    supersedes: String(original._id),
+    storageKey: replacement.storageKey,
+  };
+}
+
 export async function deleteDocument({ documentId, actor, reason }) {
   await ensureSupplierPortalReady();
   const doc = await QuoteDocument.findById(documentId).lean();
@@ -1262,7 +1361,7 @@ export async function deleteDocument({ documentId, actor, reason }) {
   if (doc.status === 'APPROVED') {
     const error = new Error(
       'An approved quote cannot be deleted — its rates are already in the rate history. '
-      + 'Upload the replacement as a re-quote, which supersedes it and keeps the trail.',
+      + 'Use "Read this file again", which creates a replacement that supersedes it and keeps the trail.',
     );
     error.status = 409;
     throw error;
