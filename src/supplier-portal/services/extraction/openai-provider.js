@@ -15,6 +15,7 @@ import {
   AdjudicationSchema,
 } from './provider.js';
 import { QUOTE_PROMPT, INVOICE_PROMPT, ADJUDICATION_PROMPT } from './prompts.js';
+import { textLayerInstruction } from './pdf-text.js';
 
 let client = null;
 
@@ -34,9 +35,17 @@ function openai() {
 const VISION_MODEL = process.env.SP_EXTRACTION_MODEL || 'gpt-4o';
 const TEXT_MODEL = process.env.SP_ADJUDICATION_MODEL || 'gpt-4o';
 
+/**
+ * One extraction call.
+ *
+ * `pages` may be empty: a born-digital PDF is read from its text layer, which
+ * arrives inside `extraInstructions`, and sending no image is correct rather
+ * than a degraded mode — the model has the exact characters instead of a
+ * picture of them.
+ */
 async function callVision({ pages, prompt, extraInstructions }) {
   const content = [{ type: 'text', text: extraInstructions ? `${prompt}\n\n${extraInstructions}` : prompt }];
-  for (const page of pages) {
+  for (const page of pages || []) {
     content.push({ type: 'image_url', image_url: { url: page.url } });
   }
 
@@ -95,9 +104,11 @@ function coerceStrings(value) {
 export const openaiProvider = registerProvider({
   name: 'openai',
 
-  async extractQuote({ pages, docType, hints } = {}) {
-    if (!pages?.length) throw new Error('extractQuote needs at least one page');
-    const extra = buildQuoteHints({ docType, hints });
+  async extractQuote({ pages, textLayer, docType, hints } = {}) {
+    if (!pages?.length && !textLayer) {
+      throw new Error('extractQuote needs at least one page image or a text layer');
+    }
+    const extra = buildQuoteHints({ docType, hints, textLayer });
     const { data, model } = await extractWithSchema({
       pages, prompt: QUOTE_PROMPT, schema: ExtractedQuoteSchema, extraInstructions: extra,
     });
@@ -142,7 +153,7 @@ export const openaiProvider = registerProvider({
   },
 });
 
-function buildQuoteHints({ docType, hints }) {
+function buildQuoteHints({ docType, hints, textLayer }) {
   const parts = [];
   if (docType) parts.push(`The uploader classified this document as: ${docType}.`);
   if (hints?.supplierName) {
@@ -153,6 +164,11 @@ function buildQuoteHints({ docType, hints }) {
   }
   if (hints?.priceColumn) {
     parts.push(`For multi-column worksheets, the live price column is "${hints.priceColumn}". Extract that column as the rate and put the others in notes.`);
+  }
+  // Last, so it sits closest to the images whose characters it corrects.
+  if (textLayer) {
+    const block = textLayerInstruction(textLayer);
+    if (block) parts.push(block);
   }
   return parts.length ? parts.join('\n') : null;
 }

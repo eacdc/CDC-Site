@@ -24,6 +24,7 @@ import {
   AdjudicationSchema,
 } from './provider.js';
 import { QUOTE_PROMPT, INVOICE_PROMPT, ADJUDICATION_PROMPT } from './prompts.js';
+import { textLayerInstruction } from './pdf-text.js';
 
 const MODEL = process.env.SP_ANTHROPIC_MODEL || 'claude-sonnet-4-5';
 
@@ -70,9 +71,17 @@ async function pageToBlock(page) {
   };
 }
 
+/**
+ * One extraction call.
+ *
+ * `pages` may be empty: a born-digital PDF is read from its text layer, which
+ * arrives inside `extraInstructions`, and sending no image is correct rather
+ * than a degraded mode — the model has the exact characters instead of a
+ * picture of them.
+ */
 async function callClaude({ pages, prompt, schema, extraInstructions }) {
   const client = await anthropic();
-  const blocks = await Promise.all(pages.map(pageToBlock));
+  const blocks = await Promise.all((pages || []).map(pageToBlock));
   const text = extraInstructions ? `${prompt}\n\n${extraInstructions}` : prompt;
 
   let lastError;
@@ -119,13 +128,17 @@ function coerceStrings(value) {
 const anthropicProvider = {
   name: 'anthropic',
 
-  async extractQuote({ pages, docType, hints } = {}) {
-    if (!pages?.length) throw new Error('extractQuote needs at least one page');
+  async extractQuote({ pages, textLayer, docType, hints } = {}) {
+    if (!pages?.length && !textLayer) {
+      throw new Error('extractQuote needs at least one page image or a text layer');
+    }
     const extra = [
       docType ? `The uploader classified this document as: ${docType}.` : null,
       hints?.supplierName ? `The uploader says the supplier is "${hints.supplierName}". Verify against the document.` : null,
       hints?.plantScope?.length ? `The uploader says this document covers: ${hints.plantScope.join(', ')}. Still report only plants the document itself names.` : null,
       hints?.priceColumn ? `The live price column is "${hints.priceColumn}".` : null,
+      // Last, so it sits closest to the images it corrects.
+      textLayer ? textLayerInstruction(textLayer) : null,
     ].filter(Boolean).join('\n') || null;
 
     const { data, model } = await callClaude({

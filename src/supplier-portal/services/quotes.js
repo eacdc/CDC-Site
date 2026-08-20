@@ -19,6 +19,7 @@ import { normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
 import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
 import { getProvider } from './extraction/provider.js';
 import { extractWorkbook } from './extraction/xlsx-extract.js';
+import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
@@ -200,8 +201,32 @@ async function extractFromImages(doc, pages, hints) {
     ? await SupplierGroup.findById(doc.supplierGroupId).lean()
     : null;
 
+  // A born-digital PDF already contains the exact characters the sender typed.
+  // Handing them over removes the transcription risk on every number in the
+  // document, and costs one fetch.
+  const textLayer = await readTextLayer(doc, pages);
+
+  /**
+   * A vision model is sent images, and a PDF is not one — neither provider can
+   * see inside it. That is not a limitation worth working around here, because
+   * CDC's quotes arrive as PDFs printed from Word and Tally, which carry their
+   * text. So a PDF is read from its text layer and no image is sent at all.
+   *
+   * What is left is the case the message below describes: a scanned PDF, which
+   * has neither. Saying so plainly beats sending a file the model will report
+   * as unreadable.
+   */
+  const visionPages = pages.filter((page) => /^image\//i.test(page.mimeType || ''));
+  if (!visionPages.length && !textLayer) {
+    throw new Error(
+      'This PDF has no text layer, so it is a scan. Upload its pages as images '
+      + '(JPEG or PNG) so they can be read.',
+    );
+  }
+
   const extracted = await provider.extractQuote({
-    pages,
+    pages: visionPages,
+    textLayer,
     docType: doc.docType,
     hints: { ...hints, supplierName: group?.name, plantScope: doc.plantScope },
   });
@@ -251,6 +276,31 @@ async function extractFromImages(doc, pages, hints) {
     extracted,
     meta: { plantBlocks: extracted.plantBlocks || null },
   };
+}
+
+/**
+ * The PDF's text layer, or null.
+ *
+ * Fetched from the same signed URL the vision provider reads, so it works for
+ * both upload paths without threading a buffer through them. Any failure here
+ * is a warning and nothing more: extraction proceeds on the images alone,
+ * exactly as it did before this existed.
+ */
+async function readTextLayer(doc, pages) {
+  if (!looksLikePdf(doc)) return null;
+  const url = pages?.[0]?.url;
+  if (!url) return null;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`storage returned ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const layer = await pdfPageTexts(buffer);
+    return layer.hasTextLayer ? layer : null;
+  } catch (err) {
+    console.warn('[SP][quotes] could not read the PDF text layer:', err.message);
+    return null;
+  }
 }
 
 // ── Identification ──────────────────────────────────────────────────────────
