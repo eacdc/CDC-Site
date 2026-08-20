@@ -59,7 +59,18 @@ export async function matchLine({
   site, line, supplierItem, group, candidates, alreadyMapped = [], allowLlm = true,
 }) {
   assertSite(site);
-  const quoteRate = line.normalised?.ratePerBaseUom ?? line.normalised?.rate ?? null;
+  /**
+   * The quote is passed around as an object rather than a number so every
+   * tier can see the pack size. CDC's master and the supplier frequently
+   * price the same purchase in different units, and a bare number loses the
+   * information needed to reconcile them.
+   */
+  const quote = {
+    ratePerBaseUom: line.normalised?.ratePerBaseUom ?? line.normalised?.rate ?? null,
+    packQty: line.normalised?.packQty ?? null,
+    packUom: line.normalised?.packUom ?? null,
+  };
+  const quoteRate = quote.ratePerBaseUom;
   const productName = line.raw?.productName || supplierItem?.supplierProductName || '';
 
   // ── Tier 1: supplier product code ────────────────────────────────────────
@@ -85,15 +96,20 @@ export async function matchLine({
   }
 
   // ── Tier 2: rate anchor ──────────────────────────────────────────────────
-  const anchored = rateAnchor(candidates, quoteRate);
+  const anchored = rateAnchor(candidates, quote);
   if (anchored.unique) {
     const c = anchored.matches[0];
+    // Saying which basis matched matters: "₹149/kg × 15 kg = ₹2,235" is the
+    // evidence, and "₹149 matches ₹2,235" would read as a mistake.
+    const basis = c._anchoredOn === 'PER_PACK'
+      ? `₹${quoteRate} per ${quote.packUom || 'unit'} × ${quote.packQty} = ₹${c._anchorRate}`
+      : `₹${quoteRate}`;
     return result({
       method: 'RATE_ANCHOR',
       itemId: c.ItemID,
       confidence: 0.97,
-      rationale: `Last paid ₹${c.LastPaidRate} matches the quoted ₹${quoteRate} within ${(TOLERANCES.rateAnchorPct * 100).toFixed(1)}%`,
-      rankedCandidates: rank(candidates, { line, quoteRate }).slice(0, 8),
+      rationale: `Last paid ₹${c.LastPaidRate} matches the quoted ${basis} within ${(TOLERANCES.rateAnchorPct * 100).toFixed(1)}%`,
+      rankedCandidates: rank(candidates, { line, quote }).slice(0, 8),
     });
   }
 
@@ -119,12 +135,12 @@ export async function matchLine({
       itemId: candidate.ItemID,
       confidence: 0.93,
       rationale: `All ${comparison.compared} stated attributes agree (${describeTuple(quoteTuple)})`,
-      rankedCandidates: rank(candidates, { line, quoteRate }).slice(0, 8),
+      rankedCandidates: rank(candidates, { line, quote }).slice(0, 8),
     });
   }
 
   // ── Tier 4: name similarity within sub-group ─────────────────────────────
-  const scored = rank(candidates, { line, quoteRate });
+  const scored = rank(candidates, { line, quote });
   const best = scored[0];
   const runnerUp = scored[1];
 
@@ -227,17 +243,63 @@ export async function loadCandidates(site, group, { itemGroupIds } = {}) {
  * Exact equality is deliberately not required: CDC's last-paid figure carries
  * the ERP's rounding and the quote carries the supplier's, and half a percent
  * is wide enough for both without admitting a genuinely different price.
+ *
+ * **Both readings of the quote are tried**, which is not optional. The two
+ * sides frequently price in different units for the same purchase: Ultimate
+ * Logistix quotes GI wire at ₹149/kg while CDC buys the 15 kg spool as one
+ * "Nos" at ₹2,235. Those are the same price — 149 × 15 = 2235, exactly what
+ * CDC last paid — and anchoring on the per-kg figure alone misses it
+ * completely. The reverse case (a supplier pricing the pack while CDC buys by
+ * weight) is handled by the same comparison from the other end.
+ *
+ * @param {Array} candidates
+ * @param {number|{ratePerBaseUom: number, packEquivalent: number}} quote
  */
-export function rateAnchor(candidates, quoteRate, tolerance = TOLERANCES.rateAnchorPct) {
-  if (!Number.isFinite(quoteRate) || quoteRate <= 0) return { matches: [], unique: false };
+export function rateAnchor(candidates, quote, tolerance = TOLERANCES.rateAnchorPct) {
+  const readings = quoteReadings(quote);
+  if (!readings.length) return { matches: [], unique: false };
 
-  const matches = candidates.filter((c) => {
+  const matches = [];
+  for (const c of candidates) {
     const paid = Number(c.LastPaidRate);
-    if (!Number.isFinite(paid) || paid <= 0) return false;
-    return Math.abs(paid - quoteRate) / paid <= tolerance;
-  });
+    if (!Number.isFinite(paid) || paid <= 0) continue;
+    const hit = readings.find((r) => Math.abs(paid - r.rate) / paid <= tolerance);
+    if (hit) matches.push({ ...c, _anchoredOn: hit.basis, _anchorRate: hit.rate });
+  }
 
   return { matches, unique: matches.length === 1 };
+}
+
+/**
+ * The rates a quote line can legitimately be compared against.
+ *
+ * `PER_UNIT` is the normalised per-base-unit rate. `PER_PACK` is that rate
+ * multiplied by the pack size, for the case where CDC's master counts whole
+ * packs. Both are returned so a caller never has to know in advance which unit
+ * the ERP happens to use for an item.
+ */
+export function quoteReadings(quote) {
+  if (Number.isFinite(quote)) {
+    return quote > 0 ? [{ rate: quote, basis: 'PER_UNIT' }] : [];
+  }
+  if (!quote || typeof quote !== 'object') return [];
+
+  const readings = [];
+  const perUnit = Number(quote.ratePerBaseUom ?? quote.rate);
+  if (Number.isFinite(perUnit) && perUnit > 0) {
+    readings.push({ rate: perUnit, basis: 'PER_UNIT' });
+  }
+
+  const packQty = Number(quote.packQty);
+  if (Number.isFinite(perUnit) && perUnit > 0 && Number.isFinite(packQty) && packQty > 0) {
+    const perPack = round(perUnit * packQty, 4);
+    // Only worth comparing when it is a different number.
+    if (Math.abs(perPack - perUnit) > 1e-9) {
+      readings.push({ rate: perPack, basis: 'PER_PACK' });
+    }
+  }
+
+  return readings;
 }
 
 // ── Tier 3: spec tuple ──────────────────────────────────────────────────────
@@ -277,10 +339,13 @@ export function specTupleMatch(candidates, quoteTuple, { minCompared = 2 } = {})
  * this supplier has sold before, bought recently and often, is far more likely
  * than a textually similar item nobody has touched in two years.
  */
-export function rank(candidates, { line, quoteRate }) {
+export function rank(candidates, { line, quote, quoteRate }) {
   const productName = line?.raw?.productName || '';
   const productCode = line?.raw?.productCode || '';
   const query = [productName, productCode].filter(Boolean).join(' ');
+  // Accepts either a quote object or a bare rate, so a caller with only a
+  // number does not have to construct one.
+  const readings = quoteReadings(quote ?? quoteRate);
 
   return candidates
     .map((c) => {
@@ -292,11 +357,23 @@ export function rank(candidates, { line, quoteRate }) {
       if (sameSubGroup) { score += 0.05; reasons.push('same sub-group'); }
       if (c._suppliedByThisGroup) { score += 0.04; reasons.push('this supplier supplies it'); }
 
-      // Rate proximity short of the anchor tolerance is still evidence.
-      if (Number.isFinite(quoteRate) && Number.isFinite(c.LastPaidRate) && c.LastPaidRate > 0) {
-        const delta = Math.abs(c.LastPaidRate - quoteRate) / c.LastPaidRate;
-        if (delta <= 0.05) { score += 0.08; reasons.push(`within ${(delta * 100).toFixed(1)}% of last paid`); }
-        else if (delta >= 3) { score -= 0.10; reasons.push('rate is implausibly far from last paid'); }
+      /**
+       * Rate proximity short of the anchor tolerance is still evidence — but
+       * measured against the closest legitimate reading of the quote, not
+       * only the per-unit one. Scoring a wire spool as "93% away" because the
+       * supplier prices per kg and CDC per spool would bury the right answer.
+       */
+      const closest = closestReading(readings, c.LastPaidRate);
+      if (closest) {
+        if (closest.delta <= 0.05) {
+          score += 0.08;
+          reasons.push(closest.basis === 'PER_PACK'
+            ? `within ${(closest.delta * 100).toFixed(1)}% of last paid, as a pack of ${quote?.packQty ?? '?'}`
+            : `within ${(closest.delta * 100).toFixed(1)}% of last paid`);
+        } else if (closest.delta >= 3) {
+          score -= 0.10;
+          reasons.push('rate is implausibly far from last paid');
+        }
       }
 
       if ((c.PurchaseCount || 0) >= 10) { score += 0.02; reasons.push('bought regularly'); }
@@ -311,11 +388,34 @@ export function rank(candidates, { line, quoteRate }) {
         purchaseCount: c.PurchaseCount,
         spend: c.SpendInWindow,
         sameSubGroup,
+        /** Which reading of the quote this candidate's rate lines up with. */
+        matchedBasis: closest?.basis ?? null,
+        comparableQuoteRate: closest?.rate ?? readings[0]?.rate ?? null,
+        deltaVsLastPaidPct: closest ? round(closest.signedDelta * 100, 2) : null,
         score: round(Math.max(0, Math.min(1, score)), 4),
         rationale: reasons.join('; ') || `name similarity ${round(base, 3)}`,
       };
     })
     .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * The reading of the quote nearest a candidate's last-paid rate.
+ *
+ * Returns the absolute delta for scoring and the signed one for display —
+ * "8% cheaper" and "8% dearer" are different findings.
+ */
+function closestReading(readings, lastPaidRate) {
+  const paid = Number(lastPaidRate);
+  if (!Number.isFinite(paid) || paid <= 0 || !readings.length) return null;
+
+  let best = null;
+  for (const reading of readings) {
+    const signedDelta = (reading.rate - paid) / paid;
+    const delta = Math.abs(signedDelta);
+    if (!best || delta < best.delta) best = { ...reading, delta, signedDelta };
+  }
+  return best;
 }
 
 /**

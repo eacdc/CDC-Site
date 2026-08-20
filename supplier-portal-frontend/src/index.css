@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-feature-settings: 'tnum' 1;
+  }
+  /* Numbers in tables must line up to be comparable at a glance. */
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+}

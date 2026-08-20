@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rateAnchor, specTupleMatch, rank } from '../services/matching.js';
+import { rateAnchor, specTupleMatch, rank, quoteReadings } from '../services/matching.js';
 import { nameSimilarity, tokenSetRatio, normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
 import { parseGsmBand, gsmInBand, parseFilmType, parseMicron, buildSpecKey, itemMatchesSpecKey } from '../lib/spec.js';
 import { TOLERANCES } from '../config/constants.js';
@@ -76,6 +76,52 @@ test('several candidates at one rate is ambiguity, not a match', () => {
   const result = rateAnchor(candidates, 382.44);
   assert.equal(result.unique, false);
   assert.equal(result.matches.length, 2);
+});
+
+test('the anchor reconciles a per-kg quote against a per-pack last-paid rate', () => {
+  /**
+   * The verified Ultimate Logistix case, and the one an earlier version of
+   * this engine missed. The supplier quotes GI wire at ₹149/kg; CDC buys the
+   * 15 kg spool as one "Nos" and last paid ₹2,235. Same price — 149 × 15 =
+   * 2235 — but anchoring on the per-kg figure alone finds nothing.
+   */
+  const candidates = [{ ItemID: 5501, ItemName: 'G.I WIRE SPOOL BIG 26', LastPaidRate: 2235 }];
+  const quote = { ratePerBaseUom: 149, packQty: 15, packUom: 'KG' };
+
+  const result = rateAnchor(candidates, quote);
+  assert.equal(result.unique, true, 'the pack-equivalent reading must be tried');
+  assert.equal(result.matches[0]._anchoredOn, 'PER_PACK');
+  assert.equal(result.matches[0]._anchorRate, 2235);
+
+  // A bare per-unit rate cannot reach it, which is exactly why the object form
+  // exists.
+  assert.equal(rateAnchor(candidates, 149).unique, false);
+});
+
+test('both readings of a quote are offered, and only when they differ', () => {
+  assert.deepEqual(
+    quoteReadings({ ratePerBaseUom: 149, packQty: 15 }),
+    [{ rate: 149, basis: 'PER_UNIT' }, { rate: 2235, basis: 'PER_PACK' }],
+  );
+  // A pack of one is not a second reading.
+  assert.deepEqual(
+    quoteReadings({ ratePerBaseUom: 500, packQty: 1 }),
+    [{ rate: 500, basis: 'PER_UNIT' }],
+  );
+  assert.deepEqual(quoteReadings(410), [{ rate: 410, basis: 'PER_UNIT' }]);
+  assert.deepEqual(quoteReadings(null), []);
+});
+
+test('ranking measures against the closest legitimate reading', () => {
+  // Scoring the wire spool as "93% away" because the supplier prices per kg
+  // and CDC per spool would bury the right answer under the wrong one.
+  const ranked = rank(
+    [{ ItemID: 5501, ItemName: 'G.I WIRE SPOOL BIG 26', LastPaidRate: 2235, PurchaseCount: 12 }],
+    { line: { raw: { productName: 'G.I WIRE SPOOL BIG 26' } }, quote: { ratePerBaseUom: 149, packQty: 15 } },
+  );
+  assert.equal(ranked[0].matchedBasis, 'PER_PACK');
+  assert.equal(ranked[0].deltaVsLastPaidPct, 0);
+  assert.match(ranked[0].rationale, /as a pack of 15/);
 });
 
 test('the anchor tolerance is half a percent, not exact equality', () => {
