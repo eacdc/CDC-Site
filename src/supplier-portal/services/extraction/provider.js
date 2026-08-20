@@ -80,6 +80,34 @@ export const ExtractedQuoteLineSchema = z.object({
   gsmFrom: printed(),
   gsmTo: printed(),
   productForm: printed(),
+  /**
+   * The plant this one row prices.
+   *
+   * Set when a document prices both plants **side by side** — NR quotes
+   * Kolkata and Ahmedabad as two rate columns against one set of GSM bands,
+   * 48 rates on a single page. `plantBlocks` cannot express that: it maps a
+   * plant to line numbers, which assumes each row belongs to one plant, and
+   * here every row carries two rates.
+   *
+   * Null when the document prices one plant, which is the common case; the
+   * document-level plant then applies.
+   *
+   * Optional, like `brightness` below, and that is a rule rather than an
+   * oversight: a field added to this schema must never reject a document that
+   * does not carry it. Declared as required keys, these two failed every quote
+   * without them — including all eight fixtures of previously good
+   * extractions — which is a far worse outcome than a missing plant on a
+   * single-plant document.
+   */
+  plant: printed().optional(),
+  /**
+   * Board brightness as printed — "84B", "90B".
+   *
+   * Part of the identity of a board grade, not decoration: NR MAXIMA 84B and
+   * NR SHINE 90B are different products at different prices, and on this
+   * supplier's quotes the brightness is the only thing separating the blocks.
+   */
+  brightness: printed().optional(),
   width: printed(),
   micron: printed(),
   /**
@@ -131,7 +159,32 @@ export const ExtractedAddresseeSchema = z.object({
   attention: printed(),
 });
 
+/**
+ * What the quote is buying.
+ *
+ * Read before anything else, because it decides which fields on a line are
+ * even meaningful. A board line is identified by mill, grade and a GSM band; an
+ * ink line by colour and pack size; a tape line by width and micron. Treating
+ * them all as one "product name" is what produced rows reading
+ * `NR MAXIMA SS (REEL) - 84B` — a specification flattened into a string, from
+ * which nothing can be searched or compared.
+ *
+ * `OTHER` is deliberate and not a failure: a class we guessed at would send a
+ * line down the wrong extraction rules, and the generic path handles an
+ * unclassified quote perfectly well.
+ */
+export const MATERIAL_CLASSES = [
+  'PAPER_BOARD', 'INK', 'FILM', 'ADHESIVE', 'PLATE', 'CHEMICAL', 'CONSUMABLE', 'OTHER',
+];
+
 export const ExtractedQuoteSchema = z.object({
+  materialClass: z.preprocess(
+    (v) => {
+      const t = String(v ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+      return MATERIAL_CLASSES.includes(t) ? t : null;
+    },
+    z.enum(MATERIAL_CLASSES).nullable(),
+  ).nullable().optional(),
   supplierName: printed(),
   supplierGstin: printed(),
   supplier: ExtractedSupplierSchema.nullable().optional(),

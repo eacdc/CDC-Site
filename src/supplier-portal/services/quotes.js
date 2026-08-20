@@ -24,6 +24,7 @@ import { extractWorkbook } from './extraction/xlsx-extract.js';
 import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
+import { planPlantSplit } from './quote-split.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
 
@@ -146,7 +147,23 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
       ? await extractFromWorksheet(doc, buffer, hints)
       : await extractFromImages(doc, pages, hints, buffer);
 
-    const stored = await storeLines(doc, result.lines);
+    /*
+      A file that prices both plants becomes two documents, one per plant.
+
+      Everything downstream — plantScope, approval, the PO check, rate history
+      — assumes a document prices one plant, and the rule that rates never
+      cross plants is enforced in those consumers. Splitting here keeps that
+      rule structural instead of teaching every consumer that a document can
+      straddle plants.
+
+      The split happens before the lines are stored, so neither document ever
+      holds a row belonging to the other, even briefly.
+    */
+    const split = planPlantSplit(result.lines, result.extracted?.plantBlocks);
+    const linesForThisDoc = split ? split.keep.lines : result.lines;
+    const siblings = split ? await spawnPlantSiblings(doc, split, result) : [];
+
+    const stored = await storeLines(doc, linesForThisDoc);
 
     // Identification reads the same extraction rather than the provider again.
     // A worksheet carries no letterhead, so it produces an empty proposal — and
@@ -177,14 +194,20 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
         'extraction.error': null,
         ...result.documentFields,
         ...identification.documentFields,
+        ...(result.extracted?.materialClass
+          ? { materialClass: result.extracted.materialClass } : {}),
+        // The split decides the plant outright — it came from the rate column
+        // the rows were in, which is better evidence than the addressee block.
+        ...(split ? { plantScope: [split.keep.plant], plantScopeBasis: 'STATED' } : {}),
       },
       $push: { checks: { $each: checks } },
     });
 
     return {
-      lineCount: result.lines.length,
+      lineCount: linesForThisDoc.length,
       checks,
       identification: identification.documentFields.identification,
+      ...(siblings.length ? { splitInto: siblings } : {}),
       ...result.meta,
     };
   } catch (err) {
@@ -847,6 +870,65 @@ export function resolveValidity(extracted, doc, group) {
  * stays alongside the computed number. Every figure on the review screen can
  * then be traced to what the document actually said.
  */
+/**
+ * Create one sibling document per extra plant, and store its lines.
+ *
+ * The siblings share the uploaded file rather than copying it: same
+ * `storageKey`, same hashes, so the review screen shows the same PDF and R2
+ * holds one object. They deliberately do NOT share the content hash's
+ * duplicate protection — `splitFrom` records where they came from, so a later
+ * upload of the same file still reports a duplicate against the original.
+ *
+ * A failure here must not lose the extraction that produced it. If a sibling
+ * cannot be written the original document still gets its own plant's lines and
+ * a check saying the other plant was not filed, which is recoverable by
+ * re-running extraction. Throwing would discard both halves.
+ */
+async function spawnPlantSiblings(doc, split, result) {
+  const created = [];
+
+  for (const { plant, lines } of split.spawn) {
+    try {
+      const source = doc.toObject ? doc.toObject() : { ...doc };
+      // eslint-disable-next-line no-unused-vars
+      const { _id, createdAt, updatedAt, checks, ...carried } = source;
+
+      const sibling = await QuoteDocument.create({
+        ...carried,
+        splitFrom: doc._id,
+        plantScope: [plant],
+        plantScopeBasis: 'STATED',
+        status: 'EXTRACTING',
+        checks: [],
+        ...(result.extracted?.materialClass
+          ? { materialClass: result.extracted.materialClass } : {}),
+      });
+
+      const storedSibling = await storeLines(sibling, lines);
+
+      await QuoteDocument.updateOne({ _id: sibling._id }, {
+        $set: {
+          status: 'EXTRACTED',
+          'extraction.provider': result.provider,
+          'extraction.model': result.model,
+          'extraction.finishedAt': new Date(),
+          'extraction.error': null,
+          ...result.documentFields,
+          plantScope: [plant],
+          plantScopeBasis: 'STATED',
+        },
+      });
+
+      created.push({ documentId: String(sibling._id), plant, lineCount: lines.length });
+    } catch (err) {
+      console.error(`[SP][split] could not create the ${plant} half:`, err.message);
+      created.push({ plant, error: err.message });
+    }
+  }
+
+  return created;
+}
+
 async function storeLines(doc, rawLines) {
   const overrides = uomOverridesFrom(await UomNormalisation.find({}).lean());
   await QuoteLine.deleteMany({ quoteDocumentId: doc._id });
@@ -884,6 +966,7 @@ async function storeLines(doc, rawLines) {
       grade: line.grade ?? null,
       shade: line.shade ?? null,
       bulk: line.bulk ?? null,
+      brightness: line.brightness ?? null,
       notes: line.notes ?? null,
     };
 

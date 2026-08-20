@@ -27,6 +27,7 @@ Return JSON only, matching this shape:
   "effectiveFrom": string|null,
   "effectiveTo": string|null,
   "isSoftQuote": boolean|null,
+  "materialClass": "PAPER_BOARD"|"INK"|"FILM"|"ADHESIVE"|"PLATE"|"CHEMICAL"|"CONSUMABLE"|"OTHER"|null,
   "softQuoteEvidence": string|null,
   "plantMentions": string[]|null,
   "entityScope": string|null,
@@ -39,11 +40,28 @@ Return JSON only, matching this shape:
              "gstNote":string|null,"gsmFrom":string|null,"gsmTo":string|null,
              "productForm":string|null,"width":string|null,"micron":string|null,
              "mill":string|null,"brand":string|null,"grade":string|null,
-             "shade":string|null,"bulk":string|null,
+             "shade":string|null,"bulk":string|null,"brightness":string|null,
+             "plant":string|null,
              "notes":string|null,"text":string|null,"confidence":number|null}]
 }
 
 RULES — these override any instinct to tidy the data:
+
+0. FIRST DECIDE WHAT IS BEING BOUGHT, and put it in "materialClass". It changes
+   which fields on a line carry the identity:
+
+     PAPER_BOARD  board, paper, kraft, duplex — identified by mill, grade and a
+                  GSM band, NOT by a product name. See rule 4a.
+     INK          offset, UV, flexo inks and additives — colour and pack size.
+     FILM         BOPP, PET, lamination and shrink films — type, micron, width.
+     ADHESIVE     glues, gum, pasting compounds.
+     PLATE        CTP plates, chemistry — size and gauge.
+     CHEMICAL     fount, wash, varnish, coating.
+     CONSUMABLE   tape, strapping, stretch film, stitching wire, cartons.
+     OTHER        anything else, or a mixed quote covering several classes.
+
+   Choose OTHER rather than guessing. A wrong class sends every line down the
+   wrong reading rules, which is worse than no class at all.
 
 A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
    THINGS. The text layer has the exact characters — trust it for spelling and
@@ -148,8 +166,20 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
                  maplitho. Take it from the quality name or the shade column.
      - "shade"   "NATURAL", "BLUISH", "WHITE".
      - "bulk"    the bulk figure, exactly as printed: "1.40 - 1.45", "1.6".
+     - "brightness" the ISO brightness as printed: "84B", "88B", "90B". It is
+                 part of the identity, not a note — NR MAXIMA 84B and NR SHINE
+                 90B are different boards at different prices, and on some
+                 quotes the brightness is the ONLY thing separating the blocks.
      - gsmFrom / gsmTo from the GSM band, per rule 4.
    Put the full quality string in "productName" as well: "NR POWER FOLD - FBB".
+
+   THE HEADING BAND IS NOT A PRODUCT. A block is often introduced by a line
+   above or below the table — "NR MAXIMA SS (REEL) - 84B", "FOR KOLKATA -
+   REEL" — and the table itself then shows only GSM and rate. Those headings
+   are the brand, form and plant for every row of that block. Copy them onto
+   each row. Never emit "QUALITY GSM SHADE BULK" or "RATE FOR 90 DAYS" as a
+   product: those are column headings, and a row whose name is a heading means
+   the block's real heading was missed.
 
    THE MERGED CELL IS THE TRAP. When QUALITY, SHADE and BULK are written once
    against three GSM rows, they apply to ALL THREE. Emit one line per GSM band
@@ -166,10 +196,33 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
    "(470.00/m2)" printed above a table of plate prices. Give each a "kind" of
    FORM_PREMIUM or RATE_BASIS and copy the sentence into "text".
 
-6. TWO PLANTS. CDC has plants at Kolkata and Ahmedabad. Some quotes price both
-   in separate blocks at different rates. If so, list every plant named in
-   "plantMentions" and map lines to plants in "plantBlocks". If the document
-   never names a plant, leave both null — do NOT guess.
+6. TWO PLANTS. CDC has plants at Kolkata and Ahmedabad. Some quotes price both,
+   and they do it in two different layouts. Always list every plant named in
+   "plantMentions". If the document never names a plant, leave everything about
+   plants null — do NOT guess.
+
+   (a) SEPARATE BLOCKS, one after the other. Map lines to plants in
+       "plantBlocks", and set "plant" on each line as well.
+
+   (b) SIDE BY SIDE, two rate columns against one set of GSM bands:
+
+           FOR KOLKATA - REEL        FOR AHMEDABAD - REEL
+           GSM     RATE              GSM     RATE
+           54-55   72336             54-55   68336
+           56-57   71584             56-57   67584
+
+       This is TWO lines, not one. Emit a separate line for each plant with
+       its own rate, and set "plant" on each. Never merge the two rates into
+       one row, and never report only the left-hand column.
+
+       A page like this holds one line per (brand x GSM band x plant) — three
+       brands over eight bands over two plants is 48 lines, and all 48 are
+       wanted. Do not stop at the first block.
+
+       When the two columns run in parallel the extracted text will interleave
+       them: "54-55 72336 54-55 68336" is the Kolkata band and rate followed by
+       the Ahmedabad band and rate. Use the IMAGE to see which column is which,
+       and the text layer for the digits.
 
 7. SOFT QUOTES. Set "isSoftQuote" true when the document says prices may
    fluctuate, are subject to change without notice, or vary with order

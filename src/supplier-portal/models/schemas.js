@@ -168,6 +168,27 @@ export const quoteDocumentSchema = new Schema({
   effectiveTo: Date,
   validityBasis: { type: String, enum: ['STATED', 'DEFAULTED', 'NONE_GIVEN'], default: 'NONE_GIVEN' },
 
+  /**
+   * What the quote is buying, read off the document.
+   *
+   * Decides which fields on a line carry the identity: a board is mill, grade
+   * and a GSM band; an ink is colour and pack size. Without it every line is a
+   * product name, and a specification flattened into a name — "NR MAXIMA SS
+   * (REEL) - 84B" — cannot be searched or compared.
+   */
+  materialClass: {
+    type: String,
+    enum: ['PAPER_BOARD', 'INK', 'FILM', 'ADHESIVE', 'PLATE', 'CHEMICAL', 'CONSUMABLE', 'OTHER'],
+    default: null,
+  },
+
+  /**
+   * Set when this document was produced by splitting a file that priced both
+   * plants. Points at the document the reviewer uploaded, so the two halves
+   * can be shown as siblings rather than as an unexplained duplicate.
+   */
+  splitFrom: { type: Schema.Types.ObjectId, ref: 'SpQuoteDocument', default: null, index: true },
+
   /** Which plants the document covers. Drives the "which rows should this have produced?" check. */
   plantScope: { type: [String], enum: ['KOLKATA', 'AHMEDABAD'], default: [] },
   /** Whether the plant scope was printed, asked at review, or assumed. */
@@ -341,6 +362,14 @@ export const quoteLineSchema = new Schema({
     grade: String,
     shade: String,
     bulk: String,
+    /**
+     * ISO brightness as printed — "84B", "90B".
+     *
+     * Part of the identity rather than a note: NR MAXIMA 84B and NR SHINE 90B
+     * are different boards at different prices, and on some quotes the
+     * brightness is the only thing that separates the blocks.
+     */
+    brightness: String,
     notes: String,
   },
 

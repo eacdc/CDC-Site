@@ -149,6 +149,53 @@ test('invoice lines are lenient in the same two directions', () => {
   assert.equal(parsed.data.subTotal, '21520.14');
 });
 
+// ── Material class and the paper fields ─────────────────────────────────────
+
+test('a material class is kept, and loose spellings are tidied', () => {
+  const parse = (v) => ExtractedQuoteSchema.safeParse({ ...quote([LINE]), materialClass: v });
+  assert.equal(parse('PAPER_BOARD').data.materialClass, 'PAPER_BOARD');
+  assert.equal(parse('paper board').data.materialClass, 'PAPER_BOARD');
+  assert.equal(parse('Paper-Board').data.materialClass, 'PAPER_BOARD');
+});
+
+test('a class we do not recognise becomes null, not a rejection', () => {
+  // A model inventing "BOARDS" must not fail the document over it. The generic
+  // path handles an unclassified quote perfectly well; losing 48 rates because
+  // a label was unfamiliar would not be a trade worth making.
+  const parsed = ExtractedQuoteSchema.safeParse({ ...quote([LINE]), materialClass: 'BOARDS' });
+  assert.ok(parsed.success, parsed.success ? '' : describeIssues(parsed.error.issues));
+  assert.equal(parsed.data.materialClass, null);
+});
+
+test('a document with no class at all still parses', () => {
+  const parsed = ExtractedQuoteSchema.safeParse(quote([LINE]));
+  assert.ok(parsed.success, parsed.success ? '' : describeIssues(parsed.error.issues));
+});
+
+test('a board line carries its plant and brightness', () => {
+  // The NR layout: two rate columns, so the plant belongs to the row rather
+  // than to the document.
+  const parsed = ExtractedQuoteSchema.safeParse(quote([{
+    ...LINE,
+    productName: 'NR MAXIMA SS (REEL)',
+    mill: 'NR', brand: 'MAXIMA', grade: 'SS', brightness: '84B',
+    productForm: 'REEL', gsmFrom: '54', gsmTo: '55',
+    plant: 'AHMEDABAD', rate: '68336',
+  }]));
+  assert.ok(parsed.success, parsed.success ? '' : describeIssues(parsed.error.issues));
+  assert.equal(parsed.data.lines[0].plant, 'AHMEDABAD');
+  assert.equal(parsed.data.lines[0].brightness, '84B');
+  assert.equal(parsed.data.lines[0].brand, 'MAXIMA');
+});
+
+test('a line omitting plant and brightness is still valid', () => {
+  // The rule that matters: adding a field to this schema must never reject a
+  // document that predates it.
+  const parsed = ExtractedQuoteSchema.safeParse(quote([LINE]));
+  assert.ok(parsed.success, parsed.success ? '' : describeIssues(parsed.error.issues));
+  assert.equal(parsed.data.lines[0].plant, undefined);
+});
+
 // ── The error message itself ────────────────────────────────────────────────
 
 test('one repeated fault is reported once, with a count', () => {
