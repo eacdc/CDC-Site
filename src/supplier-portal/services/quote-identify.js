@@ -22,13 +22,24 @@
 import { ensureSupplierPortalReady, SupplierGroup } from '../db/mongo.js';
 import { CDC_IDENTITY, PLANTS, SITE_BY_PLANT } from '../config/constants.js';
 import { normaliseName, tokenSetRatio } from '../lib/text.js';
-import { stripCorporateSuffixes, normaliseGstin, groupForLedger } from './supplier-groups.js';
+import {
+  stripCorporateSuffixes, normaliseGstin, groupForLedger, suggestGroups,
+} from './supplier-groups.js';
 import { supplierLedgers } from './erp-ledgers.js';
 
 /** At or above this, a proposal is safe to pre-select for the reviewer. */
 export const AUTO_ACCEPT = 0.82;
-/** Below this, a candidate is not worth showing at all. */
-const WORTH_SHOWING = 0.45;
+/**
+ * Below this, a candidate is not worth showing at all.
+ *
+ * Deliberately generous. The reviewer is choosing from a shortlist, not
+ * trusting it, so a near-miss in the list costs a glance while a missing right
+ * answer costs a search through 1,279 names.
+ */
+const WORTH_SHOWING = 0.3;
+
+/** How many suppliers to shortlist. Enough to scan, few enough to read. */
+const SHORTLIST = 6;
 
 /**
  * CDC's own plants, keyed by the words that appear in an address.
@@ -146,22 +157,12 @@ async function identifySupplier({ site, extracted }) {
     if (byLedger) return { ...byLedger, readName: name, readGstin: gstin, foundIn };
   }
 
-  const scored = groups
-    .filter((g) => !g.isInternal)
-    .map((group) => {
-      const names = [group.name, ...(group.aliases || []), ...(group.tradesAs || [])];
-      let best = { score: 0, matchedOn: group.name };
-      for (const candidate of names) {
-        const score = tokenSetRatio(
-          stripCorporateSuffixes(name),
-          stripCorporateSuffixes(candidate),
-        );
-        if (score > best.score) best = { score, matchedOn: candidate };
-      }
-      return { group, ...best };
-    })
-    .filter((row) => row.score >= WORTH_SHOWING)
-    .sort((a, b) => b.score - a.score);
+  // Fuzzy, suffix-blind, and only ever a shortlist. Most quotes print no
+  // GSTIN and almost none print a name that matches a ledger character for
+  // character — "PRINT SALES PRIVATE LIMITED" against "Print Sales Pvt Ltd" —
+  // so this is the normal path, not the fallback. Its job is to cut 1,279
+  // suppliers down to the handful worth looking at.
+  const scored = suggestGroups(name, groups, { limit: SHORTLIST, floor: WORTH_SHOWING });
 
   const top = scored[0];
   const runnerUp = scored[1];
@@ -176,16 +177,16 @@ async function identifySupplier({ site, extracted }) {
       supplierGroupId: top.group._id,
       confidence: round(top.score, 3),
       evidence: describeSupplierMatch(name, top, foundIn),
-      candidates: scored.slice(1, 4).map(toCandidate),
+      candidates: scored.slice(1).map(toCandidate),
       readName: name,
       readGstin: gstin,
       foundIn,
     };
   }
 
-  // No confident group. Offer the ERP's own supplier ledgers too — a supplier
-  // quoting for the first time has a ledger but no group yet, and proposing
-  // "create a group for this ledger" is more useful than an empty result.
+  // Nothing clear enough to pre-select. Offer the ERP's own supplier ledgers
+  // alongside the shortlist — a ledger added since the last sync has no
+  // supplier record yet, and naming it beats an empty result.
   const ledgerSuggestions = await suggestFromLedgers({ site, name });
 
   return {
@@ -193,9 +194,9 @@ async function identifySupplier({ site, extracted }) {
     supplierGroupId: null,
     confidence: top ? round(top.score, 3) : 0,
     evidence: top
-      ? `Closest match is ${top.group.name} (${Math.round(top.score * 100)}%) — too close to call, confirm which supplier this is`
-      : `Read "${name}" from the document but it matches no supplier on file`,
-    candidates: scored.slice(0, 4).map(toCandidate),
+      ? `Read "${name}" from the document. Closest is ${top.group.name} (${Math.round(top.score * 100)}%) — too close to call, so pick the right supplier below`
+      : `Read "${name}" from the document but nothing on file resembles it — search for the supplier below`,
+    candidates: scored.map(toCandidate),
     ledgerCandidates: ledgerSuggestions,
     readName: name,
     readGstin: gstin,
@@ -246,7 +247,7 @@ async function groupFromLedgerGstin({ site, gstin }) {
       value: null,
       supplierGroupId: null,
       confidence: 0.6,
-      evidence: `GSTIN ${gstin} belongs to ERP ledger "${ledger.LedgerName}", which is not grouped yet — confirm or create a supplier group for it`,
+      evidence: `GSTIN ${gstin} belongs to ERP ledger "${ledger.LedgerName}", which has no supplier record yet — run Sync from ERP on the Suppliers screen, then re-check`,
       candidates: [],
       ledgerCandidates: [{
         ledgerId: ledger.LedgerID,

@@ -1,19 +1,36 @@
 /**
- * Supplier grouping.
+ * Suppliers.
  *
- * One supplier commonly has several LedgerIDs — Siegwerk has five, split by
- * branch — and LedgerIDs are per-database, so the same firm has a different id
- * in Kolkata and Ahmedabad. Grouping them is mandatory: without it "who is
- * cheapest" compares branches against each other and supplier scoring
- * fragments into meaningless slices.
+ * A supplier here is one ERP ledger, and every supplier ledger becomes one on
+ * sync. There is no grouping step: nobody creates a supplier, and nobody
+ * assigns a quote to one before uploading it.
  *
- * Grouping also has to survive two cases that are not branches at all:
+ * That is a deliberate reversal. The earlier design made "supplier group" a
+ * concept the purchase team had to maintain — seed a group, place 1,279
+ * ledgers into it, then upload against it — on the theory that comparison
+ * needs branches unified. It does not. If two ledgers are the same firm and
+ * both quote the same rate, the PO check stays quiet either way; if one is
+ * cheaper, you want to see it whether or not the system knows they are
+ * related. Grouping bought two narrow things and cost a week of data entry.
  *
- *   - **Trader vs principal.** Kamal Enterprises quotes KK 2102 and KK Easy
- *     Bond; the POs are raised on K K Emulsions Pvt Ltd. Same commercial
- *     relationship, two legal entities.
- *   - **Renames and second identities.** SR Graphic and Neographic are one
- *     firm — Neographics quotes are signed "For SR Graphic".
+ * What it did buy, and why a supplier is still its own record rather than a
+ * bare LedgerID:
+ *
+ *   - **Rate history across a rename.** Neographic this year, SR Graphic next.
+ *     Ledger-keyed, the second quote has nothing to compare against and the
+ *     price-increase check never fires.
+ *   - **Cross-plant.** LedgerIDs are per-database — Print Sales has one id in
+ *     `IndusEnterprise` and an unrelated one in `IndusEnterprise2`. Keyed on
+ *     the raw id, Kolkata's negotiated rate is invisible to Ahmedabad forever,
+ *     with no way to ever connect the two.
+ *
+ * Both are answered by `mergeGroups`, which is a pointer change precisely
+ * because a supplier is its own record. Keyed on LedgerIDs, merging would be a
+ * data migration and would therefore never happen.
+ *
+ * So: independent by default, merged when somebody notices. The word "group"
+ * does not appear in the interface; it survives here only as the collection
+ * name, which is not worth a migration to change.
  */
 
 import {
@@ -23,38 +40,43 @@ import { supplierLedgers, suppliedItemGroupsByLedger } from './erp-ledgers.js';
 import { normaliseName, tokenSetRatio } from '../lib/text.js';
 import { INTERNAL_LEDGER_PATTERNS } from '../config/constants.js';
 
-/**
- * Groups CDC confirmed in August 2026. Seeded on first run so the initial
- * mapping pass is not blocked on a grouping exercise; the purchase team edits
- * them afterwards through the admin screen.
- */
-export const SEED_GROUPS = [
-  { name: 'Siegwerk', aliases: ['Siegwerk India', 'SIEGWORK', 'Siegwerk India Pvt Ltd'] },
-  { name: 'Kodak', aliases: ['Kodak India', 'KODAK INDIA PRIVATE LIMITED'] },
-  { name: 'Kurz', aliases: ['Kurz India', 'Kurz India Pvt Ltd'] },
-  { name: 'Pidilite', aliases: ['Pidilite Industries'] },
-  { name: 'Bagla', aliases: ['Bagla Polifilms', 'BAGLA POLIFILMS LIMITED'] },
-  { name: 'GSN', aliases: ['GSN Udyog', 'GSN Packaging'] },
-  // Same firm under two names; Neographics quotes are signed "For SR Graphic".
-  { name: 'SR Graphic', aliases: ['Neographic', 'Neographics'] },
-  // Trader and principal: quotes arrive from one, POs go to the other.
-  { name: 'K K Emulsions', aliases: ['Kamal Enterprises', 'KK Emulsions'], tradesAs: ['Kamal Enterprises'] },
-];
-
-/** Fetch every group, with ledger refs resolved for a site. */
+/** Fetch every supplier. */
 export async function listGroups({ includeInternal = false } = {}) {
   await ensureSupplierPortalReady();
   const filter = includeInternal ? {} : { isInternal: { $ne: true } };
   return SupplierGroup.find(filter).sort({ name: 1 }).lean();
 }
 
-/** The ledger ids a group trades under at one site. */
+/**
+ * Suppliers whose name or alias contains `q`, for the type-ahead on the
+ * confirmation screen.
+ *
+ * Substring rather than fuzzy: this backs a box someone is typing into, where
+ * they already know roughly what they are looking for. Fuzzy ranking is for
+ * `suggestGroup`, which has to guess without being told anything.
+ */
+export async function searchGroups(q, { limit = 20, includeInternal = false } = {}) {
+  await ensureSupplierPortalReady();
+
+  const filter = includeInternal ? {} : { isInternal: { $ne: true } };
+  const text = String(q ?? '').trim();
+  if (text) {
+    // Escaped — a supplier name containing "(" would otherwise be an invalid
+    // expression and throw rather than simply not matching.
+    const rx = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$or = [{ name: rx }, { aliases: rx }];
+  }
+
+  return SupplierGroup.find(filter).sort({ name: 1 }).limit(limit).lean();
+}
+
+/** The ledger ids a supplier trades under at one site. */
 export function ledgerIdsForSite(group, site) {
   if (!group?.ledgerRefs?.length) return [];
   return group.ledgerRefs.filter((r) => r.site === site).map((r) => r.ledgerId);
 }
 
-/** Find the group a ledger belongs to. */
+/** Find the supplier a ledger belongs to. */
 export async function groupForLedger(site, ledgerId) {
   await ensureSupplierPortalReady();
   return SupplierGroup.findOne({
@@ -63,66 +85,54 @@ export async function groupForLedger(site, ledgerId) {
 }
 
 /**
- * Map every supplier ledger at a site to a group.
+ * Sync suppliers from the ERP: every supplier ledger at this site that has no
+ * supplier record gets one.
  *
- * Two modes, and the choice between them is about scale rather than taste.
+ * Linking an existing supplier to a new ledger happens **only on an exact
+ * normalised name**. Fuzzy matching used to link automatically at 0.85, and
+ * that threshold is where the design was actively wrong: `stripCorporateSuffixes`
+ * removes "Pvt", "Ltd", "India", "Enterprises", "Trading" — so "Print India
+ * Solution", "India Sales Agency" and "Graphic Sales" all collapse toward each
+ * other and toward "Print Sales". Silently linking two unrelated firms
+ * corrupts every rate comparison that follows, and nothing about the result
+ * looks wrong afterwards. Fuzzy is still computed, but only as a *suggestion*
+ * a person acts on — see `suggestGroup`.
  *
- * Without `autoCreate`, unplaced ledgers come back for a human to place. That
- * is right when there are a dozen: a wrong grouping silently corrupts every
- * comparison that follows, and the cost of asking is one screen.
+ * Everything runs in bulk. At ~1,300 ledgers a round trip each is not slow so
+ * much as fatal — it outlives the request.
  *
- * With `autoCreate`, each unplaced ledger becomes its own group. That is right
- * on a first run, where CDC's ERP holds ~1,300 supplier ledgers and there are
- * eight groups to match against — a screen offering 1,300 dropdowns of eight
- * options is not asking a question, it is refusing to start. One group per
- * ledger is the honest default: it asserts "one supplier, one ledger" rather
- * than guessing at a relationship nobody has confirmed, and the branches that
- * do belong together get merged later, when somebody notices.
- *
- * Everything is done in bulk. At this size a round trip per ledger is not slow
- * so much as fatal — it outlives the request.
- *
- * @returns {Promise<{assigned: number, created: number, unmatched: Array, gstins: Object}>}
+ * @returns {Promise<{assigned: number, created: number, total: number, gstins: Object}>}
  */
-export async function reconcileLedgers(site, { autoCreate = false } = {}) {
+export async function reconcileLedgers(site) {
   await ensureSupplierPortalReady();
   const ledgers = await supplierLedgers(site);
   const groups = await SupplierGroup.find({}).lean();
 
   const assignedIds = new Set(groups.flatMap((g) => ledgerIdsForSite(g, site)));
-  const byName = new Map(groups.map((g) => [normaliseName(g.name), g]));
 
-  const links = [];       // ledgers going onto an existing group
-  const fresh = new Map(); // new groups, keyed by normalised name
-  const unmatched = [];
+  // Exact normalised name → supplier, across names and aliases alike.
+  const byName = new Map();
+  for (const group of groups) {
+    for (const label of [group.name, ...(group.aliases || [])]) {
+      const key = normaliseName(label);
+      if (key && !byName.has(key)) byName.set(key, group);
+    }
+  }
+
+  const links = [];        // ledgers joining an existing supplier
+  const fresh = new Map(); // new suppliers, keyed by normalised name
 
   for (const ledger of ledgers) {
     if (assignedIds.has(ledger.LedgerID)) continue;
 
-    const suggestion = suggestGroup(ledger.LedgerName, groups);
-    if (suggestion && suggestion.score >= 0.85) {
-      links.push({ groupId: suggestion.group._id, ledgerId: ledger.LedgerID });
-      continue;
-    }
-
-    if (!autoCreate) {
-      unmatched.push({
-        ledgerId: ledger.LedgerID,
-        ledgerName: ledger.LedgerName,
-        suggestion: suggestion
-          ? { groupId: suggestion.group._id, name: suggestion.group.name, score: suggestion.score }
-          : null,
-      });
-      continue;
-    }
-
     const name = String(ledger.LedgerName || '').trim();
     if (!name) continue;
     const key = normaliseName(name);
+    if (!key) continue;
 
-    // A name already on file — whether from a previous run or from a group
-    // created moments ago in this loop — takes the ledger rather than causing
-    // a duplicate-key failure that would abort the whole reconciliation.
+    // A name already on file — from an earlier run or from a supplier created
+    // moments ago in this same loop — takes the ledger, rather than causing a
+    // duplicate-key failure that would abort the whole sync.
     const existing = byName.get(key);
     if (existing) {
       links.push({ groupId: existing._id, ledgerId: ledger.LedgerID });
@@ -132,7 +142,7 @@ export async function reconcileLedgers(site, { autoCreate = false } = {}) {
     const already = fresh.get(key);
     if (already) {
       // Two ledgers printing the identical name are one supplier, not a
-      // collision. Both refs go on the one group.
+      // collision. Both refs go on the one record.
       already.ledgerRefs.push({ site, ledgerId: ledger.LedgerID });
       continue;
     }
@@ -157,7 +167,7 @@ export async function reconcileLedgers(site, { autoCreate = false } = {}) {
   if (fresh.size) {
     // `ordered: false` so one bad row cannot abort the rest. A duplicate name
     // racing in from another session is the expected failure and is not worth
-    // stopping for — the ledger simply stays unplaced until the next run.
+    // stopping for — the ledger stays unplaced until the next sync.
     const result = await SupplierGroup.insertMany([...fresh.values()], {
       ordered: false,
       rawResult: true,
@@ -167,18 +177,19 @@ export async function reconcileLedgers(site, { autoCreate = false } = {}) {
 
   const gstins = await harvestGstins(site, ledgers);
 
-  return { assigned: links.length, created, unmatched, gstins };
+  return { assigned: links.length, created, total: ledgers.length, gstins };
 }
 
 /**
- * Copy each ledger's GSTIN onto the group that owns it.
+ * Copy each ledger's GSTIN onto the supplier that owns it.
  *
- * Run as part of reconciliation rather than on demand because the value of a
- * GSTIN is being there *before* the quote arrives: identification falls back to
- * fuzzy name matching for any supplier whose number has not been harvested yet.
+ * Run as part of the sync rather than on demand because the value of a GSTIN
+ * is being there *before* the quote arrives. Most quotes do not print one, so
+ * this is not the common path — but when a document does carry one it settles
+ * the identification outright instead of asking a person to choose.
  *
  * `$addToSet` is deliberate — a supplier that re-registers keeps both numbers,
- * and an old GSTIN still identifies the older documents correctly.
+ * and the old GSTIN still identifies the older documents correctly.
  */
 export async function harvestGstins(site, ledgers = null) {
   await ensureSupplierPortalReady();
@@ -211,23 +222,40 @@ export function normaliseGstin(value) {
 }
 
 /**
- * Best-matching group for a ledger name. Compares against the group name and
- * every alias, and strips the corporate suffixes that carry no identity —
- * "Pvt Ltd" matching "Pvt Ltd" is not evidence of anything.
+ * Rank suppliers against a name read off a document, best first.
+ *
+ * Only ever a suggestion. The output narrows 1,279 suppliers to the handful
+ * worth looking at, and a person picks — which is the right division of
+ * labour, because a letterhead reading "PRINT SALES PRIVATE LIMITED" against a
+ * ledger reading "Print Sales Pvt Ltd" is obvious to a human and merely
+ * probable to a scorer.
+ *
+ * Corporate suffixes are stripped before scoring: "Pvt Ltd" matching "Pvt Ltd"
+ * is not evidence of anything, and letting it count scores every Indian
+ * company against every other.
  */
+export function suggestGroups(readName, groups, { limit = 6, floor = 0.3 } = {}) {
+  const candidate = stripCorporateSuffixes(readName);
+  if (!candidate) return [];
+
+  return groups
+    .filter((g) => !g.isInternal)
+    .map((group) => {
+      let best = { score: 0, matchedOn: group.name };
+      for (const label of [group.name, ...(group.aliases || [])]) {
+        const score = tokenSetRatio(candidate, stripCorporateSuffixes(label));
+        if (score > best.score) best = { score, matchedOn: label };
+      }
+      return { group, ...best };
+    })
+    .filter((row) => row.score >= floor)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/** The single best match, or null. Thin wrapper over `suggestGroups`. */
 export function suggestGroup(ledgerName, groups) {
-  const candidate = stripCorporateSuffixes(ledgerName);
-  let best = null;
-
-  for (const group of groups) {
-    const names = [group.name, ...(group.aliases || []), ...(group.tradesAs || [])];
-    for (const name of names) {
-      const score = tokenSetRatio(candidate, stripCorporateSuffixes(name));
-      if (!best || score > best.score) best = { group, score, matchedOn: name };
-    }
-  }
-
-  return best && best.score > 0 ? best : null;
+  return suggestGroups(ledgerName, groups, { limit: 1, floor: 0 })[0] || null;
 }
 
 const CORPORATE_SUFFIXES = /\b(PVT|PRIVATE|LTD|LIMITED|LLP|INC|CO|COMPANY|INDIA|ENTERPRISES?|INDUSTRIES|UDYOG|TRADING|TRADERS?)\b/g;
@@ -240,19 +268,6 @@ export function stripCorporateSuffixes(name) {
     .trim();
 }
 
-/** Create the confirmed groups if they do not exist yet. Idempotent. */
-export async function seedGroups() {
-  await ensureSupplierPortalReady();
-  let created = 0;
-  for (const seed of SEED_GROUPS) {
-    const existing = await SupplierGroup.findOne({ name: seed.name });
-    if (existing) continue;
-    await SupplierGroup.create({ ...seed, ledgerRefs: [] });
-    created += 1;
-  }
-  return { created, total: SEED_GROUPS.length };
-}
-
 /**
  * Refresh the item groups a supplier has historically supplied. Tier 0 of the
  * matcher restricts candidates to these, which is what keeps an ink supplier's
@@ -263,8 +278,8 @@ export async function refreshHistoricalGroups(site) {
   const groups = await SupplierGroup.find({}).lean();
 
   // One ERP scan for every ledger at the site, then one bulk write. Asking per
-  // group instead means ~1,300 round trips to MSSQL and ~1,300 to Mongo, which
-  // is not slow so much as fatal — it outlives the request.
+  // supplier instead means ~1,300 round trips to MSSQL and ~1,300 to Mongo,
+  // which is not slow so much as fatal — it outlives the request.
   const allLedgerIds = groups.flatMap((g) => ledgerIdsForSite(g, site));
   const byLedger = await suppliedItemGroupsByLedger(site, allLedgerIds);
 
@@ -289,28 +304,31 @@ export async function refreshHistoricalGroups(site) {
 }
 
 /**
- * Merge one group into another: ledger refs, aliases, supplier items and rate
- * history all move. Used when the purchase team discovers two groups are the
- * same firm — SR Graphic and Neographic before anyone knew.
+ * Merge one supplier into another: ledger refs, aliases, GSTINs, supplier items
+ * and rate history all move, and the source name is kept as an alias so a
+ * future quote printing it still identifies.
+ *
+ * This is the correction path for the whole design. Suppliers are independent
+ * by default and merged when somebody notices two are the same firm — SR
+ * Graphic and Neographic, or a Kolkata ledger and its Ahmedabad counterpart.
  */
 export async function mergeGroups(sourceId, targetId, { actor } = {}) {
   await ensureSupplierPortalReady();
   if (String(sourceId) === String(targetId)) {
-    throw new Error('Cannot merge a supplier group into itself.');
+    throw new Error('Cannot merge a supplier into itself.');
   }
 
   const [source, target] = await Promise.all([
     SupplierGroup.findById(sourceId).lean(),
     SupplierGroup.findById(targetId).lean(),
   ]);
-  if (!source) throw new Error(`Supplier group ${sourceId} not found`);
-  if (!target) throw new Error(`Supplier group ${targetId} not found`);
+  if (!source) throw new Error(`Supplier ${sourceId} not found`);
+  if (!target) throw new Error(`Supplier ${targetId} not found`);
 
   await SupplierGroup.updateOne({ _id: target._id }, {
     $addToSet: {
       ledgerRefs: { $each: source.ledgerRefs || [] },
       aliases: { $each: [source.name, ...(source.aliases || [])] },
-      tradesAs: { $each: source.tradesAs || [] },
       gstins: { $each: source.gstins || [] },
       historicalItemGroupIds: { $each: source.historicalItemGroupIds || [] },
     },

@@ -71,9 +71,14 @@ const checkSchema = new Schema({
 // ── 10.1 supplierGroups ─────────────────────────────────────────────────────
 
 /**
- * One supplier, however many ledgers the ERP has for it. Grouping is mandatory:
- * Siegwerk alone has five ledgers, and without grouping "who is cheapest" is
- * wrong and supplier scoring fragments across branches.
+ * One supplier — normally one ERP ledger, created automatically by Sync.
+ *
+ * Suppliers are independent by default. Two ledgers that turn out to be the
+ * same firm (a rename, a branch, the same firm's ledger in the other plant's
+ * database) are joined with `mergeGroups` when somebody notices, which is a
+ * pointer change only because a supplier is its own record rather than a bare
+ * LedgerID. `aliases` and `gstins` are what let a later quote printing the old
+ * name or number still identify.
  */
 export const supplierGroupSchema = new Schema({
   name: { type: String, required: true, unique: true, trim: true },
@@ -95,12 +100,6 @@ export const supplierGroupSchema = new Schema({
    * benchmarking.
    */
   isInternal: { type: Boolean, default: false },
-  /**
-   * A quote may arrive from a different legal entity than the PO — Kamal
-   * Enterprises quotes, K K Emulsions invoices. Recorded so the trader is not
-   * mistaken for a separate supplier.
-   */
-  tradesAs: { type: [String], default: [] },
   /** Overrides TOLERANCES.defaultValidityDays for this supplier. */
   defaultValidityDays: Number,
   /** Item groups this supplier has historically supplied. Drives Tier 0. */

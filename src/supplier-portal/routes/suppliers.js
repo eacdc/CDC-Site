@@ -1,15 +1,16 @@
 /**
- * Supplier group administration.
+ * Suppliers.
  *
- * Grouping is the one piece of master data the portal owns rather than reads,
- * because the ERP has no concept of "these five ledgers are one supplier".
+ * Suppliers come from the ERP's supplier ledgers — one each, created by Sync.
+ * Nobody creates one by hand in the normal course of things; the manual create
+ * below survives for the trader who quotes but has no ledger at all.
  */
 
 import { Router } from 'express';
 import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, SupplierGroup, AuditLog } from '../db/mongo.js';
 import {
-  listGroups, reconcileLedgers, seedGroups, refreshHistoricalGroups, mergeGroups,
+  listGroups, searchGroups, reconcileLedgers, refreshHistoricalGroups, mergeGroups,
 } from '../services/supplier-groups.js';
 
 const router = Router();
@@ -18,6 +19,20 @@ router.use(requireAuth);
 router.get('/', async (req, res, next) => {
   try {
     res.json(await listGroups({ includeInternal: req.query.includeInternal === 'true' }));
+  } catch (err) { next(err); }
+});
+
+/**
+ * Type-ahead for the confirmation screen.
+ *
+ * Registered before `/:id` — Express matches in order, and `/search` would
+ * otherwise be read as an id and 404 against a cast error.
+ */
+router.get('/search', async (req, res, next) => {
+  try {
+    res.json(await searchGroups(req.query.q, {
+      limit: Math.min(Number(req.query.limit) || 20, 50),
+    }));
   } catch (err) { next(err); }
 });
 
@@ -33,13 +48,12 @@ router.get('/:id', async (req, res, next) => {
 router.post('/', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
-    const { name, aliases, tradesAs, ledgerRefs, isInternal, contactEmail, defaultValidityDays } = req.body || {};
-    if (!name?.trim()) return res.status(400).json({ error: 'A supplier group needs a name.' });
+    const { name, aliases, ledgerRefs, isInternal, contactEmail, defaultValidityDays } = req.body || {};
+    if (!name?.trim()) return res.status(400).json({ error: 'A supplier needs a name.' });
 
     const group = await SupplierGroup.create({
       name: name.trim(),
       aliases: aliases || [],
-      tradesAs: tradesAs || [],
       ledgerRefs: ledgerRefs || [],
       isInternal: Boolean(isInternal),
       contactEmail: contactEmail || null,
@@ -64,7 +78,7 @@ router.patch('/:id', requireRole('BUYER', 'APPROVER'), async (req, res, next) =>
     const before = await SupplierGroup.findById(req.params.id).lean();
     if (!before) return res.status(404).json({ error: 'Supplier group not found.' });
 
-    const allowed = ['name', 'aliases', 'tradesAs', 'ledgerRefs', 'isInternal',
+    const allowed = ['name', 'aliases', 'ledgerRefs', 'isInternal',
       'contactEmail', 'defaultValidityDays', 'notes'];
     const update = Object.fromEntries(
       Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)),
@@ -88,23 +102,14 @@ router.patch('/:id', requireRole('BUYER', 'APPROVER'), async (req, res, next) =>
 });
 
 /**
- * Reconcile ERP supplier ledgers against groups.
- *
- * Unmatched ledgers come back for a human to place rather than being grouped
- * automatically. A wrong grouping silently corrupts every comparison that
- * follows it, and the cost of asking is one screen.
+ * Sync suppliers from the ERP. Every supplier ledger gets a supplier record,
+ * and each ledger's GSTIN is copied onto it. Idempotent — a second run creates
+ * nothing and simply picks up ledgers added since the first.
  */
 router.post('/reconcile', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   try {
-    const result = await reconcileLedgers(req.sp.site, {
-      autoCreate: req.body?.autoCreate === true,
-    });
-    res.json(result);
+    res.json(await reconcileLedgers(req.sp.site));
   } catch (err) { next(err); }
-});
-
-router.post('/seed', requireRole('ADMIN'), async (req, res, next) => {
-  try { res.json(await seedGroups()); } catch (err) { next(err); }
 });
 
 router.post('/refresh-history', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
