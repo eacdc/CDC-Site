@@ -1353,28 +1353,50 @@ export async function requoteFromDocument({ documentId, actor, reason }) {
   };
 }
 
-export async function deleteDocument({ documentId, actor, reason }) {
+export async function deleteDocument({ documentId, actor, reason, force = false }) {
   await ensureSupplierPortalReady();
   const doc = await QuoteDocument.findById(documentId).lean();
   if (!doc) throw new Error('Quote document not found.');
 
-  if (doc.status === 'APPROVED') {
-    const error = new Error(
-      'An approved quote cannot be deleted — its rates are already in the rate history. '
-      + 'Use "Read this file again", which creates a replacement that supersedes it and keeps the trail.',
-    );
-    error.status = 409;
-    throw error;
+  const rates = await RateHistory.countDocuments({ quoteDocumentId: doc._id });
+
+  /*
+    Without `force`, an approved quote and anything that has written rates are
+    refused. Those rates are what the comparison and the PO check answer from,
+    and deleting the document behind them leaves numbers whose provenance no
+    longer exists.
+
+    With `force`, the rates go too. That is the honest version of the operation
+    a person actually wants when they say "delete this": not an orphaned
+    remainder, and not a refusal that leaves them stuck. It is deliberately not
+    the default, and it says in the audit row how many rate rows it took with
+    it — recoverable only by re-uploading the file and approving it again.
+  */
+  if (!force) {
+    if (doc.status === 'APPROVED') {
+      const error = new Error(
+        'An approved quote cannot be deleted — its rates are already in the rate history. '
+        + 'Delete it with force to remove those rates too, or use "Read this file again" '
+        + 'to supersede it and keep the trail.',
+      );
+      error.status = 409;
+      error.canForce = true;
+      throw error;
+    }
+
+    if (rates > 0) {
+      const error = new Error(
+        `This quote has written ${rates} rate row(s). Delete it with force to remove them too, or reject it instead.`,
+      );
+      error.status = 409;
+      error.canForce = true;
+      throw error;
+    }
   }
 
-  const rates = await RateHistory.countDocuments({ quoteDocumentId: doc._id });
-  if (rates > 0) {
-    const error = new Error(
-      `This quote has written ${rates} rate row(s) and cannot be deleted. Reject it instead.`,
-    );
-    error.status = 409;
-    throw error;
-  }
+  const ratesDeleted = force && rates > 0
+    ? (await RateHistory.deleteMany({ quoteDocumentId: doc._id })).deletedCount
+    : 0;
 
   const lines = await QuoteLine.deleteMany({ quoteDocumentId: doc._id });
   await QuoteDocument.deleteOne({ _id: doc._id });
@@ -1389,10 +1411,72 @@ export async function deleteDocument({ documentId, actor, reason }) {
     actor,
     before: doc,
     reason: reason || null,
-    meta: { linesDeleted: lines.deletedCount, storageKey: doc.storageKey },
+    meta: {
+      linesDeleted: lines.deletedCount,
+      ratesDeleted,
+      forced: Boolean(force),
+      priorStatus: doc.status,
+      storageKey: doc.storageKey,
+    },
   });
 
-  return { deleted: true, linesDeleted: lines.deletedCount, storageKey: doc.storageKey };
+  return {
+    deleted: true,
+    linesDeleted: lines.deletedCount,
+    ratesDeleted,
+    storageKey: doc.storageKey,
+  };
+}
+
+/**
+ * Delete every quote, with its lines and the rates it wrote.
+ *
+ * A starting-over button, and it exists because starting over was otherwise a
+ * hundred separate confirmations — which is not a decision anybody makes
+ * carefully, it is one they click through. One deliberate action is safer than
+ * a hundred careless ones.
+ *
+ * Deliberately narrow: quote documents, their lines, their rate rows. It does
+ * NOT touch suppliers, the UOM normalisation table, or the supplier-item
+ * mappings unless asked — those are learned settings that survive a bad batch
+ * of extractions and are tedious to rebuild. Pass `includeMappings` when the
+ * mappings themselves are the thing that went wrong.
+ *
+ * The stored files are left in R2. They are the only copy of what suppliers
+ * actually sent, they cost almost nothing, and keeping them means the same
+ * documents can be re-uploaded rather than chased down again.
+ */
+export async function purgeAllQuotes({ actor, reason, includeMappings = false } = {}) {
+  await ensureSupplierPortalReady();
+
+  const documents = await QuoteDocument.countDocuments({});
+  const lines = await QuoteLine.deleteMany({});
+  const rates = await RateHistory.deleteMany({});
+  const mappings = includeMappings
+    ? (await SupplierItem.deleteMany({})).deletedCount
+    : 0;
+  await QuoteDocument.deleteMany({});
+
+  await AuditLog.create({
+    action: 'QUOTES_PURGED',
+    entity: 'quoteDocument',
+    entityId: 'ALL',
+    actor,
+    reason: reason || null,
+    meta: {
+      documents,
+      linesDeleted: lines.deletedCount,
+      ratesDeleted: rates.deletedCount,
+      mappingsDeleted: mappings,
+    },
+  });
+
+  return {
+    documents,
+    linesDeleted: lines.deletedCount,
+    ratesDeleted: rates.deletedCount,
+    mappingsDeleted: mappings,
+  };
 }
 
 export async function approveDocument({ documentId, actor, overrides = [] }) {

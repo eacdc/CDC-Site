@@ -16,9 +16,21 @@ import {
 import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
   runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument, setDocumentUom,
-  deleteDocument,
+  deleteDocument, purgeAllQuotes,
   requoteFromDocument,
 } from '../services/quotes.js';
+
+/**
+ * Whether this request may delete live rates.
+ *
+ * Roles live at `req.sp.user.roles`, and ADMIN passes everything — the same
+ * rule `requireRole` applies. Reading them from the wrong place would have
+ * silently denied force to everyone, which reads as "the button is broken".
+ */
+function canForce(req) {
+  const held = req.sp?.user?.roles || [];
+  return held.includes('ADMIN') || held.includes('APPROVER');
+}
 import { matchDocument } from '../services/matching.js';
 import { uomOverridesFrom } from '../lib/uom.js';
 import { normaliseName } from '../lib/text.js';
@@ -329,12 +341,38 @@ async function downloadKey(key) {
  * else is a mistake somebody should be able to undo, rather than a permanent
  * row in a list everyone has to read past.
  */
+/**
+ * Delete every quote and everything derived from it.
+ *
+ * Registered before `/:id` — Express matches in order, and "purge-all" would
+ * otherwise be read as a document id. APPROVER-only: it removes rate history,
+ * which is what the comparison and the PO check answer from.
+ */
+router.post('/purge-all', requireRole('APPROVER'), async (req, res, next) => {
+  try {
+    // A typed confirmation rather than a boolean. The client cannot send this
+    // by accident, and neither can a stray request.
+    if (req.body?.confirm !== 'DELETE ALL QUOTES') {
+      return res.status(400).json({
+        error: 'To delete every quote, send confirm: "DELETE ALL QUOTES".',
+      });
+    }
+    return res.json(await purgeAllQuotes({
+      actor: req.sp.actor,
+      reason: req.body?.reason,
+      includeMappings: req.body?.includeMappings === true,
+    }));
+  } catch (err) { return next(err); }
+});
+
 router.delete('/:id', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     const result = await deleteDocument({
       documentId: req.params.id,
       actor: req.sp.actor,
       reason: req.body?.reason,
+      // Removing live rates is an APPROVER decision, not a BUYER one.
+      force: req.body?.force === true && canForce(req),
     });
     return res.json(result);
   } catch (err) {
