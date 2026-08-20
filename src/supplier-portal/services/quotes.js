@@ -43,7 +43,18 @@ export async function checkDuplicate({ sha256, perceptualHashes = [] }) {
   const checks = [];
 
   const exact = sha256 ? await QuoteDocument.findOne({ sha256 }).lean() : null;
-  checks.push(check('EXT001', !exact, {
+
+  /**
+   * The block exists to stop rate history being written twice from one file.
+   * A document that never got that far cannot have done so, and treating it as
+   * a duplicate strands the file: the upload is refused, and the thing it
+   * collides with is a failed record with nothing in it.
+   *
+   * So a prior upload only blocks if it is still a live claim on the file.
+   * A rejected one, or one whose extraction failed and left no lines, is not.
+   */
+  const blocks = Boolean(exact) && isLiveDocument(exact);
+  checks.push(check('EXT001', !blocks, {
     message: exact
       ? `Already uploaded on ${formatDate(exact.uploadedAt)} as "${exact.originalFilename}"`
       : undefined,
@@ -81,7 +92,28 @@ export async function checkDuplicate({ sha256, perceptualHashes = [] }) {
     expectedValue: `> ${TOLERANCES.phashNearDuplicate}`,
   }));
 
-  return { checks, exactMatch: exact, nearMatch: near, isBlocked: hasBlockingFailure(checks) };
+  return {
+    checks,
+    exactMatch: exact,
+    nearMatch: near,
+    isBlocked: hasBlockingFailure(checks),
+    /** Set when a prior upload exists but is not a live claim on the file. */
+    supersedesFailed: Boolean(exact) && !isLiveDocument(exact) ? exact._id : null,
+  };
+}
+
+/**
+ * Whether an existing document still stands for its file.
+ *
+ * REJECTED is a decision to discard it. An extraction that errored, or that
+ * finished with nothing to show, produced no lines and no rates — there is
+ * nothing for a re-upload to duplicate.
+ */
+export function isLiveDocument(doc) {
+  if (!doc) return false;
+  if (doc.status === 'REJECTED') return false;
+  if (doc.extraction?.error) return false;
+  return true;
 }
 
 // ── Extraction ──────────────────────────────────────────────────────────────
@@ -835,6 +867,61 @@ export async function runMagnitudeChecks(site, documentId) {
  * @param {string} opts.actor
  * @param {Array<{code: string, reason: string}>} [opts.overrides] reasons for WARN checks
  */
+/**
+ * Delete a quote document and its lines.
+ *
+ * An APPROVED document is refused. Its rates are in `rateHistory`, other rows
+ * were closed to make room for them, and PO checks have been answered against
+ * them — deleting it would leave a rate whose provenance no longer exists,
+ * which is worse than a wrong rate because nothing can even be traced. Reject
+ * or supersede those instead.
+ *
+ * Everything else is fair game. A failed extraction, a wrong file, a scan of
+ * the wrong page: these are mistakes, and a mistake you cannot undo becomes a
+ * permanent row in a list somebody has to read past forever.
+ */
+export async function deleteDocument({ documentId, actor, reason }) {
+  await ensureSupplierPortalReady();
+  const doc = await QuoteDocument.findById(documentId).lean();
+  if (!doc) throw new Error('Quote document not found.');
+
+  if (doc.status === 'APPROVED') {
+    const error = new Error(
+      'An approved quote cannot be deleted — its rates are already in the rate history. '
+      + 'Upload the replacement as a re-quote, which supersedes it and keeps the trail.',
+    );
+    error.status = 409;
+    throw error;
+  }
+
+  const rates = await RateHistory.countDocuments({ quoteDocumentId: doc._id });
+  if (rates > 0) {
+    const error = new Error(
+      `This quote has written ${rates} rate row(s) and cannot be deleted. Reject it instead.`,
+    );
+    error.status = 409;
+    throw error;
+  }
+
+  const lines = await QuoteLine.deleteMany({ quoteDocumentId: doc._id });
+  await QuoteDocument.deleteOne({ _id: doc._id });
+
+  // The stored file is deliberately left in place. It is cheap, it is the only
+  // copy of what the supplier actually sent, and an audit row pointing at a
+  // key that no longer resolves is not much of an audit row.
+  await AuditLog.create({
+    action: 'QUOTE_DELETED',
+    entity: 'quoteDocument',
+    entityId: String(doc._id),
+    actor,
+    before: doc,
+    reason: reason || null,
+    meta: { linesDeleted: lines.deletedCount, storageKey: doc.storageKey },
+  });
+
+  return { deleted: true, linesDeleted: lines.deletedCount, storageKey: doc.storageKey };
+}
+
 export async function approveDocument({ documentId, actor, overrides = [] }) {
   await ensureSupplierPortalReady();
   const doc = await QuoteDocument.findById(documentId);
@@ -845,6 +932,27 @@ export async function approveDocument({ documentId, actor, overrides = [] }) {
     quoteDocumentId: doc._id,
     supersededByLineId: null,
   }).lean();
+
+  /**
+   * A document with nothing priced on it cannot be approved.
+   *
+   * Approving writes rate history; with no usable line there is nothing to
+   * write, and the only effect is to mark the document APPROVED — which then
+   * makes it undeletable, because deletion refuses approved documents on the
+   * grounds that their rates are live. Rates it does not have. A failed
+   * extraction would become a permanent, unremovable row.
+   */
+  const priced = lines.filter((l) => Number.isFinite(l.normalised?.rate));
+  if (!priced.length) {
+    const error = new Error(
+      lines.length
+        ? `Cannot approve: none of the ${lines.length} extracted line(s) has a usable rate.`
+        : 'Cannot approve: no lines were extracted from this document. Re-run extraction, '
+          + 'or delete it and upload the file again.',
+    );
+    error.status = 409;
+    throw error;
+  }
 
   const blocking = collectBlocking(doc, lines);
   if (blocking.length) {

@@ -16,6 +16,7 @@ import {
 import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
   runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument,
+  deleteDocument,
 } from '../services/quotes.js';
 import { matchDocument } from '../services/matching.js';
 import { uomOverridesFrom } from '../lib/uom.js';
@@ -171,6 +172,17 @@ async function uploadQuoteFile(req, res, next) {
       });
     }
 
+    // A prior upload of this exact file that never produced anything is not a
+    // duplicate to preserve — it is a failed attempt at the thing being
+    // retried. Clearing it keeps the list showing work, not wreckage.
+    if (dedup.supersedesFailed) {
+      await deleteDocument({
+        documentId: dedup.supersedesFailed,
+        actor: req.sp.actor,
+        reason: 'Replaced by a re-upload of the same file after the first attempt failed',
+      }).catch((err) => console.warn('[SP][quotes] could not clear the failed upload:', err.message));
+    }
+
     const stored = await uploadBuffer({
       folder: 'supplier-portal/quotes',
       buffer: req.file.buffer,
@@ -225,19 +237,69 @@ router.post('/:id/extract', requireSite, requireRole('BUYER', 'APPROVER'), async
     await ensureSupplierPortalReady();
     const doc = await QuoteDocument.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+    if (doc.status === 'APPROVED') {
+      return res.status(409).json({
+        error: 'This quote is approved and its rates are written. Re-extracting would '
+          + 'replace the lines those rates came from.',
+      });
+    }
 
     const keys = [doc.storageKey, ...(doc.pageKeys || [])].filter(Boolean);
+    if (!keys.length) {
+      return res.status(409).json({ error: 'This document has no stored file to re-read.' });
+    }
+
     const pages = await Promise.all(keys.map(async (key, i) => ({
       url: await viewUrl(key), pageNo: i + 1, mimeType: doc.mimeType,
     })));
 
+    // A worksheet is parsed from bytes, not from a URL. On the upload path the
+    // buffer is already in hand; on a re-extract it has to come back out of
+    // storage, and without this a re-run of a worksheet fails on the one thing
+    // a re-run is for.
+    const isWorksheet = doc.docType === 'WORKSHEET'
+      || /spreadsheet|excel|\.xlsx?$|\.csv$/i.test(`${doc.mimeType || ''} ${doc.originalFilename || ''}`);
+    const buffer = isWorksheet ? await downloadKey(doc.storageKey) : null;
+
     const result = await extractDocument(doc._id, {
       site: req.sp.site,
       pages,
+      buffer,
       hints: { ...(req.body || {}) },
     });
     return res.json(result);
   } catch (err) { return next(err); }
+});
+
+/** Fetch a stored object's bytes through its signed URL. */
+async function downloadKey(key) {
+  if (!key) return null;
+  const response = await fetch(await viewUrl(key));
+  if (!response.ok) {
+    throw new Error(`Could not read the stored file back (HTTP ${response.status}).`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/**
+ * Delete a quote document.
+ *
+ * Approved quotes are refused by the service — their rates are live. Anything
+ * else is a mistake somebody should be able to undo, rather than a permanent
+ * row in a list everyone has to read past.
+ */
+router.delete('/:id', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const result = await deleteDocument({
+      documentId: req.params.id,
+      actor: req.sp.actor,
+      reason: req.body?.reason,
+    });
+    return res.json(result);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    return next(err);
+  }
 });
 
 /**
