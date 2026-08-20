@@ -302,5 +302,21 @@ export const SUPPLIER_TOKEN_ALIASES = {
 /** Ledger names that are internal transfers, not purchases (§8). */
 export const INTERNAL_LEDGER_PATTERNS = [/CDC\s*Printers/i];
 
+/**
+ * `LedgerMaster.LedgerType` values that mean "somebody we buy from".
+ *
+ * This was a single hardcoded 'Sundry Creditors', which silently excluded
+ * every ledger filed under 'Suppliers' — they never appeared in the supplier
+ * list, so their quotes could not be identified and their rates were invisible
+ * to comparison. Nothing on screen said a whole ledger type was missing;
+ * suppliers simply were not there.
+ *
+ * A list rather than a constant because the ERP's own vocabulary is not ours
+ * to fix, and a site that adds a type should need a config edit, not a code
+ * change. `GET /erp/ledger-types` reports what the database actually holds,
+ * which is how to find out whether this list is still complete.
+ */
+export const SUPPLIER_LEDGER_TYPES = ['Sundry Creditors', 'Suppliers'];
+
 /** Stored procedure called after a GRN commits. Best-effort, outside the tx. */
 export const STOCK_REFRESH_PROC = 'dbo.UPDATE_ITEM_STOCK_VALUES';

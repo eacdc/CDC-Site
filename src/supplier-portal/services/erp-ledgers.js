@@ -16,23 +16,32 @@
  */
 
 import { query, assertSite } from '../db/mssql.js';
-import { COMPANY_ID, INTERNAL_LEDGER_PATTERNS } from '../config/constants.js';
+import { COMPANY_ID, INTERNAL_LEDGER_PATTERNS, SUPPLIER_LEDGER_TYPES } from '../config/constants.js';
 
 /** Supplier ledgers. */
 export async function supplierLedgers(site, { activeOnly = true } = {}) {
   assertSite(site);
+
+  // Parameterised rather than interpolated. These values come from our own
+  // config today, but a list that reaches a WHERE clause by string
+  // concatenation is one config edit away from being an injection point.
+  const typeParams = SUPPLIER_LEDGER_TYPES.map((_, i) => `ledgerType${i}`);
+  const typeValues = Object.fromEntries(
+    SUPPLIER_LEDGER_TYPES.map((value, i) => [typeParams[i], value]),
+  );
+
   const rows = await query(site, `
     SELECT LedgerID, LedgerCode, LedgerName, LedgerType, LedgerGroupID,
            City, State, GSTNo, PANNo, Email, TelephoneNo, MobileNo,
            MaxCreditPeriod, ISLedgerActive
     FROM LedgerMaster
     WHERE CompanyID = @companyId
-      AND LedgerType = 'Sundry Creditors'
+      AND LedgerType IN (${typeParams.map((p) => `@${p}`).join(', ')})
       AND ISNULL(IsDeleted,0) = 0
       AND ISNULL(IsDeletedTransaction,0) = 0
       ${activeOnly ? 'AND ISLedgerActive = 1' : ''}
     ORDER BY LedgerName
-  `, { companyId: COMPANY_ID });
+  `, { companyId: COMPANY_ID, ...typeValues });
 
   return rows.map((r) => ({
     ...r,
@@ -44,6 +53,37 @@ export async function supplierLedgers(site, { activeOnly = true } = {}) {
 }
 
 /** Employee ledgers — the ID space `ReceivedBy` lives in. */
+/**
+ * Every `LedgerType` in the database, with a count, and whether we treat it as
+ * a supplier type.
+ *
+ * A diagnostic, and it exists because of a silent failure: `supplierLedgers`
+ * matched only 'Sundry Creditors', so every ledger filed under 'Suppliers' was
+ * absent from the supplier list with nothing on screen to say so. A missing
+ * WHERE-clause value looks exactly like a supplier who was never set up.
+ * Being able to see the real vocabulary turns that into a five-second check.
+ */
+export async function ledgerTypes(site) {
+  assertSite(site);
+  const rows = await query(site, `
+    SELECT LedgerType, COUNT(*) AS Ledgers,
+           SUM(CASE WHEN ISLedgerActive = 1 THEN 1 ELSE 0 END) AS Active
+    FROM LedgerMaster
+    WHERE CompanyID = @companyId
+      AND ISNULL(IsDeleted,0) = 0
+      AND ISNULL(IsDeletedTransaction,0) = 0
+    GROUP BY LedgerType
+    ORDER BY COUNT(*) DESC
+  `, { companyId: COMPANY_ID });
+
+  return rows.map((r) => ({
+    ledgerType: r.LedgerType,
+    ledgers: r.Ledgers,
+    active: r.Active,
+    treatedAsSupplier: SUPPLIER_LEDGER_TYPES.includes(r.LedgerType),
+  }));
+}
+
 export async function employeeLedgers(site) {
   assertSite(site);
   return query(site, `

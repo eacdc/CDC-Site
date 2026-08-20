@@ -11,7 +11,7 @@ import { Router } from 'express';
 import { requireAuth, requireSite } from '../middleware/auth.js';
 import {
   warehouses, employeeLedgers, chargeLedgers, purchaseLedgers, erpUsers,
-  supplierLedgers, getLedger,
+  supplierLedgers, getLedger, ledgerTypes,
 } from '../services/erp-ledgers.js';
 import { ITEM_GROUPS, ITEM_SUBGROUPS, PLANTS, SITES } from '../config/constants.js';
 import { VALIDATIONS } from '../config/validations.js';
@@ -41,6 +41,15 @@ router.get('/users', async (req, res, next) => {
 
 router.get('/supplier-ledgers', async (req, res, next) => {
   try { res.json(await supplierLedgers(req.sp.site)); } catch (err) { next(err); }
+});
+
+/**
+ * What LedgerTypes this database actually has, and which count as suppliers.
+ * The check for "are any suppliers being excluded by the type filter?" — a
+ * question that otherwise looks like "was this supplier ever set up?".
+ */
+router.get('/ledger-types', async (req, res, next) => {
+  try { res.json(await ledgerTypes(req.sp.site)); } catch (err) { next(err); }
 });
 
 router.get('/ledgers/:ledgerId', async (req, res, next) => {

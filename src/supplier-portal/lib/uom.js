@@ -32,6 +32,38 @@ function key(raw) {
     .replace(/[^A-Z0-9]/g, '');
 }
 
+/**
+ * Spellings to try for one raw unit, most literal first.
+ *
+ * Suppliers write the unit as a phrase, not a symbol: "Per Kg", "Rs/Kg",
+ * "per pc". `key` strips punctuation, so "/KG" already resolved — but "Per Kg"
+ * became "PERKG", matched nothing, and was reported as a unit missing from the
+ * normalisation table. It is not missing; KG has been in the seed all along.
+ *
+ * That one gap produced seven blocking errors on a single strapping-tape quote
+ * — "Per Kg" and "Per Roll" three times each — every one of them a unit the
+ * system already knew, refused over the word in front of it.
+ *
+ * Prefixes are peeled one at a time and each candidate is looked up in full,
+ * so a stripped form is only ever used when it actually resolves. "PERCENT"
+ * yields "CENT", which resolves to nothing, and the original answer stands.
+ */
+function keyCandidates(raw) {
+  const base = key(raw);
+  const out = [base];
+
+  let current = base;
+  // Twice, so "Rs. per Kg" -> "RSPERKG" -> "PERKG" -> "KG" is reachable.
+  for (let i = 0; i < 2; i += 1) {
+    const stripped = current.replace(/^(PER|RS|INR|RUPEES?)/, '');
+    if (!stripped || stripped === current) break;
+    out.push(stripped);
+    current = stripped;
+  }
+
+  return out;
+}
+
 const SEED_BY_KEY = new Map(UOM_SEED.map((u) => [key(u.raw), u]));
 const AMBIGUOUS_KEYS = new Set(AMBIGUOUS_UOMS.map(key));
 
@@ -48,8 +80,11 @@ export function normaliseUom(raw, overrides) {
   const text = String(raw ?? '').trim();
   if (!text) return { canonical: null, factor: 1, isAmbiguous: false, raw: text };
 
+  const candidates = keyCandidates(text);
+
   if (overrides) {
-    const hit = overrides.get(text.toUpperCase()) || overrides.get(key(text));
+    const hit = overrides.get(text.toUpperCase())
+      || candidates.map((k) => overrides.get(k)).find(Boolean);
     if (hit) {
       return {
         canonical: hit.canonical ?? null,
@@ -61,11 +96,12 @@ export function normaliseUom(raw, overrides) {
   }
 
   const upper = text.toUpperCase();
-  if (AMBIGUOUS.has(upper) || AMBIGUOUS_KEYS.has(key(text))) {
+  if (AMBIGUOUS.has(upper) || candidates.some((k) => AMBIGUOUS_KEYS.has(k))) {
     return { canonical: null, factor: 1, isAmbiguous: true, raw: text };
   }
 
-  const seeded = SEED_BY_RAW.get(upper) || SEED_BY_KEY.get(key(text));
+  const seeded = SEED_BY_RAW.get(upper)
+    || candidates.map((k) => SEED_BY_KEY.get(k)).find(Boolean);
   if (seeded) {
     return { canonical: seeded.canonical, factor: seeded.factor, isAmbiguous: false, raw: text };
   }
