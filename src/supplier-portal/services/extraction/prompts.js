@@ -33,14 +33,36 @@ Return JSON only, matching this shape:
   "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null}|null,
   "statedRules": [{"kind":string,"text":string,"value":string|null}]|null,
   "plantBlocks": [{"plant":string,"lineNos":number[]}]|null,
+  "rateBasisNote": string|null,
   "lines": [{"lineNo":number,"productName":string|null,"productCode":string|null,
              "packSize":string|null,"uom":string|null,"rate":string|null,
              "gstNote":string|null,"gsmFrom":string|null,"gsmTo":string|null,
              "productForm":string|null,"width":string|null,"micron":string|null,
+             "mill":string|null,"brand":string|null,"grade":string|null,
+             "shade":string|null,"bulk":string|null,
              "notes":string|null,"text":string|null,"confidence":number|null}]
 }
 
 RULES — these override any instinct to tidy the data:
+
+A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
+   THINGS. The text layer has the exact characters — trust it for spelling and
+   for digits. The IMAGE has the layout — trust it for which column a value is
+   in, which heading a row belongs under, and where a table starts and stops.
+
+   A PDF's text layer comes out in drawing order, not reading order, so a
+   priced table arrives shuffled and with adjacent cells run together:
+
+       QUALITY GSM SHADE BULK
+       230-249 76112              <- this is GSM "230-249" and rate "76112",
+                                     two columns, not one value
+       NR POWER FOLD - FBB ...    <- the product for that row, printed far
+                                     away in the stream
+
+   Reading the text layer alone here produces nine lines all named
+   "QUALITY GSM SHADE BULK" — the column headings mistaken for a product.
+   NEVER take a product name from a heading row. If the only name you can
+   find for a row is a column heading, look at the image again.
 
 0. WHO SENT THIS, AND WHO IS IT ADDRESSED TO? Nobody will tell you — you must
    read it off the page. Both matter and they are easy to confuse.
@@ -71,6 +93,24 @@ RULES — these override any instinct to tidy the data:
    supplier.name null rather than guessing — a wrong supplier silently files
    the rates against the wrong company.
 
+   A QUOTE NEED NOT HAVE A LETTERHEAD. Some arrive as a bare working sheet
+   whose only sender marking is a title box at the top:
+
+       ┌──────────────────────────┐
+       │        SUDARSHAN         │
+       └──────────────────────────┘
+       Please find below the revised NR mill FBB rate for Ahmedabad
+
+   "SUDARSHAN" is the supplier — foundIn "title box, page 1". A short trading
+   name like this is normal and is enough; do not discard it for being
+   incomplete, and do not expand it into a guessed legal name.
+
+   DO NOT CONFUSE THE MILL WITH THE SUPPLIER. A trader quotes another
+   company's product: "NR mill FBB rate" names the MANUFACTURER, not the
+   sender. The mill belongs in each line's "mill" field. If the only name on
+   the page is a mill named inside a sentence about the goods, leave
+   supplier.name null.
+
 1. EVERY NUMBER IS A STRING, copied exactly as printed. Do not convert
    "74,342" to 74342, do not turn "131.00/UNIT" into 131. Keep the currency
    symbol out but keep the digits, separators and any trailing unit text in
@@ -91,6 +131,35 @@ RULES — these override any instinct to tidy the data:
    separate "GSM FROM"/"GSM TO" columns, or text like "100-300", "115 & ABOVE",
    "54-55", "90+AB". Put the low end in "gsmFrom" and the high end in "gsmTo",
    exactly as printed. "115 & ABOVE" means gsmFrom "115", gsmTo null.
+
+4a. PAPER AND BOARD QUOTES have their own vocabulary, and one row carries
+   several independent facts. A typical board table:
+
+       QUALITY              GSM      SHADE        BULK        RATE FOR 90 DAYS
+       NR POWER FOLD - FBB  230-249  NATURAL FBB  1.40 - 1.45 76112
+                            250-284                           75109
+                            285-400                           74106
+       NR PEARL PAC - SBS   230-249  BLUISH CBB   1.6         80124
+
+   Read each of those into its own field:
+     - "brand"   the trade name of the board: "POWER FOLD", "PEARL PAC".
+     - "mill"    the manufacturer, often a prefix or a separate note: "NR".
+     - "grade"   the board type: FBB, SBS, CBB, SBB, kraft, duplex, art paper,
+                 maplitho. Take it from the quality name or the shade column.
+     - "shade"   "NATURAL", "BLUISH", "WHITE".
+     - "bulk"    the bulk figure, exactly as printed: "1.40 - 1.45", "1.6".
+     - gsmFrom / gsmTo from the GSM band, per rule 4.
+   Put the full quality string in "productName" as well: "NR POWER FOLD - FBB".
+
+   THE MERGED CELL IS THE TRAP. When QUALITY, SHADE and BULK are written once
+   against three GSM rows, they apply to ALL THREE. Emit one line per GSM band
+   and repeat the merged values on each. Never emit a line with a rate but no
+   product because its name was in a cell above.
+
+   Board and paper are quoted PER METRIC TONNE far more often than per kg —
+   a rate in the tens of thousands with no unit printed is almost certainly
+   per MT. Still set "uom" to null when the row does not say (rule 2 holds);
+   record what the rate column was headed in "rateBasisNote" instead.
 
 5. RULES STATED IN PROSE go in "statedRules", not into the lines. Examples:
    "sheet price 1.00 extra from reel price", "reel cut Rs 1/kg extra",

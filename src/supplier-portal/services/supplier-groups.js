@@ -243,7 +243,7 @@ export function suggestGroups(readName, groups, { limit = 6, floor = 0.3 } = {})
     .map((group) => {
       let best = { score: 0, matchedOn: group.name };
       for (const label of [group.name, ...(group.aliases || [])]) {
-        const score = tokenSetRatio(candidate, stripCorporateSuffixes(label));
+        const score = nameScore(candidate, stripCorporateSuffixes(label));
         if (score > best.score) best = { score, matchedOn: label };
       }
       return { group, ...best };
@@ -256,6 +256,53 @@ export function suggestGroups(readName, groups, { limit = 6, floor = 0.3 } = {})
 /** The single best match, or null. Thin wrapper over `suggestGroups`. */
 export function suggestGroup(ledgerName, groups) {
   return suggestGroups(ledgerName, groups, { limit: 1, floor: 0 })[0] || null;
+}
+
+/**
+ * How much two supplier names look like the same firm, 0 to 1.
+ *
+ * Token-set ratio, plus one deliberate exception: a name that is a **leading**
+ * subset of the other is the same firm abbreviated, not a partial match.
+ *
+ * A board quote signed only "SUDARSHAN" scored 0.80 against its own ledger,
+ * "Sudarshan Paper & Board Pvt Ltd" — below the auto-accept bar, so the right
+ * answer sat unselected in a shortlist while the reviewer wondered why. Short
+ * trading names are the norm here, and length is not evidence of difference.
+ *
+ * The restriction to a *leading* subset is what keeps this safe. Boosting any
+ * subset would score "Sales" against "Graphic Sales" at 0.95, which is exactly
+ * the wrong-supplier failure this codebase already has scars from: Indian firm
+ * names lead with the distinctive word and trail off into the generic one, so
+ * a shared first token means something and a shared last token does not.
+ *
+ * Two suppliers can still both qualify — "PRINT" leads both "Print Sales" and
+ * "Print India Solution". They then tie, the caller's clear-of-the-field test
+ * fails, and a person is asked. A tie is the correct output there.
+ */
+const DISTINCTIVE_CHARS = 6;
+
+export function nameScore(a, b) {
+  const base = tokenSetRatio(a, b);
+
+  const left = String(a).split(/\s+/).filter(Boolean);
+  const right = String(b).split(/\s+/).filter(Boolean);
+  if (!left.length || !right.length) return base;
+
+  const [short, long] = left.length <= right.length ? [left, right] : [right, left];
+
+  /*
+    A leading subset only means something if it is distinctive enough to
+    identify a firm. "SUDARSHAN" is; "SALES" is not, and without this floor it
+    scored 0.95 against "India Sales Agency" — clear of the field, so it would
+    have been accepted outright with nobody asked. Anything this short is a
+    fragment, and a fragment belongs on the shortlist rather than in the answer.
+  */
+  const leads = short.join('').length >= DISTINCTIVE_CHARS
+    && short.every((token, i) => token === long[i]);
+
+  // Kept just below an exact match: this is strong evidence of the same firm,
+  // never proof of it, and the reviewer still confirms.
+  return leads ? Math.max(base, 0.95) : base;
 }
 
 const CORPORATE_SUFFIXES = /\b(PVT|PRIVATE|LTD|LIMITED|LLP|INC|CO|COMPANY|INDIA|ENTERPRISES?|INDUSTRIES|UDYOG|TRADING|TRADERS?)\b/g;

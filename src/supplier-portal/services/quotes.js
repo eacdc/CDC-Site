@@ -14,7 +14,9 @@ import {
 } from '../db/mongo.js';
 import { check, hasBlockingFailure } from '../config/validations.js';
 import { TOLERANCES, PLANTS, SITE_BY_PLANT, SEEDED_ALIASES } from '../config/constants.js';
-import { normaliseRate, parsePackSize, parseRateCell, uomOverridesFrom, magnitudeCheck } from '../lib/uom.js';
+import {
+  normaliseRate, normaliseUom, parsePackSize, parseRateCell, uomOverridesFrom, magnitudeCheck,
+} from '../lib/uom.js';
 import { normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
 import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
 import { getProvider } from './extraction/provider.js';
@@ -144,7 +146,7 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
       ? await extractFromWorksheet(doc, buffer, hints)
       : await extractFromImages(doc, pages, hints, buffer);
 
-    await storeLines(doc, result.lines);
+    const stored = await storeLines(doc, result.lines);
 
     // Identification reads the same extraction rather than the provider again.
     // A worksheet carries no letterhead, so it produces an empty proposal — and
@@ -154,6 +156,17 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
     });
 
     const checks = [...result.checks, ...identification.checks];
+
+    // One question about the document, rather than the same question against
+    // every row of it.
+    if (stored.documentStatesNoUom) {
+      checks.push(check('EXT012', false, {
+        message: result.documentFields?.rateBasisNote
+          ? `The rate column reads "${result.documentFields.rateBasisNote}" and names no unit — set the unit these rates are quoted in.`
+          : 'No unit is printed anywhere on this document — set the unit these rates are quoted in.',
+        actualValue: result.documentFields?.rateBasisNote || null,
+      }));
+    }
 
     await QuoteDocument.updateOne({ _id: doc._id }, {
       $set: {
@@ -253,19 +266,29 @@ async function extractFromImages(doc, pages, hints, buffer) {
   let renderNote = null;
 
   /*
-    Two PDFs need rendering, and only one of them looks like a scan.
+    Every PDF gets rendered, text layer or not.
 
-    The obvious one has no text layer at all. The dangerous one has a thin
-    layer — a typed letterhead over a photographed price table — because it
-    passes the has-a-text-layer test and would be read text-only. That
-    extraction comes back confident and empty: every rate lived in the picture
-    nobody sent, and nothing on screen says so.
+    This used to render only scans, on the reasoning that sending an image of
+    characters we already have exactly is transcription risk bought for
+    nothing. That reasoning was wrong, and a board quote showed why: a PDF's
+    text layer is in *drawing* order, not reading order, so a priced table
+    arrives with its columns fused and its rows detached from their headings —
 
-    A PDF whose layer accounts for its pages is still read from text alone.
-    Sending an image of characters we already have exactly is transcription
-    risk bought for nothing.
+        QUALITY GSM SHADE BULK
+        230-249 76112              <- GSM and rate run together
+        NR POWER FOLD - FBB ...    <- the product, fifteen lines away
+
+    The extraction that came back was confident and wrong: nine lines all named
+    "QUALITY GSM SHADE BULK", every brand, shade and bulk lost, no unit. The
+    characters were exact and the table was gone. `getTable()` recovers nothing
+    here either — the grid is drawn as vector lines, with no structure to read.
+
+    So both go: the image carries the layout, the text layer carries the exact
+    digits, and the prompt tells the model to trust the text for characters and
+    the image for which column a character is in. Rendering costs a few seconds
+    per document; a silently mis-read price table costs a purchase decision.
   */
-  if (!visionPages.length && (!textLayer || textLayer.isThin)) {
+  if (!visionPages.length) {
     const rendered = await renderPdfPages(doc, pages, buffer);
 
     if (!rendered && !textLayer) {
@@ -277,14 +300,21 @@ async function extractFromImages(doc, pages, hints, buffer) {
 
     if (rendered) {
       visionPages = rendered.pages;
+      // What the note has to convey is which sources were used, because that
+      // is what tells a reviewer how much to trust a column boundary. "Read
+      // from a scan" and "read from a laid-out page whose text we also have"
+      // warrant different amounts of checking.
       const what = textLayer
-        ? 'Mostly-image PDF'
+        ? (textLayer.isThin ? 'Mostly-image PDF' : 'PDF')
         : 'Scanned PDF';
+      const how = textLayer
+        ? `${rendered.rendered} page${rendered.rendered === 1 ? '' : 's'} read as images alongside the text layer`
+        : `${rendered.rendered} page${rendered.rendered === 1 ? '' : 's'} read as images`;
       // A truncated scan must say so. A silent cap reads as a complete
       // extraction that happens to be missing half the price list.
       renderNote = rendered.truncated
-        ? `${what}: read the first ${rendered.rendered} of ${rendered.total} pages as images.`
-        : `${what}: read ${rendered.rendered} page${rendered.rendered === 1 ? '' : 's'} as images.`;
+        ? `${what}: only the first ${rendered.rendered} of ${rendered.total} pages were read.`
+        : `${what}: ${how}.`;
     }
     // A thin layer whose render failed still has its text — worse than both,
     // better than refusing a document we can partly read.
@@ -311,12 +341,24 @@ async function extractFromImages(doc, pages, hints, buffer) {
     and get the same amount of checking.
   */
   if (renderNote) {
+    /*
+      Only a document whose numbers were *transcribed from a picture* carries
+      extra reading risk. Now that every PDF is rendered, a born-digital one
+      also has a render note — but its digits came from the text layer, exactly.
+      Flagging both the same way would put this notice on every document in the
+      system, and a notice that appears on everything is read as noise and then
+      not read at all.
+    */
+    const transcribed = !textLayer || textLayer.isThin;
     checks.push(check('EXT011', false, {
-      message: `${renderNote} Rates were read from images — check them against the document.`,
+      message: transcribed
+        ? `${renderNote} Rates were transcribed from images — check them against the document.`
+        : renderNote,
     }));
   }
 
   const documentFields = {};
+  if (extracted.rateBasisNote) documentFields.rateBasisNote = extracted.rateBasisNote;
   if (extracted.isSoftQuote) documentFields.quoteStrength = 'SOFT';
   if (extracted.commercialTerms) {
     documentFields.commercialTerms = {
@@ -642,6 +684,59 @@ export async function confirmIdentification({
  * Fields a person has already settled are left alone: re-identifying must not
  * undo a decision by proposing over it.
  */
+/**
+ * Set the unit for a document whose rows print none, and re-normalise.
+ *
+ * Re-normalising rather than storing the answer and moving on is the whole
+ * point: a rate is only comparable once it is in canonical units, and a board
+ * quote at ₹76,112 per tonne is ₹76.11 per kg. Leaving the raw figure and a
+ * note beside it would put a number a thousand times too large into every
+ * comparison that reads this document.
+ *
+ * Rows that DID state their own unit are untouched — `normaliseLine` keeps the
+ * printed unit ahead of this one, so a mixed document cannot be flattened by
+ * one answer.
+ */
+export async function setDocumentUom({ documentId, uom, actor }) {
+  await ensureSupplierPortalReady();
+  const doc = await QuoteDocument.findById(documentId);
+  if (!doc) throw new Error(`Quote document ${documentId} not found`);
+  if (doc.status === 'APPROVED') {
+    throw new Error('This document has already been approved; its rates cannot be re-based.');
+  }
+
+  const parsed = normaliseUom(uom);
+  if (!parsed?.canonical) {
+    throw new Error(
+      `"${uom}" is not a unit this system can convert. Use one it knows — KG, MT, PC, LTR, SQM.`,
+    );
+  }
+
+  doc.defaultUom = String(uom).trim().toUpperCase();
+  await doc.save();
+
+  // Re-run from the stored raw lines. The extraction is not repeated: nothing
+  // about the document changed, only what we know the numbers mean.
+  const lines = await QuoteLine.find({ quoteDocumentId: doc._id }).sort({ lineNo: 1 }).lean();
+  const relined = lines.map((l) => ({ ...l.raw, lineNo: l.lineNo, confidence: l.extractionConfidence }));
+  const stored = await storeLines(doc, relined);
+
+  const checks = (doc.checks || []).filter((c) => c.code !== 'EXT012');
+  await QuoteDocument.updateOne({ _id: doc._id }, {
+    $set: { checks, status: hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'EXTRACTED' },
+  });
+
+  await AuditLog.create({
+    action: 'QUOTE_DEFAULT_UOM_SET',
+    entity: 'quoteDocument',
+    entityId: String(doc._id),
+    actor: actor || null,
+    after: { defaultUom: doc.defaultUom, lines: stored.count },
+  });
+
+  return { defaultUom: doc.defaultUom, lines: stored.count };
+}
+
 export async function reidentifyDocument({ documentId, site }) {
   await ensureSupplierPortalReady();
   const doc = await QuoteDocument.findById(documentId);
@@ -756,6 +851,17 @@ async function storeLines(doc, rawLines) {
   const overrides = uomOverridesFrom(await UomNormalisation.find({}).lean());
   await QuoteLine.deleteMany({ quoteDocumentId: doc._id });
 
+  /*
+    "No row states a unit" and "one row is missing its unit" are different
+    problems with different fixes. The first is a property of the document —
+    board price lists routinely omit it — and is answered once by a person; the
+    second is a misread row and belongs against that row. Distinguish them here
+    so the review screen can ask the right question.
+  */
+  const documentStatesNoUom = !doc.defaultUom
+    && rawLines.length > 0
+    && rawLines.every((l) => !l.uom && !parseRateCell(l.rate).uom);
+
   const docs = rawLines.map((line, index) => {
     const raw = {
       text: line.text ?? null,
@@ -770,14 +876,27 @@ async function storeLines(doc, rawLines) {
       productForm: line.productForm ?? null,
       width: line.width ?? null,
       micron: line.micron ?? null,
+      // Paper and board. Kept as separate fields rather than folded into the
+      // product name, because matching a board quote means matching a grade
+      // and a GSM band, not a string.
+      mill: line.mill ?? null,
+      brand: line.brand ?? null,
+      grade: line.grade ?? null,
+      shade: line.shade ?? null,
+      bulk: line.bulk ?? null,
       notes: line.notes ?? null,
     };
 
-    const normalised = normaliseLine(raw, overrides);
+    const normalised = normaliseLine(raw, overrides, { documentUom: doc.defaultUom });
     const tuple = quoteSpecTuple({ raw });
     const specKey = buildSpecKey(tuple);
 
-    const lineChecks = [
+    /*
+      When the document names no unit anywhere, the per-line failure is not
+      this line's fault and repeating it per row buries the one thing that
+      needs doing. EXT011 asks once, at document scope, instead.
+    */
+    const lineChecks = documentStatesNoUom ? [] : [
       check('EXT004', Boolean(normalised.uom), {
         message: normalised.conversionNote || 'Unit could not be resolved from this line',
         actualValue: raw.uom,
@@ -798,7 +917,7 @@ async function storeLines(doc, rawLines) {
   });
 
   if (docs.length) await QuoteLine.insertMany(docs);
-  return docs.length;
+  return { count: docs.length, documentStatesNoUom };
 }
 
 /**
@@ -808,11 +927,23 @@ async function storeLines(doc, rawLines) {
  * unit), then from the line's own UOM field. A column header is never
  * consulted — the extractor was told not to supply one.
  */
-export function normaliseLine(raw, overrides) {
+export function normaliseLine(raw, overrides, { documentUom = null } = {}) {
   const flags = [];
   const fromCell = parseRateCell(raw.rate);
-  const uomSource = fromCell.uom ? 'RATE_CELL' : 'LINE_UOM';
-  const uom = fromCell.uom || raw.uom;
+
+  /*
+    Order of authority: the rate cell, then the line, then the document.
+
+    The document-level unit is last because it is the weakest evidence — a
+    person's answer about the sheet as a whole, not something printed on the
+    row. It exists because some price lists state their unit nowhere at all: a
+    board quote whose column reads "RATE FOR 90 DAYS" gives nine rows and no
+    unit, and asking the same question nine times is not a review, it is an
+    obstacle. A row that does state its own unit always wins, so setting a
+    document default can never overwrite something the supplier printed.
+  */
+  const uomSource = fromCell.uom ? 'RATE_CELL' : (raw.uom ? 'LINE_UOM' : 'DOCUMENT');
+  const uom = fromCell.uom || raw.uom || documentUom;
 
   const pack = parsePackSize([raw.productName, raw.packSize].filter(Boolean).join(' '));
   if (pack) flags.push('PACK_SIZE_IN_NAME');
@@ -839,7 +970,12 @@ export function normaliseLine(raw, overrides) {
   });
 
   if (result.isAmbiguous) flags.push('UOM_UNRESOLVED');
-  if (uomSource === 'LINE_UOM' && !raw.uom) flags.push('NO_UOM_ON_LINE');
+  if (!raw.uom && !fromCell.uom) {
+    flags.push('NO_UOM_ON_LINE');
+    // Traceable on the review screen: a rate normalised from an answer rather
+    // than from the page must never look like it was printed there.
+    if (documentUom) flags.push('UOM_FROM_DOCUMENT');
+  }
   if (hasBrandOrCodeToken(`${raw.productName || ''} ${raw.productCode || ''}`)) {
     flags.push('WEB_LOOKUP_ELIGIBLE');
   }

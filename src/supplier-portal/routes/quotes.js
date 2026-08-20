@@ -15,7 +15,7 @@ import {
 } from '../db/mongo.js';
 import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
-  runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument,
+  runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument, setDocumentUom,
   deleteDocument,
 } from '../services/quotes.js';
 import { matchDocument } from '../services/matching.js';
@@ -329,6 +329,22 @@ router.patch('/:id/identification', requireRole('BUYER', 'APPROVER'), async (req
 router.post('/:id/identify', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     const result = await reidentifyDocument({ documentId: req.params.id, site: req.sp.site });
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Set the unit for a document whose rows print none, and re-normalise its
+ * rates. Board price lists routinely omit it — "RATE FOR 90 DAYS" over figures
+ * that are per tonne — and one answer settles every row.
+ */
+router.patch('/:id/uom', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const { uom } = req.body || {};
+    if (!uom?.trim()) return res.status(400).json({ error: 'A unit is required.' });
+    const result = await setDocumentUom({
+      documentId: req.params.id, uom, actor: req.sp.actor,
+    });
     return res.json(result);
   } catch (err) { return next(err); }
 });

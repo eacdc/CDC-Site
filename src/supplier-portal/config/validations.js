@@ -36,6 +36,12 @@ export const VALIDATIONS = {
   EXT009: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Supplier has not been identified — confirm who sent this quote' },
   EXT010: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Plant has not been identified — confirm which plant this quote prices' },
   /**
+   * Raised instead of EXT004-per-line when NO line carries a unit, which means
+   * the document states none anywhere rather than that a row was misread. One
+   * missing fact should be one question.
+   */
+  EXT012: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'No unit is printed anywhere on this document — set the unit these rates are quoted in' },
+  /**
    * INFO, not WARN: nothing is wrong with a scan, and demanding a typed reason
    * for every photocopied price list would train people to type one without
    * reading. It exists so the reviewer knows the rates were transcribed from a

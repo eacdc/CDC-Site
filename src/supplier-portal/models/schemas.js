@@ -137,6 +137,22 @@ export const quoteDocumentSchema = new Schema({
     enum: ['PRICE_LIST', 'EMAIL', 'PROFORMA_INVOICE', 'HANDWRITTEN_NOTE', 'WORKSHEET'],
     default: 'PRICE_LIST',
   },
+
+  /**
+   * The unit for rows that print none, set by a reviewer for the whole
+   * document.
+   *
+   * Some price lists never state a unit: a board quote heads its column
+   * "RATE FOR 90 DAYS" and leaves the reader to know that board is sold by the
+   * tonne. Every row then fails to normalise, and the screen asks the same
+   * question once per row — nine identical blocking errors for one missing
+   * fact. One answer here settles all of them.
+   *
+   * Never overrides a unit printed on a row; see `normaliseLine`.
+   */
+  defaultUom: { type: String, default: null },
+  /** What the rate column was headed, when it named no unit. */
+  rateBasisNote: { type: String, default: null },
   /** SOFT = "subject to change without notice". Never blocks a PO check. */
   quoteStrength: { type: String, enum: ['FIRM', 'SOFT'], default: 'FIRM' },
 
@@ -313,6 +329,18 @@ export const quoteLineSchema = new Schema({
     productForm: String,
     width: String,
     micron: String,
+    /**
+     * Paper and board. A board row carries several independent facts — the
+     * mill that made it, the trade name, the grade, the shade, the bulk — and
+     * a merged cell in the source spreads them across several GSM bands.
+     * Stored apart so matching can use the grade and the band rather than
+     * string-matching a concatenated name.
+     */
+    mill: String,
+    brand: String,
+    grade: String,
+    shade: String,
+    bulk: String,
     notes: String,
   },
 

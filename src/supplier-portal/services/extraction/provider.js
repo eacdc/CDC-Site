@@ -82,6 +82,18 @@ export const ExtractedQuoteLineSchema = z.object({
   productForm: printed(),
   width: printed(),
   micron: printed(),
+  /**
+   * Paper and board. One row of a board table carries several independent
+   * facts — the mill that made it, the trade name, the grade, the shade and
+   * the bulk — and flattening them into `productName` loses every one of them
+   * for matching. `.optional()` because only paper quotes have them, and a
+   * model omitting the key on an ink quote is correct rather than wrong.
+   */
+  mill: printed().optional(),
+  brand: printed().optional(),
+  grade: printed().optional(),
+  shade: printed().optional(),
+  bulk: printed().optional(),
   notes: printed(),
   text: printed(),
   confidence: counted().nullable().pipe(z.number().min(0).max(1).nullable()),
@@ -152,6 +164,16 @@ export const ExtractedQuoteSchema = z.object({
     text: printed(),
     value: printed(),
   })).nullable(),
+  /**
+   * What the rate column was headed, when it does not name a unit.
+   *
+   * "RATE FOR 90 DAYS" over a board table states no unit and is ambiguous
+   * besides — 90 days of credit, or 90 days of validity. Recording the phrase
+   * lets a reviewer settle both in one glance, instead of the document
+   * arriving with nine identical "no unit on line" failures and no clue what
+   * the column meant.
+   */
+  rateBasisNote: printed().optional(),
   /** Set when the document prices two plants in separate blocks. */
   plantBlocks: z.array(z.object({
     plant: printed(),
