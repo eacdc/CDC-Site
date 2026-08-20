@@ -3635,6 +3635,114 @@ router.post('/grn/pending-po-close', async (req, res) => {
     }
 });
 
+// GRN: Completed POs list via dbo.usp_GetCompletedPOs
+router.get('/grn/completed-pos', async (req, res) => {
+    try {
+        const { database } = req.query || {};
+        const selectedDatabase = String(database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request().execute('dbo.usp_GetCompletedPOs');
+
+        const pick = (row, ...names) => {
+            for (let i = 0; i < names.length; i += 1) {
+                const want = String(names[i]).toLowerCase();
+                if (Object.prototype.hasOwnProperty.call(row, names[i]) && row[names[i]] !== undefined) {
+                    return row[names[i]];
+                }
+                const keys = Object.keys(row);
+                for (let j = 0; j < keys.length; j += 1) {
+                    if (String(keys[j]).toLowerCase() === want) return row[keys[j]];
+                }
+            }
+            return null;
+        };
+
+        const records = (result.recordset || []).map((row) => ({
+            poTransactionId: pick(row, 'POTransactionID', 'poTransactionId') ?? null,
+            transactionDetailId: pick(row, 'TransactionDetailID', 'transactionDetailId') ?? null,
+            poNumber: pick(row, 'PONumber', 'poNumber') ?? '',
+            poDate: pick(row, 'PODate', 'poDate') ?? null,
+            ledgerId: pick(row, 'LedgerID', 'ledgerId') ?? null,
+            vendorName: pick(row, 'VendorName', 'vendorName') ?? '',
+            itemId: pick(row, 'ItemID', 'itemId') ?? null,
+            itemCode: pick(row, 'ItemCode', 'itemCode') ?? '',
+            itemName: pick(row, 'ItemName', 'itemName') ?? '',
+            stockUnit: pick(row, 'StockUnit', 'stockUnit') ?? '',
+            orderedQty: Number(pick(row, 'OrderedQty', 'orderedQty') ?? 0),
+            receivedQty: Number(pick(row, 'ReceivedQty', 'receivedQty') ?? 0),
+            shortQty: Number(pick(row, 'ShortQty', 'shortQty') ?? 0),
+            shortValue: Number(pick(row, 'ShortValue', 'shortValue') ?? 0),
+            purchaseRate: Number(pick(row, 'PurchaseRate', 'purchaseRate') ?? 0),
+            lastGrnDate: pick(row, 'LastGRNDate', 'lastGrnDate') ?? null,
+            completedBy: pick(row, 'CompletedBy', 'completedBy') ?? null,
+            completedDate: pick(row, 'CompletedDate', 'completedDate') ?? null,
+            daysPoToClose: Number(pick(row, 'DaysPOToClose', 'daysPoToClose') ?? 0),
+            closureSource: pick(row, 'ClosureSource', 'closureSource') ?? '',
+            batchId: pick(row, 'BatchID', 'batchId') ?? null,
+            bucket: pick(row, 'Bucket', 'bucket') ?? null,
+            reason: pick(row, 'Reason', 'reason') ?? '',
+            executedByLogin: pick(row, 'ExecutedByLogin', 'executedByLogin') ?? null,
+            isReversed: pick(row, 'IsReversed', 'isReversed') ?? null,
+            companyId: pick(row, 'CompanyID', 'companyId') ?? null
+        }));
+
+        return res.json({ status: true, records });
+    } catch (err) {
+        console.error('GRN completed POs error:', err);
+        const msg = String(err?.originalError?.info?.message || err?.message || 'Failed to fetch completed POs');
+        return res.status(500).json({ status: false, error: msg });
+    }
+});
+
+// GRN: Reopen a completed PO line via dbo.usp_ReopenPO
+router.post('/grn/pending-po-reopen', async (req, res) => {
+    try {
+        const { database, transactionDetailId, onlyToolClosed, reason, dryRun } = req.body || {};
+        const selectedDatabase = String(database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const detailId = Number(transactionDetailId || 0);
+        if (!(Number.isInteger(detailId) && detailId > 0)) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing transactionDetailId' });
+        }
+
+        const onlyToolClosedBit =
+            onlyToolClosed === true || onlyToolClosed === 1 || onlyToolClosed === '1' ? 1 : 0;
+        const safeReason = String(reason || 'reopened manually').trim().slice(0, 500) || 'reopened manually';
+        const dryRunBit = dryRun === true || dryRun === 1 || dryRun === '1' ? 1 : 0;
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('TransactionDetailID', sql.Int, detailId)
+            .input('OnlyToolClosed', sql.Bit, onlyToolClosedBit)
+            .input('Reason', sql.NVarChar(500), safeReason)
+            .input('DryRun', sql.Bit, dryRunBit)
+            .execute('dbo.usp_ReopenPO');
+
+        return res.json({
+            status: true,
+            message: 'PO reopened successfully.',
+            transactionDetailId: detailId,
+            recordset: result.recordset || [],
+            recordsets: result.recordsets || []
+        });
+    } catch (err) {
+        console.error('GRN pending PO reopen error:', err);
+        const msg = String(err?.originalError?.info?.message || err?.message || 'Failed to reopen PO');
+        const isClientError = /PO|already|invalid|cannot|must|not found|permission|dry.?run|reopen|closed/i.test(msg);
+        return res.status(isClientError ? 400 : 500).json({
+            status: false,
+            error: msg
+        });
+    }
+});
+
 // Inventory Summary Tool: itemwise by item group
 router.get('/inventory-summary/group', async (req, res) => {
     try {
