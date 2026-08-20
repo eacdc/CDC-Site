@@ -8,25 +8,43 @@
  * becomes `13100`, `w.e.f. 15-07-2026` becomes `w.e.f. 15-07-2020`, a GSTIN's
  * `0` becomes `O`. Neither is implausible enough for anyone to notice.
  *
- * So when the layer is there, it is handed to the model alongside the image and
- * the model is told to prefer it. The image still goes: a price table's meaning
- * lives in its columns, and a text layer flattens those into a stream of words.
- * The two together are strictly better than either — exact characters, read in
- * a layout only the picture shows.
+ * So a PDF whose layer accounts for its pages is read from text alone, and no
+ * image is sent at all. When both do go — see `isThin` — the model is told to
+ * prefer the text on characters and the image on layout: a price table's
+ * meaning lives in its columns, and a text layer flattens those into a stream
+ * of words.
  *
- * A scan has no text layer, and this returns nothing rather than the handful of
- * stray characters an OCR-less extractor finds in one. Nothing is the honest
- * answer: vision handles that page alone, as it always did.
+ * Two PDFs need their pages rendered instead, and `pdf-render.js` does it. A
+ * scan has no layer, and this returns nothing rather than the stray characters
+ * an OCR-less extractor finds in one. The harder case is a thin layer — a typed
+ * letterhead over a photographed price table — which clears the has-a-layer bar
+ * and would otherwise be read text-only, coming back confident and empty.
  */
 
 /** Below this many characters a "text layer" is noise, not content. */
 const MEANINGFUL_CHARS = 40;
 
 /**
+ * Below this many characters per page, the layer is a caption on a picture.
+ *
+ * `hasTextLayer` is one threshold for a whole document, and that is not enough
+ * on its own: a five-page scanned price list with a typed letterhead line
+ * clears 40 characters easily and would be read text-only, so the extraction
+ * would come back confident and empty — every rate lives in the image nobody
+ * sent. A real page of quote text runs to several hundred characters, so a page
+ * averaging fewer than this is carrying its content as pixels.
+ */
+const THIN_CHARS_PER_PAGE = 180;
+
+/**
  * Read a PDF's text, per page.
  *
+ * `isThin` says the layer exists but does not account for the page — the caller
+ * renders images as well and sends both.
+ *
  * @param {Buffer} buffer
- * @returns {Promise<{pages: string[], text: string, hasTextLayer: boolean, pageCount: number}>}
+ * @returns {Promise<{pages: string[], text: string, hasTextLayer: boolean,
+ *                    isThin: boolean, charsPerPage: number, pageCount: number}>}
  */
 export async function pdfPageTexts(buffer) {
   if (!buffer?.length) return empty();
@@ -54,11 +72,17 @@ export async function pdfPageTexts(buffer) {
     const text = tidy(result?.text ?? pages.join('\n'));
     const resolved = pages.length ? pages : (text ? [text] : []);
 
+    const dense = (text || '').replace(/\s/g, '').length;
+    const pageCount = result?.total ?? resolved.length;
+    const charsPerPage = pageCount ? Math.round(dense / pageCount) : 0;
+
     return {
       pages: resolved,
       text: text || resolved.join('\n\n'),
-      hasTextLayer: (text || '').replace(/\s/g, '').length >= MEANINGFUL_CHARS,
-      pageCount: result?.total ?? resolved.length,
+      hasTextLayer: dense >= MEANINGFUL_CHARS,
+      isThin: charsPerPage < THIN_CHARS_PER_PAGE,
+      charsPerPage,
+      pageCount,
     };
   } catch (err) {
     console.warn('[SP][pdf-text] could not read the text layer:', err.message);
@@ -119,5 +143,5 @@ function tidy(text) {
 }
 
 function empty() {
-  return { pages: [], text: '', hasTextLayer: false, pageCount: 0 };
+  return { pages: [], text: '', hasTextLayer: false, isThin: true, charsPerPage: 0, pageCount: 0 };
 }

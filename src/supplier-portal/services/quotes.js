@@ -20,6 +20,7 @@ import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
 import { getProvider } from './extraction/provider.js';
 import { extractWorkbook } from './extraction/xlsx-extract.js';
 import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
+import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
@@ -240,20 +241,53 @@ async function extractFromImages(doc, pages, hints, buffer) {
 
   /**
    * A vision model is sent images, and a PDF is not one — neither provider can
-   * see inside it. That is not a limitation worth working around here, because
-   * CDC's quotes arrive as PDFs printed from Word and Tally, which carry their
-   * text. So a PDF is read from its text layer and no image is sent at all.
+   * see inside it. CDC's quotes mostly arrive as PDFs printed from Word and
+   * Tally, which carry their text, so those are read from the text layer and no
+   * image is sent at all: the exact characters beat a picture of them.
    *
-   * What is left is the case the message below describes: a scanned PDF, which
-   * has neither. Saying so plainly beats sending a file the model will report
-   * as unreadable.
+   * A scan has no text layer. It used to be refused here with "upload its pages
+   * as images", which is a chore handed back to the buyer for something the
+   * server can do itself — so it renders the pages and reads them as a scan.
    */
-  const visionPages = pages.filter((page) => /^image\//i.test(page.mimeType || ''));
-  if (!visionPages.length && !textLayer) {
-    throw new Error(
-      'This PDF has no text layer, so it is a scan. Upload its pages as images '
-      + '(JPEG or PNG) so they can be read.',
-    );
+  let visionPages = pages.filter((page) => /^image\//i.test(page.mimeType || ''));
+  let renderNote = null;
+
+  /*
+    Two PDFs need rendering, and only one of them looks like a scan.
+
+    The obvious one has no text layer at all. The dangerous one has a thin
+    layer — a typed letterhead over a photographed price table — because it
+    passes the has-a-text-layer test and would be read text-only. That
+    extraction comes back confident and empty: every rate lived in the picture
+    nobody sent, and nothing on screen says so.
+
+    A PDF whose layer accounts for its pages is still read from text alone.
+    Sending an image of characters we already have exactly is transcription
+    risk bought for nothing.
+  */
+  if (!visionPages.length && (!textLayer || textLayer.isThin)) {
+    const rendered = await renderPdfPages(doc, pages, buffer);
+
+    if (!rendered && !textLayer) {
+      throw new Error(
+        'This PDF has no text layer, so it is a scan, and its pages could not be '
+        + 'rendered for reading. Upload the pages as images (JPEG or PNG) instead.',
+      );
+    }
+
+    if (rendered) {
+      visionPages = rendered.pages;
+      const what = textLayer
+        ? 'Mostly-image PDF'
+        : 'Scanned PDF';
+      // A truncated scan must say so. A silent cap reads as a complete
+      // extraction that happens to be missing half the price list.
+      renderNote = rendered.truncated
+        ? `${what}: read the first ${rendered.rendered} of ${rendered.total} pages as images.`
+        : `${what}: read ${rendered.rendered} page${rendered.rendered === 1 ? '' : 's'} as images.`;
+    }
+    // A thin layer whose render failed still has its text — worse than both,
+    // better than refusing a document we can partly read.
   }
 
   const extracted = await provider.extractQuote({
@@ -268,6 +302,19 @@ async function extractFromImages(doc, pages, hints, buffer) {
       message: 'No effective date found — validity will be defaulted',
     }),
   ];
+
+  /*
+    A scan was transcribed from a picture rather than copied from characters,
+    so every number on it carries a reading risk that a born-digital PDF does
+    not. The reviewer is told, on the document, which of the two they are
+    looking at — without it the two extractions are indistinguishable on screen
+    and get the same amount of checking.
+  */
+  if (renderNote) {
+    checks.push(check('EXT011', false, {
+      message: `${renderNote} Rates were read from images — check them against the document.`,
+    }));
+  }
 
   const documentFields = {};
   if (extracted.isSoftQuote) documentFields.quoteStrength = 'SOFT';
@@ -306,8 +353,30 @@ async function extractFromImages(doc, pages, hints, buffer) {
     // re-calling the provider. Identification is a judgement about the
     // extraction, not a second extraction.
     extracted,
-    meta: { plantBlocks: extracted.plantBlocks || null },
+    meta: { plantBlocks: extracted.plantBlocks || null, renderedFromScan: renderNote },
   };
+}
+
+/**
+ * Rasterise a scanned PDF's pages so a vision model can read them.
+ *
+ * Returns null rather than throwing: a failure here should surface as "this
+ * scan could not be rendered", which the caller words, rather than as a sharp
+ * pdfjs error naming an internal API the reader has no use for.
+ */
+async function renderPdfPages(doc, pages, buffer) {
+  if (!looksLikePdf(doc)) return null;
+
+  try {
+    // As with the text layer, the upload path already holds the bytes; only a
+    // re-extract has to fetch them back out of storage.
+    const bytes = buffer || await fetchPage(pages?.[0]?.url);
+    if (!bytes) return null;
+    return await pdfPageImages(bytes);
+  } catch (err) {
+    console.warn('[SP][quotes] could not render the scanned PDF:', err.message);
+    return null;
+  }
 }
 
 /**

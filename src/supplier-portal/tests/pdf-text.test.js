@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { textLayerInstruction, looksLikePdf } from '../services/extraction/pdf-text.js';
+import { pdfPageTexts, textLayerInstruction, looksLikePdf } from '../services/extraction/pdf-text.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = fs.readFileSync(
@@ -86,3 +86,59 @@ test('only PDFs are tried', () => {
   assert.equal(looksLikePdf({ mimeType: 'image/jpeg', originalFilename: 'scan.jpg' }), false);
   assert.equal(looksLikePdf({}), false);
 });
+
+// ── Thin layers: the case that reads as success and returns nothing ─────────
+
+test('the real Print Sales quote is nowhere near thin', () => {
+  // The regression guard for the whole thin-layer rule. This document is
+  // born-digital and its text accounts for its pages, so it must keep being
+  // read from text alone — rendering it to images would buy transcription risk
+  // on every rate for nothing.
+  //
+  // Measured off the fixture text rather than a PDF, because what is committed
+  // is the layer this file already extracted from the real quote.
+  const dense = FIXTURE.replace(/^--- PAGE \d+ ---$/gm, '').replace(/\s/g, '').length;
+  const charsPerPage = Math.round(dense / PAGES.length);
+  assert.ok(charsPerPage > 300, `expected a dense page, got ${charsPerPage}`);
+});
+
+test('a typed letterhead over photographed pages counts as thin', async () => {
+  // The dangerous shape: it clears the 40-character has-a-layer bar easily, so
+  // without `isThin` it would be read text-only and come back confident and
+  // empty — every rate lived in the picture nobody sent.
+  const layer = await pdfPageTexts(await makeThinPdf(5));
+  assert.equal(layer.hasTextLayer, true, 'a letterhead is a real text layer');
+  assert.equal(layer.isThin, true, 'but it does not account for five pages');
+});
+
+test('a PDF with no text at all is thin and has no layer', async () => {
+  const layer = await pdfPageTexts(await makeThinPdf(2, { text: false }));
+  assert.equal(layer.hasTextLayer, false);
+  assert.equal(layer.isThin, true);
+  // Not asserted as exactly zero: a PDF with no drawn text still yields a
+  // handful of stray characters from its structure. That is precisely why
+  // `hasTextLayer` has a floor instead of testing for emptiness.
+  assert.ok(layer.charsPerPage < 40, `expected noise, got ${layer.charsPerPage} chars/page`);
+});
+
+test('unreadable bytes report thin rather than pretending to have text', async () => {
+  const layer = await pdfPageTexts(Buffer.from('not a pdf'));
+  assert.equal(layer.hasTextLayer, false);
+  assert.equal(layer.isThin, true);
+});
+
+/** A letterhead line on each of `pages` pages, and nothing else. */
+async function makeThinPdf(pages, { text = true } = {}) {
+  const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+
+  for (let i = 0; i < pages; i += 1) {
+    const page = doc.addPage([595, 842]);
+    // Stands in for the photographed price table: ink, but no characters.
+    page.drawRectangle({ x: 40, y: 80, width: 500, height: 620, color: rgb(0.9, 0.9, 0.9) });
+    if (text) page.drawText('PRINT SALES PRIVATE LIMITED', { x: 60, y: 780, size: 14, font });
+  }
+
+  return Buffer.from(await doc.save());
+}

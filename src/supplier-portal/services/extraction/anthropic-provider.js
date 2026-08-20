@@ -60,6 +60,16 @@ function anthropic() {
  * model problem rather than an expiry.
  */
 async function pageToBlock(page) {
+  // A rendered scan arrives with its bytes already in hand — fetching a
+  // multi-megabyte data: URL back through undici to get them again is pure
+  // round trip, and on a large scan it is the slowest step in the request.
+  if (page.base64) {
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: page.mimeType || 'image/jpeg', data: page.base64 },
+    };
+  }
+
   const response = await fetch(page.url);
   if (!response.ok) {
     throw new Error(`Could not fetch page ${page.pageNo ?? ''} for extraction: HTTP ${response.status}`);
