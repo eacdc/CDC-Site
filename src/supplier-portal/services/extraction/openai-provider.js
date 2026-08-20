@@ -36,6 +36,66 @@ const VISION_MODEL = process.env.SP_EXTRACTION_MODEL || 'gpt-4o';
 const TEXT_MODEL = process.env.SP_ADJUDICATION_MODEL || 'gpt-4o';
 
 /**
+ * Models that rejected `temperature`, remembered for the life of the process.
+ *
+ * `temperature: 0` was hardcoded on every call. Reasoning models accept only
+ * the default, and answer anything else with
+ * `400 Unsupported value: 'temperature' does not support 0 with this model` —
+ * so changing SP_EXTRACTION_MODEL to one of them broke every extraction, every
+ * adjudication, and left no way forward except reverting the model.
+ *
+ * A config flag would have moved the problem rather than solved it: it is one
+ * more thing to set correctly, it is set per deployment rather than per model,
+ * and getting it wrong fails in exactly the same way. So the provider finds out
+ * for itself — send the parameter, and if this model refuses it, drop it and
+ * retry. One wasted call per model per process, and no configuration at all.
+ */
+const rejectsTemperature = new Set();
+
+/**
+ * True for the specific 400 that means "this model has a fixed temperature".
+ *
+ * Narrow on purpose. A 400 is also how the API reports a bad model id, a
+ * malformed message or an oversized image, and retrying those without
+ * temperature would turn one clear error into two confusing ones.
+ */
+export function isTemperatureRefusal(err) {
+  return err?.status === 400 && /temperature/i.test(err?.message || '');
+}
+
+/**
+ * Send `params`, asking for temperature 0, and fall back to the model's own
+ * default if it refuses.
+ *
+ * `send` is passed in so the fallback can be tested without a network or a key.
+ */
+export async function withTemperatureFallback(model, params, send, seen = rejectsTemperature) {
+  const wanted = !seen.has(model);
+
+  try {
+    return await send({ model, ...params, ...(wanted ? { temperature: 0 } : {}) });
+  } catch (err) {
+    if (!wanted || !isTemperatureRefusal(err)) throw err;
+
+    console.warn(`[SP][openai] ${model} does not accept temperature; using its default.`);
+    seen.add(model);
+    return send({ model, ...params });
+  }
+}
+
+/**
+ * One chat completion, with `temperature` only where it is welcome.
+ *
+ * Determinism matters here — the same quote read twice should produce the same
+ * rates — so temperature 0 is still asked for wherever it is supported. Where
+ * it is not, the model's own default is the only option available, and a
+ * slightly less repeatable extraction beats no extraction.
+ */
+async function createCompletion({ model, ...params }) {
+  return withTemperatureFallback(model, params, (body) => openai().chat.completions.create(body));
+}
+
+/**
  * One extraction call.
  *
  * `pages` may be empty: a born-digital PDF is read from its text layer, which
@@ -49,11 +109,10 @@ async function callVision({ pages, prompt, extraInstructions }) {
     content.push({ type: 'image_url', image_url: { url: page.url } });
   }
 
-  const response = await openai().chat.completions.create({
+  const response = await createCompletion({
     model: VISION_MODEL,
     messages: [{ role: 'user', content }],
     response_format: { type: 'json_object' },
-    temperature: 0,
   });
 
   const text = response.choices?.[0]?.message?.content;
@@ -153,14 +212,13 @@ export const openaiProvider = registerProvider({
       alreadyMappedForThisSupplier: (mapped || []).slice(0, 20),
     };
 
-    const response = await openai().chat.completions.create({
+    const response = await createCompletion({
       model: TEXT_MODEL,
       messages: [
         { role: 'system', content: ADJUDICATION_PROMPT },
         { role: 'user', content: JSON.stringify(payload, null, 2) },
       ],
       response_format: { type: 'json_object' },
-      temperature: 0,
     });
 
     const text = response.choices?.[0]?.message?.content;
