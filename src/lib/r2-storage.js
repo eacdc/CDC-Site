@@ -50,6 +50,11 @@ const ALLOWED_TYPES = {
   'image/webp': 'webp',
   'image/heic': 'heic',
   'application/pdf': 'pdf',
+  // Supplier Portal quotes also arrive as worksheets and documents — a
+  // supplier price list is as often an .xlsx as a PDF.
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
 };
 
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — generous for a phone photo of an invoice

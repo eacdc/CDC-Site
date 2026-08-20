@@ -22,6 +22,10 @@ import jobProductImageRoutes from './routes-job-product-image.js';
 import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
 import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
+import supplierPortalRoutes from './supplier-portal/routes/index.js';
+import { scheduleJobs as scheduleSupplierPortalJobs } from './supplier-portal/jobs/index.js';
+import { closeSupplierPortal } from './supplier-portal/db/mongo.js';
+import { closeWritePools as closeSupplierPortalWritePools } from './supplier-portal/db/mssql.js';
 import { closeAllPools } from './db.js';
 import { closeVoiceNotesConnection } from './db-voice-notes.js';
 import { closePurchaseBillsMongo } from './db-purchase-bills.js';
@@ -109,6 +113,11 @@ app.use('/api', jobWiseProfitabilityRoutes);
 app.use('/api/cdc-bills/auth', cdcBillsAuthRoutes);
 app.use('/api/purchase-bills', purchaseBillsRoutes);
 
+// CDC Supplier Portal — rate capture, matching, comparison, PO check, receiving.
+// Self-contained under its own prefix, with its own Mongo connection
+// (MONGODB_URI_SupplierPortal) and its own site-scoped MSSQL access.
+app.use('/api/supplier-portal', supplierPortalRoutes);
+
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 // Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
 app.use('/api/contractor-po/auth',        require('./contractor-po/routes/auth.js'));
@@ -134,6 +143,9 @@ app.get('/health', (req, res) => {
 
 const server = app.listen(port, () => {
 	console.log(`Server running on port ${port}`);
+	// The delivery-date snapshot cannot be reconstructed after the fact — the
+	// ERP edits ExpectedDeliveryDate in place — so it starts with the server.
+	scheduleSupplierPortalJobs();
 });
 
 // Graceful shutdown
@@ -142,6 +154,8 @@ process.on('SIGINT', async () => {
 	await closeAllPools();
 	await closeVoiceNotesConnection();
 	await closePurchaseBillsMongo();
+	await closeSupplierPortalWritePools();
+	await closeSupplierPortal();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
@@ -154,6 +168,8 @@ process.on('SIGTERM', async () => {
 	await closeAllPools();
 	await closeVoiceNotesConnection();
 	await closePurchaseBillsMongo();
+	await closeSupplierPortalWritePools();
+	await closeSupplierPortal();
 	await mongoose.connection.close();
 	server.close(() => {
 		console.log('Server closed');
