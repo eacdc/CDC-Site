@@ -1,0 +1,391 @@
+/**
+ * Quote upload, extraction, review and approval.
+ *
+ * The review step is not a formality. Extraction is fast and mostly right, and
+ * "mostly right" written silently into a rate table is worse than slow — a
+ * wrong rate is invisible until someone buys against it.
+ */
+
+import { Router } from 'express';
+import multer from 'multer';
+import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
+import {
+  ensureSupplierPortalReady, QuoteDocument, QuoteLine, SupplierGroup,
+  SupplierItem, UomNormalisation, AuditLog,
+} from '../db/mongo.js';
+import {
+  sha256Of, checkDuplicate, extractDocument, approveDocument,
+  runMagnitudeChecks, normaliseLine,
+} from '../services/quotes.js';
+import { matchDocument } from '../services/matching.js';
+import { uomOverridesFrom } from '../lib/uom.js';
+import { normaliseName } from '../lib/text.js';
+import { createUploadUrl, viewUrl, uploadBuffer } from '../../lib/r2-storage.js';
+import { generatePhash } from '../../lib/phash.js';
+
+const router = Router();
+router.use(requireAuth);
+
+// Worksheets are parsed in-process from the buffer, so they arrive as a normal
+// multipart upload rather than through the presigned path.
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+/** Presigned PUT straight to storage, for images and PDFs. */
+router.post('/upload-url', async (req, res, next) => {
+  try {
+    const { contentType, contentLength } = req.body || {};
+    const result = await createUploadUrl({
+      folder: 'supplier-portal/quotes', contentType, contentLength,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+/**
+ * Register an uploaded document.
+ *
+ * The duplicate check runs here, before extraction, so a re-upload costs
+ * nothing but a hash comparison.
+ */
+router.post('/', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const {
+      supplierGroupId, docType, storageKey, pageKeys = [], originalFilename,
+      mimeType, sha256, plantScope, plantScopeBasis, cdcEntityScope,
+      quoteStrength, ledgerRef, supersedesDocId, isPartialUpdate,
+    } = req.body || {};
+
+    if (!supplierGroupId) return res.status(400).json({ error: 'A supplier group is required.' });
+    if (!docType) return res.status(400).json({ error: 'A document type is required.' });
+
+    const group = await SupplierGroup.findById(supplierGroupId).lean();
+    if (!group) return res.status(404).json({ error: 'Supplier group not found.' });
+
+    // Perceptual hashes are computed per page so a rescan of one page of a
+    // multi-page price list is still recognised.
+    const perceptualHashes = [];
+    for (const key of [storageKey, ...pageKeys].filter(Boolean)) {
+      try {
+        const hash = await generatePhash(await viewUrl(key));
+        if (hash) perceptualHashes.push(hash);
+      } catch (err) {
+        console.warn('[SP][quotes] could not hash page:', err.message);
+      }
+    }
+
+    const dedup = await checkDuplicate({ sha256, perceptualHashes });
+    if (dedup.isBlocked) {
+      return res.status(409).json({
+        error: 'This document has already been uploaded.',
+        checks: dedup.checks,
+        existingDocumentId: dedup.exactMatch?._id,
+      });
+    }
+
+    const doc = await QuoteDocument.create({
+      supplierGroupId,
+      ledgerRef: ledgerRef || undefined,
+      docType,
+      quoteStrength: quoteStrength || 'FIRM',
+      storageKey,
+      pageKeys,
+      originalFilename,
+      mimeType,
+      sha256,
+      perceptualHashes,
+      plantScope: plantScope || [],
+      // If the uploader did not state a plant scope, that fact is recorded
+      // rather than papered over — the review screen asks.
+      plantScopeBasis: plantScopeBasis || (plantScope?.length ? 'STATED' : 'ASSUMED'),
+      cdcEntityScope: cdcEntityScope || 'ALL',
+      supersedesDocId: supersedesDocId || null,
+      isPartialUpdate: Boolean(isPartialUpdate),
+      status: 'UPLOADED',
+      uploadedBy: req.sp.actor,
+      checks: dedup.checks,
+    });
+
+    return res.status(201).json({ document: doc, checks: dedup.checks });
+  } catch (err) { return next(err); }
+});
+
+/** Direct upload for worksheets, which need the buffer server-side. */
+router.post('/worksheet', requireRole('BUYER', 'APPROVER'), upload.single('file'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
+
+    const sha256 = sha256Of(req.file.buffer);
+    const dedup = await checkDuplicate({ sha256 });
+    if (dedup.isBlocked) {
+      return res.status(409).json({ error: 'This workbook has already been uploaded.', checks: dedup.checks });
+    }
+
+    const stored = await uploadBuffer({
+      folder: 'supplier-portal/quotes',
+      buffer: req.file.buffer,
+      contentType: req.file.mimetype,
+    });
+
+    const doc = await QuoteDocument.create({
+      supplierGroupId: req.body.supplierGroupId,
+      docType: 'WORKSHEET',
+      storageKey: stored.key || stored,
+      originalFilename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      sha256,
+      plantScope: req.body.plantScope ? JSON.parse(req.body.plantScope) : [],
+      plantScopeBasis: req.body.plantScope ? 'STATED' : 'ASSUMED',
+      status: 'UPLOADED',
+      uploadedBy: req.sp.actor,
+      checks: dedup.checks,
+    });
+
+    // The buffer is kept on the request for the extract call that follows, so
+    // a worksheet does not have to be re-downloaded to be parsed.
+    const result = await extractDocument(doc._id, {
+      buffer: req.file.buffer,
+      hints: { priceColumn: req.body.priceColumn, sheetName: req.body.sheetName },
+    });
+
+    return res.status(201).json({ documentId: doc._id, ...result });
+  } catch (err) { return next(err); }
+});
+
+/** Run extraction on a registered document. */
+router.post('/:id/extract', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const doc = await QuoteDocument.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+
+    const keys = [doc.storageKey, ...(doc.pageKeys || [])].filter(Boolean);
+    const pages = await Promise.all(keys.map(async (key, i) => ({
+      url: await viewUrl(key), pageNo: i + 1, mimeType: doc.mimeType,
+    })));
+
+    const result = await extractDocument(doc._id, {
+      pages,
+      hints: { ...(req.body || {}) },
+    });
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+/** The review payload: document, lines and the supplier's existing items. */
+router.get('/:id', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const doc = await QuoteDocument.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+
+    const [lines, group] = await Promise.all([
+      QuoteLine.find({ quoteDocumentId: doc._id, supersededByLineId: null }).sort({ lineNo: 1 }).lean(),
+      SupplierGroup.findById(doc.supplierGroupId).lean(),
+    ]);
+
+    const keys = [doc.storageKey, ...(doc.pageKeys || [])].filter(Boolean);
+    return res.json({
+      document: doc,
+      supplierGroup: group,
+      lines,
+      pageUrls: await Promise.all(keys.map((key) => viewUrl(key))),
+    });
+  } catch (err) { return next(err); }
+});
+
+router.get('/', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const { status, supplierGroupId, limit = 50, skip = 0 } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+    if (supplierGroupId) filter.supplierGroupId = supplierGroupId;
+
+    const [documents, total] = await Promise.all([
+      QuoteDocument.find(filter).sort({ uploadedAt: -1 })
+        .skip(Number(skip)).limit(Math.min(Number(limit), 200)).lean(),
+      QuoteDocument.countDocuments(filter),
+    ]);
+    res.json({ documents, total });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Correct an extracted line.
+ *
+ * The original is superseded rather than overwritten, so what the document
+ * actually said stays recoverable. A reviewer's correction and a bad
+ * extraction look identical afterwards otherwise.
+ */
+router.patch('/:id/lines/:lineId', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const original = await QuoteLine.findOne({
+      _id: req.params.lineId, quoteDocumentId: req.params.id,
+    }).lean();
+    if (!original) return res.status(404).json({ error: 'Quote line not found.' });
+
+    const raw = { ...original.raw, ...(req.body?.raw || {}) };
+    const overrides = uomOverridesFrom(await UomNormalisation.find({}).lean());
+    const normalised = normaliseLine(raw, overrides);
+
+    const replacement = await QuoteLine.create({
+      quoteDocumentId: original.quoteDocumentId,
+      lineNo: original.lineNo,
+      raw,
+      normalised,
+      specKey: req.body?.specKey || original.specKey,
+      supplierItemId: req.body?.supplierItemId ?? original.supplierItemId,
+      extractionConfidence: 1,
+      flags: [...normalised.flags, 'HUMAN_CORRECTED'],
+      // Corrections clear the extraction's own checks; they were raised
+      // against text that no longer stands.
+      checks: [],
+      editedFromLineId: original._id,
+      sourceCrop: original.sourceCrop,
+    });
+
+    await QuoteLine.updateOne({ _id: original._id }, { $set: { supersededByLineId: replacement._id } });
+
+    await AuditLog.create({
+      action: 'QUOTE_LINE_CORRECTED',
+      entity: 'quoteLine',
+      entityId: String(original._id),
+      actor: req.sp.actor,
+      before: original.raw,
+      after: raw,
+      reason: req.body?.reason || null,
+    });
+
+    return res.json(replacement);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Attach a supplier item identity to a line.
+ *
+ * This is what makes the mapping permanent: the identity belongs to the
+ * supplier's catalogue, not to this month's document.
+ */
+router.post('/:id/lines/:lineId/supplier-item', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const line = await QuoteLine.findById(req.params.lineId);
+    if (!line) return res.status(404).json({ error: 'Quote line not found.' });
+
+    const doc = await QuoteDocument.findById(line.quoteDocumentId).lean();
+    const productName = req.body?.supplierProductName || line.raw?.productName;
+    const productCode = req.body?.supplierProductCode || line.raw?.productCode || null;
+    if (!productName) return res.status(400).json({ error: 'A supplier product name is required.' });
+
+    // Matched on code where the supplier gives one, on the normalised name
+    // where they do not.
+    const query = productCode
+      ? { supplierGroupId: doc.supplierGroupId, supplierProductCode: productCode }
+      : { supplierGroupId: doc.supplierGroupId, normalisedName: normaliseName(productName) };
+
+    const existing = await SupplierItem.findOne(query);
+    let supplierItem = existing;
+
+    if (existing) {
+      // A second sighting promotes a PROVISIONAL item: it is part of the
+      // supplier's real catalogue rather than a one-off project line.
+      const update = {
+        $set: { lastSeenAt: new Date(), supplierProductName: productName },
+        $addToSet: { seenInDocIds: doc._id },
+      };
+      if (existing.status === 'PROVISIONAL'
+          && !existing.seenInDocIds.some((id) => String(id) === String(doc._id))) {
+        update.$set.status = 'ACTIVE';
+      }
+      await SupplierItem.updateOne({ _id: existing._id }, update);
+      supplierItem = await SupplierItem.findById(existing._id);
+    } else {
+      supplierItem = await SupplierItem.create({
+        supplierGroupId: doc.supplierGroupId,
+        supplierProductCode: productCode,
+        supplierProductName: productName,
+        normalisedName: normaliseName(productName),
+        defaultUom: line.normalised?.uom || null,
+        defaultPackQty: line.normalised?.packQty || null,
+        defaultPackUom: line.normalised?.packUom || null,
+        firstSeenAt: new Date(),
+        lastSeenAt: new Date(),
+        seenInDocIds: [doc._id],
+        status: 'PROVISIONAL',
+      });
+    }
+
+    line.supplierItemId = supplierItem._id;
+    await line.save();
+
+    return res.json({ line, supplierItem });
+  } catch (err) { return next(err); }
+});
+
+/** Run the matching engine across the document's lines. */
+router.post('/:id/match', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const doc = await QuoteDocument.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+
+    const group = await SupplierGroup.findById(doc.supplierGroupId).lean();
+    const result = await matchDocument({
+      site: req.sp.site,
+      documentId: doc._id,
+      group,
+      actor: req.sp.actor,
+      allowLlm: req.body?.allowLlm !== false,
+    });
+
+    // The magnitude guard runs after matching, because it compares against the
+    // last-paid rate of the item a line was just matched to.
+    const magnitudeChecks = await runMagnitudeChecks(req.sp.site, doc._id);
+
+    return res.json({ ...result, magnitudeChecks });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Approve, and write rate history.
+ *
+ * A blocking check cannot be overridden. A warning can, with a reason — the
+ * point of the override is the sentence, not the click.
+ */
+router.post('/:id/approve', requireRole('APPROVER'), async (req, res, next) => {
+  try {
+    const result = await approveDocument({
+      documentId: req.params.id,
+      actor: req.sp.actor,
+      overrides: req.body?.overrides || [],
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+router.post('/:id/reject', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const doc = await QuoteDocument.findByIdAndUpdate(
+      req.params.id,
+      { $set: { status: 'REJECTED' } },
+      { new: true },
+    ).lean();
+    if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+
+    await AuditLog.create({
+      action: 'QUOTE_REJECTED',
+      entity: 'quoteDocument',
+      entityId: req.params.id,
+      actor: req.sp.actor,
+      reason: req.body?.reason || null,
+    });
+
+    return res.json(doc);
+  } catch (err) { return next(err); }
+});
+
+export default router;
