@@ -1,3 +1,16 @@
+# Installed dependencies.
+#
+# These were tracked, and it was costing five minutes of every deploy. Render's
+# log named the phase outright — "Checking out commit ... in branch main" — and
+# 32,057 of the repository's 32,266 tracked files were node_modules, 99.4% of
+# them. Checkout time scales with the number of files it has to write, not with
+# the size of the change, which is why a 183-line commit deployed slower than a
+# 553-line one.
+#
+# The build command is `npm install`, and package-lock.json is committed, so
+# the dependencies are reproduced exactly from the lockfile instead.
+node_modules/
+
 # Environment files
 .env
 *.env
