@@ -69,15 +69,27 @@ async function callVision({ pages, prompt, extraInstructions }) {
  */
 async function extractWithSchema({ pages, prompt, schema, extraInstructions }) {
   let lastError;
+  let correction = null;
+
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const raw = await callVision({ pages, prompt, extraInstructions });
-      const parsed = schema.safeParse(coerceStrings(raw));
+      const raw = await callVision({
+        pages,
+        prompt,
+        extraInstructions: correction
+          ? [extraInstructions, correction].filter(Boolean).join('\n\n')
+          : extraInstructions,
+      });
+      const parsed = schema.safeParse(raw);
       if (parsed.success) return { data: parsed.data, model: VISION_MODEL };
-      lastError = new Error(
-        `Extraction did not match the schema: ${parsed.error.issues
-          .map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
-      );
+
+      const detail = describeIssues(parsed.error.issues);
+      lastError = new Error(`Extraction did not match the schema: ${detail}`);
+
+      // The retry is only worth its minute if it knows what went wrong.
+      // Re-sending the identical prompt at temperature 0 reproduces the same
+      // response and the same failure, having doubled the wait.
+      correction = `Your previous reply was rejected: ${detail}\nReturn the same data with those fields corrected.`;
     } catch (err) {
       lastError = err;
     }
@@ -86,19 +98,27 @@ async function extractWithSchema({ pages, prompt, schema, extraInstructions }) {
 }
 
 /**
- * Models return numbers for numeric-looking fields no matter how firmly the
- * prompt asks for strings. Rather than fail the whole document on that, the
- * value is stringified — what matters is that no rounding or separator
- * stripping happened on the way, and `String(74342)` preserves the digits.
+ * Summarise validation failures without repeating one per line.
+ *
+ * A shape slip in a 47-line price list produces 47 identical complaints, and
+ * the resulting message buries the single fact it contains — which field, and
+ * what was wrong with it — under its own repetition.
  */
-function coerceStrings(value) {
-  if (Array.isArray(value)) return value.map(coerceStrings);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceStrings(v)]));
+export function describeIssues(issues = []) {
+  const byField = new Map();
+  for (const issue of issues) {
+    // lines.12.lineNo and lines.30.lineNo are one problem, not two.
+    const field = issue.path.map((p) => (typeof p === 'number' ? '#' : p)).join('.');
+    const entry = byField.get(field) || { message: issue.message, count: 0 };
+    entry.count += 1;
+    byField.set(field, entry);
   }
-  if (typeof value === 'number') return String(value);
-  if (value === '') return null;
-  return value;
+
+  return [...byField.entries()]
+    .map(([field, { message, count }]) => (
+      count > 1 ? `${field}: ${message} (${count} rows)` : `${field}: ${message}`
+    ))
+    .join('; ');
 }
 
 export const openaiProvider = registerProvider({

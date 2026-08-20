@@ -25,6 +25,7 @@ import {
 } from './provider.js';
 import { QUOTE_PROMPT, INVOICE_PROMPT, ADJUDICATION_PROMPT } from './prompts.js';
 import { textLayerInstruction } from './pdf-text.js';
+import { describeIssues } from './openai-provider.js';
 
 const MODEL = process.env.SP_ANTHROPIC_MODEL || 'claude-sonnet-4-5';
 
@@ -97,11 +98,10 @@ async function callClaude({ pages, prompt, schema, extraInstructions }) {
 
       const body = response.content?.find((c) => c.type === 'text')?.text;
       if (!body) throw new Error('Empty response from Anthropic');
-      const parsed = schema.safeParse(coerceStrings(JSON.parse(stripFences(body))));
+      const parsed = schema.safeParse(JSON.parse(stripFences(body)));
       if (parsed.success) return { data: parsed.data, model: MODEL };
       lastError = new Error(
-        `Extraction did not match the schema: ${parsed.error.issues
-          .map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}`,
+        `Extraction did not match the schema: ${describeIssues(parsed.error.issues)}`,
       );
     } catch (err) {
       lastError = err;
@@ -112,17 +112,6 @@ async function callClaude({ pages, prompt, schema, extraInstructions }) {
 
 function stripFences(text) {
   return String(text).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-}
-
-/** See the note in openai-provider.js — the raw digits are what matter. */
-function coerceStrings(value) {
-  if (Array.isArray(value)) return value.map(coerceStrings);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceStrings(v)]));
-  }
-  if (typeof value === 'number') return String(value);
-  if (value === '') return null;
-  return value;
 }
 
 const anthropicProvider = {

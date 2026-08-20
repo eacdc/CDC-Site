@@ -20,28 +20,71 @@
 
 import { z } from 'zod';
 
+/**
+ * A value copied off the document, kept as text.
+ *
+ * Models return `74342` for a cell printed `74,342` no matter how firmly the
+ * prompt asks for a string, so a number here is accepted and stringified —
+ * `String(74342)` preserves the digits, and nothing has been rounded or had
+ * its separators stripped on the way.
+ *
+ * This replaces a blanket "stringify every number in the response" pass, which
+ * was applied before validation and therefore also stringified `lineNo` and
+ * `confidence` — the two fields that genuinely are numbers. A correct
+ * extraction of 47 lines was rejected 47 times over, by our own safety net.
+ * Coercion has to know which field it is looking at.
+ */
+const printed = () => z.preprocess(
+  (v) => {
+    if (typeof v === 'number') return String(v);
+    if (typeof v === 'string' && v.trim() === '') return null;
+    return v;
+  },
+  z.string().nullable(),
+);
+
+/**
+ * A genuine number — a line index, a confidence.
+ *
+ * Lenient in the other direction for the same reason: a model that returns
+ * `"1"` for line one is not wrong about anything that matters, and failing the
+ * document over it would be the same mistake in reverse. Only a string that
+ * is actually numeric converts; `"one"` still fails, loudly.
+ */
+const counted = () => z.preprocess(
+  (v) => {
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t === '') return null;
+      if (Number.isFinite(Number(t))) return Number(t);
+    }
+    return v;
+  },
+  z.number(),
+);
+
 /** One line as the extractor read it, before any normalisation. */
 export const ExtractedQuoteLineSchema = z.object({
-  lineNo: z.number().int().nonnegative(),
-  productName: z.string().nullable(),
-  productCode: z.string().nullable(),
-  packSize: z.string().nullable(),
+  lineNo: counted().pipe(z.number().int().nonnegative()),
+  productName: printed(),
+  productCode: printed(),
+  packSize: printed(),
   /**
    * The unit as printed ON THIS LINE. Never inferred from a column header —
    * Print Sales' column reads "RATE PER LTR" while its rows say `131.00/UNIT`,
    * `160.00/PC` and `375.00/KG`.
    */
-  uom: z.string().nullable(),
-  rate: z.string().nullable(),
-  gstNote: z.string().nullable(),
-  gsmFrom: z.string().nullable(),
-  gsmTo: z.string().nullable(),
-  productForm: z.string().nullable(),
-  width: z.string().nullable(),
-  micron: z.string().nullable(),
-  notes: z.string().nullable(),
-  text: z.string().nullable(),
-  confidence: z.number().min(0).max(1).nullable(),
+  uom: printed(),
+  rate: printed(),
+  gstNote: printed(),
+  gsmFrom: printed(),
+  gsmTo: printed(),
+  productForm: printed(),
+  width: printed(),
+  micron: printed(),
+  notes: printed(),
+  text: printed(),
+  confidence: counted().nullable().pipe(z.number().min(0).max(1).nullable()),
 });
 
 /**
@@ -53,13 +96,13 @@ export const ExtractedQuoteLineSchema = z.object({
  * identification without opening the source document.
  */
 export const ExtractedSupplierSchema = z.object({
-  name: z.string().nullable(),
-  gstin: z.string().nullable(),
-  phone: z.string().nullable(),
-  email: z.string().nullable(),
-  address: z.string().nullable(),
-  signatory: z.string().nullable(),
-  foundIn: z.string().nullable(),
+  name: printed(),
+  gstin: printed(),
+  phone: printed(),
+  email: printed(),
+  address: printed(),
+  signatory: printed(),
+  foundIn: printed(),
 });
 
 /**
@@ -70,33 +113,33 @@ export const ExtractedSupplierSchema = z.object({
  * asking a person, who will pick whichever plant they work at.
  */
 export const ExtractedAddresseeSchema = z.object({
-  company: z.string().nullable(),
-  address: z.string().nullable(),
-  gstin: z.string().nullable(),
-  attention: z.string().nullable(),
+  company: printed(),
+  address: printed(),
+  gstin: printed(),
+  attention: printed(),
 });
 
 export const ExtractedQuoteSchema = z.object({
-  supplierName: z.string().nullable(),
-  supplierGstin: z.string().nullable(),
+  supplierName: printed(),
+  supplierGstin: printed(),
   supplier: ExtractedSupplierSchema.nullable().optional(),
   addressedTo: ExtractedAddresseeSchema.nullable().optional(),
-  subjectLine: z.string().nullable().optional(),
-  documentDate: z.string().nullable(),
-  effectiveFrom: z.string().nullable(),
-  effectiveTo: z.string().nullable(),
+  subjectLine: printed().optional(),
+  documentDate: printed(),
+  effectiveFrom: printed(),
+  effectiveTo: printed(),
   /** True when the document says prices may change without notice. */
   isSoftQuote: z.boolean().nullable(),
   /** The sentence that made it soft — a flag without its reason is not trusted. */
-  softQuoteEvidence: z.string().nullable().optional(),
-  plantMentions: z.array(z.string()).nullable(),
-  entityScope: z.string().nullable(),
+  softQuoteEvidence: printed().optional(),
+  plantMentions: z.array(printed()).nullable(),
+  entityScope: printed(),
   commercialTerms: z.object({
-    creditDays: z.string().nullable(),
-    freightTerms: z.string().nullable(),
-    insurance: z.string().nullable(),
-    gstNote: z.string().nullable(),
-    paymentTerms: z.string().nullable(),
+    creditDays: printed(),
+    freightTerms: printed(),
+    insurance: printed(),
+    gstNote: printed(),
+    paymentTerms: printed(),
   }).nullable(),
   /**
    * Rules stated in prose rather than priced per line: "sheet price 1.00 extra
@@ -105,60 +148,60 @@ export const ExtractedQuoteSchema = z.object({
    * of invented.
    */
   statedRules: z.array(z.object({
-    kind: z.string(),
-    text: z.string(),
-    value: z.string().nullable(),
+    kind: printed(),
+    text: printed(),
+    value: printed(),
   })).nullable(),
   /** Set when the document prices two plants in separate blocks. */
   plantBlocks: z.array(z.object({
-    plant: z.string(),
-    lineNos: z.array(z.number().int()),
+    plant: printed(),
+    lineNos: z.array(counted().pipe(z.number().int())),
   })).nullable(),
   lines: z.array(ExtractedQuoteLineSchema),
 });
 
 export const ExtractedInvoiceLineSchema = z.object({
-  lineNo: z.number().int().nonnegative(),
-  description: z.string().nullable(),
-  hsn: z.string().nullable(),
-  gsm: z.string().nullable(),
-  size: z.string().nullable(),
-  unitWt: z.string().nullable(),
-  bundles: z.string().nullable(),
-  totalUnits: z.string().nullable(),
-  qty: z.string().nullable(),
-  uom: z.string().nullable(),
-  rate: z.string().nullable(),
-  amount: z.string().nullable(),
+  lineNo: counted().pipe(z.number().int().nonnegative()),
+  description: printed(),
+  hsn: printed(),
+  gsm: printed(),
+  size: printed(),
+  unitWt: printed(),
+  bundles: printed(),
+  totalUnits: printed(),
+  qty: printed(),
+  uom: printed(),
+  rate: printed(),
+  amount: printed(),
 });
 
 export const ExtractedInvoiceSchema = z.object({
-  invoiceNo: z.string().nullable(),
-  invoiceDate: z.string().nullable(),
-  supplierName: z.string().nullable(),
-  supplierGstin: z.string().nullable(),
-  supplierState: z.string().nullable(),
-  buyerGstin: z.string().nullable(),
-  shipToGstin: z.string().nullable(),
-  shipToAddress: z.string().nullable(),
-  eWayBillNo: z.string().nullable(),
-  vehicleNo: z.string().nullable(),
-  poNumbers: z.array(z.string()).nullable(),
+  invoiceNo: printed(),
+  invoiceDate: printed(),
+  supplierName: printed(),
+  supplierGstin: printed(),
+  supplierState: printed(),
+  buyerGstin: printed(),
+  shipToGstin: printed(),
+  shipToAddress: printed(),
+  eWayBillNo: printed(),
+  vehicleNo: printed(),
+  poNumbers: z.array(printed()).nullable(),
   taxType: z.enum(['CGST_SGST', 'IGST']).nullable(),
-  subTotal: z.string().nullable(),
-  freight: z.string().nullable(),
-  taxable: z.string().nullable(),
-  cgst: z.string().nullable(),
-  sgst: z.string().nullable(),
-  igst: z.string().nullable(),
-  roundOff: z.string().nullable(),
-  grandTotal: z.string().nullable(),
+  subTotal: printed(),
+  freight: printed(),
+  taxable: printed(),
+  cgst: printed(),
+  sgst: printed(),
+  igst: printed(),
+  roundOff: printed(),
+  grandTotal: printed(),
   lines: z.array(ExtractedInvoiceLineSchema),
 });
 
 export const AdjudicationSchema = z.object({
-  cdcItemId: z.number().int().nullable(),
-  confidence: z.number().min(0).max(1),
+  cdcItemId: counted().nullable().pipe(z.number().int().nullable()),
+  confidence: counted().pipe(z.number().min(0).max(1)),
   rationale: z.string(),
 });
 
