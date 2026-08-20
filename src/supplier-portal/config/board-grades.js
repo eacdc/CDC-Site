@@ -34,12 +34,26 @@ export const BOARD_GRADES = [
   {
     canonical: 'GREY_BACK',
     label: 'Grey back',
-    synonyms: ['GREY BACK', 'GREYBACK', 'GRAY BACK', 'GRAYBACK', 'DUPLEX GREY BACK', 'GB'],
+    synonyms: [
+      'GREY BACK', 'GREYBACK', 'GRAY BACK', 'GRAYBACK', 'DUPLEX GREY BACK', 'GB',
+      // Confirmed by CDC: Devpriya's "PGB" is Prime Grey Back.
+      'PRIME GREY BACK', 'PGB',
+    ],
   },
   {
     canonical: 'WHITE_BACK',
     label: 'White back',
-    synonyms: ['WHITE BACK', 'WHITEBACK', 'DUPLEX WHITE BACK', 'WB'],
+    synonyms: [
+      'WHITE BACK', 'WHITEBACK', 'DUPLEX WHITE BACK', 'WB',
+      /*
+        Confirmed by CDC: "DSWB" is Divya Shakti White Back — a supplier's own
+        initials welded onto the grade. Worth noting as a pattern: the mill
+        prefix carries no grade meaning, so DSWB is a white back in exactly the
+        way "MEHALI ECO WHITE WB" is, and both have to resolve to the same
+        canonical value or they will never be compared against each other.
+      */
+      'DIVYA SHAKTI WHITE BACK', 'DSWB',
+    ],
   },
   {
     canonical: 'FBB',
@@ -76,17 +90,22 @@ export const BOARD_GRADES = [
 /**
  * Abbreviations seen on real quotes whose meaning has not been confirmed.
  *
- * Deliberately NOT mapped. PGB is very likely a grey back and DSWB is very
- * likely Divya Shakti's white back, but "very likely" is not good enough for a
- * field that decides which rates get compared against each other: a wrong
- * mapping merges two boards into one comparison and there is nothing in the
- * result to show it happened.
+ * Deliberately NOT mapped, and the list is meant to shrink. PGB and DSWB
+ * started here and moved into the table above once CDC confirmed them as Prime
+ * Grey Back and Divya Shakti White Back — which is the whole workflow: the
+ * portal surfaces a word it does not know, a person who buys board says what it
+ * means, and it becomes searchable.
+ *
+ * The reason they wait here rather than being guessed at: a wrong mapping
+ * merges two different boards into one comparison, and there is nothing in the
+ * result to show it happened. An unrecognised grade is visible; a wrongly
+ * recognised one is not.
  *
  * They are listed so the review screen can say "this grade was not recognised"
  * and name it, instead of silently filing the row as ungraded.
  */
 export const UNCONFIRMED_GRADE_TOKENS = [
-  'PGB', 'DCB', 'DSWB', 'PG', 'DIVPAK', 'DIVBOX', 'ECOSTRONG',
+  'DCB', 'PG', 'DIVPAK', 'DIVBOX', 'ECOSTRONG',
 ];
 
 /**

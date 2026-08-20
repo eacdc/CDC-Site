@@ -37,6 +37,11 @@ const SUDARSHAN = [
 
 /** AKT's handwritten note. No GSM on any row. */
 const AKT = [
+  { productName: 'Devpriya PGB', supplyMode: 'MILL_ORDER', rate: '48.25' },
+  { productName: 'Devpriya PGB', supplyMode: 'EX_STOCK', rate: '48.75' },
+  { productName: 'Devpriya Premium PGB', supplyMode: 'MILL_ORDER', rate: '49.25' },
+  { productName: 'Devpriya Premium PGB', supplyMode: 'EX_STOCK', rate: '49.75' },
+  { productName: 'Divya Shakti DSWB', supplyMode: 'EX_STOCK', rate: '55.25' },
   { productName: 'Devpriya White Back', supplyMode: 'MILL_ORDER', rate: '52.25' },
   { productName: 'Devpriya White Back', supplyMode: 'EX_STOCK', rate: '52.75' },
   { productName: 'TNPL FBB', supplyMode: 'MILL_ORDER', productForm: 'REEL', rate: '74' },
@@ -73,13 +78,31 @@ test('"white back" is not read as the words it contains', () => {
   assert.equal(resolveGrade('White Back'), 'WHITE_BACK');
 });
 
-test('an unconfirmed abbreviation is reported, never guessed', () => {
-  // PGB is very likely a grey back. "Very likely" is not good enough for a
-  // field that decides which rates get compared: a wrong mapping merges two
-  // boards into one comparison and nothing in the result shows it happened.
-  assert.equal(resolveGrade('Devpriya PGB'), null);
-  assert.deepEqual(unknownGradeTokens('Devpriya PGB'), ['PGB']);
-  assert.deepEqual(unknownGradeTokens('Premium PGB'), ['PGB']);
+test('a confirmed abbreviation compares against the spelled-out grade', () => {
+  // PGB is Prime Grey Back and DSWB is Divya Shakti White Back, both confirmed
+  // by CDC. Before that they resolved to null and were reported as unknown —
+  // which is the workflow: the portal surfaces a word it does not know, a
+  // person who buys board says what it means, and it becomes searchable.
+  assert.equal(resolveGrade('Devpriya PGB'), 'GREY_BACK');
+  assert.equal(resolveGrade('Premium PGB'), 'GREY_BACK');
+  assert.equal(resolveGrade('DSWB'), 'WHITE_BACK');
+  assert.deepEqual(unknownGradeTokens('Devpriya PGB'), []);
+});
+
+test('a mill prefix welded onto a grade does not stop it matching', () => {
+  // "DSWB" carries Divya Shakti's initials; "MEHALI ECO WHITE WB" carries a
+  // brand. Both are white backs, and if they did not resolve to the same
+  // canonical value they would never be compared against each other.
+  assert.equal(resolveGrade('DSWB'), resolveGrade('MEHALI ECO WHITE WB'));
+});
+
+test('an abbreviation still awaiting confirmation is reported, never guessed', () => {
+  // DCB is priced a rupee below PGB on the same note, so it is plausibly a
+  // grey back variant. Plausible is not good enough for a field that decides
+  // which rates get compared: a wrong mapping merges two boards into one
+  // comparison and nothing in the result shows it happened.
+  assert.equal(resolveGrade('Devpriya DCB'), null);
+  assert.deepEqual(unknownGradeTokens('Devpriya DCB'), ['DCB']);
 });
 
 test('a recognised grade reports no unknowns', () => {
@@ -173,6 +196,23 @@ test('form separates a reel price from a sheet price', () => {
   const sheet = searchBoardRates(AKT, { grade: 'FBB', form: 'SHEET' });
   assert.equal(reel[0].rate, '74');
   assert.equal(sheet[0].rate, '77.5');
+});
+
+test('a grey back search now spans both suppliers, printed and handwritten', () => {
+  // The payoff. Sudarshan writes "GB" in a machine-generated price list;
+  // AKT writes "PGB" by hand on a photographed note. Nothing in those two
+  // strings is shared, and before the vocabulary existed no search could
+  // return both.
+  const hits = searchBoardRates([...SUDARSHAN, ...AKT], { grade: 'grey back', gsm: 280 });
+
+  assert.ok(hits.some((h) => h.productName === 'NIPPON GB PREMIUM'), 'Sudarshan');
+  assert.ok(hits.some((h) => h.productName === 'Devpriya PGB'), 'AKT');
+  assert.ok(hits.every((h) => h.grade === 'GREY_BACK'));
+
+  // Cheapest first across both, and the handwritten rows say they were not
+  // banded so a buyer knows the note never mentioned 280 gsm.
+  assert.equal(hits[0].rate, '42.00');
+  assert.equal(hits.find((h) => h.productName === 'Devpriya PGB').banded, false);
 });
 
 test('a grade with nothing on file returns nothing, not everything', () => {
