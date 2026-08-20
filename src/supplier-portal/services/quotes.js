@@ -24,7 +24,7 @@ import { extractWorkbook } from './extraction/xlsx-extract.js';
 import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
-import { planPlantSplit } from './quote-split.js';
+import { planPlantSplit, groupLinesByPlant } from './quote-split.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
 
@@ -150,63 +150,52 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
     /*
       A file that prices both plants becomes two documents, one per plant.
 
-      Everything downstream — plantScope, approval, the PO check, rate history
-      — assumes a document prices one plant, and the rule that rates never
-      cross plants is enforced in those consumers. Splitting here keeps that
-      rule structural instead of teaching every consumer that a document can
+      Everything downstream — plantScope, approval, the PO check, rate history —
+      assumes a document prices one plant, and the rule that rates never cross
+      plants is enforced in those consumers. Splitting keeps that rule
+      structural instead of teaching every consumer that a document can
       straddle plants.
 
-      The split happens before the lines are stored, so neither document ever
-      holds a row belonging to the other, even briefly.
+      `doc.splitPlant` is what makes re-extraction safe. The first run decides
+      the split; every later run SELECTS the half this document already owns.
+      Without it a rescan re-read the whole file, re-split it from scratch and
+      handed over whichever half sorted first — so rescanning the Ahmedabad
+      document filled it with Kolkata's rates, and would have spawned a second
+      Ahmedabad sibling on top.
     */
-    const split = planPlantSplit(result.lines, result.extracted?.plantBlocks);
-    const linesForThisDoc = split ? split.keep.lines : result.lines;
-    const siblings = split ? await spawnPlantSiblings(doc, split, result) : [];
+    const grouped = groupLinesByPlant(result.lines, result.extracted?.plantBlocks);
+    const owned = doc.splitPlant && grouped.groups.has(doc.splitPlant) ? doc.splitPlant : null;
 
-    const stored = await storeLines(doc, linesForThisDoc);
+    let myPlant = owned;
+    let myLines = owned ? grouped.groups.get(owned) : result.lines;
+    let toSpawn = [];
 
-    // Identification reads the same extraction rather than the provider again.
-    // A worksheet carries no letterhead, so it produces an empty proposal — and
-    // an empty proposal is the correct outcome: it asks, instead of defaulting.
-    const identification = await proposeIdentification({
-      doc, site, extracted: result.extracted || {},
-    });
-
-    const checks = [...result.checks, ...identification.checks];
-
-    // One question about the document, rather than the same question against
-    // every row of it.
-    if (stored.documentStatesNoUom) {
-      checks.push(check('EXT012', false, {
-        message: result.documentFields?.rateBasisNote
-          ? `The rate column reads "${result.documentFields.rateBasisNote}" and names no unit — set the unit these rates are quoted in.`
-          : 'No unit is printed anywhere on this document — set the unit these rates are quoted in.',
-        actualValue: result.documentFields?.rateBasisNote || null,
-      }));
+    if (!owned) {
+      const split = planPlantSplit(result.lines, result.extracted?.plantBlocks);
+      if (split) {
+        myPlant = split.keep.plant;
+        myLines = split.keep.lines;
+        toSpawn = split.spawn;
+      }
     }
 
-    await QuoteDocument.updateOne({ _id: doc._id }, {
-      $set: {
-        status: hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'EXTRACTED',
-        'extraction.provider': result.provider,
-        'extraction.model': result.model,
-        'extraction.finishedAt': new Date(),
-        'extraction.error': null,
-        ...result.documentFields,
-        ...identification.documentFields,
-        ...(result.extracted?.materialClass
-          ? { materialClass: result.extracted.materialClass } : {}),
-        // The split decides the plant outright — it came from the rate column
-        // the rows were in, which is better evidence than the addressee block.
-        ...(split ? { plantScope: [split.keep.plant], plantScopeBasis: 'STATED' } : {}),
-      },
-      $push: { checks: { $each: checks } },
+    // Read once for the whole file. Supplier, validity, terms and strength are
+    // properties of the document, not of a plant, so both halves share them.
+    const identified = await identifyQuote({ site, extracted: result.extracted || {} });
+
+    const finished = await finaliseDocument({
+      doc, lines: myLines, result, identified, plant: myPlant,
     });
 
+    const siblings = [];
+    for (const { plant, lines } of toSpawn) {
+      siblings.push(await spawnPlantSibling({ doc, plant, lines, result, identified }));
+    }
+
     return {
-      lineCount: linesForThisDoc.length,
-      checks,
-      identification: identification.documentFields.identification,
+      lineCount: myLines.length,
+      checks: finished.checks,
+      identification: finished.identification,
       ...(siblings.length ? { splitInto: siblings } : {}),
       ...result.meta,
     };
@@ -486,8 +475,33 @@ async function fetchPage(url) {
  * person answers. Nothing in between: a half-confident supplier written
  * quietly into `supplierGroupId` is exactly the failure this replaces.
  */
-export async function proposeIdentification({ doc, site, extracted }) {
+export async function proposeIdentification({ doc, site, extracted, fixedPlant = null }) {
   const identified = await identifyQuote({ site, extracted });
+  return { ...buildIdentification({ identified, doc, fixedPlant }), identified };
+}
+
+/**
+ * Turn one reading of a document into the fields and checks for one document.
+ *
+ * Split out from `proposeIdentification` so the two halves of a split file can
+ * share a single reading. The supplier, the validity, the terms and the strength
+ * are properties of the *file* — one letterhead, one date, one set of terms —
+ * so re-reading them per half would be wasted work and could disagree with
+ * itself. Only the plant differs, and `fixedPlant` supplies it.
+ *
+ * Getting this wrong is what shipped: the Ahmedabad half was created before
+ * identification ran and never received any of it, so it opened with no
+ * supplier, no validity and no terms, and could not be saved.
+ *
+ * @param {Object} input
+ * @param {Object} input.identified   the result of `identifyQuote`
+ * @param {Object} [input.doc]        the document, for a supplier already stated
+ * @param {string} [input.fixedPlant] the plant this document owns, when the file
+ *   priced several. It comes from the rate column the rows were actually in,
+ *   which is stronger evidence than the addressee block, so it settles the
+ *   plant outright rather than being weighed against what was read.
+ */
+export function buildIdentification({ identified, doc = null, fixedPlant = null }) {
   const { supplier, plant, validity, strength, terms } = identified;
 
   // A supplier the caller already stated outranks anything read off the page.
@@ -496,7 +510,8 @@ export async function proposeIdentification({ doc, site, extracted }) {
   const statedSupplier = doc?.supplierGroupId || null;
   const supplierSettled = Boolean(statedSupplier)
     || (Boolean(supplier.supplierGroupId) && supplier.confidence >= AUTO_ACCEPT);
-  const plantSettled = plant.value.length > 0 && plant.confidence >= AUTO_ACCEPT;
+  const plantSettled = Boolean(fixedPlant)
+    || (plant.value.length > 0 && plant.confidence >= AUTO_ACCEPT);
 
   const identification = {
     status: 'PROPOSED',
@@ -512,7 +527,14 @@ export async function proposeIdentification({ doc, site, extracted }) {
       ledgerCandidates: supplier.ledgerCandidates || [],
       basis: 'READ',
     },
-    plant: {
+    plant: fixedPlant ? {
+      proposed: [fixedPlant],
+      unit: plant.unit || null,
+      readAddress: plant.readAddress || null,
+      confidence: 1,
+      evidence: `This document holds the ${titleCasePlant(fixedPlant)} rates from a quote that priced both plants — taken from the column the rows were printed in.`,
+      basis: 'READ',
+    } : {
       proposed: plant.value,
       unit: plant.unit || null,
       readAddress: plant.readAddress || null,
@@ -534,18 +556,20 @@ export async function proposeIdentification({ doc, site, extracted }) {
     documentFields.supplierGroupId = statedSupplier || supplier.supplierGroupId;
   }
   if (plantSettled) {
-    documentFields.plantScope = plant.value;
+    documentFields.plantScope = fixedPlant ? [fixedPlant] : plant.value;
     documentFields.plantScopeBasis = 'STATED';
   }
   // The strength read from the page beats the FIRM default, but never
   // downgrades a FIRM that a person set deliberately at upload.
   if (strength.value === 'SOFT') documentFields.quoteStrength = 'SOFT';
 
-  return {
-    documentFields,
-    checks: identificationChecks(identification),
-    identified,
-  };
+  return { documentFields, checks: identificationChecks(identification), identification };
+}
+
+/** "KOLKATA" -> "Kolkata", for a sentence a person reads. */
+function titleCasePlant(plant) {
+  const t = String(plant || '').toLowerCase();
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 /**
@@ -871,62 +895,112 @@ export function resolveValidity(extracted, doc, group) {
  * then be traced to what the document actually said.
  */
 /**
- * Create one sibling document per extra plant, and store its lines.
+ * Store one document's lines and write everything that follows from them.
  *
- * The siblings share the uploaded file rather than copying it: same
- * `storageKey`, same hashes, so the review screen shows the same PDF and R2
- * holds one object. They deliberately do NOT share the content hash's
- * duplicate protection — `splitFrom` records where they came from, so a later
- * upload of the same file still reports a duplicate against the original.
+ * The single finishing path, used by the document the reviewer uploaded and by
+ * every half split off it. That it is shared is the point: the first version
+ * created siblings on a separate, shorter path that skipped identification and
+ * skipped the checks, so the Ahmedabad half opened with no supplier, no
+ * validity, no terms, no unit question — and a status of EXTRACTED that its
+ * own blocking checks would have contradicted, had any been run.
  *
- * A failure here must not lose the extraction that produced it. If a sibling
- * cannot be written the original document still gets its own plant's lines and
- * a check saying the other plant was not filed, which is recoverable by
- * re-running extraction. Throwing would discard both halves.
+ * @param {Object} input
+ * @param {Object} input.doc        the document to finish
+ * @param {Array}  input.lines      the lines that belong to it
+ * @param {Object} input.result     the extraction result for the whole file
+ * @param {Object} input.identified the single reading of the file
+ * @param {string} [input.plant]    the plant it owns, when the file split
  */
-async function spawnPlantSiblings(doc, split, result) {
-  const created = [];
+async function finaliseDocument({ doc, lines, result, identified, plant = null }) {
+  const stored = await storeLines(doc, lines);
 
-  for (const { plant, lines } of split.spawn) {
-    try {
-      const source = doc.toObject ? doc.toObject() : { ...doc };
-      // eslint-disable-next-line no-unused-vars
-      const { _id, createdAt, updatedAt, checks, ...carried } = source;
+  // A worksheet carries no letterhead, so it produces an empty proposal — and
+  // an empty proposal is the correct outcome: it asks, instead of defaulting.
+  const { documentFields, checks: idChecks, identification } = buildIdentification({
+    identified, doc, fixedPlant: plant,
+  });
 
-      const sibling = await QuoteDocument.create({
-        ...carried,
-        splitFrom: doc._id,
-        plantScope: [plant],
-        plantScopeBasis: 'STATED',
-        status: 'EXTRACTING',
-        checks: [],
-        ...(result.extracted?.materialClass
-          ? { materialClass: result.extracted.materialClass } : {}),
-      });
+  const checks = [...result.checks, ...idChecks];
 
-      const storedSibling = await storeLines(sibling, lines);
-
-      await QuoteDocument.updateOne({ _id: sibling._id }, {
-        $set: {
-          status: 'EXTRACTED',
-          'extraction.provider': result.provider,
-          'extraction.model': result.model,
-          'extraction.finishedAt': new Date(),
-          'extraction.error': null,
-          ...result.documentFields,
-          plantScope: [plant],
-          plantScopeBasis: 'STATED',
-        },
-      });
-
-      created.push({ documentId: String(sibling._id), plant, lineCount: lines.length });
-    } catch (err) {
-      console.error(`[SP][split] could not create the ${plant} half:`, err.message);
-      created.push({ plant, error: err.message });
-    }
+  // One question about the document, rather than the same question against
+  // every row of it.
+  if (stored.documentStatesNoUom) {
+    checks.push(check('EXT012', false, {
+      message: result.documentFields?.rateBasisNote
+        ? `The rate column reads "${result.documentFields.rateBasisNote}" and names no unit — set the unit these rates are quoted in.`
+        : 'No unit is printed anywhere on this document — set the unit these rates are quoted in.',
+      actualValue: result.documentFields?.rateBasisNote || null,
+    }));
   }
 
-  return created;
+  await QuoteDocument.updateOne({ _id: doc._id }, {
+    $set: {
+      status: hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'EXTRACTED',
+      'extraction.provider': result.provider,
+      'extraction.model': result.model,
+      'extraction.finishedAt': new Date(),
+      'extraction.error': null,
+      ...result.documentFields,
+      ...documentFields,
+      ...(result.extracted?.materialClass
+        ? { materialClass: result.extracted.materialClass } : {}),
+      // Recorded on both halves, so a later rescan selects this plant's rows
+      // instead of splitting the file again from scratch.
+      ...(plant ? { splitPlant: plant } : {}),
+      /*
+        Replaced, not appended.
+
+        Checks are rebuilt from the document's current state on every run, so
+        pushing them accumulated: a rescan left the previous run's failures
+        standing beside the very fixes that resolved them, and the count on
+        screen only ever grew. A check passes by disappearing from failure, and
+        that only works if the stored set is the current one.
+      */
+      checks,
+    },
+  });
+
+  return { checks, identification, lineCount: lines.length };
+}
+
+/**
+ * Create the document for one extra plant and finish it exactly like the first.
+ *
+ * The halves share the uploaded file rather than copying it: same
+ * `storageKey`, same hashes, so the review screen shows the same PDF and R2
+ * holds one object. `splitFrom` records where this one came from, so the two
+ * can be shown as siblings rather than as an unexplained duplicate.
+ *
+ * A failure here must not lose the extraction that produced it. If the sibling
+ * cannot be written, the original still gets its own plant's rows and the
+ * caller is told which plant went missing; throwing would discard both halves.
+ */
+async function spawnPlantSibling({ doc, plant, lines, result, identified }) {
+  try {
+    const source = doc.toObject ? doc.toObject() : { ...doc };
+    const {
+      _id, createdAt, updatedAt, checks, status, extraction, ...carried
+    } = source;
+
+    const sibling = await QuoteDocument.create({
+      ...carried,
+      splitFrom: doc._id,
+      splitPlant: plant,
+      plantScope: [plant],
+      plantScopeBasis: 'STATED',
+      status: 'EXTRACTING',
+      checks: [],
+    });
+
+    const finished = await finaliseDocument({
+      doc: sibling, lines, result, identified, plant,
+    });
+
+    return { documentId: String(sibling._id), plant, lineCount: finished.lineCount };
+  } catch (err) {
+    console.error(`[SP][split] could not create the ${plant} half:`, err.message);
+    return { plant, error: err.message };
+  }
 }
 
 async function storeLines(doc, rawLines) {

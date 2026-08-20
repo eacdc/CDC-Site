@@ -189,6 +189,19 @@ export const quoteDocumentSchema = new Schema({
    */
   splitFrom: { type: Schema.Types.ObjectId, ref: 'SpQuoteDocument', default: null, index: true },
 
+  /**
+   * The plant this document owns, when the uploaded file priced several.
+   *
+   * Set on **both** halves of a split, including the original. Without it a
+   * re-run of extraction re-reads the whole file, re-splits it from scratch,
+   * and hands whichever half sorts first to whichever document asked — so
+   * re-scanning the Ahmedabad half filled it with Kolkata's rates. The plant
+   * has to be a property of the document, not a fresh decision each time.
+   *
+   * Null for the ordinary single-plant document, which never splits.
+   */
+  splitPlant: { type: String, enum: ['KOLKATA', 'AHMEDABAD', null], default: null },
+
   /** Which plants the document covers. Drives the "which rows should this have produced?" check. */
   plantScope: { type: [String], enum: ['KOLKATA', 'AHMEDABAD'], default: [] },
   /** Whether the plant scope was printed, asked at review, or assumed. */
