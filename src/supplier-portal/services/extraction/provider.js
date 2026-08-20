@@ -181,19 +181,60 @@ export function registerProvider(provider) {
 }
 
 /**
+ * Load the built-in providers.
+ *
+ * Registration is a side effect of importing a provider module, and for a
+ * while nothing imported them — so the registry was empty in every deployment
+ * and the first real extraction failed with "Available: none". A registry that
+ * depends on somebody remembering an import somewhere else is a registry that
+ * is empty exactly when it is first needed, and the symptom points at
+ * configuration rather than at the missing line.
+ *
+ * So the registry loads its own. The import is dynamic and cached because
+ * `openai-provider.js` imports this module back; a static import here would be
+ * a cycle whose behaviour depends on evaluation order.
+ */
+let builtInsPromise = null;
+
+export function ensureBuiltInProviders() {
+  if (!builtInsPromise) {
+    builtInsPromise = (async () => {
+      await import('./openai-provider.js');
+      // Anthropic registers only when a key is configured — a
+      // registered-but-keyless provider fails once per request instead of
+      // being absent, which is harder to diagnose, not easier.
+      if (process.env.ANTHROPIC_API_KEY) {
+        const { registerAnthropicProvider } = await import('./anthropic-provider.js');
+        registerAnthropicProvider();
+      }
+    })();
+    builtInsPromise.catch(() => { builtInsPromise = null; });
+  }
+  return builtInsPromise;
+}
+
+/**
  * The configured provider. `EXTRACTION_PROVIDER` selects it; OpenAI is the
  * default because CDC already holds programmatic keys for it.
  */
-export function getProvider(name = process.env.EXTRACTION_PROVIDER || 'openai') {
+export async function getProvider(name = process.env.EXTRACTION_PROVIDER || 'openai') {
+  await ensureBuiltInProviders();
+
   const provider = providers.get(name);
   if (!provider) {
+    const available = [...providers.keys()];
     throw new Error(
-      `Extraction provider "${name}" is not registered. Available: ${[...providers.keys()].join(', ') || 'none'}`,
+      `Extraction provider "${name}" is not registered. Available: ${available.join(', ') || 'none'}.`
+      + (name === 'anthropic' && !process.env.ANTHROPIC_API_KEY
+        ? ' ANTHROPIC_API_KEY is not set on the server.'
+        : ''),
     );
   }
   return provider;
 }
 
-export function listProviders() {
+/** Registered provider names. Async because the built-ins load on demand. */
+export async function listProviders() {
+  await ensureBuiltInProviders();
   return [...providers.keys()];
 }

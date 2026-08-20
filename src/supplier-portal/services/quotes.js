@@ -193,7 +193,7 @@ async function extractFromWorksheet(doc, buffer, hints) {
 
 async function extractFromImages(doc, pages, hints, buffer) {
   if (!pages?.length) throw new Error('Extraction needs at least one page URL');
-  const provider = getProvider(hints.provider);
+  const provider = await getProvider(hints.provider);
   // Usually null on a fresh upload: the supplier is what extraction is about to
   // find out. When it is known — a re-extract, or an upload from the supplier
   // portal itself — the name is passed as a hint but never as an answer.

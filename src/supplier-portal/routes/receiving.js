@@ -79,7 +79,7 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
     );
     if (!pages.length) return res.status(400).json({ error: 'No supplier invoice pages have been captured.' });
 
-    const provider = getProvider();
+    const provider = await getProvider();
     const extracted = await provider.extractInvoice({ pages });
 
     set.extractedHeader = {

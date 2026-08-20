@@ -446,7 +446,7 @@ function subGroupHint(line, candidate) {
  * model confidently invents mappings.
  */
 async function adjudicate({ line, productName, group, candidates, alreadyMapped }) {
-  const provider = getProvider();
+  const provider = await getProvider();
   return provider.adjudicate({
     line: {
       supplier: group?.name || null,
