@@ -19,7 +19,7 @@
 import {
   ensureSupplierPortalReady, SupplierGroup, SupplierItem, RateHistory,
 } from '../db/mongo.js';
-import { supplierLedgers, suppliedItemGroups } from './erp-ledgers.js';
+import { supplierLedgers, suppliedItemGroupsByLedger } from './erp-ledgers.js';
 import { normaliseName, tokenSetRatio } from '../lib/text.js';
 import { INTERNAL_LEDGER_PATTERNS } from '../config/constants.js';
 
@@ -63,64 +63,111 @@ export async function groupForLedger(site, ledgerId) {
 }
 
 /**
- * Map every supplier ledger at a site to a group, returning the ones that
- * could not be placed. Unplaced ledgers are surfaced rather than auto-grouped:
- * a wrong grouping silently corrupts every comparison that follows, and the
- * cost of asking is one screen.
+ * Map every supplier ledger at a site to a group.
  *
- * @returns {Promise<{assigned: number, unmatched: Array}>}
+ * Two modes, and the choice between them is about scale rather than taste.
+ *
+ * Without `autoCreate`, unplaced ledgers come back for a human to place. That
+ * is right when there are a dozen: a wrong grouping silently corrupts every
+ * comparison that follows, and the cost of asking is one screen.
+ *
+ * With `autoCreate`, each unplaced ledger becomes its own group. That is right
+ * on a first run, where CDC's ERP holds ~1,300 supplier ledgers and there are
+ * eight groups to match against — a screen offering 1,300 dropdowns of eight
+ * options is not asking a question, it is refusing to start. One group per
+ * ledger is the honest default: it asserts "one supplier, one ledger" rather
+ * than guessing at a relationship nobody has confirmed, and the branches that
+ * do belong together get merged later, when somebody notices.
+ *
+ * Everything is done in bulk. At this size a round trip per ledger is not slow
+ * so much as fatal — it outlives the request.
+ *
+ * @returns {Promise<{assigned: number, created: number, unmatched: Array, gstins: Object}>}
  */
 export async function reconcileLedgers(site, { autoCreate = false } = {}) {
   await ensureSupplierPortalReady();
   const ledgers = await supplierLedgers(site);
   const groups = await SupplierGroup.find({}).lean();
 
-  const assignedIds = new Set(
-    groups.flatMap((g) => ledgerIdsForSite(g, site)),
-  );
+  const assignedIds = new Set(groups.flatMap((g) => ledgerIdsForSite(g, site)));
+  const byName = new Map(groups.map((g) => [normaliseName(g.name), g]));
 
+  const links = [];       // ledgers going onto an existing group
+  const fresh = new Map(); // new groups, keyed by normalised name
   const unmatched = [];
-  let assigned = 0;
 
   for (const ledger of ledgers) {
     if (assignedIds.has(ledger.LedgerID)) continue;
 
     const suggestion = suggestGroup(ledger.LedgerName, groups);
     if (suggestion && suggestion.score >= 0.85) {
-      await SupplierGroup.updateOne(
-        { _id: suggestion.group._id },
-        { $addToSet: { ledgerRefs: { site, ledgerId: ledger.LedgerID } } },
-      );
-      assigned += 1;
+      links.push({ groupId: suggestion.group._id, ledgerId: ledger.LedgerID });
       continue;
     }
 
-    if (autoCreate) {
-      // A ledger with no plausible group becomes its own group. That is the
-      // honest default: it says "one supplier, one ledger" rather than
-      // guessing at a relationship nobody has confirmed.
-      const created = await SupplierGroup.create({
-        name: ledger.LedgerName.trim(),
-        ledgerRefs: [{ site, ledgerId: ledger.LedgerID }],
-        isInternal: INTERNAL_LEDGER_PATTERNS.some((p) => p.test(ledger.LedgerName || '')),
+    if (!autoCreate) {
+      unmatched.push({
+        ledgerId: ledger.LedgerID,
+        ledgerName: ledger.LedgerName,
+        suggestion: suggestion
+          ? { groupId: suggestion.group._id, name: suggestion.group.name, score: suggestion.score }
+          : null,
       });
-      groups.push(created.toObject());
-      assigned += 1;
       continue;
     }
 
-    unmatched.push({
-      ledgerId: ledger.LedgerID,
-      ledgerName: ledger.LedgerName,
-      suggestion: suggestion
-        ? { groupId: suggestion.group._id, name: suggestion.group.name, score: suggestion.score }
-        : null,
+    const name = String(ledger.LedgerName || '').trim();
+    if (!name) continue;
+    const key = normaliseName(name);
+
+    // A name already on file — whether from a previous run or from a group
+    // created moments ago in this loop — takes the ledger rather than causing
+    // a duplicate-key failure that would abort the whole reconciliation.
+    const existing = byName.get(key);
+    if (existing) {
+      links.push({ groupId: existing._id, ledgerId: ledger.LedgerID });
+      continue;
+    }
+
+    const already = fresh.get(key);
+    if (already) {
+      // Two ledgers printing the identical name are one supplier, not a
+      // collision. Both refs go on the one group.
+      already.ledgerRefs.push({ site, ledgerId: ledger.LedgerID });
+      continue;
+    }
+
+    fresh.set(key, {
+      name,
+      ledgerRefs: [{ site, ledgerId: ledger.LedgerID }],
+      isInternal: INTERNAL_LEDGER_PATTERNS.some((p) => p.test(name)),
     });
+  }
+
+  if (links.length) {
+    await SupplierGroup.bulkWrite(links.map(({ groupId, ledgerId }) => ({
+      updateOne: {
+        filter: { _id: groupId },
+        update: { $addToSet: { ledgerRefs: { site, ledgerId } } },
+      },
+    })), { ordered: false });
+  }
+
+  let created = 0;
+  if (fresh.size) {
+    // `ordered: false` so one bad row cannot abort the rest. A duplicate name
+    // racing in from another session is the expected failure and is not worth
+    // stopping for — the ledger simply stays unplaced until the next run.
+    const result = await SupplierGroup.insertMany([...fresh.values()], {
+      ordered: false,
+      rawResult: true,
+    }).catch((err) => err.result || err);
+    created = result?.insertedCount ?? result?.nInserted ?? fresh.size;
   }
 
   const gstins = await harvestGstins(site, ledgers);
 
-  return { assigned, unmatched, gstins };
+  return { assigned: links.length, created, unmatched, gstins };
 }
 
 /**
@@ -136,19 +183,25 @@ export async function reconcileLedgers(site, { autoCreate = false } = {}) {
 export async function harvestGstins(site, ledgers = null) {
   await ensureSupplierPortalReady();
   const rows = ledgers || await supplierLedgers(site);
-  let updated = 0;
 
+  const ops = [];
   for (const ledger of rows) {
     const gstin = normaliseGstin(ledger.GSTNo);
     if (!gstin) continue;
-    const result = await SupplierGroup.updateOne(
-      { ledgerRefs: { $elemMatch: { site, ledgerId: ledger.LedgerID } } },
-      { $addToSet: { gstins: gstin } },
-    );
-    if (result.modifiedCount) updated += 1;
+    ops.push({
+      updateOne: {
+        filter: { ledgerRefs: { $elemMatch: { site, ledgerId: ledger.LedgerID } } },
+        update: { $addToSet: { gstins: gstin } },
+      },
+    });
   }
 
-  return { updated };
+  if (!ops.length) return { updated: 0, withGstin: 0 };
+
+  // One round trip. A thousand ledgers is a thousand updates, and sending them
+  // one at a time takes longer than the request it is serving.
+  const result = await SupplierGroup.bulkWrite(ops, { ordered: false });
+  return { updated: result.modifiedCount || 0, withGstin: ops.length };
 }
 
 /** 15 characters, upper case, punctuation stripped. Anything else is not one. */
@@ -208,21 +261,31 @@ export async function seedGroups() {
 export async function refreshHistoricalGroups(site) {
   await ensureSupplierPortalReady();
   const groups = await SupplierGroup.find({}).lean();
-  let updated = 0;
 
+  // One ERP scan for every ledger at the site, then one bulk write. Asking per
+  // group instead means ~1,300 round trips to MSSQL and ~1,300 to Mongo, which
+  // is not slow so much as fatal — it outlives the request.
+  const allLedgerIds = groups.flatMap((g) => ledgerIdsForSite(g, site));
+  const byLedger = await suppliedItemGroupsByLedger(site, allLedgerIds);
+
+  const ops = [];
   for (const group of groups) {
-    const ledgerIds = ledgerIdsForSite(group, site);
-    if (!ledgerIds.length) continue;
-    const itemGroupIds = await suppliedItemGroups(site, ledgerIds);
+    const itemGroupIds = [...new Set(
+      ledgerIdsForSite(group, site).flatMap((id) => byLedger.get(id) || []),
+    )];
     if (!itemGroupIds.length) continue;
-    await SupplierGroup.updateOne(
-      { _id: group._id },
-      { $addToSet: { historicalItemGroupIds: { $each: itemGroupIds } } },
-    );
-    updated += 1;
+    ops.push({
+      updateOne: {
+        filter: { _id: group._id },
+        update: { $addToSet: { historicalItemGroupIds: { $each: itemGroupIds } } },
+      },
+    });
   }
 
-  return { updated };
+  if (!ops.length) return { updated: 0, groups: groups.length };
+  await SupplierGroup.bulkWrite(ops, { ordered: false });
+
+  return { updated: ops.length, groups: groups.length };
 }
 
 /**

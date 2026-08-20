@@ -138,8 +138,25 @@ function docTypeFor({ mimeType, originalFilename }) {
   return 'PRICE_LIST';
 }
 
-/** Direct upload for worksheets, which need the buffer server-side. */
-router.post('/worksheet', requireSite, requireRole('BUYER', 'APPROVER'), upload.single('file'), async (req, res, next) => {
+/**
+ * Upload a quote in one call: store it, read it, identify it.
+ *
+ * The file comes through the API rather than going straight to storage on a
+ * presigned URL. That costs a hop through this process — 25 MB at CDC's volume
+ * is nothing — and buys three things:
+ *
+ *  - **It works without configuring CORS on the bucket.** A browser PUT to
+ *    `*.r2.cloudflarestorage.com` is a cross-origin request and fails with a
+ *    bare "Load failed" until the bucket's CORS policy names the frontend
+ *    origin. That is a Cloudflare dashboard setting nobody remembers, and its
+ *    failure mode tells the user nothing.
+ *  - **The buffer is already here.** A worksheet is parsed from it, and a PDF's
+ *    text layer is read from it, with no download back out of storage.
+ *  - **One request, one answer.** The client uploads and gets back what the
+ *    document turned out to be, instead of orchestrating three calls and
+ *    holding partial state if one of them fails.
+ */
+async function uploadQuoteFile(req, res, next) {
   try {
     await ensureSupplierPortalReady();
     if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
@@ -147,7 +164,11 @@ router.post('/worksheet', requireSite, requireRole('BUYER', 'APPROVER'), upload.
     const sha256 = sha256Of(req.file.buffer);
     const dedup = await checkDuplicate({ sha256 });
     if (dedup.isBlocked) {
-      return res.status(409).json({ error: 'This workbook has already been uploaded.', checks: dedup.checks });
+      return res.status(409).json({
+        error: 'This document has already been uploaded.',
+        checks: dedup.checks,
+        existingDocumentId: dedup.exactMatch?._id,
+      });
     }
 
     const stored = await uploadBuffer({
@@ -155,11 +176,13 @@ router.post('/worksheet', requireSite, requireRole('BUYER', 'APPROVER'), upload.
       buffer: req.file.buffer,
       contentType: req.file.mimetype,
     });
+    const storageKey = stored.key || stored;
 
     const doc = await QuoteDocument.create({
       supplierGroupId: req.body.supplierGroupId || null,
-      docType: 'WORKSHEET',
-      storageKey: stored.key || stored,
+      docType: req.body.docType
+        || docTypeFor({ mimeType: req.file.mimetype, originalFilename: req.file.originalname }),
+      storageKey,
       originalFilename: req.file.originalname,
       mimeType: req.file.mimetype,
       sha256,
@@ -170,17 +193,25 @@ router.post('/worksheet', requireSite, requireRole('BUYER', 'APPROVER'), upload.
       checks: dedup.checks,
     });
 
-    // The buffer is kept on the request for the extract call that follows, so
-    // a worksheet does not have to be re-downloaded to be parsed.
     const result = await extractDocument(doc._id, {
       site: req.sp.site,
       buffer: req.file.buffer,
+      // Images still need a URL the vision provider can fetch. A PDF does not:
+      // its text is read from the buffer above.
+      pages: [{ url: await viewUrl(storageKey), pageNo: 1, mimeType: req.file.mimetype }],
       hints: { priceColumn: req.body.priceColumn, sheetName: req.body.sheetName },
     });
 
     return res.status(201).json({ documentId: doc._id, ...result });
   } catch (err) { return next(err); }
-});
+}
+
+const uploadGuards = [requireSite, requireRole('BUYER', 'APPROVER'), upload.single('file')];
+
+router.post('/file', ...uploadGuards, uploadQuoteFile);
+// The same handler under its old name. `/worksheet` predates this route
+// handling every format, and a deployed frontend may still be calling it.
+router.post('/worksheet', ...uploadGuards, uploadQuoteFile);
 
 /**
  * Run extraction on a registered document, then identify it.

@@ -109,7 +109,7 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
 
     const result = isWorksheet
       ? await extractFromWorksheet(doc, buffer, hints)
-      : await extractFromImages(doc, pages, hints);
+      : await extractFromImages(doc, pages, hints, buffer);
 
     await storeLines(doc, result.lines);
 
@@ -191,7 +191,7 @@ async function extractFromWorksheet(doc, buffer, hints) {
   };
 }
 
-async function extractFromImages(doc, pages, hints) {
+async function extractFromImages(doc, pages, hints, buffer) {
   if (!pages?.length) throw new Error('Extraction needs at least one page URL');
   const provider = getProvider(hints.provider);
   // Usually null on a fresh upload: the supplier is what extraction is about to
@@ -204,7 +204,7 @@ async function extractFromImages(doc, pages, hints) {
   // A born-digital PDF already contains the exact characters the sender typed.
   // Handing them over removes the transcription risk on every number in the
   // document, and costs one fetch.
-  const textLayer = await readTextLayer(doc, pages);
+  const textLayer = await readTextLayer(doc, pages, buffer);
 
   /**
    * A vision model is sent images, and a PDF is not one — neither provider can
@@ -286,21 +286,27 @@ async function extractFromImages(doc, pages, hints) {
  * is a warning and nothing more: extraction proceeds on the images alone,
  * exactly as it did before this existed.
  */
-async function readTextLayer(doc, pages) {
+async function readTextLayer(doc, pages, buffer) {
   if (!looksLikePdf(doc)) return null;
-  const url = pages?.[0]?.url;
-  if (!url) return null;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`storage returned ${response.status}`);
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const layer = await pdfPageTexts(buffer);
+    // On the upload path the bytes are already in hand. Only a re-extract of a
+    // document uploaded earlier has to fetch them back out of storage.
+    const bytes = buffer || await fetchPage(pages?.[0]?.url);
+    if (!bytes) return null;
+    const layer = await pdfPageTexts(bytes);
     return layer.hasTextLayer ? layer : null;
   } catch (err) {
     console.warn('[SP][quotes] could not read the PDF text layer:', err.message);
     return null;
   }
+}
+
+async function fetchPage(url) {
+  if (!url) return null;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`storage returned ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
 }
 
 // ── Identification ──────────────────────────────────────────────────────────

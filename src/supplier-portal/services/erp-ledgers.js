@@ -186,3 +186,49 @@ export async function suppliedItemGroups(site, ledgerIds = [], { months = 24 } =
 
   return rows.map((r) => r.ItemGroupID);
 }
+
+/**
+ * The same question asked once for every ledger at a site.
+ *
+ * `suppliedItemGroups` answers for one supplier, which is right when a screen
+ * is showing one. Refreshing the whole site with it means one query per
+ * supplier — ~1,300 of them against the ERP, which outlives the request that
+ * asked. This returns `LedgerID -> [ItemGroupID]` from a single scan instead.
+ *
+ * @returns {Promise<Map<number, number[]>>}
+ */
+export async function suppliedItemGroupsByLedger(site, ledgerIds = [], { months = 24 } = {}) {
+  assertSite(site);
+  const ids = [...new Set(ledgerIds.map(Number).filter(Number.isFinite))];
+  const byLedger = new Map();
+  if (!ids.length) return byLedger;
+
+  // Chunked because the id list is inlined: one enormous IN list is a query
+  // plan SQL Server handles badly, and several thousand is a parse error.
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500);
+    const rows = await query(site, `
+      SELECT DISTINCT ITM.LedgerID, IM.ItemGroupID
+      FROM ItemTransactionDetail ITD
+      JOIN ItemTransactionMain ITM
+        ON ITM.TransactionID = ITD.TransactionID AND ITM.CompanyID = ITD.CompanyID
+      JOIN ItemMaster IM ON IM.ItemID = ITD.ItemID AND IM.CompanyID = ITD.CompanyID
+      WHERE ITD.CompanyID = @companyId
+        AND ITM.LedgerID IN (${chunk.join(',')})
+        AND ITM.VoucherID IN (-11, -14)
+        AND ITM.VoucherDate >= DATEADD(month, -@months, GETDATE())
+        AND ISNULL(ITD.IsDeletedTransaction,0) = 0
+        AND ISNULL(ITD.IsCancelled,0) = 0
+        AND ISNULL(ITM.IsDeletedTransaction,0) = 0
+    `, { companyId: COMPANY_ID, months });
+
+    for (const row of rows) {
+      if (row.ItemGroupID === null || row.ItemGroupID === undefined) continue;
+      const list = byLedger.get(row.LedgerID) || [];
+      list.push(row.ItemGroupID);
+      byLedger.set(row.LedgerID, list);
+    }
+  }
+
+  return byLedger;
+}
