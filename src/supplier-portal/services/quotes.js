@@ -19,6 +19,7 @@ import { normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
 import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
 import { getProvider } from './extraction/provider.js';
 import { extractWorkbook } from './extraction/xlsx-extract.js';
+import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
 
@@ -91,7 +92,7 @@ export async function checkDuplicate({ sha256, perceptualHashes = [] }) {
  * Both produce the same line shape, so review, matching and approval do not
  * care which was used.
  */
-export async function extractDocument(documentId, { pages, buffer, hints = {} } = {}) {
+export async function extractDocument(documentId, { site, pages, buffer, hints = {} } = {}) {
   await ensureSupplierPortalReady();
   const doc = await QuoteDocument.findById(documentId);
   if (!doc) throw new Error(`Quote document ${documentId} not found`);
@@ -111,19 +112,34 @@ export async function extractDocument(documentId, { pages, buffer, hints = {} } 
 
     await storeLines(doc, result.lines);
 
+    // Identification reads the same extraction rather than the provider again.
+    // A worksheet carries no letterhead, so it produces an empty proposal — and
+    // an empty proposal is the correct outcome: it asks, instead of defaulting.
+    const identification = await proposeIdentification({
+      doc, site, extracted: result.extracted || {},
+    });
+
+    const checks = [...result.checks, ...identification.checks];
+
     await QuoteDocument.updateOne({ _id: doc._id }, {
       $set: {
-        status: hasBlockingFailure(result.checks) ? 'NEEDS_REVIEW' : 'EXTRACTED',
+        status: hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'EXTRACTED',
         'extraction.provider': result.provider,
         'extraction.model': result.model,
         'extraction.finishedAt': new Date(),
         'extraction.error': null,
         ...result.documentFields,
+        ...identification.documentFields,
       },
-      $push: { checks: { $each: result.checks } },
+      $push: { checks: { $each: checks } },
     });
 
-    return { lineCount: result.lines.length, checks: result.checks, ...result.meta };
+    return {
+      lineCount: result.lines.length,
+      checks,
+      identification: identification.documentFields.identification,
+      ...result.meta,
+    };
   } catch (err) {
     await QuoteDocument.updateOne({ _id: doc._id }, {
       $set: {
@@ -177,7 +193,12 @@ async function extractFromWorksheet(doc, buffer, hints) {
 async function extractFromImages(doc, pages, hints) {
   if (!pages?.length) throw new Error('Extraction needs at least one page URL');
   const provider = getProvider(hints.provider);
-  const group = await SupplierGroup.findById(doc.supplierGroupId).lean();
+  // Usually null on a fresh upload: the supplier is what extraction is about to
+  // find out. When it is known — a re-extract, or an upload from the supplier
+  // portal itself — the name is passed as a hint but never as an answer.
+  const group = doc.supplierGroupId
+    ? await SupplierGroup.findById(doc.supplierGroupId).lean()
+    : null;
 
   const extracted = await provider.extractQuote({
     pages,
@@ -224,8 +245,320 @@ async function extractFromImages(doc, pages, hints) {
     provider: extracted._provider,
     model: extracted._model,
     documentFields,
+    // Handed back so identification can run on the same reading rather than
+    // re-calling the provider. Identification is a judgement about the
+    // extraction, not a second extraction.
+    extracted,
     meta: { plantBlocks: extracted.plantBlocks || null },
   };
+}
+
+// ── Identification ──────────────────────────────────────────────────────────
+
+/**
+ * Propose who sent a quote and which plant it prices, from the document.
+ *
+ * A proposal above `AUTO_ACCEPT` is written straight through to the settled
+ * field — the reviewer sees it filled in with its evidence and moves on. Below
+ * that, the field stays empty and a blocking check holds approval until a
+ * person answers. Nothing in between: a half-confident supplier written
+ * quietly into `supplierGroupId` is exactly the failure this replaces.
+ */
+export async function proposeIdentification({ doc, site, extracted }) {
+  const identified = await identifyQuote({ site, extracted });
+  const { supplier, plant, validity, strength, terms } = identified;
+
+  // A supplier the caller already stated outranks anything read off the page.
+  // The supplier portal knows whose quote it is from the session, and a
+  // letterhead naming a parent company must not reassign it.
+  const statedSupplier = doc?.supplierGroupId || null;
+  const supplierSettled = Boolean(statedSupplier)
+    || (Boolean(supplier.supplierGroupId) && supplier.confidence >= AUTO_ACCEPT);
+  const plantSettled = plant.value.length > 0 && plant.confidence >= AUTO_ACCEPT;
+
+  const identification = {
+    status: 'PROPOSED',
+    supplier: {
+      proposedGroupId: supplier.supplierGroupId || null,
+      proposedName: supplier.value || null,
+      readName: supplier.readName || null,
+      readGstin: supplier.readGstin || null,
+      foundIn: supplier.foundIn || null,
+      confidence: supplier.confidence,
+      evidence: supplier.evidence,
+      candidates: supplier.candidates || [],
+      ledgerCandidates: supplier.ledgerCandidates || [],
+      basis: 'READ',
+    },
+    plant: {
+      proposed: plant.value,
+      unit: plant.unit || null,
+      readAddress: plant.readAddress || null,
+      confidence: plant.confidence,
+      evidence: plant.evidence,
+      basis: 'READ',
+    },
+    validity: { confidence: validity.confidence, evidence: validity.evidence },
+    strength: { confidence: strength.confidence, evidence: strength.evidence },
+    terms: { confidence: terms.confidence, evidence: terms.evidence },
+    needsAttention: [
+      ...(supplierSettled ? [] : ['supplier']),
+      ...(plantSettled ? [] : ['plant']),
+    ],
+  };
+
+  const documentFields = { identification };
+  if (supplierSettled) {
+    documentFields.supplierGroupId = statedSupplier || supplier.supplierGroupId;
+  }
+  if (plantSettled) {
+    documentFields.plantScope = plant.value;
+    documentFields.plantScopeBasis = 'STATED';
+  }
+  // The strength read from the page beats the FIRM default, but never
+  // downgrades a FIRM that a person set deliberately at upload.
+  if (strength.value === 'SOFT') documentFields.quoteStrength = 'SOFT';
+
+  return {
+    documentFields,
+    checks: identificationChecks(identification),
+    identified,
+  };
+}
+
+/**
+ * The two checks that hold approval until identification is settled.
+ *
+ * Rebuilt from scratch on every change rather than mutated, so the stored pair
+ * always reflects the document's current state. They pass by disappearing from
+ * failure, not by being deleted: a check that vanishes when it passes is
+ * indistinguishable from one that never ran.
+ */
+export function identificationChecks(identification) {
+  const needs = identification?.needsAttention || [];
+  return [
+    check('EXT009', !needs.includes('supplier'), {
+      message: identification?.supplier?.evidence,
+      actualValue: identification?.supplier?.readName || null,
+    }),
+    check('EXT010', !needs.includes('plant'), {
+      message: identification?.plant?.evidence,
+      actualValue: identification?.plant?.readAddress || null,
+    }),
+  ];
+}
+
+/**
+ * Settle a document's identification.
+ *
+ * Every field is optional: a reviewer confirming a correct proposal sends
+ * nothing but the confirmation, and the proposal becomes the answer. Sending a
+ * value overrides it and is recorded as CORRECTED rather than CONFIRMED,
+ * because the two mean different things — a supplier corrected every month is
+ * a missing alias, and collapsing that into "confirmed" hides it.
+ */
+export async function confirmIdentification({
+  documentId, actor, supplierGroupId, plantScope, quoteStrength, cdcEntityScope,
+  effectiveFrom, effectiveTo, commercialTerms, docType, ledgerRef,
+}) {
+  await ensureSupplierPortalReady();
+  const doc = await QuoteDocument.findById(documentId);
+  if (!doc) throw new Error(`Quote document ${documentId} not found`);
+  if (doc.status === 'APPROVED') {
+    throw new Error('This document has already been approved; its identification cannot be changed.');
+  }
+
+  const proposal = doc.identification || {};
+
+  // Supplier: an explicit value overrides, otherwise the proposal stands.
+  const chosenSupplier = supplierGroupId ?? doc.supplierGroupId ?? proposal.supplier?.proposedGroupId ?? null;
+  if (chosenSupplier) {
+    const group = await SupplierGroup.findById(chosenSupplier).lean();
+    if (!group) throw new Error('Supplier group not found.');
+    doc.supplierGroupId = group._id;
+    doc.set(
+      'identification.supplier.basis',
+      String(chosenSupplier) === String(proposal.supplier?.proposedGroupId) ? 'CONFIRMED' : 'CORRECTED',
+    );
+
+    // A name the extractor read that did not match becomes an alias on the
+    // group the reviewer picked. This is the whole compounding mechanism: the
+    // correction made once is why the same supplier's next quote needs none.
+    const readName = proposal.supplier?.readName;
+    if (readName && normaliseName(readName) !== normaliseName(group.name)) {
+      await SupplierGroup.updateOne({ _id: group._id }, {
+        $addToSet: { aliases: readName.trim() },
+      });
+    }
+    const readGstin = proposal.supplier?.readGstin;
+    if (readGstin) {
+      await SupplierGroup.updateOne({ _id: group._id }, { $addToSet: { gstins: readGstin } });
+    }
+  }
+
+  // Plant: same rule, and an empty array is not a valid answer — it is the
+  // absence of one, which is what the blocking check is for.
+  const chosenPlants = normalisePlants(plantScope)
+    ?? (doc.plantScope?.length ? doc.plantScope : null)
+    ?? (proposal.plant?.proposed?.length ? proposal.plant.proposed : null);
+  if (chosenPlants?.length) {
+    const sameAsProposed = sameSet(chosenPlants, proposal.plant?.proposed || []);
+    doc.plantScope = chosenPlants;
+    doc.plantScopeBasis = sameAsProposed && proposal.plant?.basis === 'READ' ? 'STATED' : 'ASKED';
+    doc.set('identification.plant.basis', sameAsProposed ? 'CONFIRMED' : 'CORRECTED');
+  }
+
+  if (docType) doc.docType = docType;
+  if (ledgerRef) doc.ledgerRef = ledgerRef;
+  if (quoteStrength) doc.quoteStrength = quoteStrength;
+  if (cdcEntityScope) doc.cdcEntityScope = cdcEntityScope;
+  if (commercialTerms) doc.commercialTerms = { ...doc.commercialTerms, ...commercialTerms };
+
+  const from = parseDate(effectiveFrom);
+  const to = parseDate(effectiveTo);
+  if (from) doc.effectiveFrom = from;
+  if (to) {
+    doc.effectiveTo = to;
+    doc.validityBasis = 'STATED';
+  } else if (doc.validityBasis !== 'STATED' && doc.effectiveFrom) {
+    // The supplier's own default validity is only knowable once the supplier
+    // is. Extraction ran before that and used the global default, so a
+    // supplier with agreed longer terms gets them applied here.
+    const group = doc.supplierGroupId ? await SupplierGroup.findById(doc.supplierGroupId).lean() : null;
+    const days = group?.defaultValidityDays || TOLERANCES.defaultValidityDays;
+    const expiry = new Date(doc.effectiveFrom);
+    expiry.setDate(expiry.getDate() + days);
+    doc.effectiveTo = expiry;
+  }
+
+  const needsAttention = [
+    ...(doc.supplierGroupId ? [] : ['supplier']),
+    ...(doc.plantScope?.length ? [] : ['plant']),
+  ];
+  doc.set('identification.needsAttention', needsAttention);
+  doc.set('identification.status', needsAttention.length ? 'PROPOSED' : 'CONFIRMED');
+  if (!needsAttention.length) {
+    doc.set('identification.confirmedBy', actor);
+    doc.set('identification.confirmedAt', new Date());
+  }
+
+  // The two identification checks are replaced rather than appended, so the
+  // stored pair is always the current state and never a history of attempts.
+  doc.checks = [
+    ...(doc.checks || []).filter((c) => !['EXT009', 'EXT010'].includes(c.code)),
+    ...identificationChecks(doc.identification),
+  ];
+
+  if (doc.status === 'NEEDS_REVIEW' && !hasBlockingFailure(doc.checks)) {
+    doc.status = 'EXTRACTED';
+  }
+
+  await doc.save();
+
+  await AuditLog.create({
+    action: 'QUOTE_IDENTIFICATION_CONFIRMED',
+    entity: 'quoteDocument',
+    entityId: String(doc._id),
+    actor,
+    before: {
+      supplierGroupId: proposal.supplier?.proposedGroupId || null,
+      plantScope: proposal.plant?.proposed || [],
+    },
+    after: { supplierGroupId: doc.supplierGroupId, plantScope: doc.plantScope },
+    meta: {
+      supplierBasis: doc.identification?.supplier?.basis,
+      plantBasis: doc.identification?.plant?.basis,
+    },
+  });
+
+  return doc.toObject();
+}
+
+/**
+ * Re-run identification against the supplier groups as they stand now.
+ *
+ * The document is not re-extracted. What was read off the page — the name, the
+ * GSTIN, the address it was addressed to — is stored on the proposal, and that
+ * is the entire input identification needs. Paying for a second vision call to
+ * discover that a group created two minutes ago now matches would be absurd.
+ *
+ * Fields a person has already settled are left alone: re-identifying must not
+ * undo a decision by proposing over it.
+ */
+export async function reidentifyDocument({ documentId, site }) {
+  await ensureSupplierPortalReady();
+  const doc = await QuoteDocument.findById(documentId);
+  if (!doc) throw new Error(`Quote document ${documentId} not found`);
+  if (doc.status === 'APPROVED') {
+    throw new Error('This document has already been approved; its identification cannot be changed.');
+  }
+
+  const prior = doc.identification || {};
+  const supplierSettled = prior.supplier?.basis && prior.supplier.basis !== 'READ';
+  const plantSettled = prior.plant?.basis && prior.plant.basis !== 'READ';
+
+  const { documentFields, checks } = await proposeIdentification({
+    doc,
+    site,
+    // Reconstructed from what was stored, not re-read. `readName` is the name
+    // exactly as printed, which is what matched — or failed to — last time.
+    extracted: {
+      supplier: {
+        name: prior.supplier?.readName || null,
+        gstin: prior.supplier?.readGstin || null,
+        foundIn: prior.supplier?.foundIn || null,
+      },
+      addressedTo: { address: prior.plant?.readAddress || null },
+      plantMentions: prior.plant?.proposed || null,
+    },
+  });
+
+  const identification = documentFields.identification;
+
+  if (supplierSettled) {
+    identification.supplier = prior.supplier;
+    identification.needsAttention = identification.needsAttention.filter((f) => f !== 'supplier');
+  } else if (documentFields.supplierGroupId) {
+    doc.supplierGroupId = documentFields.supplierGroupId;
+  }
+
+  if (plantSettled) {
+    identification.plant = prior.plant;
+    identification.needsAttention = identification.needsAttention.filter((f) => f !== 'plant');
+  } else if (documentFields.plantScope) {
+    doc.plantScope = documentFields.plantScope;
+    doc.plantScopeBasis = documentFields.plantScopeBasis;
+  }
+
+  // Validity, strength and terms were judged from the full extraction, which
+  // is not being re-read. Keeping the earlier readings is more truthful than
+  // recomputing them from a stub that has no dates in it.
+  identification.validity = prior.validity || identification.validity;
+  identification.strength = prior.strength || identification.strength;
+  identification.terms = prior.terms || identification.terms;
+
+  doc.set('identification', identification);
+  doc.checks = [
+    ...(doc.checks || []).filter((c) => !['EXT009', 'EXT010'].includes(c.code)),
+    ...identificationChecks(identification),
+  ];
+  if (doc.status === 'NEEDS_REVIEW' && !hasBlockingFailure(doc.checks)) doc.status = 'EXTRACTED';
+  await doc.save();
+
+  return { document: doc.toObject(), identification, checks };
+}
+
+/** Canonical plant names, or null when nothing usable was sent. */
+function normalisePlants(value) {
+  if (!Array.isArray(value)) return null;
+  const plants = [...new Set(value.map(plantFromText).filter(Boolean))];
+  return plants.length ? plants : null;
+}
+
+function sameSet(a, b) {
+  if (a.length !== b.length) return false;
+  const set = new Set(b);
+  return a.every((x) => set.has(x));
 }
 
 /**
@@ -468,7 +801,16 @@ export async function approveDocument({ documentId, actor, overrides = [] }) {
 
   applyOverrides(doc, overrides, actor);
 
-  const plants = doc.plantScope?.length ? doc.plantScope : [PLANTS.KOL];
+  // No silent default. EXT009/EXT010 make an unsettled document unapprovable,
+  // and if that gate is ever bypassed the right outcome is a refusal, not
+  // Kolkata rates invented for a quote that never named a plant.
+  if (!doc.supplierGroupId) {
+    throw new Error('Cannot approve: the supplier has not been identified.');
+  }
+  const plants = doc.plantScope?.length ? doc.plantScope : null;
+  if (!plants) {
+    throw new Error('Cannot approve: the plant has not been identified.');
+  }
   const written = [];
 
   for (const line of lines) {
@@ -689,8 +1031,17 @@ function parseDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * A number out of "45 days", or null.
+ *
+ * The digits are required. Stripping non-digits from an empty or wordy value
+ * leaves "", and `Number('')` is 0 — so a quote stating no credit period would
+ * be filed as "payment due immediately", a term the supplier never offered.
+ */
 function numberish(value) {
-  const n = Number(String(value ?? '').replace(/[^\d.-]/g, ''));
+  const digits = String(value ?? '').match(/-?\d+(?:\.\d+)?/);
+  if (!digits) return null;
+  const n = Number(digits[0]);
   return Number.isFinite(n) ? n : null;
 }
 

@@ -80,6 +80,16 @@ export const supplierGroupSchema = new Schema({
   ledgerRefs: { type: [ledgerRefSchema], default: [] },
   aliases: { type: [String], default: [] },
   /**
+   * Every GSTIN this supplier has traded under, harvested from their ledgers.
+   *
+   * A name on a letterhead is a guess; a GSTIN is an identifier. When an
+   * uploaded quote carries one, it settles which supplier sent it outright and
+   * skips the fuzzy name match entirely — which matters most for the case name
+   * matching handles worst: a branch quoting under a slightly different
+   * trading style.
+   */
+  gstins: { type: [String], default: [] },
+  /**
    * CDC Printers (Ahmedabad) appears as a supplier ledger on lamination film.
    * That is an inter-unit transfer, not a purchase — excluded from all
    * benchmarking.
@@ -101,19 +111,32 @@ export const supplierGroupSchema = new Schema({
 
 supplierGroupSchema.index({ 'ledgerRefs.site': 1, 'ledgerRefs.ledgerId': 1 });
 supplierGroupSchema.index({ aliases: 1 });
+supplierGroupSchema.index({ gstins: 1 });
 
 // ── 10.2 quoteDocuments ─────────────────────────────────────────────────────
 
 /** One per uploaded file. Immutable once processed. */
 export const quoteDocumentSchema = new Schema({
-  supplierGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', required: true, index: true },
+  /**
+   * Null until the supplier is settled.
+   *
+   * A quote arrives as a file, and everything about it — who sent it, which
+   * plant it prices, when it takes effect — is printed on the page. Requiring
+   * the uploader to answer first made them the extractor, and a human picking
+   * from a list of eighty supplier names picks wrong occasionally, which files
+   * one supplier's rates under another's name. So the field starts empty, gets
+   * a proposal from `identification`, and is written when someone confirms.
+   */
+  supplierGroupId: {
+    type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', default: null, index: true,
+  },
   /** Nullable — a trader's quote may not correspond to a ledger at all. */
   ledgerRef: ledgerRefSchema,
 
   docType: {
     type: String,
     enum: ['PRICE_LIST', 'EMAIL', 'PROFORMA_INVOICE', 'HANDWRITTEN_NOTE', 'WORKSHEET'],
-    required: true,
+    default: 'PRICE_LIST',
   },
   /** SOFT = "subject to change without notice". Never blocks a PO check. */
   quoteStrength: { type: String, enum: ['FIRM', 'SOFT'], default: 'FIRM' },
@@ -165,6 +188,83 @@ export const quoteDocumentSchema = new Schema({
 
   /** Worksheet uploads: which column the human nominated as the live price. */
   nominatedPriceColumn: String,
+
+  /**
+   * What the document said about itself, and how sure the reading was.
+   *
+   * Kept beside the settled fields rather than merged into them, because the
+   * two answer different questions. `supplierGroupId` is what the rates will be
+   * filed under; `identification.supplier` is why. A reviewer who can see "read
+   * 'PRINT SALES PRIVATE LIMITED' from the signature block on page 3" confirms
+   * in a glance; one who sees only a pre-filled dropdown has to reopen the PDF,
+   * and in practice does not.
+   *
+   * The proposal is never overwritten by a correction — `basis` records which
+   * happened. A month of CORRECTED readings on one supplier is the signal that
+   * an alias is missing, and averaging it into the confirmed value hides that.
+   */
+  identification: {
+    status: {
+      type: String,
+      enum: ['PENDING', 'PROPOSED', 'CONFIRMED'],
+      default: 'PENDING',
+    },
+
+    supplier: {
+      proposedGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', default: null },
+      proposedName: String,
+      /** The name and GSTIN exactly as printed, whether or not they matched. */
+      readName: String,
+      readGstin: String,
+      /** Where on the document the name was found, e.g. "signature block, page 3". */
+      foundIn: String,
+      confidence: Number,
+      evidence: String,
+      candidates: [{
+        _id: false,
+        supplierGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup' },
+        name: String,
+        score: Number,
+        matchedOn: String,
+      }],
+      /** ERP ledgers that look right but have no group yet — a first-time supplier. */
+      ledgerCandidates: [{
+        _id: false,
+        ledgerId: Number,
+        ledgerName: String,
+        gstin: String,
+        score: Number,
+      }],
+      basis: {
+        type: String,
+        enum: ['READ', 'CONFIRMED', 'CORRECTED'],
+        default: 'READ',
+      },
+    },
+
+    plant: {
+      proposed: { type: [String], enum: ['KOLKATA', 'AHMEDABAD'], default: [] },
+      /** Tangra, Panchla, Ahmedabad. Finer than the plant, and not a database. */
+      unit: String,
+      readAddress: String,
+      confidence: Number,
+      evidence: String,
+      basis: {
+        type: String,
+        enum: ['READ', 'CONFIRMED', 'CORRECTED'],
+        default: 'READ',
+      },
+    },
+
+    validity: { confidence: Number, evidence: String },
+    strength: { confidence: Number, evidence: String },
+    terms: { confidence: Number, evidence: String },
+
+    /** Which fields a person still has to settle: 'supplier', 'plant'. */
+    needsAttention: { type: [String], default: [] },
+    confirmedBy: String,
+    confirmedAt: Date,
+  },
 
   extraction: {
     provider: String,

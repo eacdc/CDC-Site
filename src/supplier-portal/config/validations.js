@@ -24,6 +24,17 @@ export const VALIDATIONS = {
   EXT006: { severity: SEVERITY.WARN,  scope: 'DOCUMENT', message: 'Duplicate product code within one document' },
   EXT007: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Multi-column worksheet — price column has not been nominated' },
   EXT008: { severity: SEVERITY.WARN,  scope: 'DOCUMENT', message: 'Supplier GSTIN not recognised' },
+  /**
+   * These two gate approval rather than upload. A quote whose supplier or plant
+   * is unsettled can still be uploaded, extracted and read — what it cannot do
+   * is write rate history, because a rate filed against the wrong supplier or
+   * the wrong plant is worse than no rate at all: it is silently believed.
+   *
+   * They are BLOCK and therefore not overridable, which is not a hardship —
+   * confirming the identification clears them, and that is one click.
+   */
+  EXT009: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Supplier has not been identified — confirm who sent this quote' },
+  EXT010: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Plant has not been identified — confirm which plant this quote prices' },
 
   // ── Matching (M2) ────────────────────────────────────────────────────────
   MAP001: { severity: SEVERITY.WARN, scope: 'LINE', message: 'No candidate CDC item found', queueReason: 'NO_CANDIDATE' },

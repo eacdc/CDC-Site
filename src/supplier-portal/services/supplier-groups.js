@@ -118,7 +118,43 @@ export async function reconcileLedgers(site, { autoCreate = false } = {}) {
     });
   }
 
-  return { assigned, unmatched };
+  const gstins = await harvestGstins(site, ledgers);
+
+  return { assigned, unmatched, gstins };
+}
+
+/**
+ * Copy each ledger's GSTIN onto the group that owns it.
+ *
+ * Run as part of reconciliation rather than on demand because the value of a
+ * GSTIN is being there *before* the quote arrives: identification falls back to
+ * fuzzy name matching for any supplier whose number has not been harvested yet.
+ *
+ * `$addToSet` is deliberate — a supplier that re-registers keeps both numbers,
+ * and an old GSTIN still identifies the older documents correctly.
+ */
+export async function harvestGstins(site, ledgers = null) {
+  await ensureSupplierPortalReady();
+  const rows = ledgers || await supplierLedgers(site);
+  let updated = 0;
+
+  for (const ledger of rows) {
+    const gstin = normaliseGstin(ledger.GSTNo);
+    if (!gstin) continue;
+    const result = await SupplierGroup.updateOne(
+      { ledgerRefs: { $elemMatch: { site, ledgerId: ledger.LedgerID } } },
+      { $addToSet: { gstins: gstin } },
+    );
+    if (result.modifiedCount) updated += 1;
+  }
+
+  return { updated };
+}
+
+/** 15 characters, upper case, punctuation stripped. Anything else is not one. */
+export function normaliseGstin(value) {
+  const text = String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return text.length === 15 ? text : null;
 }
 
 /**
@@ -212,6 +248,7 @@ export async function mergeGroups(sourceId, targetId, { actor } = {}) {
       ledgerRefs: { $each: source.ledgerRefs || [] },
       aliases: { $each: [source.name, ...(source.aliases || [])] },
       tradesAs: { $each: source.tradesAs || [] },
+      gstins: { $each: source.gstins || [] },
       historicalItemGroupIds: { $each: source.historicalItemGroupIds || [] },
     },
   });

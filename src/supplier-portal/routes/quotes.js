@@ -15,7 +15,7 @@ import {
 } from '../db/mongo.js';
 import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
-  runMagnitudeChecks, normaliseLine,
+  runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument,
 } from '../services/quotes.js';
 import { matchDocument } from '../services/matching.js';
 import { uomOverridesFrom } from '../lib/uom.js';
@@ -44,6 +44,15 @@ router.post('/upload-url', async (req, res, next) => {
 /**
  * Register an uploaded document.
  *
+ * Nothing here is required but the file. Who sent it, which plant it prices,
+ * when it takes effect and on what terms are all printed on the page, and
+ * extraction reads them — asking the uploader first made them do the
+ * extractor's job, slowly and with a dropdown of eighty supplier names to pick
+ * the wrong one from.
+ *
+ * Anything the caller does send is kept and wins over what is read: an upload
+ * from the supplier portal itself already knows whose quote it is.
+ *
  * The duplicate check runs here, before extraction, so a re-upload costs
  * nothing but a hash comparison.
  */
@@ -56,11 +65,14 @@ router.post('/', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
       quoteStrength, ledgerRef, supersedesDocId, isPartialUpdate,
     } = req.body || {};
 
-    if (!supplierGroupId) return res.status(400).json({ error: 'A supplier group is required.' });
-    if (!docType) return res.status(400).json({ error: 'A document type is required.' });
+    if (!storageKey && !pageKeys.length) {
+      return res.status(400).json({ error: 'No uploaded file was referenced.' });
+    }
 
-    const group = await SupplierGroup.findById(supplierGroupId).lean();
-    if (!group) return res.status(404).json({ error: 'Supplier group not found.' });
+    if (supplierGroupId) {
+      const group = await SupplierGroup.findById(supplierGroupId).lean();
+      if (!group) return res.status(404).json({ error: 'Supplier group not found.' });
+    }
 
     // Perceptual hashes are computed per page so a rescan of one page of a
     // multi-page price list is still recognised.
@@ -84,9 +96,9 @@ router.post('/', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
     }
 
     const doc = await QuoteDocument.create({
-      supplierGroupId,
+      supplierGroupId: supplierGroupId || null,
       ledgerRef: ledgerRef || undefined,
-      docType,
+      docType: docType || docTypeFor({ mimeType, originalFilename }),
       quoteStrength: quoteStrength || 'FIRM',
       storageKey,
       pageKeys,
@@ -110,8 +122,24 @@ router.post('/', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
+/**
+ * A document type from the file itself.
+ *
+ * A guess, and a replaceable one — the review screen shows it and a reviewer
+ * can change it. It exists so that "upload the file" really is the whole
+ * interaction: docType gates nothing except which extraction path runs, and
+ * getting it wrong on a PDF costs a dropdown change, not a re-upload.
+ */
+function docTypeFor({ mimeType, originalFilename }) {
+  const text = `${mimeType || ''} ${originalFilename || ''}`;
+  if (/spreadsheet|excel|\.xlsx?$|\.csv$/i.test(text)) return 'WORKSHEET';
+  if (/\.eml$|\.msg$|message\/rfc822/i.test(text)) return 'EMAIL';
+  if (/proforma|\bpi\b/i.test(text)) return 'PROFORMA_INVOICE';
+  return 'PRICE_LIST';
+}
+
 /** Direct upload for worksheets, which need the buffer server-side. */
-router.post('/worksheet', requireRole('BUYER', 'APPROVER'), upload.single('file'), async (req, res, next) => {
+router.post('/worksheet', requireSite, requireRole('BUYER', 'APPROVER'), upload.single('file'), async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
     if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
@@ -129,7 +157,7 @@ router.post('/worksheet', requireRole('BUYER', 'APPROVER'), upload.single('file'
     });
 
     const doc = await QuoteDocument.create({
-      supplierGroupId: req.body.supplierGroupId,
+      supplierGroupId: req.body.supplierGroupId || null,
       docType: 'WORKSHEET',
       storageKey: stored.key || stored,
       originalFilename: req.file.originalname,
@@ -145,6 +173,7 @@ router.post('/worksheet', requireRole('BUYER', 'APPROVER'), upload.single('file'
     // The buffer is kept on the request for the extract call that follows, so
     // a worksheet does not have to be re-downloaded to be parsed.
     const result = await extractDocument(doc._id, {
+      site: req.sp.site,
       buffer: req.file.buffer,
       hints: { priceColumn: req.body.priceColumn, sheetName: req.body.sheetName },
     });
@@ -153,8 +182,14 @@ router.post('/worksheet', requireRole('BUYER', 'APPROVER'), upload.single('file'
   } catch (err) { return next(err); }
 });
 
-/** Run extraction on a registered document. */
-router.post('/:id/extract', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+/**
+ * Run extraction on a registered document, then identify it.
+ *
+ * The two are one call because they are one question — "what is this?" — and
+ * splitting them would let a client stop halfway and file a document with
+ * lines but no supplier.
+ */
+router.post('/:id/extract', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
     const doc = await QuoteDocument.findById(req.params.id).lean();
@@ -166,9 +201,41 @@ router.post('/:id/extract', requireRole('BUYER', 'APPROVER'), async (req, res, n
     })));
 
     const result = await extractDocument(doc._id, {
+      site: req.sp.site,
       pages,
       hints: { ...(req.body || {}) },
     });
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Confirm or correct what the document was read as.
+ *
+ * Every field is optional. Sending `{}` accepts the proposal as it stands,
+ * which is the common case and is the point of the whole flow.
+ */
+router.patch('/:id/identification', requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const doc = await confirmIdentification({
+      documentId: req.params.id,
+      actor: req.sp.actor,
+      ...(req.body || {}),
+    });
+    return res.json({ document: doc, checks: doc.checks });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Re-run identification without re-extracting.
+ *
+ * Worth having on its own: a reviewer who has just created the missing
+ * supplier group wants the document matched against it, and paying for a
+ * second vision call to find that out would be absurd.
+ */
+router.post('/:id/identify', requireSite, requireRole('BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const result = await reidentifyDocument({ documentId: req.params.id, site: req.sp.site });
     return res.json(result);
   } catch (err) { return next(err); }
 });
@@ -276,6 +343,13 @@ router.post('/:id/lines/:lineId/supplier-item', requireRole('BUYER', 'APPROVER')
     if (!line) return res.status(404).json({ error: 'Quote line not found.' });
 
     const doc = await QuoteDocument.findById(line.quoteDocumentId).lean();
+    // A supplier item belongs to a supplier's catalogue. Creating one before
+    // the supplier is settled would put it in nobody's.
+    if (!doc?.supplierGroupId) {
+      return res.status(409).json({
+        error: 'Confirm which supplier sent this quote before mapping its lines.',
+      });
+    }
     const productName = req.body?.supplierProductName || line.raw?.productName;
     const productCode = req.body?.supplierProductCode || line.raw?.productCode || null;
     if (!productName) return res.status(400).json({ error: 'A supplier product name is required.' });
@@ -331,6 +405,16 @@ router.post('/:id/match', requireSite, requireRole('BUYER', 'APPROVER'), async (
     await ensureSupplierPortalReady();
     const doc = await QuoteDocument.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ error: 'Quote document not found.' });
+
+    // Matching is scoped to what this supplier has historically supplied, so
+    // without a supplier it would compare an ink quote against the whole item
+    // master. Confirming identification first is not a formality here.
+    if (!doc.supplierGroupId) {
+      return res.status(409).json({
+        error: 'Confirm which supplier sent this quote before matching its lines.',
+        checks: (doc.checks || []).filter((c) => c.code === 'EXT009'),
+      });
+    }
 
     const group = await SupplierGroup.findById(doc.supplierGroupId).lean();
     const result = await matchDocument({

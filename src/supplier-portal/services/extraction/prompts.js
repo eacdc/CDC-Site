@@ -17,10 +17,17 @@ Return JSON only, matching this shape:
 {
   "supplierName": string|null,
   "supplierGstin": string|null,
+  "supplier": {"name":string|null,"gstin":string|null,"phone":string|null,
+               "email":string|null,"address":string|null,"signatory":string|null,
+               "foundIn":string|null},
+  "addressedTo": {"company":string|null,"address":string|null,"gstin":string|null,
+                  "attention":string|null},
+  "subjectLine": string|null,
   "documentDate": string|null,
   "effectiveFrom": string|null,
   "effectiveTo": string|null,
   "isSoftQuote": boolean|null,
+  "softQuoteEvidence": string|null,
   "plantMentions": string[]|null,
   "entityScope": string|null,
   "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null}|null,
@@ -34,6 +41,35 @@ Return JSON only, matching this shape:
 }
 
 RULES — these override any instinct to tidy the data:
+
+0. WHO SENT THIS, AND WHO IS IT ADDRESSED TO? Nobody will tell you — you must
+   read it off the page. Both matter and they are easy to confuse.
+
+   "supplier" is the company that WROTE the quote. Look at the letterhead, the
+   footer, the signature block and any GSTIN that is not CDC's. A quote often
+   names the sender only once, at the very bottom, above a phone number:
+
+       Thanks and Best Regards
+       Rina Das
+       PRINT SALES PRIVATE LIMITED
+       +91-7596986452
+
+   That is supplier.name "PRINT SALES PRIVATE LIMITED", supplier.signatory
+   "Rina Das", supplier.phone "+91-7596986452". Put a short note of where you
+   found the name in "foundIn" — e.g. "signature block, page 3".
+
+   "addressedTo" is CDC — the RECIPIENT. It usually appears near the top after
+   "To". Copy the address exactly; it identifies which CDC plant the quote is
+   for, so do not paraphrase or drop the street line:
+
+       To
+       CDC PRINTERS (P). LTD.
+       45, Radhanath Chowdhuri Road
+       Kolkata - 700015
+
+   NEVER put CDC in "supplier". If the only company you can find is CDC, leave
+   supplier.name null rather than guessing — a wrong supplier silently files
+   the rates against the wrong company.
 
 1. EVERY NUMBER IS A STRING, copied exactly as printed. Do not convert
    "74,342" to 74342, do not turn "131.00/UNIT" into 131. Keep the currency
@@ -68,11 +104,28 @@ RULES — these override any instinct to tidy the data:
 
 7. SOFT QUOTES. Set "isSoftQuote" true when the document says prices may
    fluctuate, are subject to change without notice, or vary with order
-   quantity, delivery or payment terms.
+   quantity, delivery or payment terms. Typical wording, often buried in the
+   terms at the end and easy to miss:
+
+       "The rate is subject to market fluctuation & availability of materials."
+
+   Copy the sentence that made you decide into "softQuoteEvidence". A buyer
+   who cannot see WHY a quote was downgraded to indicative will not trust the
+   flag — and a soft quote is never used as hard evidence against a PO.
 
 8. VALIDITY. Copy any "W.E.F.", "valid until", "valid for N days" or expiry
    date into effectiveFrom/effectiveTo exactly as printed. If the document
    carries no date at all, leave both null.
+
+   The effective date is frequently in the SUBJECT LINE rather than beside the
+   document date, and the two differ — a quote written on the 10th can take
+   effect on the 15th:
+
+       Date: 10-07-2026
+       Sub: QUOTATION w.e.f. 15-07-2026.
+
+   That is documentDate "10-07-2026" and effectiveFrom "15-07-2026". Copy the
+   whole subject line into "subjectLine" as well.
 
 9. MULTI-COLUMN WORKSHEETS. A price list may show several price columns
    (e.g. "Price Before Increase", "Current Price", "Proposed Increase").

@@ -44,14 +44,51 @@ export const ExtractedQuoteLineSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
 });
 
+/**
+ * Who wrote the quote, read off the letterhead, footer or signature block.
+ *
+ * Kept separate from `addressedTo` because the two are the easiest pair on the
+ * page to confuse, and confusing them files a supplier's rates against CDC
+ * itself. `foundIn` records where the name was seen so a reviewer can check the
+ * identification without opening the source document.
+ */
+export const ExtractedSupplierSchema = z.object({
+  name: z.string().nullable(),
+  gstin: z.string().nullable(),
+  phone: z.string().nullable(),
+  email: z.string().nullable(),
+  address: z.string().nullable(),
+  signatory: z.string().nullable(),
+  foundIn: z.string().nullable(),
+});
+
+/**
+ * The CDC entity and address the quote is addressed to.
+ *
+ * This is what identifies the plant. CDC's Tangra and Panchla addresses both
+ * mean Kolkata; Ahmedabad means Ahmedabad. Getting it from the address beats
+ * asking a person, who will pick whichever plant they work at.
+ */
+export const ExtractedAddresseeSchema = z.object({
+  company: z.string().nullable(),
+  address: z.string().nullable(),
+  gstin: z.string().nullable(),
+  attention: z.string().nullable(),
+});
+
 export const ExtractedQuoteSchema = z.object({
   supplierName: z.string().nullable(),
   supplierGstin: z.string().nullable(),
+  supplier: ExtractedSupplierSchema.nullable().optional(),
+  addressedTo: ExtractedAddresseeSchema.nullable().optional(),
+  subjectLine: z.string().nullable().optional(),
   documentDate: z.string().nullable(),
   effectiveFrom: z.string().nullable(),
   effectiveTo: z.string().nullable(),
   /** True when the document says prices may change without notice. */
   isSoftQuote: z.boolean().nullable(),
+  /** The sentence that made it soft — a flag without its reason is not trusted. */
+  softQuoteEvidence: z.string().nullable().optional(),
   plantMentions: z.array(z.string()).nullable(),
   entityScope: z.string().nullable(),
   commercialTerms: z.object({
