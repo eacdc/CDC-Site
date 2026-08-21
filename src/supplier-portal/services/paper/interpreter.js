@@ -89,6 +89,31 @@ export function rulesFromAnswers(answers = [], { supplierGroupId = null } = {}) 
 }
 
 /**
+ * Fill in what the document already knows.
+ *
+ * The supplier and the plant are settled by identification, against the GSTIN
+ * on the letterhead and the addressee block, and confirmed by a person. The
+ * interpreter reads them again from the same page, and when its reading comes
+ * back empty the gate asks a question the document had already answered — CDC
+ * saw "PLANT 98% sure Kolkata" in one panel and "Which plant do these rates
+ * apply to?" in the one above it.
+ *
+ * The document wins where it has an answer, because a confirmed value beats a
+ * fresh reading of the same evidence. It never overwrites what the interpreter
+ * did read: a document whose plant was assumed should not silently override a
+ * plant printed in the rate columns.
+ */
+export function applyDocumentFacts(payload, facts = {}) {
+  if (!facts || (!facts.plant && !facts.supplierName)) return payload;
+
+  return {
+    ...payload,
+    plant: payload.plant || facts.plant || null,
+    supplierName: payload.supplierName || facts.supplierName || null,
+  };
+}
+
+/**
  * Fill in what the vocabulary already knows, before the model is asked anything.
  *
  * Runs on the model's own output because it is cheap, deterministic, and
@@ -124,6 +149,7 @@ export async function interpretPaperQuote({
   answers = [],
   priorPayload = null,
   supplierGroupId = null,
+  documentFacts = null,
   send,
 } = {}) {
   if (typeof send !== 'function') throw new Error('interpretPaperQuote needs a send function');
@@ -136,7 +162,7 @@ export async function interpretPaperQuote({
     its mind about a line nobody asked about.
   */
   if (priorPayload) {
-    const folded = applyAnswers(priorPayload, answers);
+    const folded = applyAnswers(applyDocumentFacts(priorPayload, documentFacts), answers);
     if (folded.applied > 0 && folded.unapplied.length === 0) {
       const gate = checkHandoff(folded.payload);
       return {
@@ -165,7 +191,7 @@ export async function interpretPaperQuote({
     const reply = await send({ system: PAPER_SYSTEM_PROMPT, message, pages });
 
     const withKnown = resolveKnownTypes(reply?.payload || {});
-    const folded = applyAnswers(withKnown.payload, answers);
+    const folded = applyAnswers(applyDocumentFacts(withKnown.payload, documentFacts), answers);
     const gate = checkHandoff(folded.payload);
 
     last = {

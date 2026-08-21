@@ -10,7 +10,7 @@
  */
 
 import {
-  ensureSupplierPortalReady, QuoteDocument, QuoteLine, PaperBrandRule, AuditLog,
+  ensureSupplierPortalReady, QuoteDocument, QuoteLine, SupplierGroup, PaperBrandRule, AuditLog,
 } from '../../db/mongo.js';
 import { paperTypeLabel } from '../../config/paper-vocabulary.js';
 import { interpretPaperQuote, rulesFromAnswers, summarisePreviousQuote } from './interpreter.js';
@@ -69,6 +69,14 @@ export async function previousInterpretation(supplierGroupId, excludeDocumentId)
   return summarisePreviousQuote(prior?.interpretation?.payload);
 }
 
+/** The supplier's name, once identification has settled which one it is. */
+async function supplierNameFor(supplierGroupId) {
+  if (!supplierGroupId) return null;
+  await ensureSupplierPortalReady();
+  const group = await SupplierGroup.findById(supplierGroupId).select('name').lean();
+  return group?.name || null;
+}
+
 /**
  * Run one turn: read, or re-read with answers.
  *
@@ -92,9 +100,10 @@ export async function runInterpretation({
   });
 
   try {
-    const [knownBrands, previousSummary] = await Promise.all([
+    const [knownBrands, previousSummary, supplierName] = await Promise.all([
       knownBrandsFor(doc.supplierGroupId),
       previousInterpretation(doc.supplierGroupId, doc._id),
+      supplierNameFor(doc.supplierGroupId),
     ]);
 
     const result = await interpretPaperQuote({
@@ -105,6 +114,16 @@ export async function runInterpretation({
       answers: allAnswers,
       priorPayload: prior.payload || null,
       supplierGroupId: doc.supplierGroupId || null,
+      /*
+        What identification already settled, so the gate does not ask again.
+        CDC saw "PLANT 98% sure Kolkata" in one panel and "Which plant do these
+        rates apply to?" in the one above it — two readings of the same page
+        that had never been introduced.
+      */
+      documentFacts: {
+        plant: (doc.plantScope || [])[0] || null,
+        supplierName: supplierName || null,
+      },
       send,
     });
 
