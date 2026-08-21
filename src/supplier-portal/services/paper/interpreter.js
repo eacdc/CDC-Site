@@ -33,6 +33,28 @@ import { buildInterpretationMessage, PAPER_SYSTEM_PROMPT } from './paper-prompt.
 const MAX_REPAIRS = 2;
 
 /**
+ * A term CDC has ruled is not a paper type at all.
+ *
+ * "HI KOTE" heads a KV section, "PDB" trails a Uni Global product. Some of
+ * these will turn out to be grades and some will turn out to be brands, mill
+ * codes or marketing words — and "it means nothing about the paper" is a real
+ * answer that has to be recordable, or the same three questions arrive with
+ * every monthly list.
+ *
+ * Stored as a rule like any other so the answer survives; never applied to a
+ * line, because it is not a type.
+ */
+export const NOT_A_PAPER_TYPE = 'NOT_A_TYPE';
+
+/** Answers that name a type, from either kind of question. */
+function typeAnswers(answers) {
+  return answers.filter((a) => (a.kind === 'PAPER_TYPE' || a.kind === 'UNKNOWN_TERM')
+    && (a.brand || a.token)
+    && a.paperType
+    && a.paperType !== NOT_A_PAPER_TYPE);
+}
+
+/**
  * Apply settled answers to a payload, without asking the model again.
  *
  * A brand-to-type answer settles every line of that brand at once — every GSM
@@ -49,10 +71,26 @@ const MAX_REPAIRS = 2;
  * @returns {{ payload: Object, applied: number, unapplied: Array }}
  */
 export function applyAnswers(payload, answers = []) {
-  const structured = answers.filter((a) => a.kind === 'PAPER_TYPE' && a.brand && a.paperType);
-  const unapplied = answers.filter((a) => !(a.kind === 'PAPER_TYPE' && a.brand && a.paperType));
+  /*
+    `settled` holds the ORIGINAL answer objects, not the mapped ones. Building
+    it from the mapped copies made every identity check miss, so every answer
+    counted as unapplied and the no-model shortcut never fired — the whole
+    saving, silently gone.
+  */
+  const settled = new Set(typeAnswers(answers));
+  const structured = [...settled].map((a) => ({ ...a, brand: a.brand || a.token }));
 
-  if (!structured.length) return { payload, applied: 0, unapplied };
+  const unapplied = answers.filter((a) => !settled.has(a)
+    // A "not a paper type" verdict is settled — it just settles nothing on a
+    // line — so it must not send the round back to the model either.
+    && !(a.kind === 'UNKNOWN_TERM' && a.paperType === NOT_A_PAPER_TYPE));
+
+  if (!structured.length) {
+    // Nothing to write onto a line, but a verdict still counts as progress:
+    // it closes a question, and the gate has to be re-run to see that.
+    const closed = answers.some((a) => a.kind === 'UNKNOWN_TERM' && a.paperType === NOT_A_PAPER_TYPE);
+    return { payload, applied: closed ? 1 : 0, unapplied };
+  }
 
   let applied = 0;
   const lines = (payload.lines || []).map((line) => {
@@ -79,9 +117,10 @@ export function applyAnswers(payload, answers = []) {
  */
 export function rulesFromAnswers(answers = [], { supplierGroupId = null } = {}) {
   return answers
-    .filter((a) => a.kind === 'PAPER_TYPE' && a.brand && a.paperType)
+    .filter((a) => (a.kind === 'PAPER_TYPE' || a.kind === 'UNKNOWN_TERM')
+      && (a.brand || a.token) && a.paperType)
     .map((a) => ({
-      brand: String(a.brand).trim(),
+      brand: String(a.brand || a.token).trim(),
       paperType: a.paperType,
       scope: 'SUPPLIER',
       supplierGroupId,
@@ -150,9 +189,20 @@ export async function interpretPaperQuote({
   priorPayload = null,
   supplierGroupId = null,
   documentFacts = null,
+  settledTokens = [],
   send,
 } = {}) {
   if (typeof send !== 'function') throw new Error('interpretPaperQuote needs a send function');
+
+  /*
+    Terms already ruled on: those stored from previous months, plus the ones
+    answered in this very round. Without the second half, answering "PDB means
+    nothing" would be accepted and the same question asked straight back.
+  */
+  const allSettled = [
+    ...settledTokens,
+    ...answers.filter((a) => a.kind === 'UNKNOWN_TERM' && a.token).map((a) => a.token),
+  ];
 
   /*
     A prior payload plus structured answers is the common second round, and it
@@ -164,7 +214,7 @@ export async function interpretPaperQuote({
   if (priorPayload) {
     const folded = applyAnswers(applyDocumentFacts(priorPayload, documentFacts), answers);
     if (folded.applied > 0 && folded.unapplied.length === 0) {
-      const gate = checkHandoff(folded.payload);
+      const gate = checkHandoff(folded.payload, { settledTokens: allSettled });
       return {
         stage: gate.stage,
         understanding: null,
@@ -192,7 +242,7 @@ export async function interpretPaperQuote({
 
     const withKnown = resolveKnownTypes(reply?.payload || {});
     const folded = applyAnswers(applyDocumentFacts(withKnown.payload, documentFacts), answers);
-    const gate = checkHandoff(folded.payload);
+    const gate = checkHandoff(folded.payload, { settledTokens: allSettled });
 
     last = {
       stage: gate.stage,

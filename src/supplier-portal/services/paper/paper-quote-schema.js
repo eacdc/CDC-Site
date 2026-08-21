@@ -224,9 +224,10 @@ export function validatePaperQuote(payload) {
  * form nobody completes; twelve is a conversation. Teaching one brand settles
  * every GSM band and both forms under it, this month and next.
  */
-export function assessReadiness(data) {
+export function assessReadiness(data, { settledTokens = [] } = {}) {
   const gaps = [];
   const lines = data?.lines || [];
+  const settled = new Set(settledTokens.map((t) => String(t).toUpperCase()));
 
   if (!lines.length) {
     gaps.push({ kind: 'NO_LINES', question: 'No priced lines were read from this document.' });
@@ -267,6 +268,10 @@ export function assessReadiness(data) {
   const unknown = new Map();
   for (const line of lines) {
     for (const token of unconfirmedTokens(line.productName)) {
+      // Asked and answered once. A term CDC has already ruled on — either as a
+      // paper type or as "not one" — must stop being asked, or the same three
+      // questions arrive with every monthly list.
+      if (settled.has(token.toUpperCase())) continue;
       if (!unknown.has(token)) unknown.set(token, []);
       if (unknown.get(token).length < 3) unknown.get(token).push(line.productName);
     }
@@ -297,13 +302,13 @@ export function assessReadiness(data) {
  * failing is the agent's problem to fix; `assessReadiness` failing is a question
  * for a person.
  */
-export function checkHandoff(payload) {
+export function checkHandoff(payload, { settledTokens = [] } = {}) {
   const validation = validatePaperQuote(payload);
   if (!validation.ok) {
     return { canHandOff: false, stage: 'INVALID', errors: validation.errors, gaps: [], data: null };
   }
 
-  const readiness = assessReadiness(validation.data);
+  const readiness = assessReadiness(validation.data, { settledTokens });
   return {
     canHandOff: readiness.ready,
     stage: readiness.ready ? 'READY' : 'INCOMPLETE',

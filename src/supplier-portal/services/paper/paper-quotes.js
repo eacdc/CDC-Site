@@ -124,6 +124,9 @@ export async function runInterpretation({
         plant: (doc.plantScope || [])[0] || null,
         supplierName: supplierName || null,
       },
+      // Terms CDC has already ruled on, including the ones ruled "not a paper
+      // type". Both kinds have to stop being asked.
+      settledTokens: knownBrands.map((b) => b.brand),
       send,
     });
 
