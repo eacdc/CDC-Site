@@ -42,6 +42,20 @@ export const VALIDATIONS = {
    */
   EXT012: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'No unit is printed anywhere on this document — set the unit these rates are quoted in' },
   /**
+   * A paper quote read only by the general extractor is not a paper quote that
+   * has been read.
+   *
+   * The one-shot extractor flattens a board line into a product name and cannot
+   * ask a question, which is the whole reason paper got its own path. Its
+   * output is a plausible-looking table that names no grade — approvable, and
+   * useless to compare against anything.
+   *
+   * Blocking rather than warning, and deliberately not overridable: a reviewer
+   * who has not run the paper reading has nothing to weigh, so a typed reason
+   * would be a reason for a decision nobody is in a position to make.
+   */
+  EXT013: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'This is a paper or board quote and has not been read as one — run "Read as a paper quote" first' },
+  /**
    * INFO, not WARN: nothing is wrong with a scan, and demanding a typed reason
    * for every photocopied price list would train people to type one without
    * reading. It exists so the reviewer knows the rates were transcribed from a

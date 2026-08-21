@@ -1679,8 +1679,40 @@ function collectBlocking(doc, lines) {
   const all = [
     ...(doc.checks || []),
     ...lines.flatMap((l) => l.checks || []),
+    ...(paperInterpretationCheck(doc) ? [paperInterpretationCheck(doc)] : []),
   ];
   return all.filter((c) => !c.passed && c.severity === 'BLOCK' && !c.overrideReason);
+}
+
+/**
+ * A paper quote that has not been read as one, or null.
+ *
+ * COMPUTED, NEVER STORED, and that is the whole point of it. Every other check
+ * is written down at extraction and stays true until extraction runs again.
+ * This one stops being true the moment interpretation succeeds — an event that
+ * touches neither extraction nor the stored checks. Stored, it would go stale
+ * in the one direction that matters: still blocking a document that has since
+ * been read properly.
+ *
+ * The general extractor flattens a board line into a product name and cannot
+ * ask a question, which is why paper has its own path at all. What it produces
+ * is a plausible table naming no grade — approvable, and useless to compare
+ * against anything. Without this, a reviewer could accept it without ever
+ * noticing the paper reading existed.
+ */
+export function paperInterpretationCheck(doc) {
+  if (doc?.materialClass !== 'PAPER_BOARD') return null;
+  if (doc?.interpretation?.stage === 'INTERPRETED') return null;
+
+  const stage = doc?.interpretation?.stage;
+  return check('EXT013', false, {
+    message: {
+      NEEDS_INPUT: 'This paper quote has been read but still has open questions — answer them before approving.',
+      INTERPRETING: 'This paper quote is still being read.',
+      FAILED: 'This paper quote could not be read — fix the error above before approving.',
+    }[stage] || undefined,
+    actualValue: stage || 'not read',
+  });
 }
 
 /**

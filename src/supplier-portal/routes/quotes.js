@@ -16,7 +16,7 @@ import {
 import {
   sha256Of, checkDuplicate, extractDocument, approveDocument,
   runMagnitudeChecks, normaliseLine, confirmIdentification, reidentifyDocument, setDocumentUom,
-  deleteDocument, purgeAllQuotes,
+  deleteDocument, purgeAllQuotes, paperInterpretationCheck,
   requoteFromDocument,
 } from '../services/quotes.js';
 
@@ -440,9 +440,20 @@ router.get('/:id', async (req, res, next) => {
       SupplierGroup.findById(doc.supplierGroupId).lean(),
     ]);
 
+    /*
+      The paper check is computed rather than stored, because its truth changes
+      when interpretation succeeds — an event that touches neither extraction
+      nor the stored checks. Appending it here means the review screen shows the
+      same reason the approve endpoint will give, instead of a button that
+      refuses without saying why.
+    */
+    const paperCheck = paperInterpretationCheck(doc);
+
     const keys = [doc.storageKey, ...(doc.pageKeys || [])].filter(Boolean);
     return res.json({
-      document: doc,
+      document: paperCheck
+        ? { ...doc, checks: [...(doc.checks || []), paperCheck] }
+        : doc,
       supplierGroup: group,
       lines,
       pageUrls: await Promise.all(keys.map((key) => viewUrl(key))),
