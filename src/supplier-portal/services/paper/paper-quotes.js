@@ -10,8 +10,9 @@
  */
 
 import {
-  ensureSupplierPortalReady, QuoteDocument, PaperBrandRule, AuditLog,
+  ensureSupplierPortalReady, QuoteDocument, QuoteLine, PaperBrandRule, AuditLog,
 } from '../../db/mongo.js';
+import { paperTypeLabel } from '../../config/paper-vocabulary.js';
 import { interpretPaperQuote, rulesFromAnswers, summarisePreviousQuote } from './interpreter.js';
 import { sendToOpenAI } from './openai-send.js';
 import { BRAND_TYPES } from '../../config/paper-vocabulary.js';
@@ -113,6 +114,16 @@ export async function runInterpretation({
       READY: 'INTERPRETED', INCOMPLETE: 'NEEDS_INPUT', INVALID: 'FAILED',
     }[result.stage] || 'FAILED';
 
+    /*
+      READY is permission to begin, not the end of the job. Until this ran, the
+      payload sat in `interpretation.payload` and the table under the panel went
+      on showing the old extraction — so answering seven questions changed
+      nothing on screen, which reads as the answers having been ignored.
+    */
+    const linesWritten = stage === 'INTERPRETED'
+      ? await storePaperLines(doc, result.payload)
+      : 0;
+
     await QuoteDocument.updateOne({ _id: doc._id }, {
       $set: {
         'interpretation.stage': stage,
@@ -128,6 +139,9 @@ export async function runInterpretation({
         'interpretation.error': result.stage === 'INVALID'
           ? describeErrors(result.errors)
           : null,
+        // The document is understood but nobody has approved it yet, and the
+        // status a reviewer sees should say which of those is true.
+        ...(stage === 'INTERPRETED' ? { status: 'EXTRACTED', materialClass: 'PAPER_BOARD' } : {}),
       },
     });
 
@@ -138,6 +152,7 @@ export async function runInterpretation({
       questions: result.questions || [],
       payload: result.payload || null,
       modelCalls: result.rounds || 0,
+      linesWritten,
       errors: result.errors || [],
     };
   } catch (err) {
@@ -146,6 +161,112 @@ export async function runInterpretation({
     });
     throw err;
   }
+}
+
+/**
+ * Write the interpreted payload out as quote lines.
+ *
+ * The step that was missing. `checkHandoff` returning READY was treated as the
+ * end of the job, and it is not — it is permission to begin. The payload sat in
+ * `interpretation.payload` and nothing read it, so the table under the panel
+ * went on showing whatever the old one-shot extraction had produced. A reviewer
+ * answered seven questions and watched nothing change, which is worse than an
+ * error: it looks like the answers were ignored.
+ *
+ * The interpreted lines REPLACE the extracted ones. They are a reading of the
+ * same document by a better process, not an addition to it, and leaving both
+ * would leave two prices per product with no way to tell which is current.
+ *
+ * @returns {Promise<number>} lines written
+ */
+export async function storePaperLines(doc, payload) {
+  const lines = payload?.lines || [];
+  if (!lines.length) return 0;
+
+  await QuoteLine.deleteMany({ quoteDocumentId: doc._id });
+
+  const docs = lines.map((line, index) => paperLineToQuoteLine(doc._id, line, index));
+  await QuoteLine.insertMany(docs, { ordered: false });
+  return docs.length;
+}
+
+/**
+ * One interpreted line as a stored quote line. Pure, so the mapping can be
+ * checked without a database — which is where the last three defects were.
+ */
+export function paperLineToQuoteLine(documentId, line, index = 0) {
+  return {
+    quoteDocumentId: documentId,
+    lineNo: line.lineNo ?? index + 1,
+
+    /*
+      `raw` keeps what the document printed, `normalised` what it means. The
+      interpreter has already done the conversion, so unlike the extraction path
+      there is nothing to parse here — but the printed text still goes in raw,
+      because a reviewer checking "115 & ABOVE" against 115/null needs both and
+      a rate that cannot be traced to a line on the page is not auditable.
+    */
+    raw: {
+      productName: line.productName ?? null,
+      uom: line.rateUom ?? null,
+      rate: line.rateText ?? (line.rate != null ? String(line.rate) : null),
+      gsmFrom: line.gsmFrom != null ? String(line.gsmFrom) : null,
+      gsmTo: line.gsmTo != null ? String(line.gsmTo) : null,
+      productForm: line.form ?? null,
+      mill: line.mill ?? null,
+      brand: line.brand ?? null,
+      // The canonical paper type lands in `grade`, which is the field the board
+      // search already reads. FBB, CBB, GREY_BACK.
+      grade: line.paperType ?? null,
+      shade: line.shade ?? null,
+      bulk: line.bulk ?? null,
+      supplyMode: line.supplyMode ?? null,
+      notes: describeLine(line),
+    },
+
+    normalised: {
+      rate: line.rate ?? null,
+      // MT is stored as itself rather than converted to a per-kg figure: the
+      // document said per tonne, and a rate silently divided by 1000 is one
+      // nobody can check against the page.
+      uom: line.rateUom === 'MT' ? 'MT' : 'KG',
+      ratePerBaseUom: line.rate ?? null,
+      conversionNote: line.derivation ? 'derived — see notes' : null,
+    },
+
+    extractionConfidence: line.confidence ?? null,
+    flags: [
+      ...(line.paperTypeBasis === 'TAUGHT' ? ['type taught'] : []),
+      ...(line.derivation ? ['derived rate'] : []),
+      ...(line.gsmFrom == null && line.gsmTo == null ? ['no gsm band'] : []),
+    ],
+    checks: [],
+  };
+}
+
+/**
+ * The one-line summary a reviewer reads in the table.
+ *
+ * A derived rate shows its arithmetic, because a number that cannot show where
+ * it came from is one nobody can check — and roughly thirty of the kraft rows
+ * are computed rather than printed.
+ */
+function describeLine(line) {
+  const parts = [];
+  if (line.paperType) parts.push(paperTypeLabel(line.paperType));
+  if (line.shade === 'NATURAL') parts.push('natural shade');
+  if (line.bulk === 'HIGH') parts.push('high bulk');
+  if (line.bf) parts.push(`${line.bf} BF`);
+  if (line.supplyMode) parts.push(line.supplyMode.toLowerCase().replace('_', ' '));
+
+  if (line.derivation?.base != null) {
+    const adj = (line.derivation.adjustments || [])
+      .map((a) => `${a.amount < 0 ? '−' : '+'}${Math.abs(a.amount)} ${a.reason || ''}`.trim())
+      .join(' ');
+    parts.push(`${line.derivation.base} ${adj}`.trim());
+  }
+
+  return parts.join(' · ') || null;
 }
 
 /**
