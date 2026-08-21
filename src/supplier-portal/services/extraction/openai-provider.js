@@ -91,7 +91,12 @@ export async function withTemperatureFallback(model, params, send, seen = reject
  * it is not, the model's own default is the only option available, and a
  * slightly less repeatable extraction beats no extraction.
  */
-async function createCompletion({ model, ...params }) {
+/**
+ * Exported so the paper interpreter shares this module's temperature-fallback
+ * memory rather than discovering the same refusal a second time. One wasted
+ * call per model per process, not one per code path.
+ */
+export async function createCompletion({ model, ...params }) {
   return withTemperatureFallback(model, params, (body) => openai().chat.completions.create(body));
 }
 

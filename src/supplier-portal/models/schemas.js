@@ -324,6 +324,46 @@ export const quoteDocumentSchema = new Schema({
   },
   checks: { type: [checkSchema], default: [] },
 
+  /**
+   * The interpretation conversation, for paper and board.
+   *
+   * A quote is read, what was understood is shown, what could not be determined
+   * is asked about, and the cycle repeats until nothing is open. This holds that
+   * state between turns.
+   *
+   * Only the paper path uses it; every other material still takes the one-shot
+   * extraction route, which is what "one category at a time" means in practice.
+   */
+  interpretation: {
+    /**
+     * INTERPRETING while a turn is in flight, NEEDS_INPUT when the last turn
+     * produced questions, INTERPRETED when the payload passed the gate.
+     *
+     * Kept apart from `status` because they answer different questions: status
+     * is where the document is in the approval flow, this is whether we yet
+     * understand it.
+     */
+    stage: {
+      type: String,
+      enum: ['INTERPRETING', 'NEEDS_INPUT', 'INTERPRETED', 'FAILED', null],
+      default: null,
+    },
+    /** What the model made of the document, in plain language, for a reviewer. */
+    understanding: String,
+    /** Observations that are not gaps — a stated rule applied, a suspect row. */
+    notes: { type: [String], default: [] },
+    /** Open questions, grouped by what would answer them. */
+    questions: { type: [Schema.Types.Mixed], default: [] },
+    /** The validated payload, once the gate passes. */
+    payload: Schema.Types.Mixed,
+    /** Every answer given, kept so a re-read starts from what is already settled. */
+    answers: { type: [Schema.Types.Mixed], default: [] },
+    rounds: { type: Number, default: 0 },
+    modelCalls: { type: Number, default: 0 },
+    error: String,
+    lastRunAt: Date,
+  },
+
   status: {
     type: String,
     enum: ['UPLOADED', 'EXTRACTING', 'EXTRACTED', 'NEEDS_REVIEW', 'APPROVED', 'SUPERSEDED', 'REJECTED'],
@@ -827,7 +867,37 @@ export const deliveryDateSnapshotSchema = new Schema({
 deliveryDateSnapshotSchema.index({ site: 1, transactionDetailId: 1, snapshotDate: 1 }, { unique: true });
 deliveryDateSnapshotSchema.index({ site: 1, snapshotDate: -1 });
 
+/**
+ * What a brand turns out to be, learned from one answer.
+ *
+ * Sudarshan's virgin board list runs to ~28 products and states the paper type
+ * of none of them. Answering that once per brand is a conversation; answering
+ * it every month is a chore nobody sustains. This is what makes the second
+ * month free.
+ *
+ * Scoped to the supplier by default. "DO" means one thing on AKT's note and
+ * could mean another elsewhere, so promoting a rule to global — `scope:
+ * 'GLOBAL'`, `supplierGroupId: null` — should be a deliberate second act rather
+ * than a side effect of answering a question.
+ */
+export const paperBrandRuleSchema = new Schema({
+  /** The product or brand as printed. Matched whole-word, case-insensitively. */
+  brand: { type: String, required: true, trim: true },
+  paperType: { type: String, required: true },
+  scope: { type: String, enum: ['SUPPLIER', 'GLOBAL'], default: 'SUPPLIER' },
+  supplierGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', default: null, index: true },
+
+  /** Where it came from, so a wrong rule can be traced to the answer that made it. */
+  learnedFrom: { type: Schema.Types.ObjectId, ref: 'SpQuoteDocument', default: null },
+  learnedBy: String,
+}, { collection: 'sp_paperBrandRules', timestamps: true });
+
+// One ruling per brand per scope. A second answer updates rather than stacks,
+// so a correction actually corrects instead of racing the original.
+paperBrandRuleSchema.index({ brand: 1, supplierGroupId: 1 }, { unique: true });
+
 export const SCHEMAS = {
+  SpPaperBrandRule: paperBrandRuleSchema,
   SpSupplierGroup: supplierGroupSchema,
   SpQuoteDocument: quoteDocumentSchema,
   SpQuoteLine: quoteLineSchema,
