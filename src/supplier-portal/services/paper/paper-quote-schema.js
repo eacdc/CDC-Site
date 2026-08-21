@@ -111,6 +111,16 @@ export const PaperLineSchema = z.object({
   // Null is meaningful: "115 & ABOVE" has no top, and so does "296 & ABOVE".
   gsmTo: num(),
 
+  /**
+   * The plant this one row prices, when the document prices both side by side.
+   *
+   * Absent from the first cut of this schema, so Zod stripped it — the split
+   * filter did its work on the raw payload and validation then threw away the
+   * evidence it had worked from. Null on a single-plant document, where the
+   * document-level plant applies.
+   */
+  plant: text(),
+
   form: z.enum(['SHEET', 'REEL']).nullable().default(null),
   shade: z.enum(['NATURAL']).nullable().default(null),
   bulk: z.enum(['HIGH']).nullable().default(null),

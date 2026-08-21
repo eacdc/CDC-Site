@@ -124,6 +124,13 @@ export async function runInterpretation({
         plant: (doc.plantScope || [])[0] || null,
         supplierName: supplierName || null,
       },
+      /*
+        The plant this half owns, when the uploaded file priced both. The
+        reading covers the whole file — it is one PDF — so without this each
+        half is handed every line: a 24-product NR list became 48 rows under
+        Kolkata and the same 48 under Ahmedabad.
+      */
+      ownedPlant: doc.splitPlant || (doc.plantScope || [])[0] || null,
       // Terms CDC has already ruled on, including the ones ruled "not a paper
       // type". Both kinds have to stop being asked.
       settledTokens: knownBrands.map((b) => b.brand),
@@ -243,6 +250,13 @@ export function paperLineToQuoteLine(documentId, line, index = 0) {
       shade: line.shade ?? null,
       bulk: line.bulk ?? null,
       supplyMode: line.supplyMode ?? null,
+      /*
+        The plant the row itself named, kept even though the document already
+        has one. It is the audit trail for the split: a Kolkata document holding
+        a row marked AHMEDABAD is a visible fault rather than a price that
+        merely looks a little low.
+      */
+      plant: line.plant ?? null,
       notes: describeLine(line),
     },
 

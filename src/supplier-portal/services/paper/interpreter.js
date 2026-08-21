@@ -153,6 +153,51 @@ export function applyDocumentFacts(payload, facts = {}) {
 }
 
 /**
+ * Keep only the lines belonging to the plant this document owns.
+ *
+ * A file that prices both plants is split into two documents, one per plant,
+ * each holding its own half. The paper reading then re-reads the whole file —
+ * it has no choice, the PDF is one file — and comes back with every line. Both
+ * halves were being handed all of them, so a 24-product NR list priced for two
+ * plants became 48 lines under Kolkata and the same 48 under Ahmedabad, with
+ * each plant's rates appearing twice and half of them belonging elsewhere.
+ *
+ * Filtering only happens when the reading actually found more than one plant.
+ * A single-plant document reads back one plant or none, and quietly dropping
+ * rows there would be a far worse failure than the one this fixes.
+ *
+ * Unplaced lines stay in both halves, which is the same rule the split itself
+ * uses: a row the document never attributed is likelier to apply to both plants
+ * than to belong to one, and losing a priced row silently is the worst outcome
+ * available.
+ */
+export function selectPlantLines(payload, plant) {
+  if (!plant) return payload;
+
+  const lines = payload?.lines || [];
+  const plants = new Set(lines.map((l) => normalisePlantName(l.plant)).filter(Boolean));
+  if (plants.size < 2) return payload;
+
+  const wanted = normalisePlantName(plant);
+  return {
+    ...payload,
+    lines: lines.filter((l) => {
+      const linePlant = normalisePlantName(l.plant);
+      return !linePlant || linePlant === wanted;
+    }),
+  };
+}
+
+/** KOL, Kolkata, "FOR KOLKATA - REEL" all mean the same plant. */
+function normalisePlantName(value) {
+  const text = String(value ?? '').toUpperCase();
+  if (!text.trim()) return null;
+  if (/\bAHMEDABAD\b|\bAHM\b|\bGUJARAT\b/.test(text)) return 'AHMEDABAD';
+  if (/\bKOLKATA\b|\bCALCUTTA\b|\bKOL\b|\bTANGRA\b|\bPANCHLA\b|\bHOWRAH\b/.test(text)) return 'KOLKATA';
+  return null;
+}
+
+/**
  * Fill in what the vocabulary already knows, before the model is asked anything.
  *
  * Runs on the model's own output because it is cheap, deterministic, and
@@ -189,6 +234,7 @@ export async function interpretPaperQuote({
   priorPayload = null,
   supplierGroupId = null,
   documentFacts = null,
+  ownedPlant = null,
   settledTokens = [],
   send,
 } = {}) {
@@ -212,7 +258,7 @@ export async function interpretPaperQuote({
     its mind about a line nobody asked about.
   */
   if (priorPayload) {
-    const folded = applyAnswers(applyDocumentFacts(priorPayload, documentFacts), answers);
+    const folded = applyAnswers(applyDocumentFacts(selectPlantLines(priorPayload, ownedPlant), documentFacts), answers);
     if (folded.applied > 0 && folded.unapplied.length === 0) {
       const gate = checkHandoff(folded.payload, { settledTokens: allSettled });
       return {
@@ -241,7 +287,7 @@ export async function interpretPaperQuote({
     const reply = await send({ system: PAPER_SYSTEM_PROMPT, message, pages });
 
     const withKnown = resolveKnownTypes(reply?.payload || {});
-    const folded = applyAnswers(applyDocumentFacts(withKnown.payload, documentFacts), answers);
+    const folded = applyAnswers(applyDocumentFacts(selectPlantLines(withKnown.payload, ownedPlant), documentFacts), answers);
     const gate = checkHandoff(folded.payload, { settledTokens: allSettled });
 
     last = {

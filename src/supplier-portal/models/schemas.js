@@ -431,6 +431,14 @@ export const quoteLineSchema = new Schema({
      * price the portal ends up believing is decided by read order.
      */
     supplyMode: String,
+    /**
+     * The plant this row named, on a document that priced several.
+     *
+     * Redundant with the document's own plant by design: it is the audit trail
+     * for the split. A Kolkata document holding a row marked AHMEDABAD is then
+     * a visible fault rather than a rate that merely looks a little low.
+     */
+    plant: String,
     notes: String,
   },
 
