@@ -69,11 +69,19 @@ export const PAPER_TYPES = [
     canonical: 'GREY_BACK',
     label: 'Grey back',
     /*
-      `DUPLEX` is last on purpose and is the weakest of these. KV heads one
-      section "DUPLEX BOARD" and files both grey back and white back under it —
+      `DUPLEX` is here but it is not a synonym in the way the others are.
+
+      Duplex is the trade's casual word for RECYCLED board, and both grey back
+      and white back are duplex — confirmed by CDC. So it narrows rather than
+      decides. The rule CDC gave, and the one `resolvePaperType` implements:
+
+        duplex, and nothing else        -> grey back
+        duplex alongside "white back"   -> white back
+
+      KV's list is exactly this shape: one section headed "DUPLEX BOARD" holding
       BAHL GREY BACK 1000 at 49.50 beside BAHL WHITE BACK 1000 at 55.50, six
-      rupees apart. Longest-match ordering means "WHITE BACK" wins wherever
-      both appear, which is the correct outcome.
+      rupees apart. Getting the default wrong would file the dearer paper as the
+      cheaper one on every unlabelled row.
     */
     synonyms: [
       'GREY BACK', 'GREYBACK', 'GRAY BACK', 'GRAYBACK', 'DUPLEX GREY BACK',
@@ -261,6 +269,12 @@ export const MILL_ALIASES = [
   { canonical: 'BAHL', aliases: ['BAHL', 'BHAL'] },
   { canonical: 'SILVERTONE', aliases: ['SILVERTONE', 'SILVERTON', 'SILVERTONE VISTA', 'SILVER VISTA'] },
   { canonical: 'SIDHARTH', aliases: ['SIDHARTH', 'SIDHARTHA'] },
+  /*
+    One mill. OGB and GSP are Khanna's own grade names, not separate mills —
+    confirmed by CDC — and quotes state the grade properly, so it arrives as a
+    brand rather than as part of the mill.
+  */
+  { canonical: 'KHANNA', aliases: ['KHANNA', 'KHANNA OGB', 'KHANNA GSP'] },
   {
     canonical: 'APRILFINE',
     // "Importet" is CDC's own long-standing typo, not a supplier's.
@@ -329,7 +343,6 @@ export const UNCONFIRMED = [
   { token: 'LWC', seenIn: 'Uni Global LWC (KV, under DUPLEX BOARD); Arihant LWC (item master)', priced: '43.50, cheapest duplex', guess: 'light weight coated — but of what?' },
   { token: 'PDB', seenIn: 'UNI GLOBAL PDB (KV, under DUPLEX BOARD)', priced: '46.50 / 45.00', guess: null },
   { token: 'HI KOTE', seenIn: 'KV section heading', priced: '110-112, far above art paper', guess: 'cast coated?' },
-  { token: 'OGB', seenIn: 'Khanna OGB (item master), against both grey and white back', priced: null, guess: 'part of the mill name, or a grade?' },
   { token: 'DIGIEDGE ABG', seenIn: 'SPB DIGIEDGE ABG (Sudarshan Coated), product class SWP not PG', priced: '82.50, dearest on the list', guess: 'digital art board gloss?' },
 ];
 
@@ -339,7 +352,6 @@ export const UNCONFIRMED = [
  * their rate histories.
  */
 export const UNCONFIRMED_MILLS = [
-  { tokens: ['KHANNA', 'KHANNA OGB', 'KHANNA GSP'], question: 'One mill or three?' },
   { tokens: ['EMAMI', 'EMAMI SOLITAIRE'], question: 'Is Solitaire a brand of Emami, or a separate mill?' },
   { tokens: ['IK', 'IK WOODFREE'], question: 'Is IK a mill? It appears in the item master and as a KV section heading.' },
   { tokens: ['NEVIA', 'GOLDEN COIN LUXE'], question: 'Brands or mills? Both head KV sections.' },
@@ -387,7 +399,25 @@ function resolve(lookup, text) {
  * second-guessed by a stray word in its name.
  */
 export function resolvePaperType(text) {
-  return resolve(BRAND_LOOKUP, text) || resolve(TYPE_LOOKUP, text);
+  const byBrand = resolve(BRAND_LOOKUP, text);
+  if (byBrand) return byBrand;
+
+  /*
+    Duplex means recycled, and both backs are duplex. Where "white back" also
+    appears it decides; duplex on its own is grey back.
+
+    Longest-first ordering happens to give the same answer today, because
+    "WHITE BACK" is the longer needle. That is accidental correctness — adding
+    a longer grey-back spelling later would silently flip it, and the failure
+    would be a dearer paper filed as a cheaper one. So the rule is written out.
+  */
+  const haystack = tokenised(text);
+  if (haystack.includes(' DUPLEX ')) {
+    const white = resolve(lookupFor([PAPER_TYPES.find((t) => t.canonical === 'WHITE_BACK')], 'canonical', 'synonyms'), text);
+    return white || 'GREY_BACK';
+  }
+
+  return resolve(TYPE_LOOKUP, text);
 }
 
 export function resolveMill(text) {

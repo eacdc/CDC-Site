@@ -50,6 +50,19 @@ test('the four spellings of grey back all resolve', () => {
   assert.equal(resolvePaperType('DUPLEX BOARD'), 'GREY_BACK');
 });
 
+test('duplex means recycled: alone it is grey back, with white back it is white back', () => {
+  // CDC's rule, verbatim. Duplex is the trade's casual word for recycled and
+  // both backs are duplex, so it narrows rather than decides.
+  assert.equal(resolvePaperType('DUPLEX BOARD'), 'GREY_BACK');
+  assert.equal(resolvePaperType('UNI GLOBAL DUPLEX'), 'GREY_BACK');
+  assert.equal(resolvePaperType('DUPLEX WHITE BACK'), 'WHITE_BACK');
+
+  // KV's actual layout: one DUPLEX BOARD section holding both, six rupees
+  // apart. Defaulting wrong would file the dearer paper as the cheaper one on
+  // every unlabelled row.
+  assert.equal(resolvePaperType('DUPLEX BOARD ITC ECO POLAR WHITE BACK'), 'WHITE_BACK');
+});
+
 test('white back beats duplex and beats grey back', () => {
   // KV files both under one "DUPLEX BOARD" heading, six rupees apart:
   // BAHL GREY BACK 1000 at 49.50, BAHL WHITE BACK 1000 at 55.50.
@@ -136,6 +149,14 @@ test("CDC's long-standing typo still finds the mill", () => {
 
 test('BILT and Ballarpur are the same company', () => {
   assert.equal(resolveMill('BILT'), resolveMill('Ballarpur'));
+});
+
+test('Khanna is one mill; OGB and GSP are its grades', () => {
+  // Confirmed by CDC. Treating them as three mills would split one supplier's
+  // rate history three ways and hide every price movement across it.
+  assert.equal(resolveMill('Khanna'), 'KHANNA');
+  assert.equal(resolveMill('Khanna OGB'), 'KHANNA');
+  assert.equal(resolveMill('Khanna GSP'), 'KHANNA');
 });
 
 test('the kraft mills resolve', () => {
