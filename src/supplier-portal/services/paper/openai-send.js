@@ -34,6 +34,15 @@ const MODEL = process.env.SP_PAPER_MODEL
  * @returns {Promise<Object>} the model's parsed JSON reply
  */
 export async function sendToOpenAI({ system, message, pages = [] }) {
+  const unsendable = pages.filter((p) => p?.url && !isSendableImage(p));
+  if (unsendable.length) {
+    throw new Error(
+      `Cannot send page ${unsendable[0].pageNo ?? 1} to the model: `
+      + `${describeSource(unsendable[0])} is not an image. `
+      + 'PDFs must be rendered to JPEG or PNG before they are read.',
+    );
+  }
+
   const content = [{ type: 'text', text: message }];
   for (const page of pages) {
     if (page?.url) content.push({ type: 'image_url', image_url: { url: page.url } });
@@ -67,6 +76,41 @@ export async function sendToOpenAI({ system, message, pages = [] }) {
         : 'The model returned something that is not JSON.',
     );
   }
+}
+
+/** The only formats the vision endpoint accepts. */
+const SENDABLE = /^(png|jpe?g|gif|webp)$/i;
+
+/**
+ * Can this page go to a vision model?
+ *
+ * Exists because it did not, and the failure was worth turning into our own
+ * error. The paper route first passed signed storage URLs straight through, so
+ * a PDF — which is what every real quote is — arrived at OpenAI as an image and
+ * came back `400 You uploaded an unsupported image`. That message names neither
+ * the document nor the fix, and points at the upload rather than at the missing
+ * rasterise step.
+ *
+ * A `data:` URL declares its own type. A storage URL does not, so the page's
+ * `mimeType` decides — and a page with neither is refused rather than sent
+ * hopefully, because the whole point is to fail here with a sentence somebody
+ * can act on instead of there with one they cannot.
+ */
+export function isSendableImage(page) {
+  const url = String(page?.url || '');
+
+  const dataUrl = url.match(/^data:image\/([a-z0-9.+-]+);/i);
+  if (dataUrl) return SENDABLE.test(dataUrl[1]);
+  if (url.startsWith('data:')) return false;
+
+  const mime = String(page?.mimeType || '').match(/^image\/([a-z0-9.+-]+)/i);
+  return Boolean(mime) && SENDABLE.test(mime[1]);
+}
+
+function describeSource(page) {
+  const url = String(page?.url || '');
+  if (url.startsWith('data:')) return url.slice(0, url.indexOf(';')) || 'that data URL';
+  return page?.mimeType ? `its type ${page.mimeType}` : 'it declares no image type';
 }
 
 export const PAPER_MODEL = MODEL;

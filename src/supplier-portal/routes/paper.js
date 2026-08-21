@@ -14,6 +14,7 @@ import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, QuoteDocument, PaperBrandRule } from '../db/mongo.js';
 import { viewUrl } from '../../lib/r2-storage.js';
 import { pdfPageTexts, looksLikePdf } from '../services/extraction/pdf-text.js';
+import { pdfPageImages } from '../services/extraction/pdf-render.js';
 import { runInterpretation, knownBrandsFor } from '../services/paper/paper-quotes.js';
 import { canonicalPaperTypes } from '../config/paper-vocabulary.js';
 
@@ -60,20 +61,46 @@ router.post('/:id/interpret', requireSite, requireRole('BUYER', 'APPROVER'), asy
       layout. Krishna Vanijya's list needs both — its section headings land far
       from their rows in the extracted text, and only the image says which
       heading a row sits under.
-    */
-    const pages = await Promise.all(keys.map(async (key, i) => ({
-      url: await viewUrl(key), pageNo: i + 1, mimeType: doc.mimeType,
-    })));
 
+      A PDF IS NOT AN IMAGE. Handing a signed PDF URL to a vision model gets
+      `400 You uploaded an unsupported image` — the formats it accepts are png,
+      jpeg, gif and webp. Every PDF has to be rasterised first, exactly as the
+      extraction path does. This route originally passed the storage URLs
+      straight through, which worked for an uploaded JPEG and failed on the
+      first real quote, all of which are PDFs.
+    */
+    const isPdf = looksLikePdf({ mimeType: doc.mimeType, originalFilename: doc.originalFilename });
+    let pages = [];
     let textLayer = null;
-    if (looksLikePdf({ mimeType: doc.mimeType, originalFilename: doc.originalFilename })) {
+
+    if (isPdf) {
+      const bytes = await downloadKey(doc.storageKey);
+
       try {
-        textLayer = await pdfPageTexts(await downloadKey(doc.storageKey));
+        textLayer = await pdfPageTexts(bytes);
       } catch (err) {
-        // A scan has no text layer, and that is not a failure — the images
-        // carry everything. Losing the layer is worth a log, not a 500.
+        // A scan carries no text layer, and that is not a failure — the images
+        // hold everything. Losing the layer is worth a log, not a 500.
         console.warn('[SP][paper] no text layer:', err.message);
       }
+
+      const rendered = await pdfPageImages(bytes).catch((err) => {
+        console.warn('[SP][paper] could not render pages:', err.message);
+        return null;
+      });
+      pages = rendered?.pages || [];
+
+      if (!pages.length && !textLayer) {
+        return res.status(422).json({
+          error: 'This PDF could not be read — it has no text layer and its pages '
+            + 'could not be rendered. Upload the pages as images instead.',
+        });
+      }
+    } else {
+      // Already an image. The signed URL goes straight to the model.
+      pages = await Promise.all(keys.map(async (key, i) => ({
+        url: await viewUrl(key), pageNo: i + 1, mimeType: doc.mimeType,
+      })));
     }
 
     const result = await runInterpretation({
