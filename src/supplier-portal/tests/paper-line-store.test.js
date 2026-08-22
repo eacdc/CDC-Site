@@ -121,3 +121,44 @@ test('a line number is supplied when the document has none', () => {
 test('every line points at its document', () => {
   assert.equal(paperLineToQuoteLine('doc99', TAUGHT).quoteDocumentId, 'doc99');
 });
+
+// ── Kraft ───────────────────────────────────────────────────────────────────
+
+test('burst factor reaches a field, not just a sentence', () => {
+  /*
+    Caught on a dry run before CDC uploaded a kraft quote, and it is the same
+    failure as a paper type that never lands in `grade`. BF was appearing in
+    the notes text — "18 BF" — and nowhere else, so it was visible to a reader
+    and invisible to a search.
+
+    It is kraft's price identity, not a note: 16 BF and 18 BF from Madhubati
+    are 50 paise apart, and Natraj charges Rs 1.25 for the same two points.
+    Without the field, "18 BF 140 gsm across mills" is not a question anyone
+    can ask.
+  */
+  const line = paperLineToQuoteLine('doc1', {
+    lineNo: 1,
+    productName: 'KRAFT 18 BF 120 GSM NS',
+    paperType: 'KRAFT',
+    bf: 18,
+    shade: 'NATURAL',
+    gsmFrom: 120,
+    gsmTo: 120,
+    rate: 31.05,
+    rateUom: 'KGS',
+    mill: 'NATRAJ',
+    derivation: { base: 30.8, baseNote: '18 BF, 140-180 gsm', adjustments: [{ amount: 0.25, reason: '120 gsm' }] },
+  });
+
+  assert.equal(line.raw.bf, 18);
+  assert.equal(line.raw.grade, 'KRAFT');
+  assert.equal(line.raw.mill, 'NATRAJ');
+  assert.equal(line.normalised.rate, 31.05);
+});
+
+test('everything but kraft leaves burst factor empty', () => {
+  // A BF on FBB means the reader put something in the wrong field, and the
+  // schema rejects it — but the mapping must not invent one either.
+  const line = paperLineToQuoteLine('doc1', { ...TAUGHT, bf: null });
+  assert.equal(line.raw.bf, null);
+});

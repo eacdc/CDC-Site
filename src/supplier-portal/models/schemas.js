@@ -424,6 +424,15 @@ export const quoteLineSchema = new Schema({
      */
     brightness: String,
     /**
+     * Burst factor. Kraft only, and it is priced identity rather than a note.
+     *
+     * 16 BF and 18 BF from Madhubati are 50 paise apart; Natraj charges Rs 1.25
+     * for the same two points. Without it as a field, "18 BF 140 gsm across
+     * mills" is not a question that can be asked — the number would exist only
+     * inside a sentence nobody can filter on.
+     */
+    bf: Number,
+    /**
      * MILL_ORDER or EX_STOCK, where the quote distinguishes them.
      *
      * Two prices for one board, typically 50 paise apart. Stored so both

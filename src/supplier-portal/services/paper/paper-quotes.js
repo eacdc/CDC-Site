@@ -249,6 +249,12 @@ export function paperLineToQuoteLine(documentId, line, index = 0) {
       grade: line.paperType ?? null,
       shade: line.shade ?? null,
       bulk: line.bulk ?? null,
+      /*
+        Kraft's price identity. It was reaching the notes sentence and nowhere
+        else, which is the same failure as a paper type that never lands in
+        `grade`: visible to a reader, invisible to a search.
+      */
+      bf: line.bf ?? null,
       supplyMode: line.supplyMode ?? null,
       /*
         The plant the row itself named, kept even though the document already
