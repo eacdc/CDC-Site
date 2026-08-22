@@ -3,6 +3,10 @@ import { getPool, sql } from './db.js';
 import { MongoClient } from 'mongodb';
 import bcrypt from 'bcryptjs';
 import { insertUnorderedMinimal } from './unordered.js';
+import {
+  buildMongoCompletedQuery,
+  buildMongoPendingQuery,
+} from './mongo-artwork-status.js';
 
 // ---------- Prepress FMS auth config ----------
 const ADMIN_USERNAME = 'admin';
@@ -12,21 +16,26 @@ const ADMIN_PASSWORD = process.env.PREPRESS_ADMIN_PASSWORD || '933086';
 // Set Passwords page; their password hashes are stored in the
 // `prepressStaticUsers` Mongo collection keyed by userKey.
 const STATIC_EXECUTIVES = [
-  { userKey: 'executive-1', displayName: 'Executive 1' },
-  { userKey: 'executive-2', displayName: 'Executive 2' },
-  { userKey: 'executive-3', displayName: 'Executive 3' },
-  { userKey: 'executive-4', displayName: 'Executive 4' },
+  { userKey: 'executive-1', displayName: 'Executive 1', role: 'executive' },
+  { userKey: 'executive-2', displayName: 'Executive 2', role: 'executive' },
+  { userKey: 'executive-3', displayName: 'Executive 3', role: 'executive' },
+  { userKey: 'executive-4', displayName: 'Executive 4', role: 'executive' },
 ];
+const STATIC_TOOLING_USERS = [
+  { userKey: 'tooling_pack', displayName: 'tooling_pack', role: 'tooling', artworkScope: 'packaging' },
+  { userKey: 'tooling_comm', displayName: 'tooling_comm', role: 'tooling', artworkScope: 'commercial_book' },
+];
+const STATIC_ACCOUNTS = [...STATIC_EXECUTIVES, ...STATIC_TOOLING_USERS];
 const STATIC_USERS_COLLECTION = 'prepressStaticUsers';
 
-function findStaticExecutive({ userKey, username } = {}) {
+function findStaticAccount({ userKey, username } = {}) {
   if (userKey) {
-    const byKey = STATIC_EXECUTIVES.find(e => e.userKey === String(userKey));
+    const byKey = STATIC_ACCOUNTS.find(e => e.userKey === String(userKey));
     if (byKey) return byKey;
   }
   if (username) {
     const trimmed = String(username).trim().toLowerCase();
-    const byName = STATIC_EXECUTIVES.find(e => e.displayName.toLowerCase() === trimmed);
+    const byName = STATIC_ACCOUNTS.find(e => e.displayName.toLowerCase() === trimmed);
     if (byName) return byName;
   }
   return null;
@@ -292,27 +301,12 @@ async function fetchSqlPending(databaseKey, sourceDb) {
 }
 
 async function fetchMongoPending(db) {
-  // Mongo pending logic mirrors SQL:
-  // - not finally approved OR tooling/blanket/plate pending
+  // Pending = any open approval, tooling (Required), or plate step.
+  // Includes finally-approved jobs reopened via tooling Required.
 
   const docs = await db
     .collection('ArtworkUnordered')
-    .find({
-      iscancelled: { $ne: 1 },
-      'status.isDeleted': { $ne: true },
-      $or: [
-        // not finally approved
-        { 'finalApproval.approved': { $ne: true } },
-
-        // tooling pending conditions
-        { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-        { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-        { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-
-        // plate pending — open unless Done or Not Required
-        { 'plate.output': { $exists: true, $nin: [null, 'DONE', 'Done', 'done', 'NOT REQUIRED', 'Not Required', 'not required'] } },
-      ],
-    })
+    .find(buildMongoPendingQuery())
     .sort({ updatedAt: -1, createdAt: -1 })
     .toArray();
 
@@ -332,6 +326,7 @@ async function fetchMongoPending(db) {
     JobName: d.job?.jobName ?? null,
     CategoryName: d.job?.category ?? null,
     SegmentName: d.job?.segment ?? null,
+    Division: d.job?.segment ?? null,
 
     FileStatus:
       (d.artwork?.fileStatus || 'PENDING').toString().toUpperCase() === 'RECEIVED'
@@ -468,37 +463,11 @@ async function fetchSqlCompleted(databaseKey, sourceDb) {
 
 // ---------- Fetch MongoDB completed data ----------
 async function fetchMongoCompleted(db) {
-  // Mongo completed logic is the reverse of pending:
-  // Pending: not finally approved OR tooling/plate pending
-  // Completed: finally approved AND NOT (tooling/plate pending)
-  
+  // Completed = inverse of pending (all steps closed, including tagged/cancelled rows).
+
   const docs = await db
     .collection('ArtworkUnordered')
-    .find({
-      'status.isDeleted': { $ne: true },
-      $or: [
-        // Include cancelled unordered approvals in Completed page
-        { iscancelled: 1 },
-        {
-          // Finally approved
-          'finalApproval.approved': true,
-          // AND NOT (any tooling/plate pending)
-          $nor: [
-            // Tooling pending conditions (reversed)
-            { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-            { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-            { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-            // Plate pending (reversed) - exists and is not Done / Not Required
-            {
-              $and: [
-                { 'plate.output': { $exists: true } },
-                { 'plate.output': { $nin: [null, 'DONE', 'Done', 'done', 'NOT REQUIRED', 'Not Required', 'not required'] } }
-              ]
-            },
-          ],
-        },
-      ],
-    })
+    .find(buildMongoCompletedQuery())
     .sort({ updatedAt: -1, createdAt: -1 })
     .toArray();
 
@@ -519,6 +488,7 @@ async function fetchMongoCompleted(db) {
     JobName: d.job?.jobName ?? null,
     CategoryName: d.job?.category ?? null,
     SegmentName: d.job?.segment ?? null,
+    Division: d.job?.segment ?? null,
 
     FileStatus:
       (d.artwork?.fileStatus || 'PENDING').toString().toUpperCase() === 'RECEIVED'
@@ -993,17 +963,19 @@ router.get('/artwork/users', async (req, res) => {
     if (site !== 'KOLKATA' && site !== 'AHMEDABAD') {
       const staticDocs = await db
         .collection(STATIC_USERS_COLLECTION)
-        .find({ _id: { $in: STATIC_EXECUTIVES.map(e => e.userKey) } }, { projection: { _id: 1, passwordHash: 1 } })
+        .find({ _id: { $in: STATIC_ACCOUNTS.map(e => e.userKey) } }, { projection: { _id: 1, passwordHash: 1 } })
         .toArray();
       const staticPwMap = new Map(staticDocs.map(d => [d._id, !!d.passwordHash]));
-      for (const exec of STATIC_EXECUTIVES) {
+      for (const acct of STATIC_ACCOUNTS) {
         userList.push({
-          userKey: exec.userKey,
-          displayName: exec.displayName,
+          userKey: acct.userKey,
+          displayName: acct.displayName,
           sites: [],
           erp: {},
-          hasPassword: !!staticPwMap.get(exec.userKey),
+          hasPassword: !!staticPwMap.get(acct.userKey),
           isStatic: true,
+          role: acct.role,
+          artworkScope: acct.artworkScope || null,
         });
       }
     }
@@ -1047,11 +1019,11 @@ router.post('/artwork/auth/login', async (req, res) => {
 
     const db = await getMongoDb();
 
-    // Static executive accounts (Executive 1..4)
-    const staticExec = findStaticExecutive({ userKey, username });
-    if (staticExec) {
+    // Static executive / tooling accounts
+    const staticAcct = findStaticAccount({ userKey, username });
+    if (staticAcct) {
       const doc = await db.collection(STATIC_USERS_COLLECTION).findOne(
-        { _id: staticExec.userKey },
+        { _id: staticAcct.userKey },
         { projection: { _id: 1, passwordHash: 1 } }
       );
       if (!doc || !doc.passwordHash) {
@@ -1063,11 +1035,12 @@ router.post('/artwork/auth/login', async (req, res) => {
       }
       return res.json({
         ok: true,
-        role: 'executive',
-        userKey: staticExec.userKey,
-        displayName: staticExec.displayName,
+        role: staticAcct.role || 'executive',
+        userKey: staticAcct.userKey,
+        displayName: staticAcct.displayName,
         sites: [],
         isStatic: true,
+        artworkScope: staticAcct.artworkScope || null,
       });
     }
 
@@ -1130,12 +1103,12 @@ router.post('/artwork/users/set-password', async (req, res) => {
     const db = await getMongoDb();
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Static executive accounts live in prepressStaticUsers, keyed by userKey.
-    const staticExec = findStaticExecutive({ userKey });
-    if (staticExec) {
+    // Static executive / tooling accounts live in prepressStaticUsers, keyed by userKey.
+    const staticAcct = findStaticAccount({ userKey });
+    if (staticAcct) {
       await db.collection(STATIC_USERS_COLLECTION).updateOne(
-        { _id: staticExec.userKey },
-        { $set: { passwordHash, displayName: staticExec.displayName, updatedAt: new Date() } },
+        { _id: staticAcct.userKey },
+        { $set: { passwordHash, displayName: staticAcct.displayName, updatedAt: new Date() } },
         { upsert: true }
       );
       return res.json({ ok: true });

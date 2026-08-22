@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getPool, sql } from './db.js';
 import { MongoClient, ObjectId } from 'mongodb';
+import { buildMongoPendingQuery } from './mongo-artwork-status.js';
 
 // Update API for combined pending grid
 // Exposed as: POST /api/artwork/pending/update
@@ -79,6 +80,31 @@ const PLATE_CLOSED_MONGO_VALUES = [
   'Not Required',
   'not required',
 ];
+
+const TOOLING_OPEN_MONGO_VALUES = ['REQUIRED', 'Required'];
+const TOOLING_CANONICAL = {
+  NA: 'NA',
+  'N/A': 'NA',
+  'N.A.': 'NA',
+  OLD: 'Old',
+  ORDERED: 'Ordered',
+  REQUIRED: 'Required',
+  RECEIVED: 'Received',
+};
+
+function normalizeToolingStatus(value) {
+  if (value === undefined) return undefined;
+  const t = (value ?? '').toString().trim();
+  if (!t) return 'NA';
+  return TOOLING_CANONICAL[t.toUpperCase()] || t;
+}
+
+function computeToolingState(die, block, blanket) {
+  const vals = [die, block, blanket].map((v) => normalizeToolingStatus(v) || 'NA');
+  if (vals.some((v) => v.toUpperCase() === 'REQUIRED')) return 'Open';
+  if (vals.every((v) => v.toUpperCase() === 'NA')) return 'Not Applicable';
+  return 'Closed';
+}
 
 // ---------- helpers ----------
 function normStr(v) {
@@ -383,9 +409,17 @@ function applyRules(current, incoming) {
     }
   }
 
-  // 6) ToolingBlanketActual when ready
-  if (row.ToolingDie === 'Ready' && row.Blanket === 'Ready' && row.ToolingBlock !== 'Required') {
+  // 6) Tooling step state: only Required is open. Closed stamps ToolingBlanketActual once.
+  // Reopening (any type back to Required) clears the completion date.
+  if (row.ToolingDie !== undefined) row.ToolingDie = normalizeToolingStatus(row.ToolingDie) ?? row.ToolingDie;
+  if (row.ToolingBlock !== undefined) row.ToolingBlock = normalizeToolingStatus(row.ToolingBlock) ?? row.ToolingBlock;
+  if (row.Blanket !== undefined) row.Blanket = normalizeToolingStatus(row.Blanket) ?? row.Blanket;
+  const toolingState = computeToolingState(row.ToolingDie, row.ToolingBlock, row.Blanket);
+  if (toolingState === 'Closed') {
     if (!row.ToolingBlanketActual) row.ToolingBlanketActual = now;
+  } else {
+    // Open or Not Applicable — no completion date
+    row.ToolingBlanketActual = null;
   }
 
   return row;
@@ -849,17 +883,7 @@ router.get('/artwork/unordered/pending-ids', async (req, res) => {
     const db = await getMongoDb();
     const docs = await db
       .collection('ArtworkUnordered')
-      .find({
-        iscancelled: { $ne: 1 },
-        'status.isDeleted': { $ne: true },
-        $or: [
-          { 'finalApproval.approved': { $ne: true } },
-          { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-          { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-          { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
-          { 'plate.output': { $exists: true, $nin: [null, ...PLATE_CLOSED_MONGO_VALUES] } },
-        ],
-      })
+      .find(buildMongoPendingQuery())
       .sort({ updatedAt: -1, createdAt: -1 })
       .project({ _id: 1, tokenNumber: 1, reference: 1, 'client.name': 1, 'job.jobName': 1 })
       .toArray();
@@ -1098,9 +1122,9 @@ router.post('/artwork/pending/update', async (req, res) => {
     if ('MProofApprovalReqd' in update) incoming.MProofApprovalReqd = normYesNo(update.MProofApprovalReqd);
     if ('MProofApprovalStatus' in update) incoming.MProofApprovalStatus = normApprovalStatus(update.MProofApprovalStatus);
     
-    if ('ToolingDie' in update) incoming.ToolingDie = update.ToolingDie ?? null;
-    if ('ToolingBlock' in update) incoming.ToolingBlock = update.ToolingBlock ?? null;
-    if ('Blanket' in update) incoming.Blanket = update.Blanket ?? null;
+    if ('ToolingDie' in update) incoming.ToolingDie = normalizeToolingStatus(update.ToolingDie) ?? 'NA';
+    if ('ToolingBlock' in update) incoming.ToolingBlock = normalizeToolingStatus(update.ToolingBlock) ?? 'NA';
+    if ('Blanket' in update) incoming.Blanket = normalizeToolingStatus(update.Blanket) ?? 'NA';
     if ('PlateOutput' in update) {
       const normalized = normalizePlateOutput(update.PlateOutput);
       // Never persist blank/NULL plate output — default to Pending
