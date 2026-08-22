@@ -36,13 +36,14 @@ export let Session = null;
 export let ItemClassification = null;
 export let DeliveryDateSnapshot = null;
 export let PaperBrandRule = null;
+export let InkTermRule = null;
 
 const BINDINGS = [
   'SpSupplierGroup', 'SpQuoteDocument', 'SpQuoteLine', 'SpSupplierItem',
   'SpItemMapping', 'SpRateHistory', 'SpMappingQueue', 'SpDocumentSet',
   'SpUomNormalisation', 'SpAuditLog', 'SpUser', 'SpSupplierUser',
   'SpSession', 'SpItemClassification', 'SpDeliveryDateSnapshot',
-  'SpPaperBrandRule',
+  'SpPaperBrandRule', 'SpInkTermRule',
 ];
 
 function assign(models) {
@@ -63,6 +64,7 @@ function assign(models) {
     SpItemClassification: ItemClassification,
     SpDeliveryDateSnapshot: DeliveryDateSnapshot,
     SpPaperBrandRule: PaperBrandRule,
+    SpInkTermRule: InkTermRule,
   } = models);
 }
 

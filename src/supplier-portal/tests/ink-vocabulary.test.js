@@ -128,6 +128,29 @@ test('most ink never states its chemistry either', () => {
   assert.equal(resolveChemistry('AQUATIC VIVID OP INK', 'COATING'), 'WATER_BASED');
 });
 
+test('water-based ink is conventional ink, but aqueous coating is aqueous', () => {
+  /*
+    Confirmed by CDC. Water-based ink is real and they buy it, but they compare
+    it against conventional ink; left as a chemistry of its own it would key
+    separately and "WB CDC SPL BLACK 2024" (313/kg) would never appear beside
+    the other blacks it actually competes with.
+
+    Coatings keep the distinction, because aqueous versus UV is the entire
+    difference between a 154 varnish and a 970 one.
+  */
+  assert.equal(resolveChemistry('WB CDC SPL BLACK 2024'), 'CONVENTIONAL');
+  assert.equal(
+    comparisonKey({ productName: 'WB CDC SPL BLACK 2024', rateUom: 'KG' }),
+    comparisonKey({ productName: 'VEGA SPRINT INTENSIVE BLACK', rateUom: 'KG' }),
+  );
+
+  assert.equal(resolveChemistry('WATER BASED OPL-HIGH GLOSS'), 'WATER_BASED');
+  assert.notEqual(
+    comparisonKey({ productName: 'WATER BASED OPL-HIGH GLOSS', rateUom: 'KG' }),
+    comparisonKey({ productName: 'SICURA UV TEXTURE MATT - HG', rateUom: 'KG' }),
+  );
+});
+
 test('a coating that never says varnish is still a coating', () => {
   assert.equal(resolveMaterialClass('SICURA UV TEXTURE MATT - HG'), 'COATING');
   assert.equal(resolveMaterialClass('SICURA GLOSS TEXTURE T2000'), 'COATING');

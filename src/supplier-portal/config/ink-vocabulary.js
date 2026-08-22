@@ -140,6 +140,12 @@ export const CHEMISTRIES = [
   {
     canonical: 'WATER_BASED',
     label: 'Water based / aqueous',
+    /*
+      A COATING CHEMISTRY ONLY. Water-based INKS exist — Siegwerk prices "WB CDC
+      SPL BLACK 2024" at 313/kg — but CDC buys and compares them as conventional
+      ink, so `resolveChemistry` folds them there. The value survives for
+      coatings, where aqueous versus UV is the whole distinction.
+    */
     markers: ['WATER BASED', 'WATERBASED', 'AQUEOUS', 'AQUATIC', 'AQUA', 'WB'],
   },
   { canonical: 'WEB', label: 'Web / heatset', markers: ['WEB', 'HEATSET', 'HEAT SET', 'COLDSET', 'COLD SET'] },
@@ -535,7 +541,22 @@ export function resolveMaterialClass(text) {
 export function resolveChemistry(text, materialClass = null) {
   const found = resolve(CHEMISTRY_LOOKUP, text) || resolve(FAMILY_CHEMISTRY_LOOKUP, text);
   if (!found) return null;
-  if (materialClass === 'COATING' && !COATING_CHEMISTRIES.includes(found)) return null;
+
+  const klass = materialClass || resolveMaterialClass(text);
+
+  if (klass === 'COATING') {
+    // Coatings are aqueous or UV and nothing else, so a varnish whose name
+    // happens to carry "offset" does not become conventional.
+    return COATING_CHEMISTRIES.includes(found) ? found : null;
+  }
+
+  /*
+    Water-based ink is real and CDC buys it, but they compare it as
+    conventional — confirmed by CDC. Left as its own chemistry it would key
+    separately and "WB CDC SPL BLACK 2024" would never appear beside the other
+    blacks it competes with.
+  */
+  if (found === 'WATER_BASED') return 'CONVENTIONAL';
   return found;
 }
 

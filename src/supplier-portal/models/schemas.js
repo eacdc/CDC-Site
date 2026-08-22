@@ -913,8 +913,56 @@ export const paperBrandRuleSchema = new Schema({
 // so a correction actually corrects instead of racing the original.
 paperBrandRuleSchema.index({ brand: 1, supplierGroupId: 1 }, { unique: true });
 
+/**
+ * What CDC has settled about an ink, coating or chemical term.
+ *
+ * The ink equivalent of `paperBrandRuleSchema`, and deliberately wider: a paper
+ * rule always answers the same question ("what type is this?"), while an ink
+ * question can be about any of five fields. So the field being answered is
+ * stored alongside the answer.
+ *
+ * `value` may be the sentinel NOT_MEANINGFUL. "RL" trails a dozen Siegwerk rows
+ * and means nothing about the product — and unless that verdict is stored like
+ * any other, the same question arrives with every monthly list.
+ *
+ * `source` separates what a person said from what a search proposed. A rule
+ * learned from research is still confirmed by a person before it is written,
+ * but if one turns out wrong, knowing which ones came from the internet is the
+ * difference between fixing one and re-checking all of them.
+ */
+export const inkTermRuleSchema = new Schema({
+  /** The family, product or term as printed. Matched whole-word, case-insensitively. */
+  subject: { type: String, required: true, trim: true },
+  /** Which line field this answers: materialClass, chemistry, colour, finish, chemicalFunction. */
+  field: { type: String, default: null },
+  value: { type: String, required: true },
+  /** The question kind that produced it, kept so the rule can be shown as it was asked. */
+  kind: { type: String, default: null },
+
+  scope: { type: String, enum: ['SUPPLIER', 'GLOBAL'], default: 'SUPPLIER' },
+  supplierGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', default: null, index: true },
+
+  source: { type: String, enum: ['PERSON', 'RESEARCH'], default: 'PERSON' },
+  /** The evidence, where a search proposed it and a person accepted. */
+  sourceNote: { type: String, default: null },
+
+  /** Where it came from, so a wrong rule can be traced to the answer that made it. */
+  learnedFrom: { type: Schema.Types.ObjectId, ref: 'SpQuoteDocument', default: null },
+  learnedBy: String,
+}, { collection: 'sp_inkTermRules', timestamps: true });
+
+/*
+  One ruling per subject per field per scope. A second answer updates rather
+  than stacks, so a correction actually corrects instead of racing the original.
+
+  The field is part of the key because one subject can carry several answers:
+  "SICURA" is both an INK and UV, and those are two rules, not a conflict.
+*/
+inkTermRuleSchema.index({ subject: 1, field: 1, supplierGroupId: 1 }, { unique: true });
+
 export const SCHEMAS = {
   SpPaperBrandRule: paperBrandRuleSchema,
+  SpInkTermRule: inkTermRuleSchema,
   SpSupplierGroup: supplierGroupSchema,
   SpQuoteDocument: quoteDocumentSchema,
   SpQuoteLine: quoteLineSchema,
