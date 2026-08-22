@@ -32,6 +32,69 @@ function isPlateClosedValue(value) {
   return upper === 'DONE' || upper === 'NOT REQUIRED';
 }
 
+const TOOLING_CANONICAL = {
+  NA: 'NA',
+  'N/A': 'NA',
+  'N.A.': 'NA',
+  OLD: 'Old',
+  ORDERED: 'Ordered',
+  REQUIRED: 'Required',
+  RECEIVED: 'Received',
+};
+
+function normalizeToolingStatus(value) {
+  const t = (value ?? '').toString().trim();
+  if (!t) return 'NA';
+  return TOOLING_CANONICAL[t.toUpperCase()] || t;
+}
+
+function isToolingTypeOpen(value) {
+  return normalizeToolingStatus(value).toUpperCase() === 'REQUIRED';
+}
+
+function computeToolingState(die, block, blanket) {
+  const vals = [die, block, blanket].map(normalizeToolingStatus);
+  if (vals.some((v) => v.toUpperCase() === 'REQUIRED')) return 'Open';
+  if (vals.every((v) => v.toUpperCase() === 'NA')) return 'Not Applicable';
+  return 'Closed';
+}
+
+function computeToolingSummary(die, block, blanket) {
+  const d = normalizeToolingStatus(die);
+  const b = normalizeToolingStatus(block);
+  const bl = normalizeToolingStatus(blanket);
+  if (d === 'NA' && b === 'NA' && bl === 'NA') return null;
+  const parts = [];
+  if (d !== 'NA') parts.push(`Die: ${d}`);
+  if (b !== 'NA') parts.push(`Block: ${b}`);
+  if (bl !== 'NA') parts.push(`Blanket: ${bl}`);
+  return parts.length ? parts.join(', ') : null;
+}
+
+function attachToolingFields(row, source = {}) {
+  const die = normalizeToolingStatus(source.ToolingDie ?? source.toolingDie ?? source.die);
+  const block = normalizeToolingStatus(source.ToolingBlock ?? source.toolingBlock ?? source.block);
+  const blanket = normalizeToolingStatus(source.Blanket ?? source.blanket);
+  return {
+    ...row,
+    ToolingDie: die,
+    ToolingBlock: block,
+    Blanket: blanket,
+    ToolingState: source.ToolingState || computeToolingState(die, block, blanket),
+    ToolingSummary:
+      source.ToolingSummary !== undefined
+        ? source.ToolingSummary
+        : computeToolingSummary(die, block, blanket),
+    ToolingPerson: source.ToolingPerson ?? null,
+    ToolingPlanDate: source.ToolingPlanDate ?? source.ToolingBlanketPlan ?? null,
+    ToolingRemarkText: source.ToolingRemarkText ?? source.ToolingRemark ?? null,
+  };
+}
+
+function isToolingProcessName(operation) {
+  return /^TOOLING\s*-\s*(DIE|BLOCK|BLANKET)$/i.test(String(operation || '').trim());
+}
+
 // ---------- Mongo config ----------
 const MONGO_URI =
   process.env.MONGODB_URI_Approval ||
@@ -218,7 +281,10 @@ async function fetchSqlPendingByUser(databaseKey, username, db) {
     FinalApprovalStatus: r.FinalApprovalStatus ?? null,
     FinalApprovalDate: r.FinalApprovalDate ?? null,
     ledgerid: r.ledgerid ?? null,
-  }));
+    Link: r.Link ?? null,
+    SegmentName: r.SegmentName ?? r.Segment ?? null,
+    CategoryName: r.CategoryName ?? r.Category ?? null,
+  })).map((row, i) => attachToolingFields(row, filtered[i]));
   
   // Return object with both total count and filtered rows
   return {
@@ -281,7 +347,9 @@ async function fetchSqlCompletedByUser(databaseKey, username, fromDate, toDate, 
     ledgerid: r.ledgerid ?? ledgerId,
     FinalApprovalStatus: r.FinalApprovalStatus ?? 'Yes',
     Link: r.Link ?? null,
-  }));
+    SegmentName: r.SegmentName ?? r.Segment ?? null,
+    CategoryName: r.CategoryName ?? r.Category ?? null,
+  })).map((row, i) => attachToolingFields(row, rs[i]));
 }
 
 function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
@@ -301,11 +369,20 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
     JobName: doc.job?.jobName ?? null,
     Executive: doc.executive ?? null,
     Division: doc.job?.segment ?? null,
+    SegmentName: doc.job?.segment ?? null,
+    CategoryName: doc.job?.category ?? null,
     FileReceivedDate: doc.artwork?.fileReceivedDate ?? null,
     Remarks: doc.remarks?.artwork ?? null,
     ID: null,
     ledgerid: null,
     Link: doc.approvals?.soft?.link ?? null,
+    ...attachToolingFields({}, {
+      die: doc.tooling?.die,
+      block: doc.tooling?.block,
+      blanket: doc.tooling?.blanket,
+      ToolingPlanDate: doc.tooling?.planDate,
+      ToolingRemark: doc.tooling?.remark,
+    }),
   };
 
   const approvalRows = [
@@ -349,10 +426,8 @@ function mapMongoCompletedOperations(doc, userKey, fromDate, toDate) {
 
   const isTooling = doc.assignedTo?.toolingUserKey === userKey;
   const toolingActualDate = doc.tooling?.actualDate ?? null;
-  const hasDie = doc.tooling?.die && doc.tooling.die !== 'NA';
-  const hasBlock = doc.tooling?.block && doc.tooling.block !== 'NA';
-  const hasBlanket = doc.tooling?.blanket && doc.tooling.blanket !== 'NA';
-  if (isTooling && (hasDie || hasBlock || hasBlanket) && isDateInRange(toolingActualDate, fromDate, toDate)) {
+  const toolingState = computeToolingState(doc.tooling?.die, doc.tooling?.block, doc.tooling?.blanket);
+  if (isTooling && toolingState === 'Closed' && isDateInRange(toolingActualDate, fromDate, toDate)) {
     rows.push({
       ...baseFields,
       Operation: 'Tooling',
@@ -425,6 +500,7 @@ async function fetchMongoCompletedByUser(db, username, fromDate, toDate) {
             { 'approvals.hard.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
             { 'approvals.machineProof.status': { $in: ['Sent', 'sent', 'Approved', 'approved'] } },
             { 'plate.output': { $in: PLATE_CLOSED_MONGO_VALUES } },
+            { 'tooling.actualDate': { $ne: null } },
           ],
         },
         {
@@ -464,9 +540,9 @@ async function fetchMongoPendingByUser(db, username) {
           // not finally approved
           { 'finalApproval.approved': { $ne: true } },
           
-          // tooling pending conditions
-          { 'tooling.die': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
-          { 'tooling.block': { $in: ['REQUIRED', 'ORDERED', 'Required', 'Ordered'] } },
+          // tooling pending: only Required is open
+          { 'tooling.die': { $in: ['REQUIRED', 'Required'] } },
+          { 'tooling.block': { $in: ['REQUIRED', 'Required'] } },
           { 'tooling.blanket': { $in: ['REQUIRED', 'Required'] } },
           
           // plate pending — open unless Done or Not Required
@@ -497,7 +573,6 @@ async function fetchMongoPendingByUser(db, username) {
     const pendingOperations = [];
 
     const isPrepress = d.assignedTo?.prepressUserKey === userKey;
-    const isTooling = d.assignedTo?.toolingUserKey === userKey;
     const isPlate = d.assignedTo?.plateUserKey === userKey;
 
     console.log('********************d', d);
@@ -525,11 +600,20 @@ async function fetchMongoPendingByUser(db, username) {
       Remarks: d.remarks?.artwork ?? null,
       Status: d.finalApproval?.approved ? 'Approved' : 'Pending',
       Executive: d.executive ?? null, // Executive name from MongoDB
+      SegmentName: d.job?.segment ?? null,
+      CategoryName: d.job?.category ?? null,
     
       // Keep MongoDB-specific fields for reference
       EmployeeUserKey: d.assignedTo?.prepressUserKey ?? null,
       ToolingUserKey: d.assignedTo?.toolingUserKey ?? null,
       PlateUserKey: d.assignedTo?.plateUserKey ?? null,
+      ...attachToolingFields({}, {
+        die: d.tooling?.die,
+        block: d.tooling?.block,
+        blanket: d.tooling?.blanket,
+        ToolingPlanDate: d.tooling?.planDate,
+        ToolingRemark: d.tooling?.remark,
+      }),
     };
     
     // Check for plate output pending (only for plate assignee; Done / Not Required are closed)
@@ -541,36 +625,8 @@ async function fetchMongoPendingByUser(db, username) {
         PlanDate: d.plate?.planDate ?? null,
       });
     }
-    
-    // Check for tooling die pending (only for tooling assignee)
-    const toolingDie = d.tooling?.die;
-    if (isTooling && toolingDie && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingDie)) {
-      pendingOperations.push({
-        ...baseFields,
-        Operation: 'Tooling Die',
-        PlanDate: d.tooling?.planDate ?? null,
-      });
-    }
-    
-    // Check for tooling block pending (only for tooling assignee)
-    const toolingBlock = d.tooling?.block;
-    if (isTooling && toolingBlock && ['REQUIRED', 'ORDERED', 'Required', 'Ordered'].includes(toolingBlock)) {
-      pendingOperations.push({
-        ...baseFields,
-        Operation: 'Tooling Block',
-        PlanDate: d.tooling?.planDate ?? null,
-      });
-    }
-    
-    // Check for tooling blanket pending (only for tooling assignee)
-    const toolingBlanket = d.tooling?.blanket;
-    if (isTooling && toolingBlanket && ['REQUIRED', 'Required'].includes(toolingBlanket)) {
-      pendingOperations.push({
-        ...baseFields,
-        Operation: 'Tooling Blanket',
-        PlanDate: d.tooling?.planDate ?? null,
-      });
-    }
+
+    // Tooling does not get its own worklist rows — statuses ride on the existing operation row.
     
     // Approvals follow prepress assignment only (not tooling/plate-only users)
     // Exclude approvals that are 'Sent' or 'Approved' - they are no longer pending
@@ -706,6 +762,16 @@ router.get('/prepress/pending', async (req, res) => {
       
       // Additional fields for reference
       Link: row.Link || null,          // Link field if exists
+      ToolingDie: row.ToolingDie ?? 'NA',
+      ToolingBlock: row.ToolingBlock ?? 'NA',
+      Blanket: row.Blanket ?? 'NA',
+      ToolingState: row.ToolingState ?? null,
+      ToolingSummary: row.ToolingSummary ?? null,
+      ToolingPerson: row.ToolingPerson ?? null,
+      ToolingPlanDate: row.ToolingPlanDate ?? null,
+      ToolingRemarkText: row.ToolingRemarkText ?? null,
+      SegmentName: row.SegmentName ?? null,
+      CategoryName: row.CategoryName ?? null,
     }));
     
     // Log sample of formatted data to verify metadata fields are included
@@ -807,6 +873,13 @@ router.get('/prepress/completed', async (req, res) => {
       FinalApprovalStatus: row.FinalApprovalStatus ?? null,
       __Site: row.__Site ?? null,
       Link: row.Link ?? null,
+      ToolingDie: row.ToolingDie ?? 'NA',
+      ToolingBlock: row.ToolingBlock ?? 'NA',
+      Blanket: row.Blanket ?? 'NA',
+      ToolingState: row.ToolingState ?? null,
+      ToolingSummary: row.ToolingSummary ?? null,
+      SegmentName: row.SegmentName ?? null,
+      CategoryName: row.CategoryName ?? null,
     }));
 
     res.json({
@@ -825,7 +898,7 @@ router.get('/prepress/completed', async (req, res) => {
 
 // ---------- Update MongoDB Artwork Process Status ----------
 // Updates MongoDB document based on Operation, following SQL stored procedure logic
-async function updateMongoArtworkProcessStatus(db, mongoId, operation, remark, link) {
+async function updateMongoArtworkProcessStatus(db, mongoId, operation, remark, link, toolingStatus, username) {
   const _id = new ObjectId(mongoId);
   const now = new Date();
   
@@ -948,9 +1021,63 @@ async function updateMongoArtworkProcessStatus(db, mongoId, operation, remark, l
     }
 
     appliedStatus = 'Not Required';
+
+  } else if (isToolingProcessName(operation)) {
+    if (toolingStatus === undefined || toolingStatus === null || String(toolingStatus).trim() === '') {
+      throw new Error('@ToolingStatus is required for a Tooling process.');
+    }
+    const canonical = normalizeToolingStatus(toolingStatus);
+    const allowed = new Set(['NA', 'OLD', 'ORDERED', 'REQUIRED', 'RECEIVED']);
+    if (!allowed.has(canonical.toUpperCase())) {
+      throw new Error(`Invalid @ToolingStatus "${toolingStatus}". Use: NA | Old | Ordered | Required | Received.`);
+    }
+
+    const procName = String(operation || '').toUpperCase();
+    let field = 'tooling.blanket';
+    let currentVal = doc.tooling?.blanket;
+    if (procName.includes('DIE')) {
+      field = 'tooling.die';
+      currentVal = doc.tooling?.die;
+    } else if (procName.includes('BLOCK')) {
+      field = 'tooling.block';
+      currentVal = doc.tooling?.block;
+    }
+
+    if (normalizeToolingStatus(currentVal) === canonical) {
+      return {
+        id: mongoId,
+        operation,
+        newStatus: canonical,
+        changed: 0,
+        modifiedCount: 0,
+      };
+    }
+
+    updateFields[field] = canonical;
+    if (remark) {
+      updateFields['tooling.remark'] = remark;
+    }
+
+    const nextDie = field === 'tooling.die' ? canonical : doc.tooling?.die;
+    const nextBlock = field === 'tooling.block' ? canonical : doc.tooling?.block;
+    const nextBlanket = field === 'tooling.blanket' ? canonical : doc.tooling?.blanket;
+    const nextState = computeToolingState(nextDie, nextBlock, nextBlanket);
+    if (nextState === 'Closed') {
+      if (!doc.tooling?.actualDate) {
+        updateFields['tooling.actualDate'] = now;
+        if (username) {
+          const userKey = await usernameToUserKey(db, username);
+          if (userKey) updateFields['assignedTo.toolingUserKey'] = userKey;
+        }
+      }
+    } else {
+      updateFields['tooling.actualDate'] = null;
+    }
+
+    appliedStatus = canonical;
     
   } else {
-    throw new Error(`Unsupported @Process "${operation}". Use: Soft Copy Approval | Hard Copy Approval | Machine Proof | Plate Output | Plate Not Required.`);
+    throw new Error(`Unsupported @Process "${operation}". Use: Soft Copy Approval | Hard Copy Approval | Machine Proof | Plate Output | Plate Not Required | Tooling - Die | Tooling - Block | Tooling - Blanket.`);
   }
   
   // Perform the update
@@ -1020,7 +1147,7 @@ router.post('/prepress/pending/update', async (req, res) => {
     // Process each item
     for (const item of items) {
       try {
-        const { __SourceDB, ID, __MongoId, Operation, ledgerid, Remark, Link } = item;
+        const { __SourceDB, ID, __MongoId, Operation, ledgerid, Remark, Link, ToolingStatus } = item;
         
         // Validate required fields
         if (!__SourceDB || !Operation) {
@@ -1069,7 +1196,7 @@ router.post('/prepress/pending/update', async (req, res) => {
           console.log(`  @Link = '${Link || 'NULL'}'`);
           
           // Update MongoDB document
-          const result = await updateMongoArtworkProcessStatus(db, mongoId, Operation, Remark, Link);
+          const result = await updateMongoArtworkProcessStatus(db, mongoId, Operation, Remark, Link, ToolingStatus, item.username);
           
           console.log(`✅ [UPDATE] Successfully updated MongoDB document ${mongoId}`);
           
@@ -1103,6 +1230,17 @@ router.post('/prepress/pending/update', async (req, res) => {
           request.input('UserID', sql.Int, Number(ledgerid));
           request.input('Remark', sql.NVarChar(500), Remark ? String(Remark) : null);
           request.input('Link', sql.NVarChar(1000), Link ? String(Link) : null);
+          if (isToolingProcessName(Operation)) {
+            if (ToolingStatus === undefined || ToolingStatus === null || String(ToolingStatus).trim() === '') {
+              throw new Error('@ToolingStatus is required for a Tooling process.');
+            }
+            const canonical = normalizeToolingStatus(ToolingStatus);
+            const allowed = new Set(['NA', 'OLD', 'ORDERED', 'REQUIRED', 'RECEIVED']);
+            if (!allowed.has(canonical.toUpperCase())) {
+              throw new Error(`Invalid @ToolingStatus "${ToolingStatus}". Use: NA | Old | Ordered | Required | Received.`);
+            }
+            request.input('ToolingStatus', sql.NVarChar(50), canonical);
+          }
           
           console.log(`[UPDATE] Executing UpdateArtworkProcessStatus for ${databaseKey}:`);
           console.log(`  @ArtworkProcessApprovalID = ${ID}`);
@@ -1110,6 +1248,9 @@ router.post('/prepress/pending/update', async (req, res) => {
           console.log(`  @UserID = ${ledgerid}`);
           console.log(`  @Remark = '${Remark || 'NULL'}'`);
           console.log(`  @Link = '${Link || 'NULL'}'`);
+          if (isToolingProcessName(Operation)) {
+            console.log(`  @ToolingStatus = '${ToolingStatus}'`);
+          }
           
           // Execute the stored procedure
           const result = await request.execute('UpdateArtworkProcessStatus');
