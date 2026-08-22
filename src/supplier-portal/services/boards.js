@@ -17,7 +17,7 @@
 
 import { ensureSupplierPortalReady, QuoteDocument, QuoteLine, SupplierGroup } from '../db/mongo.js';
 import { searchBoardRates } from '../lib/board-search.js';
-import { BOARD_GRADES, gradeLabel } from '../config/board-grades.js';
+import { PAPER_TYPES as BOARD_GRADES, paperTypeLabel as gradeLabel } from '../config/paper-vocabulary.js';
 
 /** Documents whose rates count. */
 const USABLE_STATUSES = ['EXTRACTED', 'NEEDS_REVIEW', 'APPROVED'];
@@ -49,11 +49,32 @@ export async function searchBoards(query = {}) {
     docFilter.$or = [{ effectiveTo: null }, { effectiveTo: { $gte: new Date() } }];
   }
 
-  const docs = await QuoteDocument.find(docFilter)
-    .select('_id supplierGroupId plantScope effectiveFrom effectiveTo quoteStrength materialClass originalFilename')
-    .lean();
+  const fields = '_id supplierGroupId plantScope effectiveFrom effectiveTo quoteStrength materialClass originalFilename';
+  const docs = await QuoteDocument.find(docFilter).select(fields).lean();
 
-  if (!docs.length) return { rows: [], quotes: 0 };
+  /*
+    Excluding an expired quote is right; doing it silently is not.
+
+    CDC read a kraft quote, saw four rates saved, searched for kraft and got an
+    empty screen. The quote was valid to 15 August and the search ran on the
+    22nd, so every row was correctly withheld — and the screen said nothing at
+    all, which reads as "the reading failed" rather than "these prices have
+    lapsed". A buyer then has no idea whether to re-read the document, re-upload
+    it, or ring the supplier for a new one.
+
+    So the excluded rows are counted and reported. Costs one extra query, and
+    only when the answer would otherwise be nothing.
+  */
+  let expired = 0;
+  if (!query.includeExpired) {
+    expired = await QuoteDocument.countDocuments({
+      status: { $in: USABLE_STATUSES },
+      ...(query.plant ? { plantScope: query.plant } : {}),
+      effectiveTo: { $lt: new Date() },
+    });
+  }
+
+  if (!docs.length) return { rows: [], quotes: 0, expiredQuotes: expired };
 
   const byDoc = new Map(docs.map((d) => [String(d._id), d]));
 
@@ -98,7 +119,7 @@ export async function searchBoards(query = {}) {
     };
   });
 
-  return { rows: searchBoardRates(rows, query), quotes: docs.length };
+  return { rows: searchBoardRates(rows, query), quotes: docs.length, expiredQuotes: expired };
 }
 
 /** Supplier names for the documents in hand, in one query rather than per row. */

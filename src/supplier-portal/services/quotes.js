@@ -25,7 +25,7 @@ import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { planPlantSplit, groupLinesByPlant } from './quote-split.js';
-import { resolveSupplyMode } from '../config/board-grades.js';
+import { resolveSupplyMode } from '../config/paper-vocabulary.js';
 import { lastPaidRates } from './erp-items.js';
 import { hammingDistance } from '../../lib/phash.js';
 

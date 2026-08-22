@@ -250,6 +250,13 @@ export const SURFACE_MARKERS = [
   { value: 'SS', markers: ['SS', 'SURFACE SIZED'] },
 ];
 
+export const SUPPLY_MODES = ['MILL_ORDER', 'EX_STOCK'];
+
+const SUPPLY_MODE_SYNONYMS = [
+  ['EX_STOCK', ['FROM STOCK', 'EX STOCK', 'EX-STOCK', 'READY STOCK', 'STOCK']],
+  ['MILL_ORDER', ['MILL ORDER', 'MILL-ORDER', 'MILL DIRECT', 'DO BASED', 'DO']],
+];
+
 // ── 4. Mills ────────────────────────────────────────────────────────────────
 
 /**
@@ -452,6 +459,15 @@ export function unconfirmedTokens(text) {
   if (resolvePaperType(text)) return [];
   const haystack = tokenised(text);
   return UNCONFIRMED_TOKENS.filter((t) => haystack.includes(` ${t} `));
+}
+
+/** MILL_ORDER, EX_STOCK, or null where the document does not distinguish. */
+export function resolveSupplyMode(text) {
+  const haystack = tokenised(text);
+  for (const [mode, synonyms] of SUPPLY_MODE_SYNONYMS) {
+    if (synonyms.some((s) => haystack.includes(` ${tokenised(s).trim()} `))) return mode;
+  }
+  return null;
 }
 
 /** The label a person reads, for a canonical type. */

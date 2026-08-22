@@ -20,7 +20,7 @@
  * matches, and says it was not banded.
  */
 
-import { resolveGrade, gradeLabel } from '../config/board-grades.js';
+import { resolvePaperType as resolveGrade, paperTypeLabel as gradeLabel } from '../config/paper-vocabulary.js';
 
 /**
  * Does `gsm` fall inside this row's band?

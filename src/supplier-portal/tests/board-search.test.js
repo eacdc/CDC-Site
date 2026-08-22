@@ -17,7 +17,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { searchBoardRates, gsmMatches, rowGrade } from '../lib/board-search.js';
-import { resolveGrade, resolveSupplyMode, unknownGradeTokens } from '../config/board-grades.js';
+import {
+  resolvePaperType as resolveGrade, resolveSupplyMode,
+  unconfirmedTokens as unknownGradeTokens,
+} from '../config/paper-vocabulary.js';
 
 /** Sudarshan's recycled board list, verbatim. Rates are per KG. */
 const SUDARSHAN = [
