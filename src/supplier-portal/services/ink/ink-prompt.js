@@ -26,6 +26,7 @@ Reply with JSON only, in the shape you are given.`;
 export const INK_PAYLOAD_SHAPE = `{
   "understanding": "two or three sentences: whose quote this is, what it covers, how it is laid out",
   "notes": ["anything worth a reviewer's attention"],
+  "rowsSeen": 21,
   "payload": {
     "supplierName": "as printed on the letterhead",
     "supplierGstin": null,
@@ -87,6 +88,8 @@ export const INK_RULES = [
   `12. THE MAKER IS NOT THE SUPPLIER. Print Sales is a dealer selling DIC, Boettcher and Capri products. "supplierName" is who sent the quote; "manufacturer" is who makes the row. Set "supplierIsDealer" accordingly.`,
 
   `13. READ EVERY PRICED ROW. A price list with sixty rows produces sixty lines. Do not summarise, sample, or collapse rows that look similar — two rows with the same product name and different prices are two rows, and a reviewer needs to see both to know something is odd.`,
+
+  `14. COUNT THE PRICED ROWS FIRST, before you transcribe any of them, and put that number in "rowsSeen". Then return one line per row. If the two numbers do not match, the difference is reported to a person, so an honest count that exposes a short reading is far more useful than one that agrees with what you wrote.`,
 ];
 
 /**
@@ -102,8 +105,29 @@ export function buildInkMessage({
   answers = [],
   textLayer = null,
   repairErrors = [],
+  page = null,
+  pageCount = null,
+  sectionInForce = null,
 } = {}) {
   const parts = [];
+
+  /*
+    A long price list is read one page at a time, and the model has to be told
+    which page it is looking at or it will describe the whole document from a
+    single image and quietly stop partway.
+  */
+  if (page && pageCount > 1) {
+    parts.push(`THIS IS PAGE ${page} OF ${pageCount}. Read every priced row on THIS page and no others. Do not summarise, and do not stop early: if the page holds twenty rows, return twenty lines.`);
+
+    /*
+      A section heading does not stop at a page break. Print Sales' press
+      chemicals run over two pages and the second page's rows carry no heading
+      of their own — read alone, every one of them loses its rate unit.
+    */
+    if (sectionInForce) {
+      parts.push(`The heading still in force from the previous page is "${sectionInForce}". Rows on this page that sit under no new heading belong to it.`);
+    }
+  }
 
   parts.push('CANONICAL VALUES. Use these exact strings. Anything outside them is rejected.');
   parts.push(`materialClass: ${MATERIAL_CLASSES.map((c) => c.canonical).join(', ')}`);
@@ -145,9 +169,18 @@ export function buildInkMessage({
 
   parts.push(`\nRULES.\n${INK_RULES.join('\n\n')}`);
 
-  if (textLayer) {
-    parts.push('\nTHE DOCUMENT\'S TEXT LAYER, exact characters. The page images show the layout; this shows the spelling. Where they disagree about a character, trust this; where they disagree about which heading a row sits under, trust the image.');
-    parts.push(textLayer);
+  /*
+    A STRING, and it has to be one.
+
+    This was handed the whole `pdfPageTexts` result — an object — and pushed
+    straight into the message, where it rendered as "[object Object]". So the
+    reading had no text layer at all and worked from the page images alone,
+    which is exactly the condition under which rows get missed.
+  */
+  const layer = typeof textLayer === 'string' ? textLayer : textLayer?.text;
+  if (layer) {
+    parts.push('\nTHE TEXT LAYER FOR THIS PAGE, exact characters. The image shows the layout; this shows the spelling. Where they disagree about a character, trust this; where they disagree about which heading a row sits under, trust the image.');
+    parts.push(layer);
   }
 
   parts.push(`\nREPLY IN THIS SHAPE:\n${INK_PAYLOAD_SHAPE}`);

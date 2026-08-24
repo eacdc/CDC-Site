@@ -50,6 +50,130 @@ import { buildInkMessage, INK_SYSTEM_PROMPT } from './ink-prompt.js';
 const MAX_REPAIRS = 2;
 
 /**
+ * Read a long document one page at a time and merge the readings.
+ *
+ * WHAT WENT WRONG WITHOUT THIS. CDC read Print Sales' three-page quotation —
+ * about forty-three priced rows across plates, DIC ink, DIC coating, aqua
+ * coatings, press chemicals and Boettcher chemicals — and got twenty lines. No
+ * error, no warning: the press chemicals and the entire Boettcher section were
+ * absent and the twenty that survived looked perfect.
+ *
+ * One reply has to hold every row of every page, and a long list simply runs
+ * out of room. Per page, no page is long.
+ *
+ * THE HEADING CARRIES ACROSS THE BREAK. Print Sales' press chemicals run over
+ * two pages and the rows on the second carry no heading of their own — read in
+ * isolation, every one of them loses its rate unit, which is one of the two
+ * ways a rate can be silently wrong. So each page is told what heading was
+ * still in force when the previous one ended.
+ *
+ * @param {Object} input
+ * @param {Function} input.send  the model call, injected
+ * @param {Array} input.pages    rendered page images
+ * @param {Array} input.pageTexts per-page text layers, aligned with `pages`
+ * @returns {Promise<Object>} one merged reading
+ */
+export async function readEveryPage({ send, system, pages = [], pageTexts = [], buildMessage }) {
+  /*
+    A single page, or none at all, is read in one call exactly as before. Paging
+    a one-page document would cost the same and gain nothing.
+  */
+  if (pages.length <= 1) {
+    const message = buildMessage({ textLayer: pageTexts[0] ?? null });
+    return send({ system, message, pages });
+  }
+
+  const readings = [];
+  let sectionInForce = null;
+
+  for (let i = 0; i < pages.length; i += 1) {
+    const message = buildMessage({
+      textLayer: pageTexts[i] ?? null,
+      page: i + 1,
+      pageCount: pages.length,
+      sectionInForce,
+    });
+
+    // eslint-disable-next-line no-await-in-loop
+    const reading = await send({ system, message, pages: [pages[i]] });
+    readings.push(reading);
+
+    // The last heading this page actually used, to hand to the next one.
+    const lines = reading?.payload?.lines || [];
+    for (const line of lines) {
+      if (line?.section) sectionInForce = line.section;
+    }
+  }
+
+  return mergeReadings(readings);
+}
+
+/**
+ * Several page readings as one.
+ *
+ * Document-level facts come from the first page that states them — the
+ * letterhead, the validity date and the terms are printed once, usually on the
+ * first page and sometimes on the last.
+ *
+ * Lines are concatenated in page order and renumbered, because every page
+ * numbers its own rows from one and three lines numbered 1 would collide the
+ * moment anything keyed on the number.
+ *
+ * `rowsSeen` is summed, so the shortfall check works across the whole document
+ * rather than page by page.
+ */
+export function mergeReadings(readings = []) {
+  const real = readings.filter(Boolean);
+  if (!real.length) return {};
+  if (real.length === 1) return real[0];
+
+  const payloads = real.map((r) => r.payload || {});
+  const merged = {};
+
+  // Every document-level field, taken from the first page that has one.
+  for (const payload of payloads) {
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === 'lines') continue;
+      if (merged[key] == null && value != null) merged[key] = value;
+    }
+  }
+
+  merged.lines = payloads
+    .flatMap((p) => p.lines || [])
+    .map((line, index) => ({ ...line, lineNo: index + 1 }));
+
+  const rowsSeen = real.reduce((total, r) => total + (Number(r.rowsSeen) || 0), 0);
+
+  return {
+    // The first page's description of the document is the one worth keeping:
+    // it names the supplier and what the quote covers, where later pages
+    // describe only their own contents.
+    understanding: real.find((r) => r.understanding)?.understanding || null,
+    notes: [...new Set(real.flatMap((r) => r.notes || []))],
+    rowsSeen: rowsSeen || null,
+    payload: merged,
+  };
+}
+
+/**
+ * The rows a reading claims to have seen but did not return.
+ *
+ * A reading that stops early is indistinguishable from a short document unless
+ * something counts, and this is the thing that counts. It reports rather than
+ * repairs: asking the model to try again would as likely produce a different
+ * twenty rows as the missing twenty-three, and a person who can see the page
+ * knows immediately which section is absent.
+ */
+export function shortfallNote(reading) {
+  const seen = Number(reading?.rowsSeen);
+  const got = (reading?.payload?.lines || []).length;
+  if (!Number.isFinite(seen) || seen <= got) return null;
+
+  return `Counted ${seen} priced rows on this document but only read ${got}. `
+    + `${seen - got} row(s) are missing — check which section was dropped before approving.`;
+}
+
+/**
  * A term CDC has ruled means nothing about the product.
  *
  * "RL" trails a dozen Siegwerk rows and "MV --AB" sits inside two varnish
@@ -337,11 +461,29 @@ export async function interpretInkQuote({
   let repairErrors = [];
   let last = null;
 
-  for (let round = 0; round <= MAX_REPAIRS; round += 1) {
-    const message = buildInkMessage({ knownTerms, previousSummary, answers, textLayer, repairErrors });
+  /*
+    Per-page text, aligned with the page images. `pdfPageTexts` returns the
+    whole result object; the string a message needs is `.text`, and passing the
+    object rendered as "[object Object]" — so the reading worked from the images
+    alone, which is exactly the condition under which rows get missed.
+  */
+  const pageTexts = Array.isArray(textLayer?.pages) && textLayer.pages.length === pages.length
+    ? textLayer.pages
+    : [typeof textLayer === 'string' ? textLayer : textLayer?.text || null];
 
+  for (let round = 0; round <= MAX_REPAIRS; round += 1) {
     // eslint-disable-next-line no-await-in-loop
-    const reply = await send({ system: INK_SYSTEM_PROMPT, message, pages });
+    const reply = await readEveryPage({
+      send,
+      system: INK_SYSTEM_PROMPT,
+      pages,
+      pageTexts,
+      buildMessage: (perPage) => buildInkMessage({
+        knownTerms, previousSummary, answers, repairErrors, ...perPage,
+      }),
+    });
+
+    const short = shortfallNote(reply);
 
     const withSections = applySectionFacts(reply?.payload || {});
     const withKnown = resolveKnownFields(withSections.payload);
@@ -351,7 +493,12 @@ export async function interpretInkQuote({
     last = {
       stage: gate.stage,
       understanding: reply?.understanding || null,
-      notes: reply?.notes || [],
+      /*
+        The shortfall leads the notes, because it is the one thing on this
+        panel that says the table below is incomplete. Everything else there
+        describes what WAS read.
+      */
+      notes: [...(short ? [short] : []), ...(reply?.notes || [])],
       // eslint-disable-next-line no-await-in-loop
       questions: await withResearch(gate.gaps, research),
       payload: gate.data,

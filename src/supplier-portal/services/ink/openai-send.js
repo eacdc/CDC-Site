@@ -49,6 +49,14 @@ export async function sendToOpenAI({ system, message, pages = [] }) {
     model: MODEL,
     messages: [{ role: 'system', content: system }, { role: 'user', content }],
     response_format: { type: 'json_object' },
+    /*
+      ASKED FOR EXPLICITLY, because the default is not generous enough for a
+      price list. Chat completions default to a few thousand output tokens, and
+      one line of this payload — with its name, code, section, class, chemistry,
+      colour and pack — runs to well over a hundred. Forty rows does not fit in
+      the default, and what comes back is a shorter list rather than an error.
+    */
+    max_tokens: 16384,
   });
 
   return parseReply(response, 'interpreting an ink quote');
@@ -152,8 +160,26 @@ function buildResearchMessage(gaps) {
 }
 
 function parseReply(response, doing) {
-  const text = response.choices?.[0]?.message?.content;
+  const choice = response.choices?.[0];
+  const text = choice?.message?.content;
   if (!text) throw new Error(`Empty response from OpenAI while ${doing}.`);
+
+  /*
+    THE MODEL SAYS WHEN IT RAN OUT OF ROOM, and this is the only place that
+    hears it. `finish_reason: 'length'` means the reply was cut off — and in
+    JSON mode the result can still parse, because the closing braces get added.
+    A silently shortened price list is then indistinguishable from a short one.
+
+    So it is an error rather than a note. A partial reading that reaches the
+    review table looks finished, and CDC would be approving rates for a document
+    whose second half was never read.
+  */
+  if (choice.finish_reason === 'length') {
+    throw new Error(
+      `The model ran out of room while ${doing} — the reply was cut off, so some rows are missing. `
+      + 'Split the document into fewer pages per file, or raise the output allowance.',
+    );
+  }
 
   try {
     return JSON.parse(text);

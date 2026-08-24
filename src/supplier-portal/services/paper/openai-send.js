@@ -55,10 +55,34 @@ export async function sendToOpenAI({ system, message, pages = [] }) {
       { role: 'user', content },
     ],
     response_format: { type: 'json_object' },
+    /*
+      ASKED FOR EXPLICITLY. Chat completions default to a few thousand output
+      tokens, and one line of this payload runs to well over a hundred — so a
+      long price list does not fit in the default, and what comes back is a
+      shorter list rather than an error. The ink reader lost twenty-three of
+      forty-three rows this way before anyone noticed; Sudarshan's lists are
+      the same length.
+    */
+    max_tokens: 16384,
   });
 
-  const text = response.choices?.[0]?.message?.content;
+  const choice = response.choices?.[0];
+  const text = choice?.message?.content;
   if (!text) throw new Error('Empty response from OpenAI while interpreting a paper quote.');
+
+  /*
+    THE MODEL SAYS WHEN IT RAN OUT OF ROOM, and this is the only place that
+    hears it. In JSON mode a cut-off reply can still parse, because the closing
+    braces get added — so a silently shortened price list is indistinguishable
+    from a short one. An error, not a note: a partial reading that reaches the
+    review table looks finished.
+  */
+  if (choice.finish_reason === 'length') {
+    throw new Error(
+      'The model ran out of room while reading this quote — the reply was cut off, so some rows '
+      + 'are missing. Split the document into fewer pages per file, or raise the output allowance.',
+    );
+  }
 
   try {
     return JSON.parse(text);
