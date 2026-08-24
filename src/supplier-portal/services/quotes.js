@@ -1680,6 +1680,7 @@ function collectBlocking(doc, lines) {
     ...(doc.checks || []),
     ...lines.flatMap((l) => l.checks || []),
     ...(paperInterpretationCheck(doc) ? [paperInterpretationCheck(doc)] : []),
+    ...(inkInterpretationCheck(doc) ? [inkInterpretationCheck(doc)] : []),
   ];
   return all.filter((c) => !c.passed && c.severity === 'BLOCK' && !c.overrideReason);
 }
@@ -1710,6 +1711,50 @@ export function paperInterpretationCheck(doc) {
       NEEDS_INPUT: 'This paper quote has been read but still has open questions — answer them before approving.',
       INTERPRETING: 'This paper quote is still being read.',
       FAILED: 'This paper quote could not be read — fix the error above before approving.',
+    }[stage] || undefined,
+    actualValue: stage || 'not read',
+  });
+}
+
+/**
+ * Classifications that must go through the ink reader before approval.
+ *
+ * NOTE WHAT IS ABSENT: `CONSUMABLE`. The classifier uses that word for tape,
+ * strapping, stretch film, stitching wire and cartons — none of which this
+ * reader knows anything about. Blocking them here would stop CDC approving a
+ * tape quote until somebody ran an ink reading on it that could only produce
+ * questions with no answers.
+ *
+ * The ink panel still OFFERS itself on a consumable quote, because a pressroom
+ * consumable — sponge, anti set-off powder, a Pantone guide — is classified the
+ * same way and does belong here. Offering is cheap and reversible; blocking is
+ * neither.
+ */
+const INK_READER_CLASSES = ['INK', 'PLATE', 'CHEMICAL', 'INK_COATING'];
+
+/**
+ * An ink quote that has not been read as one, or null.
+ *
+ * COMPUTED, NEVER STORED, for the same reason as its paper twin: it stops being
+ * true the moment interpretation succeeds, an event that touches neither
+ * extraction nor the stored checks. Stored, it would go stale in the one
+ * direction that matters — still blocking a document that has since been read.
+ *
+ * What it prevents is specific. The general extractor produces a plausible
+ * table of product names and prices with no chemistry and no colour on any row.
+ * That table is approvable and useless: every rate in it would be filed where
+ * no comparison can reach it, and nothing on the screen would say so.
+ */
+export function inkInterpretationCheck(doc) {
+  if (!INK_READER_CLASSES.includes(doc?.materialClass)) return null;
+  if (doc?.interpretation?.stage === 'INTERPRETED') return null;
+
+  const stage = doc?.interpretation?.stage;
+  return check('EXT014', false, {
+    message: {
+      NEEDS_INPUT: 'This ink quote has been read but still has open questions — answer them before approving.',
+      INTERPRETING: 'This ink quote is still being read.',
+      FAILED: 'This ink quote could not be read — fix the error above before approving.',
     }[stage] || undefined,
     actualValue: stage || 'not read',
   });

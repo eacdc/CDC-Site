@@ -55,6 +55,7 @@ export const VALIDATIONS = {
    * would be a reason for a decision nobody is in a position to make.
    */
   EXT013: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'This is a paper or board quote and has not been read as one — run "Read as a paper quote" first' },
+  EXT014: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'This is an ink, coating, chemical or plate quote and has not been read as one — run "Read as ink / coating / chemical / consumable" first' },
   /**
    * INFO, not WARN: nothing is wrong with a scan, and demanding a typed reason
    * for every photocopied price list would train people to type one without
