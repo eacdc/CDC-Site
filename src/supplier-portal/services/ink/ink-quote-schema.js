@@ -32,7 +32,7 @@
 import { z } from 'zod';
 import {
   MATERIAL_CLASSES, CHEMISTRIES, INK_ROLES, COLOURS, COATING_FINISHES,
-  COATING_PROPERTIES, CHEMICAL_FUNCTIONS, RATE_UOMS,
+  COATING_PROPERTIES, CHEMICAL_FUNCTIONS, RATE_UOMS, PACK_UOMS,
   unconfirmedInkTokens, comparisonKey,
 } from '../../config/ink-vocabulary.js';
 
@@ -79,9 +79,34 @@ const text = () => z.preprocess((v) => {
  */
 export const PackSchema = z.object({
   size: num(),
-  uom: z.enum(['KG', 'LTR', 'PC']).nullable().default(null),
+  /*
+    ACCEPTS WHAT DOCUMENTS PRINT, and normalises rather than rejecting.
+
+    The first cut allowed KG, LTR and PC only. Print Sales prints "(500 ML)" and
+    "(250 ML)", so a forty-three row reading failed validation twice over a
+    bottle size — a detail that changes no rate and no comparison. Rejecting a
+    whole document for it is the wrong trade by a wide margin.
+
+    An unrecognised spelling becomes null for the same reason: the pack is
+    context for a person, never arithmetic, so not knowing it costs nothing that
+    losing the document does not cost far more of.
+  */
+  uom: z.preprocess((v) => {
+    if (v == null || v === '') return null;
+    const found = PACK_UOM_SPELLINGS.find(([pattern]) => pattern.test(String(v).trim()));
+    return found ? found[1] : null;
+  }, z.enum(PACK_UOMS).nullable().default(null)),
   inBaseUom: num(),
 });
+
+/** The spellings a quote actually uses, mapped to the unit kept on the line. */
+const PACK_UOM_SPELLINGS = [
+  [/^KGS?$/i, 'KG'],
+  [/^(GMS?|GRAMS?)$/i, 'GM'],
+  [/^(LTRS?|LITRES?|LITERS?|L)$/i, 'LTR'],
+  [/^ML$/i, 'ML'],
+  [/^(PCS?|NOS?|UNITS?|PIECES?)$/i, 'PC'],
+];
 
 /**
  * A plate, which is priced per piece by its dimensions.
@@ -207,7 +232,19 @@ export const InkLineSchema = z.object({
   if (line.finish && line.materialClass && line.materialClass !== 'COATING') {
     ctx.addIssue({ code: 'custom', path: ['finish'], message: `Coating finish on a ${line.materialClass} row` });
   }
-  if (line.chemicalFunction && line.materialClass && line.materialClass !== 'PRESS_CHEMICAL') {
+  /*
+    A CONSUMABLE MAY HAVE A FUNCTION, and refusing one was wrong.
+
+    "ANTI SET OFF VERN POWDER" is a consumable by any reading — it is a powder,
+    not a liquid chemical — and ANTI_SET_OFF is exactly what it does. The rule
+    was written to catch misfiling and instead rejected a forty-three row
+    document over a row it had understood correctly.
+
+    Ink, coating and plate rows still may not carry one: there the field really
+    would mean something has been put in the wrong place.
+  */
+  const FUNCTION_ALLOWED = ['PRESS_CHEMICAL', 'CONSUMABLE'];
+  if (line.chemicalFunction && line.materialClass && !FUNCTION_ALLOWED.includes(line.materialClass)) {
     ctx.addIssue({ code: 'custom', path: ['chemicalFunction'], message: `Chemical function on a ${line.materialClass} row` });
   }
   if (line.plate && line.materialClass && line.materialClass !== 'PLATE') {

@@ -368,10 +368,24 @@ test('the pack size is not the rate unit', () => {
   assert.equal(resolveRateUom('PRESS CHEMICALS RATE PER LTR.'), 'LTR');
 });
 
-test('millilitres and grams stay comparable as packs', () => {
-  assert.deepEqual(parsePack('DEEP KLEEN SHAMPOO (500 ML)'), { size: 500, uom: 'LTR', inBaseUom: 0.5 });
-  assert.deepEqual(parsePack('BLANKET SAVER (250 ML)'), { size: 250, uom: 'LTR', inBaseUom: 0.25 });
+test('a pack keeps the unit the document printed', () => {
+  /*
+    ML WAS FOLDED INTO LTR HERE, and the size was not. So "(500 ML)" came back
+    as { size: 500, uom: 'LTR' } and the review table offered a reviewer "500
+    LTR pack" for a half-litre bottle — a number that is wrong by a thousand and
+    reads as perfectly ordinary.
+
+    The size and the unit must agree with each other and with the page. The
+    conversion lives beside them in `inBaseUom`, where it is clearly derived and
+    can be checked.
+  */
+  assert.deepEqual(parsePack('DEEP KLEEN SHAMPOO (500 ML)'), { size: 500, uom: 'ML', inBaseUom: 0.5 });
+  assert.deepEqual(parsePack('BLANKET SAVER (250 ML)'), { size: 250, uom: 'ML', inBaseUom: 0.25 });
   assert.deepEqual(parsePack('IN/AL5354-45 AQUA MATT (20 KG)'), { size: 20, uom: 'KG', inBaseUom: 20 });
+
+  // And packs in different units stay comparable to each other through the
+  // base figure: a 250 ML bottle is a quarter of a litre against a 20 LTR can.
+  assert.equal(parsePack('BLANKET SAVER (250 ML)').inBaseUom * 80, parsePack('ECNO WASH KR (20 LTR)').inBaseUom);
 });
 
 test('a product with no stated pack has none, rather than a guessed one', () => {

@@ -408,3 +408,82 @@ test('next month starts from how last month was read', () => {
   assert.match(summary, /SICURA PLAST 770HS -> INK \/ UV/);
   assert.match(summary, /VEGA SPRINT -> INK \/ CONVENTIONAL/);
 });
+
+// ── Rows that a real document produced and the schema wrongly refused ────────
+
+/**
+ * Three validation errors on one reading of Print Sales' quotation, all of them
+ * the schema being stricter than the world:
+ *
+ *   lines.20.chemicalFunction: Chemical function on a CONSUMABLE row
+ *   lines.34.pack.uom: Invalid option: expected one of "KG"|"LTR"|"PC"
+ *   lines.35.pack.uom: Invalid option: expected one of "KG"|"LTR"|"PC"
+ *
+ * A whole forty-three row document was rejected over a powder and two bottle
+ * sizes — details that change no rate and no comparison. The trade is badly
+ * wrong in that direction: a schema exists to stop a bad rate being stored, not
+ * to stop a good document being read.
+ */
+
+test('a consumable may have a function', () => {
+  // "ANTI SET OFF VERN POWDER" is a consumable by any reading — a powder, not a
+  // liquid chemical — and ANTI_SET_OFF is exactly what it does. The rule was
+  // written to catch misfiling and instead rejected a row it had understood.
+  const ok = validateInkQuote(quote([line({
+    productName: 'ANTI SET OFF VERN POWDER',
+    materialClass: 'CONSUMABLE',
+    chemicalFunction: 'ANTI_SET_OFF',
+    rate: 375,
+  })]));
+  assert.equal(ok.ok, true);
+
+  // An ink or a coating still may not carry one: there it really would mean
+  // something has been put in the wrong place.
+  assert.equal(validateInkQuote(quote([line({
+    materialClass: 'INK', chemicalFunction: 'WASH',
+  })])).ok, false);
+});
+
+test('a pack size in millilitres is read, not refused', () => {
+  const ok = validateInkQuote(quote([
+    line({ productName: 'DEEP KLEEN SHAMPOO (500 ML)', pack: { size: 500, uom: 'ML' } }),
+    line({ lineNo: 2, productName: 'BLANKET SAVER (250 ML)', pack: { size: 250, uom: 'ml' } }),
+  ]));
+
+  assert.equal(ok.ok, true);
+  assert.equal(ok.data.lines[0].pack.uom, 'ML');
+  // Case and plural spellings are normalised rather than rejected.
+  assert.equal(ok.data.lines[1].pack.uom, 'ML');
+});
+
+test('every spelling a quote uses for a pack is accepted', () => {
+  for (const [printed, expected] of [
+    ['KGS', 'KG'], ['kg', 'KG'], ['GM', 'GM'], ['grams', 'GM'],
+    ['LTRS', 'LTR'], ['Litre', 'LTR'], ['L', 'LTR'], ['ML', 'ML'],
+    ['PCS', 'PC'], ['NOS', 'PC'], ['unit', 'PC'],
+  ]) {
+    const parsed = validateInkQuote(quote([line({ pack: { size: 1, uom: printed } })]));
+    assert.equal(parsed.ok, true, printed);
+    assert.equal(parsed.data.lines[0].pack.uom, expected, printed);
+  }
+});
+
+test('an unrecognised pack unit becomes null rather than failing the document', () => {
+  /*
+    The pack is context for a person, never arithmetic. Not knowing it costs
+    nothing; losing a forty-three row reading over it costs the whole document.
+  */
+  const ok = validateInkQuote(quote([line({ pack: { size: 1, uom: 'DRUM' } })]));
+  assert.equal(ok.ok, true);
+  assert.equal(ok.data.lines[0].pack.uom, null);
+  // The size is still there, because the document did say one.
+  assert.equal(ok.data.lines[0].pack.size, 1);
+});
+
+test('a rate that is wrong is still refused', () => {
+  // The looseness above is about details that change no comparison. Anything
+  // that decides a price stays exactly as strict as it was.
+  assert.equal(validateInkQuote(quote([line({ rate: 0 })])).ok, false);
+  assert.equal(validateInkQuote(quote([line({ materialClass: 'INK', chemistry: 'WATER_BASED' })])).ok, false);
+  assert.equal(validateInkQuote(quote([line({ materialClass: 'COATING', colour: 'CYAN' })])).ok, false);
+});

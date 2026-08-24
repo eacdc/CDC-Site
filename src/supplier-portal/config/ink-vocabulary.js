@@ -408,12 +408,24 @@ const RATE_UOM_SYNONYMS = [
  */
 const PACK_PATTERN = /(\d+(?:\.\d+)?)\s*(KGS?|LTRS?|LITRES?|LITERS?|ML|GMS?|GRAMS?|PCS?|NOS?)\b/i;
 
+/**
+ * How a pack unit is spelled, what it is called here, and what it is worth in
+ * the base unit.
+ *
+ * THE UNIT STAYS AS PRINTED. An earlier cut folded ML into LTR at parse time,
+ * so "DEEP KLEEN SHAMPOO (500 ML)" became `{ size: 500, uom: 'LTR' }` and the
+ * review table offered a reviewer "500 LTR pack" for a half-litre bottle. The
+ * size and the unit have to agree with each other and with the document; the
+ * conversion belongs in `inBaseUom`, beside them and clearly derived.
+ */
+export const PACK_UOMS = ['KG', 'GM', 'LTR', 'ML', 'PC'];
+
 const PACK_UOM_CANONICAL = [
   [/^KGS?$/i, 'KG', 1],
-  [/^(LTRS?|LITRES?|LITERS?)$/i, 'LTR', 1],
-  [/^ML$/i, 'LTR', 0.001],
-  [/^(GMS?|GRAMS?)$/i, 'KG', 0.001],
-  [/^(PCS?|NOS?)$/i, 'PC', 1],
+  [/^(LTRS?|LITRES?|LITERS?|L)$/i, 'LTR', 1],
+  [/^ML$/i, 'ML', 0.001],
+  [/^(GMS?|GRAMS?)$/i, 'GM', 0.001],
+  [/^(PCS?|NOS?|UNITS?)$/i, 'PC', 1],
 ];
 
 // ── 9. What nobody has confirmed ────────────────────────────────────────────
@@ -630,8 +642,10 @@ export function resolveRateUom(text) {
 /**
  * The pack a product is sold in — `{ size, uom, inBaseUom }` — or null.
  *
- * "(500 ML)" becomes half a litre and "(250 ML)" a quarter, so pack sizes
- * remain comparable to each other without ever touching the rate.
+ * The size and unit are kept exactly as the document prints them, and
+ * `inBaseUom` carries what that is worth in kilos or litres — so "(500 ML)"
+ * reads back as 500 ML and is still comparable to a 20 LTR can, without either
+ * number ever touching the rate.
  */
 export function parsePack(text) {
   const match = String(text ?? '').match(PACK_PATTERN);
