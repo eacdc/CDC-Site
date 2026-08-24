@@ -178,7 +178,23 @@ export const quoteDocumentSchema = new Schema({
    */
   materialClass: {
     type: String,
-    enum: ['PAPER_BOARD', 'INK', 'FILM', 'ADHESIVE', 'PLATE', 'CHEMICAL', 'CONSUMABLE', 'OTHER'],
+    /*
+      TWO KINDS OF VALUE LIVE HERE, and the difference is worth knowing.
+
+      The first eight are what the CLASSIFIER guesses from a quick look at the
+      document. INK_COATING is different: no classifier ever produces it. It is
+      what the ink reader WRITES BACK once a document has been read properly,
+      the same way PAPER_BOARD doubles as both a guess and a verdict.
+
+      It was missing from this list, so the write that marks a successful ink
+      reading threw — after the model call, after the questions were answered,
+      at the last step. The reading was done and correct and the document was
+      left looking as though it had failed.
+    */
+    enum: [
+      'PAPER_BOARD', 'INK', 'FILM', 'ADHESIVE', 'PLATE', 'CHEMICAL', 'CONSUMABLE', 'OTHER',
+      'INK_COATING',
+    ],
     default: null,
   },
 
