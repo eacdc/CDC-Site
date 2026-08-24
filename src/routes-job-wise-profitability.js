@@ -155,7 +155,41 @@ function serializeRow(row, columns, billKey, costKey) {
 		gpPercent = Number(((billValue - totalCost) / billValue).toFixed(2));
 	}
 	out['GP %'] = gpPercent;
+	out['Exception Cause'] = computeExceptionCause(out);
 	return out;
+}
+
+function pickValue(row, ...names) {
+	const keys = Object.keys(row || {});
+	for (const name of names) {
+		const want = String(name).toLowerCase();
+		for (const k of keys) {
+			if (String(k).toLowerCase() === want) return toNumber(row[k]);
+		}
+	}
+	return null;
+}
+
+/**
+ * Priority:
+ * 1) Paper issued > 20% more than required → excess paper issued
+ * 2) Del qty < 90% of order qty → Short Delivery
+ * 3) Else → Low pricing
+ */
+function computeExceptionCause(row) {
+	const issued = pickValue(row, 'IssuedWt', 'Issued Wt', 'Paper Issued');
+	const required = pickValue(row, 'TotalBookedPaperWt', 'Total Booked Paper Wt', 'Booked Paper Wt');
+	if (required != null && required > 0 && issued != null && issued > required * 1.2) {
+		return 'excess paper issued';
+	}
+
+	const orderQty = pickValue(row, 'OrderQty', 'Order Qty');
+	const delQty = pickValue(row, 'Del Qty', 'DelQty', 'Delivery Qty');
+	if (orderQty != null && orderQty > 0 && delQty != null && delQty < orderQty * 0.9) {
+		return 'Short Delivery';
+	}
+
+	return 'Low pricing';
 }
 
 router.get('/job-wise-profitability', async (req, res) => {
@@ -198,8 +232,11 @@ router.get('/job-wise-profitability', async (req, res) => {
 		const costKey = findColumnKey(baseColumns, 'Total Cost');
 
 		const columns = baseColumns.includes('GP %')
-			? baseColumns
+			? baseColumns.slice()
 			: baseColumns.concat(['GP %']);
+		if (!columns.includes('Exception Cause')) {
+			columns.push('Exception Cause');
+		}
 
 		const records = rawRows.map((row) => serializeRow(row, baseColumns, billKey, costKey));
 
