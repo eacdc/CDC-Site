@@ -14,7 +14,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withTemperatureFallback, isTemperatureRefusal } from '../services/extraction/openai-provider.js';
+import {
+  withTemperatureFallback, isTemperatureRefusal, withMaxTokensFallback, isMaxTokensRefusal,
+} from '../services/extraction/openai-provider.js';
 
 /** The refusal exactly as the API sends it. */
 function temperatureError() {
@@ -137,4 +139,153 @@ test('the error matcher recognises the real message and nothing else', () => {
     'a 500 mentioning temperature is a server fault, not a parameter problem',
   );
   assert.equal(isTemperatureRefusal(null), false);
+});
+
+// ── The same problem, a second time ─────────────────────────────────────────
+
+/**
+ * `max_tokens` versus `max_completion_tokens`.
+ *
+ * An output cap was added to stop long price lists being truncated silently,
+ * and the reasoning model in use answered
+ *
+ *   400 Unsupported parameter: 'max_tokens' is not supported with this model.
+ *   Use 'max_completion_tokens' instead
+ *
+ * — so the fix for a silent failure became a loud one on every read. Renaming
+ * the parameter outright would only move the 400: the older models this project
+ * also runs against accept the old name and not the new one.
+ */
+
+const refusal = () => Object.assign(
+  new Error("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."),
+  { status: 400 },
+);
+
+test('the old name is tried first, because most models take it', async () => {
+  const sent = [];
+  await withMaxTokensFallback(
+    { model: 'gpt-4o', max_tokens: 16384 },
+    async (body) => { sent.push(body); return 'ok'; },
+    new Set(),
+  );
+  assert.equal(sent[0].max_tokens, 16384);
+  assert.equal(sent[0].max_completion_tokens, undefined);
+});
+
+test('a refusal is answered by renaming, not by dropping the cap', async () => {
+  // Dropping it would restore the silent truncation this cap exists to prevent.
+  const sent = [];
+  const seen = new Set();
+
+  await withMaxTokensFallback(
+    { model: 'o-series', max_tokens: 16384, messages: [] },
+    async (body) => {
+      sent.push(body);
+      if (body.max_tokens != null) throw refusal();
+      return 'ok';
+    },
+    seen,
+  );
+
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].max_completion_tokens, 16384);
+  assert.equal(sent[1].max_tokens, undefined);
+  // And everything else on the request survives the rename.
+  assert.deepEqual(sent[1].messages, []);
+});
+
+test('the rename is remembered, so it costs one call per model per process', async () => {
+  const seen = new Set();
+  let calls = 0;
+
+  const send = async (body) => {
+    calls += 1;
+    if (body.max_tokens != null) throw refusal();
+    return 'ok';
+  };
+
+  await withMaxTokensFallback({ model: 'o-series', max_tokens: 100 }, send, seen);
+  await withMaxTokensFallback({ model: 'o-series', max_tokens: 100 }, send, seen);
+
+  // Two attempts for the first read, one for the second.
+  assert.equal(calls, 3);
+});
+
+test('a request with no cap is never retried', async () => {
+  // There is nothing to rename, and spending a retry to discover that is waste.
+  let calls = 0;
+  await withMaxTokensFallback({ model: 'gpt-4o' }, async () => { calls += 1; return 'ok'; }, new Set());
+  assert.equal(calls, 1);
+});
+
+test('an unrelated 400 is not mistaken for the rename', async () => {
+  // A bad model id and a malformed message are both 400s. Retrying those under
+  // a different parameter name turns one clear error into two confusing ones.
+  assert.equal(isMaxTokensRefusal(Object.assign(new Error('The model `nope` does not exist'), { status: 400 })), false);
+  assert.equal(isMaxTokensRefusal(Object.assign(new Error("Unsupported value: 'temperature'"), { status: 400 })), false);
+  assert.equal(isMaxTokensRefusal(refusal()), true);
+
+  await assert.rejects(
+    withMaxTokensFallback(
+      { model: 'x', max_tokens: 10 },
+      async () => { throw Object.assign(new Error('nope'), { status: 400 }); },
+      new Set(),
+    ),
+    /nope/,
+  );
+});
+
+test('a model that refuses both parameters still converges', async () => {
+  /*
+    The real case, and the one neither fallback handles alone: a reasoning model
+    rejects `temperature` AND wants `max_completion_tokens`. This composes them
+    exactly as `createCompletion` does — the temperature fallback on the
+    outside, the cap rename on the inside — and asserts it settles rather than
+    ping-ponging.
+
+    It converges because both fallbacks REMEMBER. Without the memory the retry
+    that fixes one parameter reintroduces the other, and the pair never agree.
+  */
+  const noTemperature = new Set();
+  const wantsNewName = new Set();
+  const sent = [];
+
+  const api = async (body) => {
+    sent.push({ ...body });
+    if (body.max_tokens != null) {
+      throw Object.assign(
+        new Error("Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."),
+        { status: 400 },
+      );
+    }
+    if (body.temperature != null) {
+      throw Object.assign(
+        new Error("Unsupported value: 'temperature' does not support 0 with this model."),
+        { status: 400 },
+      );
+    }
+    return 'ok';
+  };
+
+  const result = await withTemperatureFallback(
+    'reasoning-model',
+    { max_tokens: 16384, messages: [] },
+    (body) => withMaxTokensFallback(body, api, wantsNewName),
+    noTemperature,
+  );
+
+  assert.equal(result, 'ok');
+
+  // The last request carries the cap under its new name and no temperature —
+  // the point being that the cap SURVIVES. Dropping it to get past the 400
+  // would restore the silent truncation it was added to prevent.
+  const last = sent[sent.length - 1];
+  assert.equal(last.max_completion_tokens, 16384);
+  assert.equal(last.max_tokens, undefined);
+  assert.equal(last.temperature, undefined);
+
+  // And both refusals are now remembered, so the next read starts correct.
+  assert.ok(noTemperature.has('reasoning-model'));
+  assert.ok(wantsNewName.has('reasoning-model'));
 });

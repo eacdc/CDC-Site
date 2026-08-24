@@ -53,6 +53,23 @@ const TEXT_MODEL = process.env.SP_ADJUDICATION_MODEL || 'gpt-4o';
 const rejectsTemperature = new Set();
 
 /**
+ * Models that call the output cap `max_completion_tokens`, remembered likewise.
+ *
+ * The second instance of exactly the same problem, and it arrived the same way:
+ * an output cap was added to stop long price lists being silently truncated,
+ * and the reasoning model in use answered
+ * `400 Unsupported parameter: 'max_tokens' is not supported with this model.
+ * Use 'max_completion_tokens' instead` — so the fix for one silent failure
+ * became a loud one on every read.
+ *
+ * Renaming the parameter outright is not the answer: the older models this
+ * project also runs against accept `max_tokens` and not the new name, so a
+ * blind rename would simply move the 400 to a different deployment. The
+ * provider finds out for itself, exactly as it does for temperature.
+ */
+const wantsMaxCompletionTokens = new Set();
+
+/**
  * True for the specific 400 that means "this model has a fixed temperature".
  *
  * Narrow on purpose. A 400 is also how the API reports a bad model id, a
@@ -61,6 +78,49 @@ const rejectsTemperature = new Set();
  */
 export function isTemperatureRefusal(err) {
   return err?.status === 400 && /temperature/i.test(err?.message || '');
+}
+
+/**
+ * True for the specific 400 that means "this model spells the cap differently".
+ *
+ * Narrow for the same reason as its temperature twin: a 400 is also how the API
+ * reports a bad model id or a malformed message, and retrying those under a
+ * different parameter name would turn one clear error into two confusing ones.
+ */
+export function isMaxTokensRefusal(err) {
+  return err?.status === 400
+    && /max_tokens/i.test(err?.message || '')
+    && /max_completion_tokens/i.test(err?.message || '');
+}
+
+/**
+ * Send `body`, renaming `max_tokens` to `max_completion_tokens` for the models
+ * that insist on it.
+ *
+ * The rename is remembered per model, so the wasted call happens once per model
+ * per process rather than on every read. `send` is passed in so the fallback
+ * can be tested without a network or a key.
+ *
+ * A body with no cap at all passes straight through — there is nothing to
+ * rename, and spending a retry to discover that would be pure waste.
+ */
+export async function withMaxTokensFallback(body, send, seen = wantsMaxCompletionTokens) {
+  const { model, max_tokens: cap, ...rest } = body;
+  if (cap == null) return send(body);
+
+  if (seen.has(model)) {
+    return send({ model, ...rest, max_completion_tokens: cap });
+  }
+
+  try {
+    return await send(body);
+  } catch (err) {
+    if (!isMaxTokensRefusal(err)) throw err;
+
+    console.warn(`[SP][openai] ${model} wants max_completion_tokens; using it.`);
+    seen.add(model);
+    return send({ model, ...rest, max_completion_tokens: cap });
+  }
 }
 
 /**
@@ -97,7 +157,11 @@ export async function withTemperatureFallback(model, params, send, seen = reject
  * call per model per process, not one per code path.
  */
 export async function createCompletion({ model, ...params }) {
-  return withTemperatureFallback(model, params, (body) => openai().chat.completions.create(body));
+  return withTemperatureFallback(
+    model,
+    params,
+    (body) => withMaxTokensFallback(body, (b) => openai().chat.completions.create(b)),
+  );
 }
 
 /**
