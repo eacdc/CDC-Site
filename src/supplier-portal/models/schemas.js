@@ -448,6 +448,54 @@ export const quoteLineSchema = new Schema({
      * a visible fault rather than a rate that merely looks a little low.
      */
     plant: String,
+
+    /**
+     * Ink, coating, press chemical, plate and consumable.
+     *
+     * Declared rather than left to `raw`'s other fields because Mongoose strips
+     * undeclared paths silently — the same way Zod stripped `plant` on the paper
+     * side, where the split filter did its work and validation then threw away
+     * the evidence it had worked from. A chemistry that vanishes on write is a
+     * row that looks complete in the review table and is invisible in every
+     * search.
+     *
+     * `chemistry` and `colour` together are the comparison key: DIC's Radicure
+     * cyan and Siegwerk's Sicura cyan are the same purchase decision, and
+     * `manufacturer` is deliberately outside the key while still being kept —
+     * without it, "who is cheapest on DIC Radicure" cannot be asked.
+     */
+    materialClass: String,
+    chemistry: String,
+    role: String,
+    colour: String,
+    /** The Pantone base number: 517, 706, 228. Ties one base across four codes. */
+    baseNumber: String,
+    finish: String,
+    coatingProperty: String,
+    chemicalFunction: String,
+    manufacturer: String,
+    /** The heading this row sat under — on a dealer's quote, the only place the
+     *  maker and the rate unit appear at all. */
+    section: String,
+    /**
+     * The pack the product is sold in, which is NOT the rate unit.
+     *
+     * "(20 LTR)" beside a per-litre rate of 220 means a 4,400 can. Read as the
+     * pricing unit it becomes 11 a litre — twenty times cheaper than the truth,
+     * and it would win every comparison it appeared in. `packSize` above holds
+     * the number; this holds what the number counts.
+     */
+    packUom: String,
+    /**
+     * What this row can be compared against, computed at write time.
+     *
+     * Stored rather than derived at search because a row whose key is null is
+     * invisible in every search, and that has to be visible in the record where
+     * a person can see it is empty. Recomputing silently on each search would
+     * hide the one failure this category can hide.
+     */
+    comparisonKey: String,
+
     notes: String,
   },
 
