@@ -41,7 +41,7 @@
 import {
   resolveMaterialClass, resolveChemistry, resolveColour, resolveFinish,
   resolveChemicalFunction, resolveManufacturer, resolveFamily, resolveRole,
-  resolveBaseNumber, resolveRateUom, parsePack,
+  resolveBaseNumber, resolveRateUom, parsePack, fieldBelongsOn,
 } from '../../config/ink-vocabulary.js';
 import { checkInkHandoff } from './ink-quote-schema.js';
 import { buildInkMessage, INK_SYSTEM_PROMPT } from './ink-prompt.js';
@@ -315,13 +315,39 @@ export function applyInkAnswers(payload, answers = []) {
   const lines = (payload.lines || []).map((line) => {
     const next = { ...line };
     for (const rule of rules) {
-      if (next[rule.field]) continue;
+      /*
+        A READ VALUE NORMALLY WINS, because an answer fills gaps rather than
+        second-guessing the document.
+
+        The material class is the exception, and has to be: the only way an
+        answer about it arrives for a row that already has one is somebody
+        using the escape on a question whose premise was wrong — "this is not
+        an ink, it is a varnish". That IS a correction, and a correction that
+        the existing value silently defeats is worse than no escape at all.
+      */
+      if (next[rule.field] && rule.field !== 'materialClass') continue;
       if (!namesTheSame(rule.subject, line.family) && !mentions(line.productName, rule.subject)) continue;
+
+      /*
+        THE FIELD HAS TO BELONG ON THIS ROW, and this check was missing.
+
+        A family is not one kind of product. Siegwerk's Sicura range covers UV
+        inks AND UV varnishes; answering "Sicura Plast is cyan" wrote a colour
+        onto the varnishes too, and the schema then refused the whole document
+        for a colour on a coating row — a row nobody had been asked about and
+        which had been read correctly all along.
+
+        Skipping is right rather than clever: the varnish still needs a finish,
+        and the gate will ask for one on the next round, which is the question
+        that was always owed.
+      */
+      if (!fieldBelongsOn(rule.field, line.materialClass)) continue;
+
       next[rule.field] = rule.value;
       next.basis = 'TAUGHT';
       applied += 1;
     }
-    return next;
+    return stripFieldsThatNoLongerBelong(next);
   });
 
   return { payload: { ...payload, lines }, applied, unapplied };
@@ -580,6 +606,33 @@ async function withResearch(gaps, research) {
     */
     return gaps;
   }
+}
+
+/**
+ * Drop what the row's class says cannot be there.
+ *
+ * Needed the moment somebody corrects a class. A varnish that was read as an
+ * ink already carries a colour; telling the portal "it is a coating" without
+ * clearing that colour leaves a row the schema refuses — so the correction
+ * would be rejected as loudly as the mistake it fixes, which is the point at
+ * which a person gives up on the screen.
+ *
+ * The dropped value is not mourned. It was wrong about a row that has just been
+ * described more accurately, and the gate will ask for the right field next.
+ */
+export function stripFieldsThatNoLongerBelong(line) {
+  if (!line?.materialClass) return line;
+
+  let changed = false;
+  const next = { ...line };
+  for (const field of ['colour', 'baseNumber', 'role', 'finish', 'coatingProperty', 'chemicalFunction', 'plate']) {
+    if (next[field] == null) continue;
+    if (fieldBelongsOn(field, next.materialClass)) continue;
+    next[field] = null;
+    changed = true;
+  }
+
+  return changed ? next : line;
 }
 
 function isSettling(a) {

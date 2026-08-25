@@ -33,7 +33,7 @@ import { z } from 'zod';
 import {
   MATERIAL_CLASSES, CHEMISTRIES, INK_ROLES, COLOURS, COATING_FINISHES,
   COATING_PROPERTIES, CHEMICAL_FUNCTIONS, RATE_UOMS, PACK_UOMS,
-  unconfirmedInkTokens, comparisonKey,
+  unconfirmedInkTokens, comparisonKey, fieldBelongsOn,
 } from '../../config/ink-vocabulary.js';
 
 const CLASS_VALUES = MATERIAL_CLASSES.map((c) => c.canonical);
@@ -43,6 +43,17 @@ const COLOUR_VALUES = COLOURS.map((c) => c.canonical);
 const FINISH_VALUES = COATING_FINISHES.map((f) => f.canonical);
 const PROPERTY_VALUES = COATING_PROPERTIES.map((p) => p.value);
 const FUNCTION_VALUES = CHEMICAL_FUNCTIONS.map((f) => f.canonical);
+
+/** What each field is called in an error a person reads. */
+const LABEL_FOR = {
+  colour: 'Colour',
+  baseNumber: 'Pantone base number',
+  role: 'Ink role',
+  finish: 'Coating finish',
+  coatingProperty: 'Coating property',
+  chemicalFunction: 'Chemical function',
+  plate: 'Plate dimensions',
+};
 
 /** How a value came to be on a line. Provenance, not decoration. */
 export const INK_BASIS = ['STATED', 'SECTION', 'FAMILY', 'TAUGHT', 'RESEARCHED', 'ASKED'];
@@ -224,31 +235,24 @@ export const InkLineSchema = z.object({
     });
   }
 
-  // Fields on the wrong kind of row mean the agent has misfiled something, and
-  // the misfiling is invisible once stored.
-  if (line.colour && line.materialClass && line.materialClass !== 'INK') {
-    ctx.addIssue({ code: 'custom', path: ['colour'], message: `Colour on a ${line.materialClass} row` });
-  }
-  if (line.finish && line.materialClass && line.materialClass !== 'COATING') {
-    ctx.addIssue({ code: 'custom', path: ['finish'], message: `Coating finish on a ${line.materialClass} row` });
-  }
   /*
-    A CONSUMABLE MAY HAVE A FUNCTION, and refusing one was wrong.
+    Fields on the wrong kind of row mean something has been misfiled, and the
+    misfiling is invisible once stored.
 
-    "ANTI SET OFF VERN POWDER" is a consumable by any reading — it is a powder,
-    not a liquid chemical — and ANTI_SET_OFF is exactly what it does. The rule
-    was written to catch misfiling and instead rejected a forty-three row
-    document over a row it had understood correctly.
-
-    Ink, coating and plate rows still may not carry one: there the field really
-    would mean something has been put in the wrong place.
+    The rules live in FIELD_BELONGS_ON, which the answer-folding reads too. They
+    were written out here AND assumed there, and the two disagreed: a colour
+    answer keyed on a product family was written onto every row of that family,
+    varnishes included, and this refused the document for a row nobody had been
+    asked about. One copy, read by both.
   */
-  const FUNCTION_ALLOWED = ['PRESS_CHEMICAL', 'CONSUMABLE'];
-  if (line.chemicalFunction && line.materialClass && !FUNCTION_ALLOWED.includes(line.materialClass)) {
-    ctx.addIssue({ code: 'custom', path: ['chemicalFunction'], message: `Chemical function on a ${line.materialClass} row` });
-  }
-  if (line.plate && line.materialClass && line.materialClass !== 'PLATE') {
-    ctx.addIssue({ code: 'custom', path: ['plate'], message: `Plate dimensions on a ${line.materialClass} row` });
+  for (const field of ['colour', 'baseNumber', 'role', 'finish', 'coatingProperty', 'chemicalFunction', 'plate']) {
+    if (!line[field]) continue;
+    if (fieldBelongsOn(field, line.materialClass)) continue;
+    ctx.addIssue({
+      code: 'custom',
+      path: [field],
+      message: `${LABEL_FOR[field] || field} on a ${line.materialClass} row`,
+    });
   }
 
   if (line.pack?.size != null && line.pack.size <= 0) {

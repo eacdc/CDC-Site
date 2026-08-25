@@ -487,3 +487,108 @@ test('a rate that is wrong is still refused', () => {
   assert.equal(validateInkQuote(quote([line({ materialClass: 'INK', chemistry: 'WATER_BASED' })])).ok, false);
   assert.equal(validateInkQuote(quote([line({ materialClass: 'COATING', colour: 'CYAN' })])).ok, false);
 });
+
+// ── When the question itself had the wrong premise ───────────────────────────
+
+/**
+ * CDC was asked the colour of something that was not an ink.
+ *
+ * The dropdown held nothing but colours, so the only way forward was to pick
+ * one that was not true — and the schema then refused the document:
+ *
+ *   lines.15.colour: Colour on a COATING row
+ *   lines.80.colour: Colour on a COATING row
+ *
+ * Two faults, one cause. The rules about which field belongs on which row were
+ * written twice — once in the schema, once as assumptions in the folding — and
+ * they disagreed. And a screen that forces a wrong answer has stopped being a
+ * question.
+ */
+
+test('an answer never lands on a row it does not fit', () => {
+  /*
+    A family is not one kind of product. Siegwerk's Sicura range covers UV inks
+    AND UV varnishes, so "Sicura is cyan" wrote a colour onto the varnishes too
+    — rows nobody had been asked about, which had been read correctly all along.
+  */
+  const payload = {
+    lines: [
+      { productName: 'SICURA PLAST 770HS PROCESS CYAN', family: 'SICURA', materialClass: 'INK' },
+      { productName: 'SICURA GLOSS VARNISH G1108', family: 'SICURA', materialClass: 'COATING' },
+    ],
+  };
+
+  const result = applyInkAnswers(payload, [{ kind: 'COLOUR', subject: 'SICURA', value: 'CYAN' }]);
+
+  assert.equal(result.payload.lines[0].colour, 'CYAN');
+  assert.equal(result.payload.lines[1].colour, undefined);
+  assert.equal(result.applied, 1);
+
+  // And the document it produces actually validates, which is the whole point.
+  assert.equal(validateInkQuote(quote(result.payload.lines.map((l, i) => ({
+    ...l, lineNo: i + 1, rate: 100, rateUom: 'KG',
+  })))).ok, true);
+});
+
+test('correcting a class clears what that class cannot carry', () => {
+  /*
+    A varnish read as an ink already carries a colour. Accepting "it is a
+    coating" without clearing that colour leaves a row the schema refuses — so
+    the correction would be rejected as loudly as the mistake it fixes, which is
+    where a person gives up on the screen.
+  */
+  const payload = {
+    lines: [{
+      productName: 'SICURA GLOSS VARNISH G1108',
+      family: 'SICURA GLOSS',
+      materialClass: 'INK',
+      colour: 'CYAN',
+      role: 'PRESS_READY',
+    }],
+  };
+
+  const result = applyInkAnswers(payload, [
+    { kind: 'MATERIAL_CLASS', subject: 'SICURA GLOSS', value: 'COATING' },
+  ]);
+
+  const [line0] = result.payload.lines;
+  assert.equal(line0.materialClass, 'COATING');
+  assert.equal(line0.colour, null);
+  assert.equal(line0.role, null);
+
+  assert.equal(validateInkQuote(quote([{ ...line0, lineNo: 1, rate: 100, rateUom: 'KG' }])).ok, true);
+});
+
+test('the schema and the folding agree about every field', () => {
+  /*
+    They disagreed once and it could only be found by a person hitting it. This
+    walks every field against every class and asserts that what the folding is
+    willing to write, the schema is willing to accept.
+  */
+  const CLASSES = ['INK', 'COATING', 'PRESS_CHEMICAL', 'PLATE', 'CONSUMABLE'];
+  const SAMPLE = {
+    colour: 'CYAN',
+    finish: 'GLOSS',
+    chemicalFunction: 'WASH',
+    role: 'MIXING_BASE',
+    baseNumber: '517',
+    coatingProperty: 'HIGH_SLIP',
+  };
+
+  for (const materialClass of CLASSES) {
+    for (const [field, value] of Object.entries(SAMPLE)) {
+      const folded = applyInkAnswers(
+        { lines: [{ productName: 'THING', family: 'FAM', materialClass }] },
+        [{ kind: field.toUpperCase(), subject: 'FAM', value }],
+      );
+
+      // Only fields the folding actually wrote need to survive validation; the
+      // question kinds it does not recognise write nothing, which is fine.
+      const [written] = folded.payload.lines;
+      if (written[field] == null) continue;
+
+      const parsed = validateInkQuote(quote([{ ...written, lineNo: 1, rate: 1, rateUom: 'KG' }]));
+      assert.equal(parsed.ok, true, `${field} written onto a ${materialClass} row is refused by the schema`);
+    }
+  }
+});

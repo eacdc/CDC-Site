@@ -226,6 +226,48 @@ export const INK_ROLES = [
   { canonical: 'PRESS_READY', label: 'Press-ready ink', markers: [] },
 ];
 
+/**
+ * Which line fields belong on which kind of row. THE ONE COPY.
+ *
+ * This existed twice — once as validation rules in the schema, once as
+ * assumptions in the code that folds answers onto lines — and the two
+ * disagreed, which is a failure that can only ever be found by a person hitting
+ * it:
+ *
+ *   CDC answered one colour question. The answer was keyed on a product family,
+ *   and every row of that family took the colour — including the varnishes,
+ *   which nobody had been asked about. The schema then rejected the whole
+ *   document for a colour on a coating row.
+ *
+ * A rule written down twice is a rule that will diverge. Everything that
+ * decides where a field may go now reads this, so the schema, the folding and
+ * the questions cannot drift apart again.
+ */
+export const FIELD_BELONGS_ON = {
+  colour: ['INK'],
+  baseNumber: ['INK'],
+  role: ['INK'],
+  finish: ['COATING'],
+  coatingProperty: ['COATING'],
+  // A powder is a consumable and ANTI_SET_OFF is what it does.
+  chemicalFunction: ['PRESS_CHEMICAL', 'CONSUMABLE'],
+  plate: ['PLATE'],
+};
+
+/**
+ * May this field be set on a row of this class?
+ *
+ * An unknown class is permitted deliberately. A row whose class has not been
+ * settled yet is the normal state early in a reading, and refusing to record
+ * what IS known about it would throw away the reading's own work.
+ */
+export function fieldBelongsOn(field, materialClass) {
+  const allowed = FIELD_BELONGS_ON[field];
+  if (!allowed) return true;
+  if (!materialClass) return true;
+  return allowed.includes(materialClass);
+}
+
 // ── 4. Colour ───────────────────────────────────────────────────────────────
 
 /**
