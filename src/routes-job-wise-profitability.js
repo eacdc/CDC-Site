@@ -171,12 +171,15 @@ function pickValue(row, ...names) {
 }
 
 /**
- * Priority:
+ * Priority (only when GP/Imp < 0.9; otherwise blank):
  * 1) Paper issued > 20% more than required → excess paper issued
  * 2) Del qty < 90% of order qty → Short Delivery
  * 3) Else → Low pricing
  */
 function computeExceptionCause(row) {
+	const gpImp = pickValue(row, 'GP/Imp', 'GP / Imp');
+	if (gpImp == null || gpImp >= 0.9) return '';
+
 	const issued = pickValue(row, 'IssuedWt', 'Issued Wt', 'Paper Issued');
 	const required = pickValue(row, 'TotalBookedPaperWt', 'Total Booked Paper Wt', 'Booked Paper Wt');
 	if (required != null && required > 0 && issued != null && issued > required * 1.2) {
