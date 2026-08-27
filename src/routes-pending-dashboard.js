@@ -20,6 +20,11 @@ const router = Router();
 export const JOB_MODES = ['DELIVERY', 'POSTPRINT', 'PARTIAL', 'ALL'];
 export const ALLOWED_DATABASES = ['KOL', 'AHM'];
 export const CACHE_TTL_MS = 60_000;
+/**
+ * The procs require @TopN (jobs default 1000, PO default 5000). Passing
+ * sql.Int max is "no practical limit" — the dashboard paginates in the UI.
+ */
+export const FETCH_ALL_TOPN = 2147483647;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -228,6 +233,8 @@ async function respondFromProc({
 			rows,
 			rowCount: rows.length,
 			totals: { pendingValue: sumPendingValue(rows) },
+			topN: params.topN ?? null,
+			capped: params.topN != null && rows.length >= params.topN,
 			generatedAt: new Date().toISOString()
 		};
 		cacheSet(key, payload);
@@ -274,6 +281,7 @@ router.get('/pending-po', async (req, res) => {
 	if (q.top != null && String(q.top).trim() !== '' && topN === undefined) {
 		return invalidInt(res, 'top');
 	}
+	const appliedTopN = topN ?? FETCH_ALL_TOPN;
 
 	const params = {
 		database,
@@ -284,7 +292,7 @@ router.get('/pending-po', async (req, res) => {
 		jobBookingNo,
 		includeKraft: includeKraft ?? null,
 		receiptCutoff: receiptCutoff ?? null,
-		topN: topN ?? null
+		topN: appliedTopN
 	};
 
 	return respondFromProc({
@@ -303,7 +311,7 @@ router.get('/pending-po', async (req, res) => {
 			request.input('JobBookingNo', sql.NVarChar(50), jobBookingNo);
 			bindOptional(request, 'IncludeKraft', sql.Bit, includeKraft);
 			bindOptional(request, 'ReceiptCutoff', sql.Decimal(5, 2), receiptCutoff);
-			bindOptional(request, 'TopN', sql.Int, topN);
+			request.input('TopN', sql.Int, appliedTopN);
 		}
 	});
 });
@@ -353,6 +361,7 @@ router.get('/pending-jobs', async (req, res) => {
 	if (q.top != null && String(q.top).trim() !== '' && topN === undefined) {
 		return invalidInt(res, 'top');
 	}
+	const appliedTopN = topN ?? FETCH_ALL_TOPN;
 
 	const params = {
 		database,
@@ -365,7 +374,7 @@ router.get('/pending-jobs', async (req, res) => {
 		categoryId,
 		deliveryCutoff: deliveryCutoff ?? null,
 		printCompletePct: printCompletePct ?? null,
-		topN: topN ?? null
+		topN: appliedTopN
 	};
 
 	return respondFromProc({
@@ -386,7 +395,7 @@ router.get('/pending-jobs', async (req, res) => {
 			request.input('CategoryID', sql.Int, categoryId);
 			bindOptional(request, 'DeliveryCutoff', sql.Decimal(5, 2), deliveryCutoff);
 			bindOptional(request, 'PrintCompletePct', sql.Decimal(5, 2), printCompletePct);
-			bindOptional(request, 'TopN', sql.Int, topN);
+			request.input('TopN', sql.Int, appliedTopN);
 		}
 	});
 });
