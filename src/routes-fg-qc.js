@@ -4,6 +4,16 @@
  * Every verdict is computed by SaveFinishGoodsQCInspection. This file only
  * binds parameters and forwards stored-procedure results.
  *
+ * Spec section 6: every route calls a stored procedure — no business logic in
+ * JavaScript. The three read routes that were written before their procedures
+ * existed (inspections list, inspection by id, dashboard) call the procedure
+ * first and fall back to an equivalent inline query only when the procedure is
+ * not deployed yet, logging a warning each time. Deploy sql/fgqc/*.sql and the
+ * fallbacks stop being reached; sql/fgqc/002_verify.sql reports which are still
+ * missing. The fallbacks exist so that deploying the API and deploying the
+ * database do not have to happen in the same minute — they are not a second
+ * implementation, they are the same SQL.
+ *
  *   GET  /api/qc/pending
  *   GET  /api/qc/template
  *   POST /api/qc/inspections
@@ -26,6 +36,41 @@ const DOUBLE_SUBMIT_WINDOW_MS = 8000;
 
 /** In-memory guard against double-clicks. Rework resubmits are allowed after the window. */
 const recentSubmits = new Map();
+
+/** SQL Server: "Could not find stored procedure". */
+const SP_MISSING_ERROR_NUMBERS = new Set([2812]);
+
+/** Warn once per procedure, not once per request. */
+const warnedMissingSps = new Set();
+
+function isMissingProcedure(err, spName) {
+	if (!err) return false;
+	if (SP_MISSING_ERROR_NUMBERS.has(err.number)) return true;
+	const text = String(err.message || '');
+	return /could not find stored procedure/i.test(text) && text.includes(spName);
+}
+
+/**
+ * Run a stored procedure, falling back to an equivalent inline query while the
+ * procedure has not been deployed yet. See the file header — the fallback is
+ * the same SQL, not a second implementation, and it warns so the gap is
+ * visible in the logs rather than silent.
+ */
+async function execProcedure(pool, spName, bind, fallbackSql) {
+	try {
+		return await bind(pool.request()).execute(spName);
+	} catch (err) {
+		if (!fallbackSql || !isMissingProcedure(err, spName)) throw err;
+		if (!warnedMissingSps.has(spName)) {
+			warnedMissingSps.add(spName);
+			console.warn(
+				`[fg-qc] ${spName} is not deployed — using the inline fallback. `
+				+ 'Deploy sql/fgqc/*.sql and re-run sql/fgqc/002_verify.sql.'
+			);
+		}
+		return bind(pool.request()).query(fallbackSql);
+	}
+}
 
 function getDb(value) {
 	const db = String(value || '').trim().toUpperCase();
@@ -227,11 +272,37 @@ function mapAql(src) {
 	};
 }
 
+/**
+ * Spec section 5 question 1 is still open: which column on
+ * FinishGoodsQCParameterSetting is authoritative for severity.
+ *
+ * Until it is answered, an unrecognised value must not be guessed. Defaulting
+ * to Minor — which this used to do — takes a Critical defect, files it under
+ * Minor, and turns a lot that should be rejected on one defect into a lot that
+ * accepts up to the Minor accept number. That is exactly the silent wrong
+ * verdict the spec is written to prevent, so an unresolved value is reported as
+ * Unclassified and the form refuses to count it.
+ */
+const SEVERITY_UNCLASSIFIED = 'Unclassified';
+
+function severityOf(value) {
+	const s = String(value == null ? '' : value).trim().toLowerCase();
+	if (!s) return null;
+	if (s.startsWith('crit')) return 'Critical';
+	if (s.startsWith('maj')) return 'Major';
+	if (s.startsWith('min')) return 'Minor';
+	return null;
+}
+
 function mapTemplateItem(item) {
+	const rawSeverity = pick(item, 'severity', 'Severity', 'MasterFieldType');
+	const severity = severityOf(rawSeverity);
 	return {
 		fgqcParameterSettingID: asInt(pick(item, 'fgqcParameterSettingID', 'FGQCParameterSettingID', 'FinishGoodsQCParameterSettingID', 'id', 'ID')),
 		characterstics: asStr(pick(item, 'characterstics', 'Characterstics', 'characteristics', 'Characteristics', 'parameter', 'Parameter')),
-		severity: asStr(pick(item, 'severity', 'Severity', 'MasterFieldType')) || 'Minor',
+		severity: severity || SEVERITY_UNCLASSIFIED,
+		severityResolved: severity != null,
+		rawSeverity: asStr(rawSeverity),
 		critical: asNum(pick(item, 'critical', 'Critical')) || 0,
 		major: asNum(pick(item, 'major', 'Major')) || 0,
 		minor: asNum(pick(item, 'minor', 'Minor')) || 0,
@@ -246,12 +317,14 @@ function mapTemplate(payload, lotSizeFallback) {
 			sampleSize: null,
 			planFound: false,
 			referenceAQL: { critical: 0, major: null, minor: null },
-			items: []
+			items: [],
+			unclassifiedCount: 0
 		};
 	}
 	const refSrc = pick(payload, 'referenceAQL', 'ReferenceAQL') || payload;
 	const rawItems = pick(payload, 'items', 'Items') || [];
 	const planFoundRaw = pick(payload, 'planFound', 'PlanFound');
+	const items = (Array.isArray(rawItems) ? rawItems : []).map(mapTemplateItem);
 	return {
 		lotSize: asNum(pick(payload, 'lotSize', 'LotSize', 'TotalBox')) ?? lotSizeFallback,
 		sampleSize: asNum(pick(payload, 'sampleSize', 'SampleSize')),
@@ -259,7 +332,8 @@ function mapTemplate(payload, lotSizeFallback) {
 		lotRangeFrom: asNum(pick(payload, 'lotRangeFrom', 'LotRangeFrom')),
 		lotRangeTo: asNum(pick(payload, 'lotRangeTo', 'LotRangeTo')),
 		referenceAQL: mapAql(refSrc),
-		items: (Array.isArray(rawItems) ? rawItems : []).map(mapTemplateItem)
+		items,
+		unclassifiedCount: items.filter((item) => !item.severityResolved).length
 	};
 }
 
@@ -313,6 +387,7 @@ function mapInspectionListRow(row) {
 		foundCritical: asNum(pick(row, 'FoundCritical')) || 0,
 		foundMajor: asNum(pick(row, 'FoundMajor')) || 0,
 		foundMinor: asNum(pick(row, 'FoundMinor')) || 0,
+		submissionCount: asInt(pick(row, 'SubmissionCount')) || 0,
 		remark: asStr(pick(row, 'Remark'))
 	};
 }
@@ -560,6 +635,14 @@ const INSPECTION_LIST_SQL = `
   WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
   GROUP BY d.FinishGoodsQCInspectionMainID
 ),
+SubmissionCount AS (
+  SELECT
+    FinishGoodsQCInspectionMainID,
+    COUNT(DISTINCT CreatedDate) AS Submissions
+  FROM dbo.FinishGoodsQCInspectionDetail
+  WHERE ISNULL(IsDeletedTransaction, 0) = 0
+  GROUP BY FinishGoodsQCInspectionMainID
+),
 LotJob AS (
   SELECT
     fgd.FGTransactionID,
@@ -596,9 +679,11 @@ SELECT
   cm.CategoryName,
   ISNULL(ld.FoundCritical, 0) AS FoundCritical,
   ISNULL(ld.FoundMajor, 0) AS FoundMajor,
-  ISNULL(ld.FoundMinor, 0) AS FoundMinor
+  ISNULL(ld.FoundMinor, 0) AS FoundMinor,
+  ISNULL(sc.Submissions, 0) AS SubmissionCount
 FROM dbo.FinishGoodsQCInspectionMain m
 LEFT JOIN LatestDetail ld ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
+LEFT JOIN SubmissionCount sc ON sc.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
 LEFT JOIN dbo.FinishGoodsTransactionMain fgm
   ON fgm.FGTransactionID = m.FGTransactionID
  AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
@@ -673,16 +758,20 @@ router.get('/qc/inspections', async (req, res) => {
 
 	try {
 		const pool = await getPool(db);
-		const result = await pool.request()
-			.input('CompanyID', sql.BigInt, companyId)
-			.input('FromDate', sql.Date, from)
-			.input('ToDate', sql.Date, to)
-			.input('JobNo', sql.NVarChar(100), jobNo)
-			.input('Status', sql.NVarChar(50), status)
-			.input('UnitID', sql.BigInt, unitId)
-			.input('Offset', sql.Int, (page - 1) * pageSize)
-			.input('PageSize', sql.Int, pageSize)
-			.query(INSPECTION_LIST_SQL);
+		const result = await execProcedure(
+			pool,
+			'GetFGQCInspectionList',
+			(request) => request
+				.input('CompanyID', sql.BigInt, companyId)
+				.input('FromDate', sql.Date, from)
+				.input('ToDate', sql.Date, to)
+				.input('JobNo', sql.NVarChar(100), jobNo)
+				.input('Status', sql.NVarChar(50), status)
+				.input('UnitID', sql.BigInt, unitId)
+				.input('Offset', sql.Int, (page - 1) * pageSize)
+				.input('PageSize', sql.Int, pageSize),
+			INSPECTION_LIST_SQL
+		);
 
 		const paged = parsePaged(result);
 		return res.json({
@@ -702,6 +791,145 @@ router.get('/qc/inspections', async (req, res) => {
 });
 
 /**
+ * Inline fallback for GetFGQCInspectionByID — same four result sets, same
+ * ordering. See the file header for why a fallback exists at all.
+ */
+const INSPECTION_BY_ID_SQL = `
+;WITH LotJob AS (
+  SELECT
+    fgd.FGTransactionID,
+    fgd.JobBookingID,
+    ROW_NUMBER() OVER (
+      PARTITION BY fgd.FGTransactionID, fgd.JobBookingID
+      ORDER BY fgd.JobBookingID
+    ) AS rn
+  FROM dbo.FinishGoodsTransactionDetail fgd
+  WHERE ISNULL(fgd.IsDeletedTransaction, 0) = 0
+),
+LatestDetail AS (
+  SELECT
+    d.FinishGoodsQCInspectionMainID,
+    SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
+    SUM(ISNULL(d.Major, 0)) AS FoundMajor,
+    SUM(ISNULL(d.Minor, 0)) AS FoundMinor
+  FROM dbo.FinishGoodsQCInspectionDetail d
+  INNER JOIN (
+    SELECT FinishGoodsQCInspectionMainID, MAX(CreatedDate) AS MaxCreated
+    FROM dbo.FinishGoodsQCInspectionDetail
+    WHERE ISNULL(IsDeletedTransaction, 0) = 0
+      AND FinishGoodsQCInspectionMainID = @MainID
+    GROUP BY FinishGoodsQCInspectionMainID
+  ) latest
+    ON latest.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
+   AND d.CreatedDate = latest.MaxCreated
+  WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
+  GROUP BY d.FinishGoodsQCInspectionMainID
+)
+SELECT TOP 1
+  m.*,
+  ISNULL(m.ModifiedDate, m.CreatedDate) AS InspectedOn,
+  ISNULL(um.UserName, '') AS Inspector,
+  fgm.VoucherNo AS GPNNo,
+  fgm.VoucherDate AS GPNDate,
+  jb.JobBookingNo,
+  jb.JobName,
+  ISNULL(jb.ClientName, lm.LedgerName) AS ClientName,
+  cm.CategoryName,
+  ISNULL(ld.FoundCritical, 0) AS FoundCritical,
+  ISNULL(ld.FoundMajor, 0) AS FoundMajor,
+  ISNULL(ld.FoundMinor, 0) AS FoundMinor,
+  (
+    SELECT COUNT(DISTINCT CreatedDate)
+    FROM dbo.FinishGoodsQCInspectionDetail
+    WHERE FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
+      AND ISNULL(IsDeletedTransaction, 0) = 0
+  ) AS SubmissionCount
+FROM dbo.FinishGoodsQCInspectionMain m
+LEFT JOIN LatestDetail ld ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
+LEFT JOIN dbo.FinishGoodsTransactionMain fgm ON fgm.FGTransactionID = m.FGTransactionID
+LEFT JOIN LotJob lj
+  ON lj.FGTransactionID = m.FGTransactionID
+ AND (m.JobBookingID IS NULL OR lj.JobBookingID = m.JobBookingID)
+ AND lj.rn = 1
+LEFT JOIN dbo.JobBookingJobCard jb ON jb.JobBookingID = ISNULL(m.JobBookingID, lj.JobBookingID)
+LEFT JOIN dbo.JobOrderBooking job ON job.OrderBookingID = jb.OrderBookingID
+LEFT JOIN dbo.LedgerMaster lm ON lm.LedgerID = job.LedgerID
+LEFT JOIN dbo.CategoryMaster cm ON cm.CategoryID = ISNULL(m.CategoryID, jb.CategoryID)
+LEFT JOIN dbo.UserMaster um ON um.UserID = m.CreatedBy
+WHERE m.FinishGoodsQCInspectionMainID = @MainID
+  AND ISNULL(m.IsDeletedTransaction, 0) = 0;
+
+DECLARE @LatestCreated DATETIME = (
+  SELECT MAX(CreatedDate)
+  FROM dbo.FinishGoodsQCInspectionDetail
+  WHERE FinishGoodsQCInspectionMainID = @MainID
+    AND ISNULL(IsDeletedTransaction, 0) = 0
+);
+
+SELECT *
+FROM dbo.FinishGoodsQCInspectionDetail
+WHERE FinishGoodsQCInspectionMainID = @MainID
+  AND ISNULL(IsDeletedTransaction, 0) = 0
+  AND (@LatestCreated IS NULL OR CreatedDate = @LatestCreated)
+ORDER BY FinishGoodsQCInspectionDetailID;
+
+;WITH Submissions AS (
+  SELECT CreatedDate, DENSE_RANK() OVER (ORDER BY CreatedDate) AS SubmissionNo
+  FROM dbo.FinishGoodsQCInspectionDetail
+  WHERE FinishGoodsQCInspectionMainID = @MainID
+    AND ISNULL(IsDeletedTransaction, 0) = 0
+  GROUP BY CreatedDate
+)
+SELECT d.*, s.SubmissionNo
+FROM dbo.FinishGoodsQCInspectionDetail d
+INNER JOIN Submissions s ON s.CreatedDate = d.CreatedDate
+WHERE d.FinishGoodsQCInspectionMainID = @MainID
+  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+ORDER BY s.SubmissionNo, d.FinishGoodsQCInspectionDetailID;
+
+DECLARE @AqlCritical DECIMAL(18,4), @AqlMajor DECIMAL(18,4), @AqlMinor DECIMAL(18,4);
+SELECT
+  @AqlCritical = TRY_CAST(ReferenceAQLCritical AS DECIMAL(18,4)),
+  @AqlMajor    = TRY_CAST(ReferenceAQLMajor AS DECIMAL(18,4)),
+  @AqlMinor    = TRY_CAST(ReferenceAQLMinor AS DECIMAL(18,4))
+FROM dbo.FinishGoodsQCInspectionMain
+WHERE FinishGoodsQCInspectionMainID = @MainID;
+
+;WITH PerSubmission AS (
+  SELECT
+    d.CreatedDate,
+    DENSE_RANK() OVER (ORDER BY d.CreatedDate) AS SubmissionNo,
+    SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
+    SUM(ISNULL(d.Major, 0)) AS FoundMajor,
+    SUM(ISNULL(d.Minor, 0)) AS FoundMinor,
+    MAX(ISNULL(TRY_CAST(d.SampleSize AS DECIMAL(18,4)), 0)) AS SampleSize,
+    MIN(d.CreatedBy) AS CreatedBy
+  FROM dbo.FinishGoodsQCInspectionDetail d
+  WHERE d.FinishGoodsQCInspectionMainID = @MainID
+    AND ISNULL(d.IsDeletedTransaction, 0) = 0
+  GROUP BY d.CreatedDate
+)
+SELECT
+  ps.SubmissionNo,
+  ps.CreatedDate,
+  ps.SampleSize,
+  ps.FoundCritical,
+  ps.FoundMajor,
+  ps.FoundMinor,
+  ISNULL(um.UserName, '') AS Inspector,
+  CASE
+    WHEN @AqlCritical IS NULL AND @AqlMajor IS NULL AND @AqlMinor IS NULL THEN NULL
+    WHEN ps.FoundCritical > ISNULL(@AqlCritical, 0) THEN CAST(0 AS BIT)
+    WHEN ps.FoundMajor > ISNULL(@AqlMajor, ps.FoundMajor) THEN CAST(0 AS BIT)
+    WHEN ps.FoundMinor > ISNULL(@AqlMinor, ps.FoundMinor) THEN CAST(0 AS BIT)
+    ELSE CAST(1 AS BIT)
+  END AS WouldPass
+FROM PerSubmission ps
+LEFT JOIN dbo.UserMaster um ON um.UserID = ps.CreatedBy
+ORDER BY ps.SubmissionNo;
+`;
+
+/**
  * GET /api/qc/inspections/:id
  */
 router.get('/qc/inspections/:id', async (req, res) => {
@@ -714,64 +942,50 @@ router.get('/qc/inspections/:id', async (req, res) => {
 
 	try {
 		const pool = await getPool(db);
-		const mainResult = await pool.request()
-			.input('MainID', sql.BigInt, id)
-			.query(`
-				SELECT TOP 1
-				  m.*,
-				  ISNULL(um.UserName, '') AS Inspector,
-				  fgm.VoucherNo AS GPNNo,
-				  fgm.VoucherDate AS GPNDate,
-				  jb.JobBookingNo,
-				  jb.JobName,
-				  ISNULL(jb.ClientName, lm.LedgerName) AS ClientName,
-				  cm.CategoryName
-				FROM dbo.FinishGoodsQCInspectionMain m
-				LEFT JOIN dbo.FinishGoodsTransactionMain fgm
-				  ON fgm.FGTransactionID = m.FGTransactionID
-				LEFT JOIN dbo.FinishGoodsTransactionDetail fgd
-				  ON fgd.FGTransactionID = m.FGTransactionID
-				 AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
-				 AND (m.JobBookingID IS NULL OR fgd.JobBookingID = m.JobBookingID)
-				LEFT JOIN dbo.JobBookingJobCard jb
-				  ON jb.JobBookingID = ISNULL(m.JobBookingID, fgd.JobBookingID)
-				LEFT JOIN dbo.JobOrderBooking job
-				  ON job.OrderBookingID = jb.OrderBookingID
-				LEFT JOIN dbo.LedgerMaster lm
-				  ON lm.LedgerID = job.LedgerID
-				LEFT JOIN dbo.CategoryMaster cm
-				  ON cm.CategoryID = ISNULL(m.CategoryID, jb.CategoryID)
-				LEFT JOIN dbo.UserMaster um
-				  ON um.UserID = m.CreatedBy
-				WHERE m.FinishGoodsQCInspectionMainID = @MainID
-				  AND ISNULL(m.IsDeletedTransaction, 0) = 0
-			`);
+		const result = await execProcedure(
+			pool,
+			'GetFGQCInspectionByID',
+			(request) => request.input('MainID', sql.BigInt, id),
+			INSPECTION_BY_ID_SQL
+		);
 
-		const mainRow = mainResult.recordset?.[0];
+		const sets = result.recordsets || [];
+		const mainRow = sets[0]?.[0];
 		if (!mainRow) {
 			return res.status(404).json({ status: false, error: 'Inspection not found' });
 		}
 
-		const detailResult = await pool.request()
-			.input('MainID', sql.BigInt, id)
-			.query(`
-				SELECT *
-				FROM dbo.FinishGoodsQCInspectionDetail
-				WHERE FinishGoodsQCInspectionMainID = @MainID
-				  AND ISNULL(IsDeletedTransaction, 0) = 0
-				ORDER BY CreatedDate DESC, FinishGoodsQCInspectionDetailID
-			`);
+		/*
+		 * Rows from one submission share a CreatedDate (spec section 4.1), so
+		 * the latest submission is selected in SQL by exact equality against
+		 * MAX(CreatedDate). This used to be a two-second window in JavaScript,
+		 * which could merge two submissions made in quick succession — the
+		 * opposite of what the detail history is for.
+		 */
+		const detail = (sets[1] || []).map(mapDetailRow);
+		const history = (sets[2] || []).map((row) => ({
+			...mapDetailRow(row),
+			submissionNo: asInt(pick(row, 'SubmissionNo')) || 1
+		}));
+		const submissions = (sets[3] || []).map((row) => ({
+			submissionNo: asInt(pick(row, 'SubmissionNo')) || 1,
+			createdDate: pick(row, 'CreatedDate'),
+			inspector: asStr(pick(row, 'Inspector')),
+			sampleSize: asNum(pick(row, 'SampleSize')),
+			foundCritical: asNum(pick(row, 'FoundCritical')) || 0,
+			foundMajor: asNum(pick(row, 'FoundMajor')) || 0,
+			foundMinor: asNum(pick(row, 'FoundMinor')) || 0,
+			wouldPass: pick(row, 'WouldPass') == null ? null : Boolean(pick(row, 'WouldPass'))
+		}));
 
-		const details = (detailResult.recordset || []).map(mapDetailRow);
-		let latestStamp = null;
-		if (details.length) {
-			const t = details[0].createdDate ? new Date(details[0].createdDate).getTime() : null;
-			latestStamp = t;
-		}
-		const latest = details.filter((d) => {
-			if (latestStamp == null || !d.createdDate) return true;
-			return Math.abs(new Date(d.createdDate).getTime() - latestStamp) < 2000;
-		});
+		/*
+		 * Spec section 5 question 2: a rejected lot is re-inspected against the
+		 * same key and the main row is replaced, so the main row no longer shows
+		 * that the lot ever failed. Rather than add a column the save procedure
+		 * would not fill, the flag is derived from the detail history, which
+		 * survives replacement by design.
+		 */
+		const everRejected = submissions.some((sub) => sub.wouldPass === false);
 
 		return res.json({
 			status: true,
@@ -780,10 +994,13 @@ router.get('/qc/inspections/:id', async (req, res) => {
 				packingDescription: asStr(pick(mainRow, 'PackingDescription')),
 				samplingMethodType: asStr(pick(mainRow, 'SamplingMethodType')) || 'Carter',
 				sampleSize: asNum(pick(mainRow, 'SampleSize')),
-				lotSize: asNum(pick(mainRow, 'TotalBox', 'LotSize'))
+				lotSize: asNum(pick(mainRow, 'TotalBox', 'LotSize')),
+				submissionCount: asInt(pick(mainRow, 'SubmissionCount')) || submissions.length,
+				everRejected
 			},
-			detail: latest,
-			history: details
+			detail,
+			history,
+			submissions
 		});
 	} catch (err) {
 		console.error('[fg-qc] inspection by id error:', err);
@@ -793,6 +1010,168 @@ router.get('/qc/inspections/:id', async (req, res) => {
 		});
 	}
 });
+
+/**
+ * Inline fallback for GetFGQCDashboardKPIs — the body of the procedure, same
+ * five result sets in the same order. See the file header.
+ */
+const DASHBOARD_SQL = `
+SET NOCOUNT ON;
+DECLARE @DaySpan INT = DATEDIFF(day, @FromDate, @ToDate);
+
+IF OBJECT_ID('tempdb..#FgqcLots') IS NOT NULL DROP TABLE #FgqcLots;
+SELECT
+  m.FinishGoodsQCInspectionMainID,
+  m.QCStatus,
+  ISNULL(TRY_CAST(m.SampleSize AS DECIMAL(18,4)), 0) AS SampleSize,
+  m.ProductionUnitID,
+  TRY_CAST(m.ReferenceAQLCritical AS DECIMAL(18,4)) AS AqlCritical,
+  TRY_CAST(m.ReferenceAQLMajor AS DECIMAL(18,4)) AS AqlMajor,
+  TRY_CAST(m.ReferenceAQLMinor AS DECIMAL(18,4)) AS AqlMinor,
+  CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) AS InspectedDate
+INTO #FgqcLots
+FROM dbo.FinishGoodsQCInspectionMain m
+WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
+  AND (@CompanyID IS NULL OR m.CompanyID = @CompanyID)
+  AND (@UnitID IS NULL OR m.ProductionUnitID = @UnitID)
+  AND CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) BETWEEN @FromDate AND @ToDate;
+
+IF OBJECT_ID('tempdb..#FgqcSubmissions') IS NOT NULL DROP TABLE #FgqcSubmissions;
+SELECT
+  d.FinishGoodsQCInspectionMainID,
+  d.CreatedDate,
+  DENSE_RANK() OVER (PARTITION BY d.FinishGoodsQCInspectionMainID ORDER BY d.CreatedDate) AS SubmissionNo,
+  DENSE_RANK() OVER (PARTITION BY d.FinishGoodsQCInspectionMainID ORDER BY d.CreatedDate DESC) AS SubmissionNoDesc,
+  SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
+  SUM(ISNULL(d.Major, 0)) AS FoundMajor,
+  SUM(ISNULL(d.Minor, 0)) AS FoundMinor
+INTO #FgqcSubmissions
+FROM dbo.FinishGoodsQCInspectionDetail d
+INNER JOIN #FgqcLots l ON l.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
+WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
+GROUP BY d.FinishGoodsQCInspectionMainID, d.CreatedDate;
+
+IF OBJECT_ID('tempdb..#FgqcLatest') IS NOT NULL DROP TABLE #FgqcLatest;
+SELECT
+  l.FinishGoodsQCInspectionMainID, l.QCStatus, l.SampleSize, l.ProductionUnitID,
+  l.AqlCritical, l.AqlMajor, l.AqlMinor, l.InspectedDate,
+  ISNULL(s.FoundCritical, 0) AS FoundCritical,
+  ISNULL(s.FoundMajor, 0) AS FoundMajor,
+  ISNULL(s.FoundMinor, 0) AS FoundMinor,
+  ISNULL(s.FoundCritical, 0) + ISNULL(s.FoundMajor, 0) + ISNULL(s.FoundMinor, 0) AS FoundTotal
+INTO #FgqcLatest
+FROM #FgqcLots l
+LEFT JOIN #FgqcSubmissions s
+  ON s.FinishGoodsQCInspectionMainID = l.FinishGoodsQCInspectionMainID
+ AND s.SubmissionNoDesc = 1;
+
+IF OBJECT_ID('tempdb..#FgqcFirstPass') IS NOT NULL DROP TABLE #FgqcFirstPass;
+SELECT
+  l.FinishGoodsQCInspectionMainID,
+  CASE
+    WHEN s.FoundCritical > ISNULL(l.AqlCritical, 0) THEN 0
+    WHEN s.FoundMajor > ISNULL(l.AqlMajor, s.FoundMajor) THEN 0
+    WHEN s.FoundMinor > ISNULL(l.AqlMinor, s.FoundMinor) THEN 0
+    ELSE 1
+  END AS FirstPassAccepted
+INTO #FgqcFirstPass
+FROM #FgqcLatest l
+INNER JOIN #FgqcSubmissions s
+  ON s.FinishGoodsQCInspectionMainID = l.FinishGoodsQCInspectionMainID
+ AND s.SubmissionNo = 1
+WHERE l.AqlCritical IS NOT NULL OR l.AqlMajor IS NOT NULL OR l.AqlMinor IS NOT NULL;
+
+SELECT
+  COUNT(1) AS LotsInspected,
+  SUM(CASE WHEN QCStatus = 'Accepted' THEN 1 ELSE 0 END) AS LotsAccepted,
+  SUM(CASE WHEN QCStatus = 'Rejected' THEN 1 ELSE 0 END) AS LotsRejected,
+  SUM(CASE WHEN QCStatus = 'Pending' THEN 1 ELSE 0 END) AS PendingVerdicts,
+  SUM(CASE WHEN QCStatus = 'In Progress' THEN 1 ELSE 0 END) AS InProgress,
+  SUM(SampleSize) AS TotalSample,
+  SUM(FoundTotal) AS TotalDefects,
+  (SELECT COUNT(1) FROM #FgqcFirstPass) AS FirstPassLots,
+  (SELECT ISNULL(SUM(FirstPassAccepted), 0) FROM #FgqcFirstPass) AS FirstPassAccepted,
+  (SELECT COUNT(DISTINCT FinishGoodsQCInspectionMainID) FROM #FgqcSubmissions WHERE SubmissionNo > 1) AS LotsReinspected
+FROM #FgqcLatest;
+
+SELECT
+  CASE WHEN @DaySpan <= 21 THEN InspectedDate
+       ELSE DATEADD(day, -DATEPART(weekday, InspectedDate) + 1, InspectedDate) END AS PeriodStart,
+  COUNT(1) AS LotsInspected,
+  SUM(CASE WHEN QCStatus = 'Accepted' THEN 1 ELSE 0 END) AS LotsAccepted,
+  SUM(CASE WHEN QCStatus = 'Rejected' THEN 1 ELSE 0 END) AS LotsRejected
+FROM #FgqcLatest
+GROUP BY
+  CASE WHEN @DaySpan <= 21 THEN InspectedDate
+       ELSE DATEADD(day, -DATEPART(weekday, InspectedDate) + 1, InspectedDate) END
+ORDER BY PeriodStart;
+
+SELECT TOP 20
+  d.Characterstics,
+  SUM(ISNULL(d.Critical, 0)) AS CriticalCount,
+  SUM(ISNULL(d.Major, 0)) AS MajorCount,
+  SUM(ISNULL(d.Minor, 0)) AS MinorCount,
+  SUM(ISNULL(d.Critical, 0) + ISNULL(d.Major, 0) + ISNULL(d.Minor, 0)) AS TotalCount
+FROM dbo.FinishGoodsQCInspectionDetail d
+INNER JOIN #FgqcSubmissions s
+  ON s.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
+ AND s.CreatedDate = d.CreatedDate
+ AND s.SubmissionNoDesc = 1
+WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
+GROUP BY d.Characterstics
+HAVING SUM(ISNULL(d.Critical, 0) + ISNULL(d.Major, 0) + ISNULL(d.Minor, 0)) > 0
+ORDER BY TotalCount DESC;
+
+SELECT ProductionUnitID, COUNT(1) AS RejectionCount
+FROM #FgqcLatest
+WHERE QCStatus = 'Rejected'
+GROUP BY ProductionUnitID
+ORDER BY RejectionCount DESC;
+
+SELECT
+  SUM(CASE WHEN FoundCritical > ISNULL(AqlCritical, 0) THEN 1 ELSE 0 END) AS CriticalRejects,
+  SUM(CASE WHEN FoundMajor > ISNULL(AqlMajor, FoundMajor) THEN 1 ELSE 0 END) AS MajorRejects,
+  SUM(CASE WHEN FoundMinor > ISNULL(AqlMinor, FoundMinor) THEN 1 ELSE 0 END) AS MinorRejects
+FROM #FgqcLatest
+WHERE QCStatus = 'Rejected';
+
+DROP TABLE #FgqcFirstPass;
+DROP TABLE #FgqcLatest;
+DROP TABLE #FgqcSubmissions;
+DROP TABLE #FgqcLots;
+`;
+
+/**
+ * Production units, with a fallback for databases where ProductionUnitMaster is
+ * not present. Shared by the unit filter and by the dashboard, which needs the
+ * names to label the rejections-by-unit chart — the spec asks for units, not
+ * bare identifiers.
+ */
+async function fetchUnits(pool) {
+	let rows = [];
+	try {
+		const result = await pool.request().query(`
+			SELECT DISTINCT ProductionUnitID, ProductionUnitName
+			FROM dbo.ProductionUnitMaster
+			ORDER BY ProductionUnitName
+		`);
+		rows = result.recordset || [];
+	} catch {
+		const result = await pool.request().query(`
+			SELECT DISTINCT ProductionUnitID
+			FROM dbo.FinishGoodsTransactionMain
+			WHERE ProductionUnitID IS NOT NULL
+			  AND ISNULL(IsDeletedTransaction, 0) = 0
+			ORDER BY ProductionUnitID
+		`);
+		rows = result.recordset || [];
+	}
+	return rows.map((row) => ({
+		productionUnitId: asInt(pick(row, 'ProductionUnitID')),
+		productionUnitName: asStr(pick(row, 'ProductionUnitName'))
+			|| String(pick(row, 'ProductionUnitID') ?? '')
+	})).filter((r) => r.productionUnitId != null);
+}
 
 /**
  * GET /api/qc/dashboard
@@ -807,117 +1186,16 @@ router.get('/qc/dashboard', async (req, res) => {
 
 	try {
 		const pool = await getPool(db);
-		const result = await pool.request()
-			.input('CompanyID', sql.BigInt, companyId)
-			.input('FromDate', sql.Date, from)
-			.input('ToDate', sql.Date, to)
-			.input('UnitID', sql.BigInt, unitId)
-			.query(`
-SET NOCOUNT ON;
-DECLARE @DaySpan INT = DATEDIFF(day, @FromDate, @ToDate);
-
-IF OBJECT_ID('tempdb..#FgqcLots') IS NOT NULL DROP TABLE #FgqcLots;
-
-SELECT
-  m.FinishGoodsQCInspectionMainID,
-  m.QCStatus,
-  m.SampleSize,
-  m.ProductionUnitID,
-  m.ReferenceAQLCritical,
-  m.ReferenceAQLMajor,
-  m.ReferenceAQLMinor,
-  ISNULL(ld.FoundCritical, 0) AS FoundCritical,
-  ISNULL(ld.FoundMajor, 0) AS FoundMajor,
-  ISNULL(ld.FoundMinor, 0) AS FoundMinor,
-  ISNULL(ld.FoundTotal, 0) AS FoundTotal,
-  CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) AS InspectedDate
-INTO #FgqcLots
-FROM dbo.FinishGoodsQCInspectionMain m
-LEFT JOIN (
-  SELECT
-    d.FinishGoodsQCInspectionMainID,
-    SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
-    SUM(ISNULL(d.Major, 0)) AS FoundMajor,
-    SUM(ISNULL(d.Minor, 0)) AS FoundMinor,
-    SUM(ISNULL(d.Critical, 0) + ISNULL(d.Major, 0) + ISNULL(d.Minor, 0)) AS FoundTotal
-  FROM dbo.FinishGoodsQCInspectionDetail d
-  INNER JOIN (
-    SELECT FinishGoodsQCInspectionMainID, MAX(CreatedDate) AS MaxCreated
-    FROM dbo.FinishGoodsQCInspectionDetail
-    WHERE ISNULL(IsDeletedTransaction, 0) = 0
-    GROUP BY FinishGoodsQCInspectionMainID
-  ) latest
-    ON latest.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
-   AND d.CreatedDate = latest.MaxCreated
-  WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
-  GROUP BY d.FinishGoodsQCInspectionMainID
-) ld ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
-WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
-  AND (@CompanyID IS NULL OR m.CompanyID = @CompanyID)
-  AND (@UnitID IS NULL OR m.ProductionUnitID = @UnitID)
-  AND CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) >= @FromDate
-  AND CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) <= @ToDate;
-
-SELECT
-  COUNT(1) AS LotsInspected,
-  SUM(CASE WHEN QCStatus = 'Accepted' THEN 1 ELSE 0 END) AS LotsAccepted,
-  SUM(CASE WHEN QCStatus = 'Rejected' THEN 1 ELSE 0 END) AS LotsRejected,
-  SUM(CASE WHEN QCStatus = 'Pending' THEN 1 ELSE 0 END) AS PendingVerdicts,
-  SUM(CASE WHEN QCStatus = 'In Progress' THEN 1 ELSE 0 END) AS InProgress,
-  SUM(ISNULL(TRY_CAST(SampleSize AS FLOAT), 0)) AS TotalSample,
-  SUM(ISNULL(FoundTotal, 0)) AS TotalDefects
-FROM #FgqcLots;
-
-SELECT
-  CASE WHEN @DaySpan <= 21 THEN InspectedDate
-       ELSE DATEADD(day, -DATEPART(weekday, InspectedDate) + 1, InspectedDate)
-  END AS PeriodStart,
-  COUNT(1) AS LotsInspected,
-  SUM(CASE WHEN QCStatus = 'Accepted' THEN 1 ELSE 0 END) AS LotsAccepted,
-  SUM(CASE WHEN QCStatus = 'Rejected' THEN 1 ELSE 0 END) AS LotsRejected
-FROM #FgqcLots
-GROUP BY
-  CASE WHEN @DaySpan <= 21 THEN InspectedDate
-       ELSE DATEADD(day, -DATEPART(weekday, InspectedDate) + 1, InspectedDate)
-  END
-ORDER BY PeriodStart;
-
-SELECT TOP 20
-  d.Characterstics,
-  SUM(ISNULL(d.Critical, 0)) AS CriticalCount,
-  SUM(ISNULL(d.Major, 0)) AS MajorCount,
-  SUM(ISNULL(d.Minor, 0)) AS MinorCount,
-  SUM(ISNULL(d.Critical, 0) + ISNULL(d.Major, 0) + ISNULL(d.Minor, 0)) AS TotalCount
-FROM dbo.FinishGoodsQCInspectionDetail d
-INNER JOIN #FgqcLots m ON m.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
-INNER JOIN (
-  SELECT FinishGoodsQCInspectionMainID, MAX(CreatedDate) AS MaxCreated
-  FROM dbo.FinishGoodsQCInspectionDetail
-  WHERE ISNULL(IsDeletedTransaction, 0) = 0
-  GROUP BY FinishGoodsQCInspectionMainID
-) latest
-  ON latest.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
- AND d.CreatedDate = latest.MaxCreated
-WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
-GROUP BY d.Characterstics
-HAVING SUM(ISNULL(d.Critical, 0) + ISNULL(d.Major, 0) + ISNULL(d.Minor, 0)) > 0
-ORDER BY TotalCount DESC;
-
-SELECT
-  ISNULL(CAST(ProductionUnitID AS NVARCHAR(20)), 'Unknown') AS ProductionUnit,
-  COUNT(1) AS RejectionCount
-FROM #FgqcLots
-WHERE QCStatus = 'Rejected'
-GROUP BY ProductionUnitID
-ORDER BY RejectionCount DESC;
-
-SELECT
-  SUM(CASE WHEN FoundCritical > ISNULL(TRY_CAST(ReferenceAQLCritical AS FLOAT), 0) THEN 1 ELSE 0 END) AS CriticalRejects,
-  SUM(CASE WHEN FoundMajor > ISNULL(TRY_CAST(ReferenceAQLMajor AS FLOAT), 0) THEN 1 ELSE 0 END) AS MajorRejects,
-  SUM(CASE WHEN FoundMinor > ISNULL(TRY_CAST(ReferenceAQLMinor AS FLOAT), 0) THEN 1 ELSE 0 END) AS MinorRejects
-FROM #FgqcLots
-WHERE QCStatus = 'Rejected';
-			`);
+		const result = await execProcedure(
+			pool,
+			'GetFGQCDashboardKPIs',
+			(request) => request
+				.input('CompanyID', sql.BigInt, companyId)
+				.input('FromDate', sql.Date, from)
+				.input('ToDate', sql.Date, to)
+				.input('UnitID', sql.BigInt, unitId),
+			DASHBOARD_SQL
+		);
 
 		const sets = result.recordsets || [];
 		const kpiRow = sets[0]?.[0] || {};
@@ -927,8 +1205,29 @@ WHERE QCStatus = 'Rejected';
 		const pendingVerdicts = asInt(pick(kpiRow, 'PendingVerdicts')) || 0;
 		const totalSample = asNum(pick(kpiRow, 'TotalSample')) || 0;
 		const totalDefects = asNum(pick(kpiRow, 'TotalDefects')) || 0;
+		const firstPassLots = asInt(pick(kpiRow, 'FirstPassLots')) || 0;
+		const firstPassAccepted = asInt(pick(kpiRow, 'FirstPassAccepted')) || 0;
+		const lotsReinspected = asInt(pick(kpiRow, 'LotsReinspected')) || 0;
+
 		const acceptanceRate = inspected > 0 ? (accepted / inspected) * 100 : null;
+
+		/*
+		 * Spec section 7.4: do not average defect percentages across different
+		 * sample sizes without weighting. SUM(defects) / SUM(sample) weights each
+		 * lot by the cartons actually inspected, which a mean of per-lot
+		 * percentages would not.
+		 */
 		const avgDefectPercent = totalSample > 0 ? (totalDefects / totalSample) * 100 : null;
+
+		/*
+		 * Spec section 7.4: first-pass acceptance has to come from the detail
+		 * history, not the main row — the main row carries only the latest
+		 * verdict, so a lot that failed and was reworked into an Accepted state
+		 * would otherwise be indistinguishable from one that passed first time.
+		 */
+		const firstPassAcceptanceRate = firstPassLots > 0
+			? (firstPassAccepted / firstPassLots) * 100
+			: null;
 
 		let awaiting = null;
 		try {
@@ -947,6 +1246,13 @@ WHERE QCStatus = 'Rejected';
 			console.warn('[fg-qc] dashboard awaiting count failed:', pendingErr?.message);
 		}
 
+		let unitNames = new Map();
+		try {
+			unitNames = new Map((await fetchUnits(pool)).map((u) => [u.productionUnitId, u.productionUnitName]));
+		} catch (unitErr) {
+			console.warn('[fg-qc] dashboard unit names failed:', unitErr?.message);
+		}
+
 		const classRow = sets[4]?.[0] || {};
 
 		return res.json({
@@ -963,7 +1269,11 @@ WHERE QCStatus = 'Rejected';
 				awaitingInspection: awaiting,
 				totalSample,
 				totalDefects,
-				note: 'Acceptance rate uses the latest verdict per lot. Reworked lots show only their current status.'
+				firstPassLots,
+				firstPassAccepted,
+				firstPassAcceptanceRate,
+				lotsReinspected,
+				note: 'Acceptance rate uses the latest verdict per lot. First-pass acceptance comes from the earliest submission in the detail history.'
 			},
 			trend: (sets[1] || []).map((row) => ({
 				periodStart: ymd(pick(row, 'PeriodStart')),
@@ -981,10 +1291,15 @@ WHERE QCStatus = 'Rejected';
 				minor: asNum(pick(row, 'MinorCount')) || 0,
 				total: asNum(pick(row, 'TotalCount')) || 0
 			})),
-			rejectionsByUnit: (sets[3] || []).map((row) => ({
-				productionUnit: asStr(pick(row, 'ProductionUnit')),
-				rejectionCount: asInt(pick(row, 'RejectionCount')) || 0
-			})),
+			rejectionsByUnit: (sets[3] || []).map((row) => {
+				const id = asInt(pick(row, 'ProductionUnitID'));
+				return {
+					productionUnitId: id,
+					productionUnit: unitNames.get(id)
+						|| (id == null ? 'Not recorded' : String(id)),
+					rejectionCount: asInt(pick(row, 'RejectionCount')) || 0
+				};
+			}),
 			rejectionsByClass: {
 				critical: asInt(pick(classRow, 'CriticalRejects')) || 0,
 				major: asInt(pick(classRow, 'MajorRejects')) || 0,
@@ -1035,32 +1350,7 @@ router.get('/qc/units', async (req, res) => {
 	if (!db) return;
 	try {
 		const pool = await getPool(db);
-		let rows = [];
-		try {
-			const result = await pool.request().query(`
-				SELECT DISTINCT ProductionUnitID, ProductionUnitName
-				FROM dbo.ProductionUnitMaster
-				ORDER BY ProductionUnitName
-			`);
-			rows = result.recordset || [];
-		} catch {
-			const result = await pool.request().query(`
-				SELECT DISTINCT ProductionUnitID
-				FROM dbo.FinishGoodsTransactionMain
-				WHERE ProductionUnitID IS NOT NULL
-				  AND ISNULL(IsDeletedTransaction, 0) = 0
-				ORDER BY ProductionUnitID
-			`);
-			rows = result.recordset || [];
-		}
-		return res.json({
-			status: true,
-			rows: rows.map((row) => ({
-				productionUnitId: asInt(pick(row, 'ProductionUnitID')),
-				productionUnitName: asStr(pick(row, 'ProductionUnitName'))
-					|| String(pick(row, 'ProductionUnitID') ?? '')
-			})).filter((r) => r.productionUnitId != null)
-		});
+		return res.json({ status: true, rows: await fetchUnits(pool) });
 	} catch (err) {
 		console.error('[fg-qc] units error:', err);
 		return res.status(500).json({
@@ -1071,3 +1361,12 @@ router.get('/qc/units', async (req, res) => {
 });
 
 export default router;
+
+/*
+ * Exported for src/routes-fg-qc.test.js. These are the pure mapping helpers
+ * that stand between the stored procedures and the inspector's screen — a
+ * mistake in severityOf() files a Critical defect under the wrong accept
+ * number, which is the failure mode spec section 3 exists to prevent, so it
+ * is worth a test rather than a read-through.
+ */
+export { severityOf, mapTemplateItem, mapTemplate, mapAql, isMissingProcedure, SEVERITY_UNCLASSIFIED };

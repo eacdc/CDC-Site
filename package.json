@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test src/sql-guard.test.js \"src/supplier-portal/tests/*.test.js\"",
+    "test": "node --test src/sql-guard.test.js src/routes-fg-qc.test.js \"src/supplier-portal/tests/*.test.js\"",
+    "test:fg-qc": "node --test src/routes-fg-qc.test.js",
     "test:sql-guard": "node --test src/sql-guard.test.js",
     "test:supplier-portal": "node --test \"src/supplier-portal/tests/*.test.js\"",
     "supplier-portal:create-user": "node scripts/supplier-portal-create-user.js",
