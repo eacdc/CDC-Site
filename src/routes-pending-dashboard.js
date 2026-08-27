@@ -18,11 +18,10 @@ import { getLongQueryPool, sql } from './db.js';
 const router = Router();
 
 export const JOB_MODES = ['DELIVERY', 'POSTPRINT', 'PARTIAL', 'ALL'];
+export const ALLOWED_DATABASES = ['KOL', 'AHM'];
 export const CACHE_TTL_MS = 60_000;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const DATABASE = () =>
-	String(process.env.PENDING_DASHBOARD_DATABASE || 'KOL').trim().toUpperCase();
 
 const PO_DATE_COLS = new Set(['PODate', 'ExpectedDeliveryDate']);
 const JOB_DATE_COLS = new Set(['JobBookingDate', 'PrintEnd', 'LastDeliveryDate']);
@@ -53,6 +52,12 @@ export function parseMode(raw) {
 	if (raw == null || String(raw).trim() === '') return null;
 	const mode = String(raw).trim().toUpperCase();
 	return JOB_MODES.includes(mode) ? mode : undefined;
+}
+
+export function parseDatabase(raw) {
+	if (raw == null || String(raw).trim() === '') return 'KOL';
+	const db = String(raw).trim().toUpperCase();
+	return ALLOWED_DATABASES.includes(db) ? db : undefined;
 }
 
 export function emptyToNull(raw) {
@@ -213,7 +218,7 @@ async function respondFromProc({
 	}
 
 	try {
-		const pool = await getLongQueryPool(DATABASE());
+		const pool = await getLongQueryPool(params.database);
 		const request = pool.request();
 		bind(request);
 		const result = await request.execute(procName);
@@ -235,10 +240,14 @@ async function respondFromProc({
 
 /**
  * GET /api/pending-po
- * Query: from, to, supplierId, itemGroupId, jobBookingNo, includeKraft, receiptCutoff, top
+ * Query: database=KOL|AHM, from, to, supplierId, itemGroupId, jobBookingNo, includeKraft, receiptCutoff, top
  */
 router.get('/pending-po', async (req, res) => {
 	const q = req.query || {};
+	const database = parseDatabase(q.database);
+	if (database === undefined) {
+		return res.status(400).json({ error: 'database must be KOL or AHM.' });
+	}
 	const fromDate = dateOrNull(q.from);
 	const toDate = dateOrNull(q.to);
 	if (fromDate === undefined) return invalidDate(res, 'from');
@@ -267,6 +276,7 @@ router.get('/pending-po', async (req, res) => {
 	}
 
 	const params = {
+		database,
 		fromDate,
 		toDate,
 		supplierId,
@@ -300,11 +310,15 @@ router.get('/pending-po', async (req, res) => {
 
 /**
  * GET /api/pending-jobs
- * Query: mode, from, to, clientName, salesPersonId, jobBookingNo, categoryId,
+ * Query: database=KOL|AHM, mode, from, to, clientName, salesPersonId, jobBookingNo, categoryId,
  *        deliveryCutoff, printCompletePct, top
  */
 router.get('/pending-jobs', async (req, res) => {
 	const q = req.query || {};
+	const database = parseDatabase(q.database);
+	if (database === undefined) {
+		return res.status(400).json({ error: 'database must be KOL or AHM.' });
+	}
 	const mode = parseMode(q.mode);
 	if (q.mode != null && String(q.mode).trim() !== '' && mode === undefined) {
 		return res.status(400).json({
@@ -341,6 +355,7 @@ router.get('/pending-jobs', async (req, res) => {
 	}
 
 	const params = {
+		database,
 		mode: mode ?? null,
 		fromDate,
 		toDate,

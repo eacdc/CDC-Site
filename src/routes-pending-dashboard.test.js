@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
 	JOB_MODES,
 	parseMode,
+	parseDatabase,
 	emptyToNull,
 	dateOrNull,
 	intOrNull,
@@ -27,6 +28,16 @@ test('parseMode accepts the four whitelist values and nothing else', () => {
 	assert.equal(parseMode('DELIVER'), undefined);
 	assert.equal(parseMode('DROP TABLE'), undefined);
 	assert.equal(parseMode("DELIVERY'; --"), undefined);
+});
+
+test('parseDatabase defaults to KOL and rejects anything else', () => {
+	assert.equal(parseDatabase(undefined), 'KOL');
+	assert.equal(parseDatabase(''), 'KOL');
+	assert.equal(parseDatabase('kol'), 'KOL');
+	assert.equal(parseDatabase('AHM'), 'AHM');
+	assert.equal(parseDatabase('ahm'), 'AHM');
+	assert.equal(parseDatabase('DEL'), undefined);
+	assert.equal(parseDatabase('IndusEnterprise'), undefined);
 });
 
 test('emptyToNull and dateOrNull leave missing as null and reject junk', () => {
