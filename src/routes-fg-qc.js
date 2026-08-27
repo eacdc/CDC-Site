@@ -30,7 +30,14 @@ const router = Router();
 
 const ALLOWED_DATABASES = ['KOL', 'AHM'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const DEFAULT_COMPANY_ID = Number(process.env.FGQC_COMPANY_ID || 1);
+/*
+ * The GPNs this module reads are stored against CompanyID 2 in Indus. This is
+ * the value that decides whether the pending queue has any rows at all: the
+ * spec marks FinishGoodsTransactionMain.CompanyID as [VERIFY] (section 4.3)
+ * precisely because getting it wrong empties the queue with no error raised.
+ * Override with FGQC_COMPANY_ID if another site stores them elsewhere.
+ */
+const DEFAULT_COMPANY_ID = Number(process.env.FGQC_COMPANY_ID || 2);
 const DEFAULT_FROM_GPN_DATE = process.env.FGQC_FROM_GPN_DATE || '2026-08-01';
 const DOUBLE_SUBMIT_WINDOW_MS = 8000;
 
