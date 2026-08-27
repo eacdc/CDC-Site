@@ -506,9 +506,15 @@ router.get('/qc/template', async (req, res) => {
 	try {
 		const pool = await getPool(db);
 		const result = await pool.request()
+			/*
+			 * Bound to the types GetFinishGoodsQCTemplate actually declares:
+			 * @LotSize is bigint and @SamplingMethodType is varchar(128).
+			 * Lot size is a count of inner cartons, so rounding here is exact
+			 * rather than leaving a decimal-to-bigint conversion to the driver.
+			 */
 			.input('CategoryID', sql.BigInt, categoryId)
-			.input('LotSize', sql.Decimal(18, 4), lotSize)
-			.input('SamplingMethodType', sql.NVarChar(50), 'Carter')
+			.input('LotSize', sql.BigInt, Math.round(lotSize))
+			.input('SamplingMethodType', sql.VarChar(128), 'Carter')
 			.input('CompanyID', sql.BigInt, companyId)
 			.input('IncludeDeleted', sql.Bit, 0)
 			.execute('GetFinishGoodsQCTemplate');
