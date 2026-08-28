@@ -39,7 +39,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * Override with FGQC_COMPANY_ID if another site stores them elsewhere.
  */
 const DEFAULT_COMPANY_ID = Number(process.env.FGQC_COMPANY_ID || 2);
-const DEFAULT_FROM_GPN_DATE = process.env.FGQC_FROM_GPN_DATE || '2026-08-01';
+const DEFAULT_FROM_GPN_DATE = process.env.FGQC_FROM_GPN_DATE || '2026-04-01';
 const DOUBLE_SUBMIT_WINDOW_MS = 8000;
 
 /** In-memory guard against double-clicks. Rework resubmits are allowed after the window. */

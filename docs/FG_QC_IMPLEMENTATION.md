@@ -26,10 +26,11 @@ is what makes the verdicts correct. Do it first.
 5.  deploy the API                 nothing to configure beyond the env vars below
 ```
 
-Environment: `FGQC_COMPANY_ID` (default 1) and `FGQC_FROM_GPN_DATE` (default
-`2026-08-01`). The second is the go-live cutoff from spec section 4.3 — without
-it every historical GPN in the database appears in the queue on day one. The
-frontend carries the same value in `config.js`; keep the two in step.
+Environment: `FGQC_COMPANY_ID` (default 2) and `FGQC_FROM_GPN_DATE` (default
+`2026-04-01`, the start of the financial year). The second is the go-live
+cutoff from spec section 4.3 — without it every historical GPN in the database
+appears in the queue on day one. The frontend carries the same value in
+`config.js`; keep the two in step.
 
 ---
 
