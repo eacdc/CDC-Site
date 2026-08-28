@@ -20,7 +20,7 @@ if (!serverPort && serverEnv.includes(',')) {
 		serverPort = parsed;
 	}
 }
-
+//test
 const sqlConfig = {
 	user: process.env.DB_USER,
 	password: process.env.DB_PASSWORD,
