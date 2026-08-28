@@ -20,6 +20,7 @@
  *   GET  /api/qc/inspections
  *   GET  /api/qc/inspections/:id
  *   GET  /api/qc/dashboard
+ *   GET  /api/qc/login
  *   GET  /api/qc/inspectors
  *   GET  /api/qc/units
  */
@@ -135,6 +136,15 @@ function ymd(value) {
 	return `${y}-${m}-${day}`;
 }
 
+/** Calendar date in India — used as the pending-queue end date when the client omits toGPNDate. */
+function todayYmd() {
+	try {
+		return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+	} catch {
+		return ymd(new Date());
+	}
+}
+
 function queryVal(req, ...names) {
 	const src = { ...(req.query || {}), ...(req.body || {}) };
 	for (const name of names) {
@@ -223,7 +233,7 @@ function parsePaged(result) {
 		for (let i = 1; i < sets.length; i++) {
 			const row = sets[i] && sets[i][0];
 			if (!row) continue;
-			const t = pick(row, 'Total', 'total', 'TotalCount', 'TOTAL', 'Cnt', 'RowCount');
+			const t = pick(row, 'Total', 'total', 'TotalCount', 'TOTAL', 'Cnt', 'RowCount', 'TotalRows');
 			if (t != null) {
 				total = asInt(t);
 				break;
@@ -231,7 +241,7 @@ function parsePaged(result) {
 		}
 	}
 	if (total == null && primary[0]) {
-		total = asInt(pick(primary[0], 'TotalCount', 'Total', 'total', 'TOTAL'));
+		total = asInt(pick(primary[0], 'TotalCount', 'Total', 'total', 'TOTAL', 'TotalRows', 'RowCount'));
 	}
 	if (total == null) total = primary.length;
 	return { rows: primary, total };
@@ -446,7 +456,7 @@ router.get('/qc/pending', async (req, res) => {
 	const companyId = companyIdOf(req);
 	const search = asStr(queryVal(req, 'search')) || null;
 	const fromGPNDate = ymd(queryVal(req, 'fromGPNDate')) || DEFAULT_FROM_GPN_DATE;
-	const toGPNDate = ymd(queryVal(req, 'toGPNDate'));
+	const toGPNDate = ymd(queryVal(req, 'toGPNDate')) || todayYmd();
 	const page = Math.max(1, asInt(queryVal(req, 'page')) || 1);
 	const pageSize = Math.min(200, Math.max(1, asInt(queryVal(req, 'pageSize')) || 25));
 	const unitId = asInt(queryVal(req, 'unitId', 'productionUnitId', 'productionUnitID'));
@@ -1247,7 +1257,7 @@ router.get('/qc/dashboard', async (req, res) => {
 			const pendingRes = await pool.request()
 				.input('Search', sql.NVarChar(200), null)
 				.input('FromGPNDate', sql.Date, DEFAULT_FROM_GPN_DATE)
-				.input('ToGPNDate', sql.Date, null)
+				.input('ToGPNDate', sql.Date, todayYmd())
 				.input('CompanyID', sql.BigInt, companyId)
 				.input('ProductionUnitID', sql.BigInt, unitId)
 				.input('IncludeClosed', sql.Bit, 0)
@@ -1329,6 +1339,49 @@ router.get('/qc/dashboard', async (req, res) => {
 });
 
 /**
+ * GET /api/qc/login?username=&database=
+ * Same sign-in shape as Raw Material QC (username + KOL/AHM), resolved against UserMaster.
+ */
+router.get('/qc/login', async (req, res) => {
+	const db = requireDb(req, res);
+	if (!db) return;
+	const username = asStr(queryVal(req, 'username', 'userName', 'UserName'));
+	if (!username) {
+		return res.status(400).json({ status: false, error: 'Enter username' });
+	}
+	try {
+		const pool = await getPool(db);
+		const result = await pool.request()
+			.input('UserName', sql.NVarChar(255), username)
+			.query(`
+				SELECT TOP 1 UserID, UserName
+				FROM dbo.UserMaster
+				WHERE LOWER(LTRIM(RTRIM(UserName))) = LOWER(LTRIM(RTRIM(@UserName)))
+				ORDER BY UserID
+			`);
+		const row = result.recordset && result.recordset[0];
+		if (!row) {
+			return res.status(401).json({
+				status: false,
+				error: 'No user found with that name in ' + db
+			});
+		}
+		return res.json({
+			status: true,
+			userId: asInt(pick(row, 'UserID')),
+			userName: asStr(pick(row, 'UserName')) || username,
+			database: db
+		});
+	} catch (err) {
+		console.error('[fg-qc] login error:', err);
+		return res.status(500).json({
+			status: false,
+			error: err?.message || 'Login failed'
+		});
+	}
+});
+
+/**
  * GET /api/qc/inspectors
  */
 router.get('/qc/inspectors', async (req, res) => {
@@ -1337,7 +1390,7 @@ router.get('/qc/inspectors', async (req, res) => {
 	try {
 		const pool = await getPool(db);
 		const result = await pool.request().query(`
-			SELECT TOP 500 UserID, UserName
+			SELECT TOP 2000 UserID, UserName
 			FROM dbo.UserMaster
 			ORDER BY UserName
 		`);
