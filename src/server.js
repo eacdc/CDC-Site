@@ -21,6 +21,7 @@ import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
 import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
 import fgQcRoutes from './routes-fg-qc.js';
+import pendingDashboardRoutes from './routes-pending-dashboard.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
 import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
 import supplierPortalRoutes from './supplier-portal/routes/index.js';
@@ -110,6 +111,13 @@ app.use('/api', previousItemsByClientRoutes);
 app.use('/api', jobProductImageRoutes);
 app.use('/api', jobWiseProfitabilityRoutes);
 app.use('/api', fgQcRoutes);
+app.use('/api', pendingDashboardRoutes);
+
+const fgQcDir = join(__dirname, '..', '..', 'FG Transaction QC');
+app.use('/fg-qc', express.static(fgQcDir));
+
+const pendingDashboardDir = join(__dirname, '..', '..', 'Pending Dashboard');
+app.use('/pending-dashboard', express.static(pendingDashboardDir));
 
 // CDC Bills Digitization Platform
 app.use('/api/cdc-bills/auth', cdcBillsAuthRoutes);
