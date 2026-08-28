@@ -31,7 +31,26 @@ CREATE PROCEDURE dbo.GetFGQCInspectionList
     @Status    NVARCHAR(50)  = NULL,
     @UnitID    BIGINT        = NULL,
     @Offset    INT           = 0,
-    @PageSize  INT           = 25
+    @PageSize  INT           = 25,
+    /*
+      Per-column filters for the dashboard table, one per header cell. @JobNo
+      above is the toolbar's single search box and still matches FGQC, job and
+      GPN at once; these narrow to one column each. All default to NULL, so a
+      caller that does not know about them behaves exactly as before.
+
+      They are applied here rather than in the browser because the table is
+      paged: filtering the fetched page would hide matches on page two and
+      leave the row count above the table disagreeing with what is on screen.
+    */
+    @FGQCNo       NVARCHAR(100) = NULL,
+    @JobBookingNo NVARCHAR(100) = NULL,
+    @GPNNo        NVARCHAR(100) = NULL,
+    @Inspector    NVARCHAR(100) = NULL,
+    @MinLotSize   BIGINT        = NULL,
+    @MinSample    BIGINT        = NULL,
+    @MinCritical  BIGINT        = NULL,
+    @MinMajor     BIGINT        = NULL,
+    @MinMinor     BIGINT        = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -40,6 +59,10 @@ BEGIN
     IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 25;
     IF @JobNo = '' SET @JobNo = NULL;
     IF @Status = '' SET @Status = NULL;
+    IF @FGQCNo = '' SET @FGQCNo = NULL;
+    IF @JobBookingNo = '' SET @JobBookingNo = NULL;
+    IF @GPNNo = '' SET @GPNNo = NULL;
+    IF @Inspector = '' SET @Inspector = NULL;
 
     /*
       Latest submission per lot. Rows from one submission share a CreatedDate,
@@ -153,11 +176,38 @@ BEGIN
          OR m.FGQCNo        LIKE '%' + @JobNo + '%'
          OR fgm.VoucherNo   LIKE '%' + @JobNo + '%'
       )
+      AND (@FGQCNo       IS NULL OR m.FGQCNo         LIKE '%' + @FGQCNo + '%')
+      AND (@JobBookingNo IS NULL OR jb.JobBookingNo  LIKE '%' + @JobBookingNo + '%')
+      AND (@GPNNo        IS NULL OR fgm.VoucherNo    LIKE '%' + @GPNNo + '%')
+      AND (@Inspector    IS NULL OR um.UserName      LIKE '%' + @Inspector + '%')
+      AND (@MinLotSize   IS NULL OR ISNULL(m.TotalBox,       0) >= @MinLotSize)
+      AND (@MinSample    IS NULL OR ISNULL(m.SampleSize,     0) >= @MinSample)
+      AND (@MinCritical  IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
+      AND (@MinMajor     IS NULL OR ISNULL(ld.FoundMajor,    0) >= @MinMajor)
+      AND (@MinMinor     IS NULL OR ISNULL(ld.FoundMinor,    0) >= @MinMinor)
     ORDER BY ISNULL(m.ModifiedDate, m.CreatedDate) DESC
     OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
 
-    /* Unpaged count for the pager. */
-    ;WITH LotJob AS (
+    /* Unpaged count for the pager — the same predicates, or the pager lies. */
+    ;WITH LatestDetail AS (
+        SELECT
+            d.FinishGoodsQCInspectionMainID,
+            SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
+            SUM(ISNULL(d.Major,    0)) AS FoundMajor,
+            SUM(ISNULL(d.Minor,    0)) AS FoundMinor
+        FROM dbo.FinishGoodsQCInspectionDetail d
+        INNER JOIN (
+            SELECT FinishGoodsQCInspectionMainID, MAX(CreatedDate) AS MaxCreated
+            FROM dbo.FinishGoodsQCInspectionDetail
+            WHERE ISNULL(IsDeletedTransaction, 0) = 0
+            GROUP BY FinishGoodsQCInspectionMainID
+        ) latest
+            ON  latest.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
+            AND d.CreatedDate = latest.MaxCreated
+        WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
+        GROUP BY d.FinishGoodsQCInspectionMainID
+    ),
+    LotJob AS (
         SELECT
             fgd.FGTransactionID,
             fgd.JobBookingID,
@@ -170,6 +220,10 @@ BEGIN
     )
     SELECT COUNT(DISTINCT m.FinishGoodsQCInspectionMainID) AS Total
     FROM dbo.FinishGoodsQCInspectionMain m
+    LEFT JOIN LatestDetail ld
+           ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
+    LEFT JOIN dbo.UserMaster um
+           ON um.UserID = m.CreatedBy
     LEFT JOIN dbo.FinishGoodsTransactionMain fgm
            ON fgm.FGTransactionID = m.FGTransactionID
           AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
@@ -190,6 +244,15 @@ BEGIN
          OR jb.JobBookingNo LIKE '%' + @JobNo + '%'
          OR m.FGQCNo        LIKE '%' + @JobNo + '%'
          OR fgm.VoucherNo   LIKE '%' + @JobNo + '%'
-      );
+      )
+      AND (@FGQCNo       IS NULL OR m.FGQCNo         LIKE '%' + @FGQCNo + '%')
+      AND (@JobBookingNo IS NULL OR jb.JobBookingNo  LIKE '%' + @JobBookingNo + '%')
+      AND (@GPNNo        IS NULL OR fgm.VoucherNo    LIKE '%' + @GPNNo + '%')
+      AND (@Inspector    IS NULL OR um.UserName      LIKE '%' + @Inspector + '%')
+      AND (@MinLotSize   IS NULL OR ISNULL(m.TotalBox,       0) >= @MinLotSize)
+      AND (@MinSample    IS NULL OR ISNULL(m.SampleSize,     0) >= @MinSample)
+      AND (@MinCritical  IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
+      AND (@MinMajor     IS NULL OR ISNULL(ld.FoundMajor,    0) >= @MinMajor)
+      AND (@MinMinor     IS NULL OR ISNULL(ld.FoundMinor,    0) >= @MinMinor);
 END
 GO

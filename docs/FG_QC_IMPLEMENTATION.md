@@ -116,6 +116,28 @@ so that deploying the API and deploying the database do not have to happen in
 the same minute. `002_verify.sql` reports which procedures are still missing.
 Once all three are deployed the fallbacks are unreachable and can be deleted.
 
+The fallback now also catches a procedure that is *deployed but out of date* —
+SQL Server errors 8144 and 8145, raised when a route sends a parameter the
+procedure does not declare. That is what happens when the API is deployed and
+the matching `sql/fgqc/*.sql` is not re-run. Before this the route returned a
+500 and the screen went blank; now it falls back and logs a warning that says
+which procedure to re-run.
+
+**The inspections table filters per column.** A filter row sits under the
+headers: FGQC no, inspector, job no and GPN no match on any part of the value,
+lot size, sample and the three defect counts take a "≥ this many" threshold,
+and status is a dropdown that shares its state with the KPI tiles above, so the
+two controls cannot disagree. Date has no box — the From / To fields in the
+toolbar are that filter.
+
+Every one of them is applied in SQL, not over the fetched page. The table is
+paged twenty-five rows at a time, so filtering in the browser would hide
+matches sitting on page two while the count in the panel heading went on
+quoting the unfiltered total. `GetFGQCInspectionList` gained the matching
+parameters, all defaulting to NULL — **re-run `sql/fgqc/010_GetFGQCInspectionList.sql`
+after deploying this**, or the route falls back to inline SQL as described
+above.
+
 ---
 
 ## Waiting on the database

@@ -47,6 +47,13 @@ const recentSubmits = new Map();
 /** SQL Server: "Could not find stored procedure". */
 const SP_MISSING_ERROR_NUMBERS = new Set([2812]);
 
+/**
+ * SQL Server: 8144 "has too many arguments specified", 8145 "is not a parameter
+ * for procedure". Both mean the deployed procedure predates the route that
+ * calls it — a live database still running last month's sql/fgqc/*.sql.
+ */
+const SP_STALE_ERROR_NUMBERS = new Set([8144, 8145]);
+
 /** Warn once per procedure, not once per request. */
 const warnedMissingSps = new Set();
 
@@ -55,6 +62,14 @@ function isMissingProcedure(err, spName) {
 	if (SP_MISSING_ERROR_NUMBERS.has(err.number)) return true;
 	const text = String(err.message || '');
 	return /could not find stored procedure/i.test(text) && text.includes(spName);
+}
+
+function isStaleProcedure(err, spName) {
+	if (!err) return false;
+	if (SP_STALE_ERROR_NUMBERS.has(err.number)) return true;
+	const text = String(err.message || '');
+	return /(too many arguments specified|is not a parameter for procedure)/i.test(text)
+		&& text.includes(spName);
 }
 
 /**
@@ -67,12 +82,18 @@ async function execProcedure(pool, spName, bind, fallbackSql) {
 	try {
 		return await bind(pool.request()).execute(spName);
 	} catch (err) {
-		if (!fallbackSql || !isMissingProcedure(err, spName)) throw err;
+		const missing = isMissingProcedure(err, spName);
+		const stale = !missing && isStaleProcedure(err, spName);
+		if (!fallbackSql || !(missing || stale)) throw err;
 		if (!warnedMissingSps.has(spName)) {
 			warnedMissingSps.add(spName);
 			console.warn(
-				`[fg-qc] ${spName} is not deployed — using the inline fallback. `
-				+ 'Deploy sql/fgqc/*.sql and re-run sql/fgqc/002_verify.sql.'
+				stale
+					? `[fg-qc] ${spName} is deployed but does not accept every parameter this `
+						+ 'route sends — using the inline fallback. Re-run the matching '
+						+ 'sql/fgqc/*.sql to bring the procedure up to date.'
+					: `[fg-qc] ${spName} is not deployed — using the inline fallback. `
+						+ 'Deploy sql/fgqc/*.sql and re-run sql/fgqc/002_verify.sql.'
 			);
 		}
 		return bind(pool.request()).query(fallbackSql);
@@ -726,11 +747,39 @@ WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
     OR fgm.VoucherNo LIKE '%' + @JobNo + '%'
   )
   AND (@UnitID IS NULL OR m.ProductionUnitID = @UnitID)
+  AND (@FGQCNo IS NULL OR m.FGQCNo LIKE '%' + @FGQCNo + '%')
+  AND (@JobBookingNo IS NULL OR jb.JobBookingNo LIKE '%' + @JobBookingNo + '%')
+  AND (@GPNNo IS NULL OR fgm.VoucherNo LIKE '%' + @GPNNo + '%')
+  AND (@Inspector IS NULL OR um.UserName LIKE '%' + @Inspector + '%')
+  AND (@MinLotSize IS NULL OR ISNULL(m.TotalBox, 0) >= @MinLotSize)
+  AND (@MinSample IS NULL OR ISNULL(m.SampleSize, 0) >= @MinSample)
+  AND (@MinCritical IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
+  AND (@MinMajor IS NULL OR ISNULL(ld.FoundMajor, 0) >= @MinMajor)
+  AND (@MinMinor IS NULL OR ISNULL(ld.FoundMinor, 0) >= @MinMinor)
 ORDER BY ISNULL(m.ModifiedDate, m.CreatedDate) DESC
 OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
 
+;WITH LatestDetail AS (
+  SELECT
+    d.FinishGoodsQCInspectionMainID,
+    SUM(ISNULL(d.Critical, 0)) AS FoundCritical,
+    SUM(ISNULL(d.Major, 0)) AS FoundMajor,
+    SUM(ISNULL(d.Minor, 0)) AS FoundMinor
+  FROM dbo.FinishGoodsQCInspectionDetail d
+  INNER JOIN (
+    SELECT FinishGoodsQCInspectionMainID, MAX(CreatedDate) AS MaxCreated
+    FROM dbo.FinishGoodsQCInspectionDetail
+    WHERE ISNULL(IsDeletedTransaction, 0) = 0
+    GROUP BY FinishGoodsQCInspectionMainID
+  ) latest
+    ON latest.FinishGoodsQCInspectionMainID = d.FinishGoodsQCInspectionMainID
+   AND d.CreatedDate = latest.MaxCreated
+  WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
+  GROUP BY d.FinishGoodsQCInspectionMainID
+)
 SELECT COUNT(DISTINCT m.FinishGoodsQCInspectionMainID) AS Total
 FROM dbo.FinishGoodsQCInspectionMain m
+LEFT JOIN LatestDetail ld ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
 LEFT JOIN dbo.FinishGoodsTransactionMain fgm
   ON fgm.FGTransactionID = m.FGTransactionID
  AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
@@ -740,6 +789,8 @@ LEFT JOIN dbo.FinishGoodsTransactionDetail fgd
  AND (m.JobBookingID IS NULL OR fgd.JobBookingID = m.JobBookingID)
 LEFT JOIN dbo.JobBookingJobCard jb
   ON jb.JobBookingID = ISNULL(m.JobBookingID, fgd.JobBookingID)
+LEFT JOIN dbo.UserMaster um
+  ON um.UserID = m.CreatedBy
 WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
   AND (@CompanyID IS NULL OR m.CompanyID = @CompanyID)
   AND (@FromDate IS NULL OR CAST(ISNULL(m.ModifiedDate, m.CreatedDate) AS DATE) >= @FromDate)
@@ -751,7 +802,16 @@ WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
     OR m.FGQCNo LIKE '%' + @JobNo + '%'
     OR fgm.VoucherNo LIKE '%' + @JobNo + '%'
   )
-  AND (@UnitID IS NULL OR m.ProductionUnitID = @UnitID);
+  AND (@UnitID IS NULL OR m.ProductionUnitID = @UnitID)
+  AND (@FGQCNo IS NULL OR m.FGQCNo LIKE '%' + @FGQCNo + '%')
+  AND (@JobBookingNo IS NULL OR jb.JobBookingNo LIKE '%' + @JobBookingNo + '%')
+  AND (@GPNNo IS NULL OR fgm.VoucherNo LIKE '%' + @GPNNo + '%')
+  AND (@Inspector IS NULL OR um.UserName LIKE '%' + @Inspector + '%')
+  AND (@MinLotSize IS NULL OR ISNULL(m.TotalBox, 0) >= @MinLotSize)
+  AND (@MinSample IS NULL OR ISNULL(m.SampleSize, 0) >= @MinSample)
+  AND (@MinCritical IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
+  AND (@MinMajor IS NULL OR ISNULL(ld.FoundMajor, 0) >= @MinMajor)
+  AND (@MinMinor IS NULL OR ISNULL(ld.FoundMinor, 0) >= @MinMinor);
 `;
 
 /**
@@ -769,6 +829,26 @@ router.get('/qc/inspections', async (req, res) => {
 	const page = Math.max(1, asInt(queryVal(req, 'page')) || 1);
 	const pageSize = Math.min(200, Math.max(1, asInt(queryVal(req, 'pageSize')) || 25));
 
+	/*
+	 * Per-column filters, one per header cell in the dashboard table. They are
+	 * applied in SQL rather than over the fetched page: the table is paged
+	 * server-side, so filtering the twenty-five rows in the browser would
+	 * silently hide matches sitting on page two and leave the row count above
+	 * the table disagreeing with what is on screen.
+	 *
+	 * jobNo above stays as it is — it is the toolbar's one-box search across
+	 * FGQC, job and GPN. These narrow it to a single column each.
+	 */
+	const fgqcNo = asStr(queryVal(req, 'fgqcNo')) || null;
+	const jobBookingNo = asStr(queryVal(req, 'jobBookingNo')) || null;
+	const gpnNo = asStr(queryVal(req, 'gpnNo')) || null;
+	const inspector = asStr(queryVal(req, 'inspector')) || null;
+	const minLotSize = asInt(queryVal(req, 'minLotSize'));
+	const minSample = asInt(queryVal(req, 'minSample'));
+	const minCritical = asInt(queryVal(req, 'minCritical'));
+	const minMajor = asInt(queryVal(req, 'minMajor'));
+	const minMinor = asInt(queryVal(req, 'minMinor'));
+
 	try {
 		const pool = await getPool(db);
 		const result = await execProcedure(
@@ -782,7 +862,16 @@ router.get('/qc/inspections', async (req, res) => {
 				.input('Status', sql.NVarChar(50), status)
 				.input('UnitID', sql.BigInt, unitId)
 				.input('Offset', sql.Int, (page - 1) * pageSize)
-				.input('PageSize', sql.Int, pageSize),
+				.input('PageSize', sql.Int, pageSize)
+				.input('FGQCNo', sql.NVarChar(100), fgqcNo)
+				.input('JobBookingNo', sql.NVarChar(100), jobBookingNo)
+				.input('GPNNo', sql.NVarChar(100), gpnNo)
+				.input('Inspector', sql.NVarChar(100), inspector)
+				.input('MinLotSize', sql.BigInt, minLotSize)
+				.input('MinSample', sql.BigInt, minSample)
+				.input('MinCritical', sql.BigInt, minCritical)
+				.input('MinMajor', sql.BigInt, minMajor)
+				.input('MinMinor', sql.BigInt, minMinor),
 			INSPECTION_LIST_SQL
 		);
 
@@ -1382,4 +1471,4 @@ export default router;
  * number, which is the failure mode spec section 3 exists to prevent, so it
  * is worth a test rather than a read-through.
  */
-export { severityOf, mapTemplateItem, mapTemplate, mapAql, isMissingProcedure, SEVERITY_UNCLASSIFIED };
+export { severityOf, mapTemplateItem, mapTemplate, mapAql, isMissingProcedure, isStaleProcedure, SEVERITY_UNCLASSIFIED };

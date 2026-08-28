@@ -7,6 +7,7 @@ import {
 	mapTemplate,
 	mapAql,
 	isMissingProcedure,
+	isStaleProcedure,
 	SEVERITY_UNCLASSIFIED
 } from './routes-fg-qc.js';
 
@@ -124,6 +125,50 @@ test('accept numbers are read under either naming convention', () => {
  * procedure. Falling back on any other error would mask a real failure behind
  * a second query that fails the same way.
  */
+/*
+ * A procedure that exists but predates the route calling it fails with 8144 or
+ * 8145, not 2812. Without this the dashboard table would 500 on any database
+ * still running an older sql/fgqc/010_GetFGQCInspectionList.sql, rather than
+ * falling back to the inline query and warning.
+ */
+test('isStaleProcedure recognises a procedure that is behind the route', () => {
+	assert.equal(
+		isStaleProcedure(
+			{ number: 8144, message: 'Procedure or function GetFGQCInspectionList has too many arguments specified.' },
+			'GetFGQCInspectionList'
+		),
+		true
+	);
+	assert.equal(
+		isStaleProcedure(
+			{ number: 8145, message: '@GPNNo is not a parameter for procedure GetFGQCInspectionList.' },
+			'GetFGQCInspectionList'
+		),
+		true
+	);
+	// No number, so the message has to name the procedure this call was for.
+	assert.equal(
+		isStaleProcedure(
+			{ message: 'Procedure or function GetFGQCInspectionList has too many arguments specified.' },
+			'GetFGQCInspectionList'
+		),
+		true
+	);
+	assert.equal(
+		isStaleProcedure(
+			{ message: 'Procedure or function SomethingElse has too many arguments specified.' },
+			'GetFGQCInspectionList'
+		),
+		false
+	);
+	// A missing procedure is a different case with a different warning.
+	assert.equal(
+		isStaleProcedure({ number: 2812, message: "Could not find stored procedure 'X'." }, 'X'),
+		false
+	);
+	assert.equal(isStaleProcedure(null, 'GetFGQCInspectionList'), false);
+});
+
 test('isMissingProcedure recognises only a missing procedure', () => {
 	assert.equal(
 		isMissingProcedure({ number: 2812, message: "Could not find stored procedure 'GetFGQCDashboardKPIs'." }, 'GetFGQCDashboardKPIs'),
