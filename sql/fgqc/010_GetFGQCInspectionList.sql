@@ -15,7 +15,13 @@
   are history and are never carried forward (spec section 3).
 
   Result set 1: the page of rows.
-  Result set 2: Total — the unpaged row count, for the pager.
+  Result set 2: Total — the unpaged row count, for the pager — alongside the
+                figures behind the summary row under the table: how many
+                distinct inspectors, jobs and GPNs the filtered set covers, and
+                the lot size and sample size totals across it. They come from
+                the same filtered set as Total, not from the fetched page, so
+                they describe every matching lot rather than the twenty-five on
+                screen.
 ================================================================================
 */
 
@@ -218,7 +224,29 @@ BEGIN
         FROM dbo.FinishGoodsTransactionDetail fgd
         WHERE ISNULL(fgd.IsDeletedTransaction, 0) = 0
     )
-    SELECT COUNT(DISTINCT m.FinishGoodsQCInspectionMainID) AS Total
+    /*
+      One pass serves both the pager and the summary row under the table.
+
+      The inner query groups by the lot so the joins cannot inflate anything: a
+      GPN spanning several jobs fans out to several rows here, and a straight
+      SUM over that would count the same lot's cartons twice. MIN picks one job
+      number per lot — the same tie-break the row listing makes with rn = 1.
+    */
+    SELECT
+        COUNT(1)                        AS Total,
+        COUNT(DISTINCT s.Inspector)     AS DistinctInspectors,
+        COUNT(DISTINCT s.JobBookingNo)  AS DistinctJobs,
+        COUNT(DISTINCT s.GPNNo)         AS DistinctGPNs,
+        SUM(s.LotSize)                  AS TotalLotSize,
+        SUM(s.SampleSize)               AS TotalSampleSize
+    FROM (
+    SELECT
+        m.FinishGoodsQCInspectionMainID AS MainID,
+        MIN(ISNULL(m.TotalBox,   0))    AS LotSize,
+        MIN(ISNULL(m.SampleSize, 0))    AS SampleSize,
+        MIN(NULLIF(um.UserName, ''))    AS Inspector,
+        MIN(jb.JobBookingNo)            AS JobBookingNo,
+        MIN(fgm.VoucherNo)              AS GPNNo
     FROM dbo.FinishGoodsQCInspectionMain m
     LEFT JOIN LatestDetail ld
            ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
@@ -253,6 +281,8 @@ BEGIN
       AND (@MinSample    IS NULL OR ISNULL(m.SampleSize,     0) >= @MinSample)
       AND (@MinCritical  IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
       AND (@MinMajor     IS NULL OR ISNULL(ld.FoundMajor,    0) >= @MinMajor)
-      AND (@MinMinor     IS NULL OR ISNULL(ld.FoundMinor,    0) >= @MinMinor);
+      AND (@MinMinor     IS NULL OR ISNULL(ld.FoundMinor,    0) >= @MinMinor)
+    GROUP BY m.FinishGoodsQCInspectionMainID
+    ) s;
 END
 GO

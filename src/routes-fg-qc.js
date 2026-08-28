@@ -777,7 +777,29 @@ OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
   WHERE ISNULL(d.IsDeletedTransaction, 0) = 0
   GROUP BY d.FinishGoodsQCInspectionMainID
 )
-SELECT COUNT(DISTINCT m.FinishGoodsQCInspectionMainID) AS Total
+/*
+  Total for the pager and the summary row under the table, from one pass.
+
+  The inner query groups by the lot so the joins cannot inflate anything: a GPN
+  spanning several jobs fans out to several rows here, and a straight SUM over
+  that would count the same lot's cartons twice. MIN picks one job number per
+  lot, which is the same tie-break the row listing makes with LotJob rn = 1.
+*/
+SELECT
+  COUNT(1) AS Total,
+  COUNT(DISTINCT s.Inspector) AS DistinctInspectors,
+  COUNT(DISTINCT s.JobBookingNo) AS DistinctJobs,
+  COUNT(DISTINCT s.GPNNo) AS DistinctGPNs,
+  SUM(s.LotSize) AS TotalLotSize,
+  SUM(s.SampleSize) AS TotalSampleSize
+FROM (
+SELECT
+  m.FinishGoodsQCInspectionMainID AS MainID,
+  MIN(ISNULL(m.TotalBox, 0)) AS LotSize,
+  MIN(ISNULL(m.SampleSize, 0)) AS SampleSize,
+  MIN(NULLIF(um.UserName, '')) AS Inspector,
+  MIN(jb.JobBookingNo) AS JobBookingNo,
+  MIN(fgm.VoucherNo) AS GPNNo
 FROM dbo.FinishGoodsQCInspectionMain m
 LEFT JOIN LatestDetail ld ON ld.FinishGoodsQCInspectionMainID = m.FinishGoodsQCInspectionMainID
 LEFT JOIN dbo.FinishGoodsTransactionMain fgm
@@ -811,7 +833,9 @@ WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
   AND (@MinSample IS NULL OR ISNULL(m.SampleSize, 0) >= @MinSample)
   AND (@MinCritical IS NULL OR ISNULL(ld.FoundCritical, 0) >= @MinCritical)
   AND (@MinMajor IS NULL OR ISNULL(ld.FoundMajor, 0) >= @MinMajor)
-  AND (@MinMinor IS NULL OR ISNULL(ld.FoundMinor, 0) >= @MinMinor);
+  AND (@MinMinor IS NULL OR ISNULL(ld.FoundMinor, 0) >= @MinMinor)
+GROUP BY m.FinishGoodsQCInspectionMainID
+) s;
 `;
 
 /**
@@ -876,10 +900,27 @@ router.get('/qc/inspections', async (req, res) => {
 		);
 
 		const paged = parsePaged(result);
+
+		/*
+		 * The summary row under the table. These describe every lot matching the
+		 * filters, not the twenty-five on this page — so they come back from the
+		 * same result set as Total rather than being added up in the browser.
+		 */
+		const summaryRow = (result?.recordsets || [])[1]?.[0] || {};
+		const summary = {
+			lots: paged.total,
+			inspectors: asInt(pick(summaryRow, 'DistinctInspectors')),
+			jobs: asInt(pick(summaryRow, 'DistinctJobs')),
+			gpns: asInt(pick(summaryRow, 'DistinctGPNs')),
+			totalLotSize: asInt(pick(summaryRow, 'TotalLotSize')),
+			totalSampleSize: asInt(pick(summaryRow, 'TotalSampleSize'))
+		};
+
 		return res.json({
 			status: true,
 			rows: paged.rows.map(mapInspectionListRow),
 			total: paged.total,
+			summary,
 			page,
 			pageSize
 		});

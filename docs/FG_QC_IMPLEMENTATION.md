@@ -138,6 +138,18 @@ parameters, all defaulting to NULL — **re-run `sql/fgqc/010_GetFGQCInspectionL
 after deploying this**, or the route falls back to inline SQL as described
 above.
 
+**A summary row sits under the table.** Distinct inspectors, jobs and GPNs;
+lot size and sample size totalled. Like the filters these describe the whole
+filtered set, not the twenty-five rows on screen — adding up the visible page
+would put a number under a heading that counts every matching lot, and the two
+would disagree.
+
+They come back from the procedure's second result set, beside `Total`, so the
+pager and the summary are one pass over one filtered set and cannot drift
+apart. That query groups by the lot before aggregating: a GPN spanning several
+jobs fans out across the joins, and a straight `SUM` over that would count the
+same lot's cartons twice.
+
 ---
 
 ## Waiting on the database
