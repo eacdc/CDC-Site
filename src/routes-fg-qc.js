@@ -530,7 +530,7 @@ router.get('/qc/template', async (req, res) => {
 	if (lotSize == null || lotSize < 0) {
 		return res.status(400).json({
 			status: false,
-			error: 'lotSize is required and must be the inner carton count for this lot'
+			error: 'lotSize is required'
 		});
 	}
 
@@ -540,7 +540,7 @@ router.get('/qc/template', async (req, res) => {
 			/*
 			 * Bound to the types GetFinishGoodsQCTemplate actually declares:
 			 * @LotSize is bigint and @SamplingMethodType is varchar(128).
-			 * Lot size is a count of inner cartons, so rounding here is exact
+			 * Lot size is a count, so rounding here is exact
 			 * rather than leaving a decimal-to-bigint conversion to the driver.
 			 */
 			.input('CategoryID', sql.BigInt, categoryId)
@@ -602,7 +602,7 @@ router.post('/qc/inspections', async (req, res) => {
 	if (!inspection.sampleSize || inspection.sampleSize <= 0) {
 		return res.status(400).json({
 			status: false,
-			error: 'Cartons inspected (sampleSize) must be greater than zero'
+			error: 'Quantity inspected (sampleSize) must be greater than zero'
 		});
 	}
 	if (!inspection.items.length) {

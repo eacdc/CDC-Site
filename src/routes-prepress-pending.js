@@ -87,7 +87,12 @@ function attachToolingFields(row, source = {}) {
         : computeToolingSummary(die, block, blanket),
     ToolingPerson: source.ToolingPerson ?? null,
     ToolingPlanDate: source.ToolingPlanDate ?? source.ToolingBlanketPlan ?? null,
-    ToolingRemarkText: source.ToolingRemarkText ?? source.ToolingRemark ?? null,
+    ToolingRemarkText:
+      source.ToolingRemarkText ??
+      source.toolingRemarkText ??
+      source.ToolingRemark ??
+      source.toolingRemark ??
+      null,
   };
 }
 
