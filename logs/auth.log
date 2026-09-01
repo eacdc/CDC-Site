@@ -286,3 +286,30 @@
 {"ts":"2026-06-05T13:10:11.192Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
 {"ts":"2026-06-05T13:10:11.317Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
 {"ts":"2026-06-05T13:10:11.318Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
+{"ts":"2026-09-01T07:13:34.901Z","message":"Login params normalized","username":"admin","databaseParam":"KOL","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:13:34.900Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"admin","database":"KOL","_t":"1788246814882"}}
+{"ts":"2026-09-01T07:13:34.902Z","message":"Attempting to get DB pool","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:13:36.123Z","message":"DB pool acquired","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:13:37.947Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
+{"ts":"2026-09-01T07:13:38.648Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-09-01T07:13:38.649Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
+{"ts":"2026-09-01T07:13:46.068Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:16:24.864Z","message":"Admin PIN rejected","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:16:28.574Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:16:49.759Z","message":"Login params normalized","username":"admin","databaseParam":"AHM","selectedDatabase":"AHM"}
+{"ts":"2026-09-01T07:16:49.759Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"admin","database":"AHM","_t":"1788247009753"}}
+{"ts":"2026-09-01T07:16:49.760Z","message":"Attempting to get DB pool","selectedDatabase":"AHM"}
+{"ts":"2026-09-01T07:16:50.240Z","message":"DB pool acquired","selectedDatabase":"AHM"}
+{"ts":"2026-09-01T07:16:50.936Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"AHM","currentDb":"IndusEnterprise2","getMachinesForUserExists":true,"spId":1603028992}
+{"ts":"2026-09-01T07:16:51.174Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"AHM","resultRowCount":23,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-09-01T07:16:51.175Z","message":"Login success","selectedDatabase":"AHM","username":"admin","userId":2,"ledgerId":6269,"machinesCount":23,"currentDb":"IndusEnterprise2"}
+{"ts":"2026-09-01T07:16:59.303Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:19:36.117Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:19:44.322Z","message":"Attempting to get DB pool","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:19:44.320Z","message":"Login params normalized","username":"admin","databaseParam":"KOL","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:19:44.320Z","message":"Login request received","route":"/auth/login","ip":"::1","rawQuery":{"username":"admin","database":"KOL","_t":"1788247184312"}}
+{"ts":"2026-09-01T07:19:44.851Z","message":"DB pool acquired","selectedDatabase":"KOL"}
+{"ts":"2026-09-01T07:19:45.554Z","message":"Diagnostics - DB and SP availability","selectedDatabase":"KOL","currentDb":"IndusEnterprise","getMachinesForUserExists":true,"spId":659025629}
+{"ts":"2026-09-01T07:19:45.799Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
+{"ts":"2026-09-01T07:19:45.799Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
+{"ts":"2026-09-01T07:19:48.814Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
