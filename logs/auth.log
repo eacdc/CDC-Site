@@ -313,3 +313,5 @@
 {"ts":"2026-09-01T07:19:45.799Z","message":"Login SP executed","storedProcedure":"dbo.GetMachinesForUser","selectedDatabase":"KOL","resultRowCount":20,"resultColumns":["UserID","LedgerID","machineid","machinename","departmentid","productionunitid"]}
 {"ts":"2026-09-01T07:19:45.799Z","message":"Login success","selectedDatabase":"KOL","username":"admin","userId":2,"ledgerId":6349,"machinesCount":20,"currentDb":"IndusEnterprise"}
 {"ts":"2026-09-01T07:19:48.814Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:54:41.829Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
+{"ts":"2026-09-01T07:58:23.249Z","message":"Admin PIN verified","route":"/auth/admin-pin","ip":"::1"}
