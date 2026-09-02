@@ -2414,10 +2414,10 @@ router.post('/grn/initiate', async (req, res) => {
         const pool = await getPool(selectedDatabase);
 
         const result = await pool.request()
-            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('BarcodeNo', sql.BigInt, barcodeNum)
             .input('Status', sql.NVarChar(50), 'new-check')
             .input('UserID', sql.Int, userIdNum)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
 
         // Normalize response
         const rows = result.recordset || [];
@@ -2492,9 +2492,9 @@ router.post('/grn/save-delivery-note', async (req, res) => {
         mark(`getPool done (${poolMs}ms)`);
 
         const spStart = Date.now();
-        mark('SP SaveDeliveryNoteByBarcode_Manu START Status=new-start');
+        mark('SP SaveDeliveryNoteByBarcode_Manu_v2 START Status=new-start');
         const result = await pool.request()
-            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('BarcodeNo', sql.BigInt, barcodeNum)
             .input('Status', sql.NVarChar(50), 'new-start')
             .input('UserID', sql.Int, userIdNum)
             .input('TransporterLedgerID', sql.Int, transporterIdNum)
@@ -2502,9 +2502,9 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             .input('VehicleNo', sql.NVarChar(255), vehicleNumber)
             .input('ContainerNo', sql.NVarChar(255), containerNumber)
             .input('SealNo', sql.NVarChar(255), sealNumber)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
         const spMs = Date.now() - spStart;
-        mark(`SP SaveDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
+        mark(`SP SaveDeliveryNoteByBarcode_Manu_v2 END (${spMs}ms)`);
 
         const rows = result.recordset || [];
         const first = rows[0] || {};
@@ -2598,15 +2598,15 @@ router.post('/grn/update-delivery-note', async (req, res) => {
         mark(`getPool done (${poolMs}ms)`);
 
         const spStart = Date.now();
-        mark('SP SaveDeliveryNoteByBarcode_Manu START Status=update');
+        mark('SP SaveDeliveryNoteByBarcode_Manu_v2 START Status=update');
         const result = await pool.request()
-            .input('BarcodeNo', sql.Int, barcodeNum)
+            .input('BarcodeNo', sql.BigInt, barcodeNum)
             .input('Status', sql.NVarChar(50), 'update')
             .input('UserID', sql.Int, userIdNum)
             .input('FGTransactionID', sql.Int, fgIdNum)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
         const spMs = Date.now() - spStart;
-        mark(`SP SaveDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
+        mark(`SP SaveDeliveryNoteByBarcode_Manu_v2 END (${spMs}ms)`);
 
         const rows = result.recordset || [];
         const first = rows[0] || {};
@@ -4887,7 +4887,7 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
             request.input('FGTransactionID', sql.Int, Number(fgTransactionId));
         }
 
-        const result = await request.execute('dbo.SaveFinishGoodsByBarcode_Manu_v2');
+        const result = await request.execute('dbo.SaveFinishGoodsByBarcode_Manu_v3');
 
         const rows = result.recordset || [];
         console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
