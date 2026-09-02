@@ -2444,7 +2444,21 @@ router.post('/grn/initiate', async (req, res) => {
 
 // GRN: Save Delivery Note
 router.post('/grn/save-delivery-note', async (req, res) => {
+    const t0 = Date.now();
+    const mark = (label) => {
+        const ms = Date.now() - t0;
+        console.log(`[DN SAVE][+${ms}ms] ${label}`);
+        return ms;
+    };
     try {
+        mark(`request received body=${JSON.stringify({
+            barcode: req.body?.barcode,
+            database: req.body?.database,
+            userId: req.body?.userId,
+            transporterLedgerId: req.body?.transporterLedgerId,
+            modeOfTransport: req.body?.modeOfTransport
+        })}`);
+
         const { barcode, database, userId, clientName, modeOfTransport, containerNumber, sealNumber, transporterName, transporterLedgerId, vehicleNumber } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -2471,7 +2485,14 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             return res.status(400).json({ status: false, error: 'Invalid or missing transporterLedgerId' });
         }
 
+        mark(`validation done db=${selectedDatabase} barcode=${barcodeNum} userId=${userIdNum}`);
+        const poolStart = Date.now();
         const pool = await getPool(selectedDatabase);
+        const poolMs = Date.now() - poolStart;
+        mark(`getPool done (${poolMs}ms)`);
+
+        const spStart = Date.now();
+        mark('SP SaveDeliveryNoteByBarcode_Manu START Status=new-start');
         const result = await pool.request()
             .input('BarcodeNo', sql.Int, barcodeNum)
             .input('Status', sql.NVarChar(50), 'new-start')
@@ -2482,6 +2503,8 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             .input('ContainerNo', sql.NVarChar(255), containerNumber)
             .input('SealNo', sql.NVarChar(255), sealNumber)
             .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+        const spMs = Date.now() - spStart;
+        mark(`SP SaveDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
 
         const rows = result.recordset || [];
         const first = rows[0] || {};
@@ -2500,15 +2523,19 @@ router.post('/grn/save-delivery-note', async (req, res) => {
 
         // Handle known failure from SP (e.g., "Fail: Barcode already dispatched")
         const statusTextLower = (normalized.statusText || '').toString().toLowerCase();
+        const totalMs = Date.now() - t0;
+        const timing = { totalMs, poolMs, spMs };
         if (statusTextLower.startsWith('fail')) {
             let msg = normalized.statusText || 'Operation failed';
             if (statusTextLower.includes('barcode already dispatched')) {
                 msg = 'Barcode already dispatched';
             }
-            return res.json({ status: false, error: msg, sp: normalized });
+            mark(`FAIL response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${normalized.statusText}`);
+            return res.json({ status: false, error: msg, sp: normalized, timing });
         }
 
-        return res.json({ 
+        mark(`SUCCESS response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms fgId=${normalized.transactionId} voucher=${normalized.voucherNo}`);
+        return res.json({
             status: true,
             deliveryNoteNumber: normalized.voucherNo || '25-26/26',
             data: {
@@ -2521,17 +2548,31 @@ router.post('/grn/save-delivery-note', async (req, res) => {
                 vehicleNumber,
                 barcode: barcodeNum
             },
-            sp: normalized
+            sp: normalized,
+            timing
         });
     } catch (err) {
-        console.error('GRN save delivery note error:', err);
-        return res.status(500).json({ status: false, error: 'Failed to save delivery note' });
+        const totalMs = Date.now() - t0;
+        console.error(`[DN SAVE][+${totalMs}ms] ERROR`, err);
+        return res.status(500).json({ status: false, error: 'Failed to save delivery note', timing: { totalMs } });
     }
 });
 
-// GRN: Update Delivery Note (append line items)
 router.post('/grn/update-delivery-note', async (req, res) => {
+    const t0 = Date.now();
+    const mark = (label) => {
+        const ms = Date.now() - t0;
+        console.log(`[DN UPDATE][+${ms}ms] ${label}`);
+        return ms;
+    };
     try {
+        mark(`request received body=${JSON.stringify({
+            barcode: req.body?.barcode,
+            database: req.body?.database,
+            userId: req.body?.userId,
+            fgTransactionId: req.body?.fgTransactionId
+        })}`);
+
         const { barcode, database, userId, fgTransactionId } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -2550,13 +2591,22 @@ router.post('/grn/update-delivery-note', async (req, res) => {
             return res.status(400).json({ status: false, error: 'Invalid or missing FGTransactionID' });
         }
 
+        mark(`validation done db=${selectedDatabase} barcode=${barcodeNum} userId=${userIdNum} fgId=${fgIdNum}`);
+        const poolStart = Date.now();
         const pool = await getPool(selectedDatabase);
+        const poolMs = Date.now() - poolStart;
+        mark(`getPool done (${poolMs}ms)`);
+
+        const spStart = Date.now();
+        mark('SP SaveDeliveryNoteByBarcode_Manu START Status=update');
         const result = await pool.request()
             .input('BarcodeNo', sql.Int, barcodeNum)
             .input('Status', sql.NVarChar(50), 'update')
             .input('UserID', sql.Int, userIdNum)
             .input('FGTransactionID', sql.Int, fgIdNum)
             .execute('dbo.SaveDeliveryNoteByBarcode_Manu');
+        const spMs = Date.now() - spStart;
+        mark(`SP SaveDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
 
         const rows = result.recordset || [];
         const first = rows[0] || {};
@@ -2575,20 +2625,38 @@ router.post('/grn/update-delivery-note', async (req, res) => {
 
         // Fail handling
         const statusTextLower = (normalized.statusText || '').toString().toLowerCase();
+        const totalMs = Date.now() - t0;
+        const timing = { totalMs, poolMs, spMs };
         if (statusTextLower.startsWith('fail')) {
-            return res.json({ status: false, error: normalized.statusText || 'Operation failed', sp: normalized });
+            mark(`FAIL response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${normalized.statusText}`);
+            return res.json({ status: false, error: normalized.statusText || 'Operation failed', sp: normalized, timing });
         }
 
-        return res.json({ status: true, sp: normalized });
+        mark(`SUCCESS response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${normalized.statusText}`);
+        return res.json({ status: true, sp: normalized, timing });
     } catch (err) {
-        console.error('GRN update delivery note error:', err);
-        return res.status(500).json({ status: false, error: 'Failed to update delivery note' });
+        const totalMs = Date.now() - t0;
+        console.error(`[DN UPDATE][+${totalMs}ms] ERROR`, err);
+        return res.status(500).json({ status: false, error: 'Failed to update delivery note', timing: { totalMs } });
     }
 });
 
-// GRN: Delete Delivery Note entry for a barcode
 router.post('/grn/delete-delivery-note', async (req, res) => {
+    const t0 = Date.now();
+    const mark = (label) => {
+        const ms = Date.now() - t0;
+        console.log(`[DN DELETE][+${ms}ms] ${label}`);
+        return ms;
+    };
     try {
+        mark(`request received body=${JSON.stringify({
+            barcode: req.body?.barcode,
+            database: req.body?.database,
+            userId: req.body?.userId,
+            companyId: req.body?.companyId ?? 2,
+            branchId: req.body?.branchId ?? 0
+        })}`);
+
         const { barcode, database, userId, companyId = 2, branchId = 0 } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -2615,30 +2683,45 @@ router.post('/grn/delete-delivery-note', async (req, res) => {
             return res.status(400).json({ status: false, error: 'Invalid branchId' });
         }
 
+        mark(`validation done db=${selectedDatabase} barcode=${barcodeNum} userId=${userIdNum} companyId=${companyIdNum} branchId=${branchIdNum}`);
+        const poolStart = Date.now();
         const pool = await getPool(selectedDatabase);
+        const poolMs = Date.now() - poolStart;
+        mark(`getPool done (${poolMs}ms)`);
+
+        const spStart = Date.now();
+        mark('SP DeleteDeliveryNoteByBarcode_Manu START');
         const result = await pool.request()
             .input('BarcodeNo', sql.Int, barcodeNum)
             .input('UserID', sql.Int, userIdNum)
             .input('CompanyID', sql.Int, companyIdNum)
             .input('BranchID', sql.Int, branchIdNum)
             .execute('dbo.DeleteDeliveryNoteByBarcode_Manu');
+        const spMs = Date.now() - spStart;
+        mark(`SP DeleteDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
 
         const rows = result.recordset || [];
         const first = rows[0] || {};
         const statusText = first.Status || first.status || '';
+        const totalMs = Date.now() - t0;
+        const timing = { totalMs, poolMs, spMs };
 
         if (typeof statusText === 'string' && statusText.toLowerCase().startsWith('fail')) {
-            return res.json({ status: false, error: statusText || 'Failed to delete delivery note', sp: first });
+            mark(`FAIL response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${statusText}`);
+            return res.json({ status: false, error: statusText || 'Failed to delete delivery note', sp: first, timing });
         }
 
+        mark(`SUCCESS response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${statusText}`);
         return res.json({
             status: true,
             message: 'Delivery note deleted successfully',
-            sp: first
+            sp: first,
+            timing
         });
     } catch (err) {
-        console.error('GRN delete delivery note error:', err);
-        return res.status(500).json({ status: false, error: 'Failed to delete delivery note' });
+        const totalMs = Date.now() - t0;
+        console.error(`[DN DELETE][+${totalMs}ms] ERROR`, err);
+        return res.status(500).json({ status: false, error: 'Failed to delete delivery note', timing: { totalMs } });
     }
 });
 
