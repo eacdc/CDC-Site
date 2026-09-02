@@ -2997,6 +2997,15 @@ router.get('/grn/processed-delivery-notes', async (req, res) => {
             ) ?? pickGrnRowFieldByColumnPattern(row, recordset, /^totaldeliveredcartons?$/);
             const totalQty = pickGrnRowField(row, 'Total Qty', 'TotalQty')
                 ?? pickGrnRowFieldByColumnPattern(row, recordset, /^totalqty$/);
+            const jobDeliveredCarton = pickGrnRowField(
+                row,
+                'Job Delivered Carton',
+                'JobDeliveredCarton',
+                'Job Delivered Cartons',
+                'JobDeliveredCartons'
+            ) ?? pickGrnRowFieldByColumnPattern(row, recordset, /^jobdeliveredcartons?$/);
+            const jobQty = pickGrnRowField(row, 'Job Qty', 'JobQty')
+                ?? pickGrnRowFieldByColumnPattern(row, recordset, /^jobqty$/);
             const canUpdateRaw = pickGrnRowField(row, 'Update Challan Details', 'UpdateChallanDetails', 'CanUpdate')
                 ?? pickGrnRowFieldByColumnPattern(row, recordset, /^updatechallandetails$/);
             const canUpdateExplicitFalse = canUpdateRaw === 0
@@ -3022,6 +3031,8 @@ router.get('/grn/processed-delivery-notes', async (req, res) => {
                     ?? pickGrnRowFieldByColumnPattern(row, recordset, /^podate$/),
                 totalDeliveredCartons: totalDeliveredCartons != null ? Number(totalDeliveredCartons) : null,
                 totalQty: totalQty != null ? Number(totalQty) : null,
+                jobDeliveredCarton: jobDeliveredCarton != null ? Number(jobDeliveredCarton) : null,
+                jobQty: jobQty != null ? Number(jobQty) : null,
                 canUpdate: canUpdateExplicitFalse
                     ? false
                     : (canUpdateExplicitTrue || Boolean(fgTransactionId)),
