@@ -2,7 +2,8 @@
  * Previous Items By Client Tool API
  * - POST /previousitemsbyclient/search
  *   Body: { database: 'KOL'|'AHM', ledgerIds: number[], basis: 'O'|'D', topFilter: 'top50'|'top100'|'all6months' }
- *   Executes GetPackagingClientConsumption_withpaper_check.
+ *   Executes GetPackagingClientConsumption_withpaper_check
+ *   (@LedgerIDs, @Basis 'O'|'D', @TopN 50|100|NULL for all6months).
  *   Expects: RS1 = period labels (Month6Label…Month1Label), RS(n-1) = SKU qty table, RS(n) = category table.
  *   SKU table includes columnDisplayNames mapping QtyMonth* → "Qty {Month label}" from RS1.
  *
@@ -37,22 +38,16 @@ function parseLedgerIds(raw) {
 	return ids.length ? ids : null;
 }
 
-function rowLimitForTopFilter(topFilter) {
+function topNForFilter(topFilter) {
 	if (topFilter === 'top50') return 50;
 	if (topFilter === 'top100') return 100;
-	return null; // all6months — no cap
+	return null; // all6months — SP returns all rows
 }
 
-function recordsetToTable(rows, limit) {
+function recordsetToTable(rows) {
 	const arr = Array.isArray(rows) ? rows : [];
-	const sliced = limit != null ? arr.slice(0, limit) : arr;
-	const columns =
-		sliced.length > 0
-			? Object.keys(sliced[0])
-			: arr.length > 0
-				? Object.keys(arr[0])
-				: [];
-	return { columns, rows: sliced };
+	const columns = arr.length > 0 ? Object.keys(arr[0]) : [];
+	return { columns, rows: arr };
 }
 
 /**
@@ -127,7 +122,7 @@ router.post('/previousitemsbyclient/search', async (req, res) => {
 	}
 
 	const ledgerCsv = ledgerIds.join(',');
-	const limit = rowLimitForTopFilter(topFilter);
+	const topN = topNForFilter(topFilter);
 
 	try {
 		const pool = await getPool(db);
@@ -135,6 +130,7 @@ router.post('/previousitemsbyclient/search', async (req, res) => {
 			.request()
 			.input('LedgerIDs', sql.VarChar(8000), ledgerCsv)
 			.input('Basis', sql.VarChar(1), basis)
+			.input('TopN', sql.Int, topN)
 			.execute('dbo.GetPackagingClientConsumption_withpaper_check');
 
 		const recordsets = result.recordsets;
@@ -159,13 +155,13 @@ router.post('/previousitemsbyclient/search', async (req, res) => {
 		const table2 = rs[rs.length - 2];
 		const table3 = rs[rs.length - 1];
 
-		const leftTable = recordsetToTable(table2, limit);
+		const leftTable = recordsetToTable(table2);
 		const columnDisplayNames = buildSkuQtyColumnDisplayNames(leftTable.columns, monthIndexToLabel);
 		if (Object.keys(columnDisplayNames).length > 0) {
 			leftTable.columnDisplayNames = columnDisplayNames;
 		}
 
-		const rightTable = recordsetToTable(table3, limit);
+		const rightTable = recordsetToTable(table3);
 
 		return res.json({
 			status: true,
