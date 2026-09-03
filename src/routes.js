@@ -2088,19 +2088,43 @@ router.post('/processes/start-async', async (req, res) => {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
+    // Production_Start_Manu_v2's "machine already has an active status" check
+    // sits before its BEGIN TRAN, so the UPDLOCK it asks for is released as
+    // soon as that SELECT ends. Two starts for the same machine that overlap
+    // therefore both pass the check and both insert, leaving the machine with
+    // two production entries; completing one marks the shared
+    // JobScheduleRelease row Complete, which hides the component from the
+    // search and strands the other with its machine row open forever — the
+    // machine can then never be started again. Refuse the second start here,
+    // where the first is still visibly running.
+    const machineIdNum = Number(MachineID);
+    for (const existing of jobs.values()) {
+      if (existing.type === 'start'
+        && (existing.status === 'pending' || existing.status === 'processing')
+        && existing.database === selectedDatabase
+        && existing.requestData.MachineID === machineIdNum) {
+        console.log(`[JOB] Rejected start for machine ${machineIdNum}: job ${existing.id} is still ${existing.status}`);
+        return res.status(409).json({
+          status: false,
+          error: 'A start is already running for this machine. Please wait for it to finish before starting another job.'
+        });
+      }
+    }
+
     const jobId = generateJobId();
-    
+
     // Store job in memory
     jobs.set(jobId, {
       id: jobId,
       type: 'start',
       status: 'pending',
+      database: selectedDatabase,
       requestData: {
         UserID: Number(UserID),
         EmployeeID: Number(EmployeeID),
         ProcessID: Number(ProcessID),
         JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: Number(MachineID),
+        MachineID: machineIdNum,
         JobCardFormNo: String(JobCardFormNo)
       },
       createdAt: new Date()
