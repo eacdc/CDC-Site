@@ -2088,43 +2088,19 @@ router.post('/processes/start-async', async (req, res) => {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
-    // Production_Start_Manu_v2's "machine already has an active status" check
-    // sits before its BEGIN TRAN, so the UPDLOCK it asks for is released as
-    // soon as that SELECT ends. Two starts for the same machine that overlap
-    // therefore both pass the check and both insert, leaving the machine with
-    // two production entries; completing one marks the shared
-    // JobScheduleRelease row Complete, which hides the component from the
-    // search and strands the other with its machine row open forever — the
-    // machine can then never be started again. Refuse the second start here,
-    // where the first is still visibly running.
-    const machineIdNum = Number(MachineID);
-    for (const existing of jobs.values()) {
-      if (existing.type === 'start'
-        && (existing.status === 'pending' || existing.status === 'processing')
-        && existing.database === selectedDatabase
-        && existing.requestData.MachineID === machineIdNum) {
-        console.log(`[JOB] Rejected start for machine ${machineIdNum}: job ${existing.id} is still ${existing.status}`);
-        return res.status(409).json({
-          status: false,
-          error: 'A start is already running for this machine. Please wait for it to finish before starting another job.'
-        });
-      }
-    }
-
     const jobId = generateJobId();
-
+    
     // Store job in memory
     jobs.set(jobId, {
       id: jobId,
       type: 'start',
       status: 'pending',
-      database: selectedDatabase,
       requestData: {
         UserID: Number(UserID),
         EmployeeID: Number(EmployeeID),
         ProcessID: Number(ProcessID),
         JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: machineIdNum,
+        MachineID: Number(MachineID),
         JobCardFormNo: String(JobCardFormNo)
       },
       createdAt: new Date()
@@ -3898,7 +3874,8 @@ router.get('/inventory-summary/group', async (req, res) => {
             openingKg: row.Opening_KG ?? row.opening_kg ?? 0,
             stockInKg: row.StockIn_KG ?? row.stockin_kg ?? 0,
             stockOutKg: row.StockOut_KG ?? row.stockout_kg ?? 0,
-            closingKg: row.Closing_KG ?? row.closing_kg ?? 0
+            closingKg: row.Closing_KG ?? row.closing_kg ?? 0,
+            incomingKg: row.incoming_kg ?? row.Incoming_KG ?? row.IncomingKg ?? 0
         }));
 
         return res.json({ status: true, records });
@@ -4099,7 +4076,8 @@ router.get('/inventory-summary/clientwise', async (req, res) => {
             openingStockKg: row.OpeningStockKG ?? row.openingstockkg ?? 0,
             receiptKg: row.ReceiptKG ?? row.receiptkg ?? 0,
             issueKg: row.IssueKG ?? row.issuekg ?? 0,
-            closingStockKg: row.ClosingStockKG ?? row.closingstockkg ?? 0
+            closingStockKg: row.ClosingStockKG ?? row.closingstockkg ?? 0,
+            incomingStockKg: row.IncomingStockKG ?? row.incomingstockkg ?? row.IncomingStockKg ?? 0
         }));
 
         return res.json({ status: true, records });
