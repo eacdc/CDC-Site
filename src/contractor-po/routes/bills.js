@@ -588,11 +588,17 @@ router.put('/:billNumber/edit-qty', async (req, res) => {
     // After adjustments, clean up bill jobs:
     // - Remove operations with qtyCompleted === 0
     // - Remove jobs with no operations
-    // Mutate in place so clientName, jobTitle, isAdhoc, adhocOrderId, etc. are preserved.
-    for (const job of bill.jobs) {
-      job.ops = (job.ops || []).filter(op => Number(op.qtyCompleted || 0) > 0);
-    }
-    bill.jobs = bill.jobs.filter(job => (job.ops || []).length > 0);
+    bill.jobs = bill.jobs
+      .map(job => {
+        const filteredOps = (job.ops || []).filter(op => Number(op.qtyCompleted || 0) > 0);
+        return {
+          jobNumber: job.jobNumber,
+          clientName: job.clientName || '',
+          jobTitle: job.jobTitle || '',
+          ops: filteredOps
+        };
+      })
+      .filter(job => (job.ops || []).length > 0);
 
     await bill.save({ session });
 
