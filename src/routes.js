@@ -10898,13 +10898,20 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
     }
 
     // Build quick lookup for existing operations in the bill
-    // key: jobNumber|opsName|rateRounded
-    function buildKey(jobNumber, opsName, rate) {
-      const jn = String(jobNumber || '').trim();
+    // key: jobOrAdhocId|opsName|rateRounded
+    function buildKey(jobOrAdhocKey, opsName, rate) {
+      const id = String(jobOrAdhocKey || '').trim();
       const name = String(opsName || '').trim();
       const r = Number(rate || 0);
       const roundedRate = Number.isFinite(r) ? r.toFixed(4) : '0.0000';
-      return `${jn}|${name}|${roundedRate}`;
+      return `${id}|${name}|${roundedRate}`;
+    }
+
+    function jobLookupKey(job) {
+      if (job && job.isAdhoc) {
+        return `adhoc:${String(job.adhocOrderId || '').trim()}`;
+      }
+      return String(job?.jobNumber || '').trim();
     }
 
     // A bill can list the same job, operation and rate more than once. Keeping
@@ -10912,22 +10919,40 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
     // so ambiguous keys are rejected rather than half-applied.
     const billOpsMap = new Map();
     bill.jobs.forEach(job => {
-      const jobNumber = job.jobNumber;
+      const lookupKey = jobLookupKey(job);
       (job.ops || []).forEach(op => {
-        const key = buildKey(jobNumber, op.opsName, op.rate);
+        const key = buildKey(lookupKey, op.opsName, op.rate);
         if (!billOpsMap.has(key)) billOpsMap.set(key, []);
         billOpsMap.get(key).push({ job, op });
       });
     });
 
-    // Collect deltas per job for JobopsMaster / Contractor_WD updates
-    const deltasByJob = new Map(); // jobNumber -> [{ opsName, rate, deltaQty }]
+    // Collect deltas for JobopsMaster / AdhocWorkOrder / Contractor_WD updates
+    const deltasByJob = new Map(); // jobNumber -> [{ opId, opsName, rate, deltaQty }]
+    const deltasByAdhoc = new Map(); // adhocOrderId -> [{ opId, opsName, rate, deltaQty }]
 
     // Apply changes to bill in-memory
     for (const change of changes) {
-      const { jobNumber, opsName, rate, newQtyCompleted } = change || {};
+      const {
+        jobNumber,
+        opsName,
+        rate,
+        newQtyCompleted,
+        isAdhoc: changeIsAdhoc,
+        adhocOrderId: changeAdhocOrderId,
+      } = change || {};
 
-      if (!jobNumber || !String(jobNumber).trim()) {
+      const isAdhoc = !!changeIsAdhoc;
+      const adhocOrderId = String(changeAdhocOrderId || '').trim();
+      const normalizedJobNumber = String(jobNumber || '').trim();
+
+      if (isAdhoc) {
+        if (!adhocOrderId) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ error: 'Each ad-hoc change must have an adhocOrderId' });
+        }
+      } else if (!normalizedJobNumber) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({ error: 'Each change must have a jobNumber' });
@@ -10943,21 +10968,26 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         return res.status(400).json({ error: 'Each change must have newQtyCompleted' });
       }
 
-      const key = buildKey(jobNumber, opsName, rate);
+      const lookupKey = isAdhoc ? `adhoc:${adhocOrderId}` : normalizedJobNumber;
+      const key = buildKey(lookupKey, opsName, rate);
       const entries = billOpsMap.get(key);
       if (!entries || entries.length === 0) {
         await session.abortTransaction();
         session.endSession();
-        return res.status(400).json({ error: `Operation not found in bill for job ${jobNumber}, operation ${opsName}` });
+        return res.status(400).json({
+          error: isAdhoc
+            ? `Operation not found in bill for ad-hoc order ${adhocOrderId}, operation ${opsName}`
+            : `Operation not found in bill for job ${normalizedJobNumber}, operation ${opsName}`,
+        });
       }
       if (entries.length > 1) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({
           error:
-            `Job ${jobNumber} lists operation "${opsName}" at rate ${rate} ${entries.length} times in ` +
-            `this bill, so it is not clear which line should change. Delete the bill and re-create it ` +
-            `with the correct lines instead.`
+            `${isAdhoc ? `Ad-hoc ${adhocOrderId}` : `Job ${normalizedJobNumber}`} lists operation ` +
+            `"${opsName}" at rate ${rate} ${entries.length} times in this bill, so it is not clear ` +
+            `which line should change. Delete the bill and re-create it with the correct lines instead.`
         });
       }
 
@@ -10976,18 +11006,21 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
         continue; // nothing to do for this row
       }
 
-      // Track delta for backend collections
-      if (!deltasByJob.has(job.jobNumber)) {
-        deltasByJob.set(job.jobNumber, []);
-      }
-      deltasByJob.get(job.jobNumber).push({
-        // Carried through so the operation can be matched by id rather than by
-        // name and rate, which are not a reliable key.
+      const deltaEntry = {
         opId: String(op.opId || '').trim(),
         opsName: String(op.opsName || '').trim(),
         rate: Number(op.rate || 0),
-        deltaQty: delta
-      });
+        deltaQty: delta,
+      };
+
+      if (isAdhoc || job.isAdhoc) {
+        const id = String(job.adhocOrderId || adhocOrderId).trim();
+        if (!deltasByAdhoc.has(id)) deltasByAdhoc.set(id, []);
+        deltasByAdhoc.get(id).push(deltaEntry);
+      } else {
+        if (!deltasByJob.has(job.jobNumber)) deltasByJob.set(job.jobNumber, []);
+        deltasByJob.get(job.jobNumber).push(deltaEntry);
+      }
 
       // Update bill op
       op.qtyCompleted = newQty;
@@ -10995,7 +11028,7 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
     }
 
     // If no effective changes, just return the existing bill
-    if (deltasByJob.size === 0) {
+    if (deltasByJob.size === 0 && deltasByAdhoc.size === 0) {
       await session.abortTransaction();
       session.endSession();
       return res.json(bill);
@@ -11213,6 +11246,133 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       }
       jobOpsMaster.markModified('ops');
       await jobOpsMaster.save({ session });
+    }
+
+    // Ad-hoc path: restore/adjust AdhocWorkOrder.pendingOpsQty and Contractor_WD
+    for (const [adhocOrderId, deltas] of deltasByAdhoc.entries()) {
+      const adhocOrder = await AdhocWorkOrder.findById(adhocOrderId).session(session);
+      if (!adhocOrder) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: `AdhocWorkOrder not found for id ${adhocOrderId}` });
+      }
+
+      const contractorWDAdjustments = [];
+
+      for (const { opId, opsName, rate, deltaQty } of deltas) {
+        const normalizedName = String(opsName || '').trim();
+        const normalizedRate = Number(rate || 0);
+        const normalizedOpId = String(opId || '').trim();
+
+        let orderOp = null;
+        if (normalizedOpId) {
+          orderOp = adhocOrder.ops.find(o => String(o.opId) === normalizedOpId);
+        }
+        if (!orderOp) {
+          orderOp = adhocOrder.ops.find(o =>
+            String(o.opsName || '').trim() === normalizedName &&
+            Number(o.rate || 0) === normalizedRate
+          );
+        }
+        if (!orderOp) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            error: `Operation ${normalizedName} not found in AdhocWorkOrder ${adhocOrder.adhocId || adhocOrderId}`,
+          });
+        }
+
+        const totalOpsQty = Number(orderOp.totalOpsQty || 0);
+        const currentPending = Number(orderOp.pendingOpsQty || 0);
+        // pending decreases when completed qty increases (delta > 0)
+        let newPending = currentPending - deltaQty;
+        if (newPending < 0 - 1e-6 && deltaQty > 0) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            error:
+              `Insufficient pending quantity for ad-hoc ${adhocOrder.adhocId || adhocOrderId}, ` +
+              `operation ${normalizedName} to increase completed quantity by ${deltaQty}`,
+          });
+        }
+        newPending = Math.max(0, Math.min(totalOpsQty, newPending));
+        orderOp.pendingOpsQty = newPending;
+        orderOp.lastUpdatedDate = new Date();
+
+        contractorWDAdjustments.push({
+          opId: String(orderOp.opId || '').trim(),
+          opsName: normalizedName,
+          valuePerBook: Number(orderOp.rate || 0),
+          deltaQty,
+        });
+      }
+
+      adhocOrder.markModified('ops');
+      await adhocOrder.save({ session });
+
+      let contractorWD = await ContractorWD.findOne({
+        contractorId,
+        isAdhoc: true,
+        adhocOrderId: String(adhocOrderId),
+      }).session(session);
+
+      if (!contractorWD) {
+        contractorWD = new ContractorWD({
+          contractorId,
+          jobId: '',
+          isAdhoc: true,
+          adhocOrderId: String(adhocOrderId),
+          adhocLabel: adhocOrder.adhocId || '',
+          opsDone: [],
+        });
+      }
+
+      for (const adj of contractorWDAdjustments) {
+        const { opId, opsName, valuePerBook, deltaQty } = adj;
+        const adjName = String(opsName || '').trim();
+        const adjValue = Number(valuePerBook || 0);
+        const adjOpId = String(opId || '').trim();
+
+        const matchesAdj = (od) => {
+          if (isOpsDoneUnsaved(od)) return false;
+          if (adjOpId && String(od.opsId || '').trim() === adjOpId) return true;
+          return String(od.opsName || '').trim() === adjName && Number(od.valuePerBook || 0) === adjValue;
+        };
+        const existingOp = contractorWD.opsDone.find(matchesAdj);
+
+        if (deltaQty > 0) {
+          if (existingOp) {
+            existingOp.opsDoneQty += deltaQty;
+            existingOp.completionDate = new Date();
+          } else {
+            contractorWD.opsDone.push({
+              opsId: adjOpId || null,
+              opsName: adjName,
+              valuePerBook: adjValue,
+              opsDoneQty: deltaQty,
+              completionDate: new Date(),
+              savedInBill: 'Yes',
+            });
+          }
+        } else if (deltaQty < 0 && existingOp) {
+          const newDone = Number(existingOp.opsDoneQty || 0) + deltaQty;
+          if (newDone <= 0) {
+            contractorWD.opsDone = contractorWD.opsDone.filter(od => od !== existingOp);
+          } else {
+            existingOp.opsDoneQty = newDone;
+            existingOp.completionDate = new Date();
+          }
+        }
+      }
+
+      contractorWD.markModified('opsDone');
+      if (!contractorWD.opsDone || contractorWD.opsDone.length === 0) {
+        if (contractorWD._id) {
+          await ContractorWD.deleteOne({ _id: contractorWD._id }).session(session);
+        }
+      } else {
+        await contractorWD.save({ session });
+      }
     }
 
     // After adjustments, clean up bill jobs:
