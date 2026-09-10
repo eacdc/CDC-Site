@@ -3215,7 +3215,11 @@ router.get('/grn/consignees', async (req, res) => {
 
         const pool = await getPool(selectedDatabase);
         const result = await pool.request().query(`
-            SELECT LedgerID, LedgerName
+            SELECT
+                LedgerID,
+                LedgerName,
+                NULLIF(LTRIM(RTRIM(ISNULL(MailingAddress, ''))), '') AS MailingAddress,
+                NULLIF(LTRIM(RTRIM(ISNULL(Address1, ''))), '') AS Address1
             FROM LedgerMaster
             WHERE LedgerType = 'Consignee'
               AND ISNULL(IsDeleted, 0) = 0
@@ -3223,10 +3227,19 @@ router.get('/grn/consignees', async (req, res) => {
             ORDER BY LedgerName;
         `);
 
-        const consignees = (result.recordset || []).map((row) => ({
-            ledgerId: row.LedgerID ?? row.ledgerid ?? null,
-            ledgerName: row.LedgerName ?? row.ledgername ?? ''
-        }));
+        const consignees = (result.recordset || []).map((row) => {
+            const ledgerName = String(row.LedgerName ?? row.ledgername ?? '').trim();
+            const mailingAddress = String(row.MailingAddress ?? row.mailingaddress ?? '').trim();
+            const address1 = String(row.Address1 ?? row.address1 ?? '').trim();
+            const address = mailingAddress || address1;
+            return {
+                ledgerId: row.LedgerID ?? row.ledgerid ?? null,
+                ledgerName,
+                mailingAddress: mailingAddress || null,
+                address1: address1 || null,
+                displayName: address ? `${ledgerName} (${address})` : ledgerName
+            };
+        });
 
         return res.json({ status: true, consignees });
     } catch (err) {
