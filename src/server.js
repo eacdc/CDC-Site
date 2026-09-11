@@ -17,6 +17,8 @@ import scheduleRoutes from './routes-schedule.js';
 import rawQcRoutes from './routes-raw-qc.js';
 import shipmentEtaRoutes from './routes-shipment-eta.js';
 import concernPersonRoutes from './routes-concern-person.js';
+import { startWhatsappMonitor, whatsappMonitorHealth } from './whatsapp-monitor/index.js';
+import { close as closeWhatsappMonitor } from './whatsapp-monitor/db.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
 import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
@@ -147,8 +149,8 @@ app.use('/api/contractors', require('./contractor-po/routes/contractors.js'));
 app.use('/api/bills',       require('./contractor-po/routes/bills.js'));
 app.use('/api/series',      require('./contractor-po/routes/series.js'));
 
-app.get('/health', (req, res) => {
-	res.json({ status: 'ok' });
+app.get('/health', async (req, res) => {
+	res.json({ status: 'ok', whatsappMonitor: await whatsappMonitorHealth() });
 });
 
 const server = app.listen(port, () => {
@@ -156,6 +158,11 @@ const server = app.listen(port, () => {
 	// The delivery-date snapshot cannot be reconstructed after the fact — the
 	// ERP edits ExpectedDeliveryDate in place — so it starts with the server.
 	scheduleSupplierPortalJobs();
+	// No-op unless WHATSAPP_MONITOR_ENABLED=true. Never throws — the monitor
+	// must not be able to stop the backend from booting.
+	startWhatsappMonitor().catch((err) => {
+		console.error('WhatsApp monitor failed to start:', err);
+	});
 });
 
 // Graceful shutdown
@@ -163,6 +170,7 @@ process.on('SIGINT', async () => {
 	console.log('Received SIGINT, shutting down gracefully...');
 	await closeAllPools();
 	await closeVoiceNotesConnection();
+	await closeWhatsappMonitor().catch(() => {});
 	await closePurchaseBillsMongo();
 	await closeSupplierPortalWritePools();
 	await closeSupplierPortal();
