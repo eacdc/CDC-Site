@@ -23,3 +23,8 @@ r2-key-mapping.csv
 # Apply-step plans and generated revert scripts
 r2-apply-*.csv
 r2-revert-*.sql
+
+# The WhatsApp monitor's frontend is a separate repository that is often cloned
+# inside this folder. It has its own .git — it must not be tracked here.
+WhatsAppSummarizer/
+whatsappsummarizer/
