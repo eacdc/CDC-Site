@@ -39,6 +39,8 @@ export const config = {
   },
 
   pollCron: opt('POLL_CRON', '*/5 * * * *'),
+  rollingSummaryCron: opt('ROLLING_SUMMARY_CRON', '0 */4 * * *'),
+  dailySummaryTime: opt('DAILY_SUMMARY_TIME', '20:00'),
   cursorOverlapSeconds: num('CURSOR_OVERLAP_SECONDS', 60),
   messageTtlSeconds: num('MESSAGE_TTL_SECONDS', 5184000),
 

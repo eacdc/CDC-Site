@@ -3,13 +3,43 @@ import { readFileSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { parseConcerns, MalformedLlmOutput } from './parse.js';
+import { parseSummary, MalformedSummary } from '../summariser/parse.js';
 
 const SYSTEM_PROMPT = readFileSync(new URL('../detector/prompt.md', import.meta.url), 'utf8');
+const SUMMARY_PROMPT = readFileSync(new URL('../summariser/prompt.md', import.meta.url), 'utf8');
 
 function renderMessages(label, msgs) {
   if (msgs.length === 0) return '';
   const lines = msgs.map((m) => `[${m.msgId}] ${m.senderName ?? 'unknown'}: ${m.text.replace(/\n/g, ' ')}`);
   return `${label}\n${lines.join('\n')}\n`;
+}
+
+function renderPrevious(previous) {
+  if (!previous) return '';
+  const section = (label, items) =>
+    items?.length ? `${label}\n${items.map((b) => `- ${b}`).join('\n')}\n` : '';
+  const body =
+    section('Decisions:', previous.decisions) +
+    section('Open issues:', previous.openIssues) +
+    section('Blocked:', previous.blocked) +
+    section('Notable:', previous.notable);
+  return body ? `PREVIOUS SUMMARY (carry forward what is still true):\n${body}\n` : '';
+}
+
+function buildSummaryPrompt(input) {
+  const lines = input.messages.map(
+    (m) => `${m.senderName ?? 'unknown'}: ${m.text.replace(/\n/g, ' ')}`,
+  );
+  return [
+    `Group: ${input.groupName}`,
+    `Window: ${input.periodStart.toISOString()} to ${input.periodEnd.toISOString()}`,
+    '',
+    renderPrevious(input.previous),
+    `MESSAGES (${input.messages.length}):`,
+    lines.join('\n'),
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function buildUserPrompt(input) {
@@ -30,18 +60,22 @@ export class OpenAiLlm {
     this.client = new OpenAI({ apiKey });
   }
 
-  async call(model, input) {
+  async chat(model, system, user) {
     const res = await this.client.chat.completions.create({
       model,
       // JSON mode. Deliberately no temperature and no token cap — the GPT-5
       // family rejects some of those, and the defaults are what we want anyway.
       response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserPrompt(input) },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
     });
     return res.choices[0]?.message?.content ?? '';
+  }
+
+  async call(model, input) {
+    return this.chat(model, SYSTEM_PROMPT, buildUserPrompt(input));
   }
 
   /**
@@ -71,5 +105,28 @@ export class OpenAiLlm {
     logger.info({ from: fast, to: strong, reason: escalationReason }, 'escalating to strong model');
     const concerns = parseConcerns(await this.call(strong, input), known);
     return { concerns, model: strong, escalated: true, escalationReason };
+  }
+
+  /**
+   * Summarises a window of messages into four buckets.
+   *
+   * Uses the fast model, falling back to the strong one only if the output is
+   * structurally broken. Unlike a missed concern, a slightly thin summary costs
+   * nobody anything — it is read at leisure on a dashboard, not acted on in the
+   * next five minutes — so it does not deserve a second opinion on content.
+   */
+  async summarise(input) {
+    const fast = config.llm.fastModel;
+    const user = buildSummaryPrompt(input);
+
+    try {
+      return { bullets: parseSummary(await this.chat(fast, SUMMARY_PROMPT, user)), model: fast };
+    } catch (err) {
+      if (!(err instanceof MalformedSummary)) throw err;
+      logger.warn({ model: fast, err: err.message }, 'fast model returned a malformed summary — escalating');
+    }
+
+    const strong = config.llm.strongModel;
+    return { bullets: parseSummary(await this.chat(strong, SUMMARY_PROMPT, user)), model: strong };
   }
 }

@@ -9,8 +9,8 @@ unset or `false` the module does nothing at all: no Mongo connection, no cron, n
 Maytapi calls. The rest of the backend is unaffected either way — a startup
 failure here is logged and swallowed rather than stopping the server.
 
-Status: **Phase 3** (poller + detector + alerts + escalation + ACK). Phases 4–6
-(summariser, dashboard API, deploy) are not built yet. The
+Status: **Phase 4** (poller, detector, alerts, escalation/ACK, summariser).
+Phases 5–6 (dashboard API, deploy) are not built yet. The
 dashboard itself lives in the separate `WhatsAppSummarizer` repo and will talk
 to JSON routes added here, behind this backend's existing JWT auth.
 
@@ -39,6 +39,10 @@ npm run whatsapp:dump-messages -- "<id>"       # raw Maytapi response
 npm run whatsapp:concerns                      # open + acknowledged concerns
 npm run whatsapp:concerns -- all               # including resolved
 npm run whatsapp:escalate-once                 # one ack + escalation pass
+npm run whatsapp:summarise                     # rolling summaries now
+npm run whatsapp:summarise -- daily            # today's daily summary
+npm run whatsapp:summarise -- both
+npm run whatsapp:summaries                     # print the latest summaries
 npm run test:whatsapp                          # unit tests
 ```
 
@@ -134,6 +138,45 @@ back to A). When the chain simply ends, that is logged **once** per concern and
 flagged with `escalationChainExhausted` rather than repeating every five
 minutes for the life of the concern.
 
+## Summaries
+
+Two jobs, both writing to `summaries` with four buckets — `decisions`,
+`openIssues`, `blocked` (who is waiting on whom), `notable`. Empty arrays are a
+valid summary; a quiet window should produce nothing rather than padding.
+
+**Rolling** (`ROLLING_SUMMARY_CRON`, default every 4 hours) feeds the previous
+rolling summary plus the new messages back in, so open issues carry forward
+until something settles them.
+
+Messages are selected by **`receivedAt`, not `ts`**. Every message is ingested
+exactly once, so a receivedAt cursor guarantees each is summarised at least once
+and none are skipped. Selecting by `ts` would silently lose late arrivals — a
+message whose `ts` falls inside an already-summarised window would never qualify
+again. This is the "re-summarise tolerantly" requirement, and it is the reason
+the cursor is `lastReceivedAt` rather than `periodEnd`.
+
+When a window produces nothing worth saying, the cursor still advances (no new
+row is written) — otherwise a quiet stretch would be re-sent to the model every
+four hours forever.
+
+**Daily** (`DAILY_SUMMARY_TIME`, default 20:00 IST) covers that IST day up to the
+run time, not to midnight: a summary cannot cover messages that do not exist
+yet, and anything later lands in tomorrow's window. It is keyed by IST day and
+**upserted**, so a retry, a manual run, or a restart at 20:05 replaces the day's
+summary instead of adding a second — enforced by a unique partial index on
+`{groupId, kind, dayKey}`.
+
+Day boundaries are computed from a fixed +5:30 offset rather than the process
+timezone, so behaviour is identical on a Kolkata laptop and a UTC server. India
+has no daylight saving, so a fixed offset is correct.
+
+Unlike the detector, the summariser escalates to the strong model only on
+structurally broken output, never on content. A slightly thin summary is read at
+leisure on a dashboard rather than acted on within five minutes, so it does not
+warrant a second opinion.
+
+Its prompt is `summariser/prompt.md`, same arrangement as the detector's.
+
 ## Changing the prompt
 
 `detector/prompt.md` is the classifier's system prompt — plain Markdown, no code
@@ -183,8 +226,16 @@ llm/parse.js           validates classifier JSON; throws to trigger escalation
 detector/prompt.md     the classifier's system prompt — edit freely
 detector/concerns.js   de-duplication rules (pure, unit tested)
 detector/detect.js     classify -> de-dup -> open concern -> alert
+summariser/prompt.md   the summariser's system prompt — edit freely
+summariser/window.js   IST day boundaries and cron parsing (pure, unit tested)
+summariser/parse.js    validates the four buckets
+summariser/summarise.js rolling + daily runs
 router/resolve.js      routing precedence (pure, unit tested)
 router/alert.js        DM formatting and delivery logging
+router/escalation-rules.js  escalation timing and targets (pure, unit tested)
+router/ack-rules.js    ACK matching and target selection (pure, unit tested)
+router/escalate.js     the escalation pass
+router/acknowledge.js  the 1:1 ACK poll
 index.js               start/stop + health, called from server.js
 ```
 

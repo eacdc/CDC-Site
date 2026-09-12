@@ -3,8 +3,26 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { connect, ensureIndexes, runs } from './db.js';
 import { runPoll, checkSession } from './poller/poll.js';
+import { runRollingSummaries, runDailySummaries } from './summariser/summarise.js';
+import { timeToCron } from './summariser/window.js';
 
 let polling = false;
+let summarising = false;
+
+/** Wraps a job so a slow run cannot overlap the next tick, and a throw cannot kill the process. */
+function guard(name, isRunning, setRunning, job) {
+  return async () => {
+    if (isRunning()) return logger.warn({ job: name }, 'previous run still going — skipping this tick');
+    setRunning(true);
+    try {
+      await job();
+    } catch (err) {
+      logger.error({ job: name, err: String(err) }, 'scheduled job threw');
+    } finally {
+      setRunning(false);
+    }
+  };
+}
 
 /**
  * Starts the WhatsApp monitor inside the main backend process.
@@ -30,22 +48,44 @@ export async function startWhatsappMonitor() {
 
   cron.schedule(
     config.pollCron,
-    async () => {
-      // A slow run must not overlap the next tick and double-fetch.
-      if (polling) return logger.warn('previous poll still running — skipping this tick');
-      polling = true;
-      try {
-        await runPoll();
-      } catch (err) {
-        logger.error({ err: String(err) }, 'poll run threw');
-      } finally {
-        polling = false;
-      }
-    },
+    guard('poll', () => polling, (v) => { polling = v; }, runPoll),
     { timezone: config.tz },
   );
 
-  logger.info({ cron: config.pollCron, tz: config.tz }, 'whatsapp monitor started');
+  // Both summary jobs share one lock: they read the same messages and there is
+  // no value in the 20:00 daily run racing the 20:00 rolling run.
+  const summaryLock = [() => summarising, (v) => { summarising = v; }];
+
+  cron.schedule(
+    config.rollingSummaryCron,
+    guard('rolling-summary', ...summaryLock, runRollingSummaries),
+    { timezone: config.tz },
+  );
+
+  let dailyCron;
+  try {
+    dailyCron = timeToCron(config.dailySummaryTime);
+  } catch (err) {
+    // A bad time must not silently schedule the daily summary at midnight.
+    logger.error({ err: String(err) }, 'daily summary not scheduled');
+  }
+  if (dailyCron) {
+    cron.schedule(
+      dailyCron,
+      guard('daily-summary', ...summaryLock, () => runDailySummaries()),
+      { timezone: config.tz },
+    );
+  }
+
+  logger.info(
+    {
+      poll: config.pollCron,
+      rolling: config.rollingSummaryCron,
+      daily: dailyCron ?? 'not scheduled',
+      tz: config.tz,
+    },
+    'whatsapp monitor started',
+  );
   return true;
 }
 

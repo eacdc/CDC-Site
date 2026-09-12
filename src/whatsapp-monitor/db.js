@@ -57,6 +57,12 @@ export async function ensureIndexes() {
   await concerns().createIndex({ createdAt: -1 }, { name: 'createdAt_desc' });
   await alerts().createIndex({ concernId: 1 }, { name: 'concernId' });
   await summaries().createIndex({ groupId: 1, kind: 1, periodEnd: -1 }, { name: 'group_kind_period' });
+  // The daily summary is upserted by this key, so it must be unique — a retry
+  // or a restart at 20:05 must replace the day's summary, not add a second.
+  await summaries().createIndex(
+    { groupId: 1, kind: 1, dayKey: 1 },
+    { name: 'group_kind_day', unique: true, partialFilterExpression: { dayKey: { $exists: true } } },
+  );
   await routing().createIndex({ groupId: 1, category: 1 }, { name: 'routing_lookup' });
   await runs().createIndex({ startedAt: -1 }, { name: 'startedAt_desc' });
 

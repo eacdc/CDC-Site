@@ -35,7 +35,9 @@
     "whatsapp:dump-messages": "node scripts/whatsapp-dump-messages.js",
     "test:whatsapp": "node --test \"src/whatsapp-monitor/*.test.js\"",
     "whatsapp:escalate-once": "node scripts/whatsapp-escalate-once.js",
-    "whatsapp:concerns": "node scripts/whatsapp-concerns.js"
+    "whatsapp:concerns": "node scripts/whatsapp-concerns.js",
+    "whatsapp:summarise": "node scripts/whatsapp-summarise-once.js",
+    "whatsapp:summaries": "node scripts/whatsapp-summaries.js"
   },
   "keywords": [],
   "author": "",
