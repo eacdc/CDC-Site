@@ -29,7 +29,7 @@ test('does not escalate before the window', () => {
   assert.equal(dueForEscalation(concern({ createdAt: minsAgo(29) }), NOW, 30), false);
 });
 
-test('never escalates an acknowledged concern — a human said they have it', () => {
+test('never escalates an acknowledged concern - a human said they have it', () => {
   assert.equal(dueForEscalation(concern({ status: 'acknowledged' }), NOW, 30), false);
 });
 

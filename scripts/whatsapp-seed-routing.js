@@ -28,7 +28,7 @@ for (const r of ROUTING) {
 }
 
 if (OWNERS.length === 0 && ROUTING.length === 0) {
-  console.log('Nothing seeded — the OWNERS and ROUTING arrays in this script are empty.');
+  console.log('Nothing seeded - the OWNERS and ROUTING arrays in this script are empty.');
   console.log('Until you fill them in, every concern routes to DEFAULT_OWNER_PHONE.');
   console.log(`\nValid categories: ${CONCERN_CATEGORIES.join(', ')}`);
 }

@@ -84,7 +84,7 @@ async function checkOwner(phone, openConcerns) {
 
   const target = findAckTarget(phone, openConcerns);
   if (!target) {
-    logger.info({ phone }, 'ACK received but no open concern is theirs — ignoring');
+    logger.info({ phone }, 'ACK received but no open concern is theirs - ignoring');
     return 0;
   }
 

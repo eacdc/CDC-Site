@@ -49,8 +49,8 @@ const update = { monitored };
 if (monitored && !group.joinedAt) update.joinedAt = new Date();
 
 await groups().updateOne({ _id: groupId }, { $set: update });
-console.log(`${group.name} — monitoring ${monitored ? 'ON' : 'off'}`);
+console.log(`${group.name} - monitoring ${monitored ? 'ON' : 'off'}`);
 if (update.joinedAt) {
-  console.log(`joinedAt set to ${update.joinedAt.toISOString()} — nothing older will ever be ingested.`);
+  console.log(`joinedAt set to ${update.joinedAt.toISOString()} - nothing older will ever be ingested.`);
 }
 await close();

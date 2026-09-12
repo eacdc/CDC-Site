@@ -12,7 +12,7 @@ let summarising = false;
 /** Wraps a job so a slow run cannot overlap the next tick, and a throw cannot kill the process. */
 function guard(name, isRunning, setRunning, job) {
   return async () => {
-    if (isRunning()) return logger.warn({ job: name }, 'previous run still going — skipping this tick');
+    if (isRunning()) return logger.warn({ job: name }, 'previous run still going - skipping this tick');
     setRunning(true);
     try {
       await job();
@@ -42,7 +42,7 @@ export async function startWhatsappMonitor() {
     await connect();
     await ensureIndexes();
   } catch (err) {
-    logger.error({ err: String(err) }, 'whatsapp monitor failed to start — continuing without it');
+    logger.error({ err: String(err) }, 'whatsapp monitor failed to start - continuing without it');
     return false;
   }
 

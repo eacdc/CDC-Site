@@ -89,7 +89,7 @@ export async function detectForGroup(group) {
           );
           logger.info(
             { concernId: String(duplicate._id), category: candidate.category },
-            'duplicate concern — appended, no alert',
+            'duplicate concern - appended, no alert',
           );
           continue;
         }
@@ -122,7 +122,7 @@ export async function detectForGroup(group) {
         if (!route) {
           logger.error(
             { concernId: String(insertedId), category: candidate.category },
-            'no routing rule and no DEFAULT_OWNER_PHONE — concern raised but NOBODY was alerted',
+            'no routing rule and no DEFAULT_OWNER_PHONE - concern raised but NOBODY was alerted',
           );
           continue;
         }

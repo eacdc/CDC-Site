@@ -98,7 +98,7 @@ export class OpenAiLlm {
       escalationReason = 'high_severity';
     } catch (err) {
       if (!(err instanceof MalformedLlmOutput)) throw err;
-      logger.warn({ model: fast, err: err.message }, 'fast model returned malformed JSON — escalating');
+      logger.warn({ model: fast, err: err.message }, 'fast model returned malformed JSON - escalating');
       escalationReason = 'malformed_json';
     }
 
@@ -123,7 +123,7 @@ export class OpenAiLlm {
       return { bullets: parseSummary(await this.chat(fast, SUMMARY_PROMPT, user)), model: fast };
     } catch (err) {
       if (!(err instanceof MalformedSummary)) throw err;
-      logger.warn({ model: fast, err: err.message }, 'fast model returned a malformed summary — escalating');
+      logger.warn({ model: fast, err: err.message }, 'fast model returned a malformed summary - escalating');
     }
 
     const strong = config.llm.strongModel;

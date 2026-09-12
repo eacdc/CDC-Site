@@ -40,7 +40,7 @@ test('treats an acknowledged concern as still live', () => {
   assert.notEqual(findDuplicate(candidate(), [concern({ status: 'acknowledged' })], NOW, 30), null);
 });
 
-test('does not match a resolved concern — a recurrence deserves a fresh alert', () => {
+test('does not match a resolved concern - a recurrence deserves a fresh alert', () => {
   assert.equal(findDuplicate(candidate(), [concern({ status: 'resolved' })], NOW, 30), null);
 });
 
@@ -74,7 +74,7 @@ test('accepts a clean response', () => {
   assert.equal(out[0].ownerHint, 'maintenance');
 });
 
-test('accepts an empty result — the common case', () => {
+test('accepts an empty result - the common case', () => {
   assert.deepEqual(parseConcerns('{"concerns":[]}', known), []);
 });
 

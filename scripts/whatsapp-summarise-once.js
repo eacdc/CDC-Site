@@ -13,6 +13,6 @@ await connect();
 
 if (which === 'rolling' || which === 'both') console.log(`rolling written: ${await runRollingSummaries()}`);
 if (which === 'daily' || which === 'both') console.log(`daily written:   ${await runDailySummaries()}`);
-if (!['rolling', 'daily', 'both'].includes(which)) console.error(`unknown argument "${which}" — use rolling, daily or both`);
+if (!['rolling', 'daily', 'both'].includes(which)) console.error(`unknown argument "${which}" - use rolling, daily or both`);
 
 await close();

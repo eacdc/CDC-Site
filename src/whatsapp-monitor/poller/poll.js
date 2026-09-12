@@ -40,7 +40,7 @@ export async function pollGroup(group) {
   if (!joinedAt) {
     joinedAt = now;
     await groups().updateOne({ _id: group._id }, { $set: { joinedAt } });
-    logger.info({ groupId: group._id }, 'first poll — joinedAt set to now');
+    logger.info({ groupId: group._id }, 'first poll - joinedAt set to now');
   }
 
   try {

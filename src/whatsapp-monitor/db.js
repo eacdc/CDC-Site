@@ -30,7 +30,7 @@ export async function close() {
 }
 
 function coll(name) {
-  if (!database) throw new Error('whatsapp-monitor db not connected — call connect() first');
+  if (!database) throw new Error('whatsapp-monitor db not connected - call connect() first');
   return database.collection(name);
 }
 

@@ -47,7 +47,7 @@ export async function runEscalations() {
         if (!concern.escalationChainExhausted) {
           logger.warn(
             { concernId: String(concern._id), ownerId: concern.ownerId },
-            'concern unacknowledged but nobody left to escalate to — set escalationTo on the owner',
+            'concern unacknowledged but nobody left to escalate to - set escalationTo on the owner',
           );
           await concerns().updateOne(
             { _id: concern._id },
