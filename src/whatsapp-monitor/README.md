@@ -9,8 +9,8 @@ unset or `false` the module does nothing at all: no Mongo connection, no cron, n
 Maytapi calls. The rest of the backend is unaffected either way — a startup
 failure here is logged and swallowed rather than stopping the server.
 
-Status: **Phase 4** (poller, detector, alerts, escalation/ACK, summariser).
-Phases 5–6 (dashboard API, deploy) are not built yet. The
+Status: **Phase 5** (poller, detector, alerts, escalation/ACK, summariser,
+dashboard API). Phase 6 (tests/backfill/deploy config) is not built yet. The
 dashboard itself lives in the separate `WhatsAppSummarizer` repo and will talk
 to JSON routes added here, behind this backend's existing JWT auth.
 
@@ -137,6 +137,47 @@ thread is skipped, which also breaks a loop in the config (A escalates to B, B
 back to A). When the chain simply ends, that is logged **once** per concern and
 flagged with `escalationChainExhausted` rather than repeating every five
 minutes for the life of the concern.
+
+## Dashboard API
+
+`src/routes-whatsapp-monitor.js`, mounted at `/api/whatsapp-monitor`, behind
+`requireCdcBillsAuth` — the same JWT the other CDC tools use, so the team has one
+login rather than another password to circulate. Writes additionally require
+`requireCdcBillsAdmin`.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/health` | monitor status, last run age, errors |
+| GET | `/groups` | all groups + open-concern counts + latest rolling summary |
+| GET | `/groups/:id` | daily summaries, rolling summary, live concerns, last 50 messages |
+| GET | `/concerns` | `?status=&category=&groupId=&limit=` |
+| GET | `/concerns/:id` | the triggering messages and the alert log |
+| GET | `/runs` | last 100 runs |
+| GET | `/owners` | owners, routing rules, and the env defaults |
+| PATCH | `/groups/:id` | admin — `monitored`, `department`, `joinedAt` |
+| POST | `/concerns/:id/acknowledge` | |
+| POST | `/concerns/:id/resolve` | |
+| PUT/DELETE | `/owners/:phone` | admin |
+| PUT/DELETE | `/routing` | admin |
+
+Details worth knowing:
+
+- **The API works whether or not the poller is running.** Each request calls the
+  idempotent `connect()`, because someone reading yesterday's concerns does not
+  care whether `WHATSAPP_MONITOR_ENABLED` is true.
+- **Acknowledge and resolve are guarded on current status**, so two people
+  clicking at once cannot double-apply; the loser gets a 409 naming the state.
+- **Validation refuses configurations that would fail silently**: an owner who
+  escalates to themselves, a routing rule pointing at a phone with no owner row,
+  deleting an owner that routing rules still reference.
+- `/groups` uses one grouped aggregate for the counts rather than a query per
+  group — it is the dashboard's front page and the most-hit route.
+- `/concerns/:id` can return fewer messages than `messageIds` lists: messages
+  age out under the 60-day TTL while the concern itself does not.
+
+`api.test.js` asserts that **every** route returns 401 unauthenticated. These
+routes expose every message the monitor has read, so a route added later without
+the middleware would leak all of it, and quietly.
 
 ## Summaries
 

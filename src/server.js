@@ -19,6 +19,7 @@ import shipmentEtaRoutes from './routes-shipment-eta.js';
 import concernPersonRoutes from './routes-concern-person.js';
 import { startWhatsappMonitor, whatsappMonitorHealth } from './whatsapp-monitor/index.js';
 import { close as closeWhatsappMonitor } from './whatsapp-monitor/db.js';
+import whatsappMonitorRoutes from './routes-whatsapp-monitor.js';
 import previousItemsByClientRoutes from './routes-previous-items-by-client.js';
 import jobProductImageRoutes from './routes-job-product-image.js';
 import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
@@ -129,6 +130,7 @@ app.use('/api/purchase-bills', purchaseBillsRoutes);
 // Self-contained under its own prefix, with its own Mongo connection
 // (MONGODB_URI_SupplierPortal) and its own site-scoped MSSQL access.
 app.use('/api/supplier-portal', supplierPortalRoutes);
+app.use('/api/whatsapp-monitor', whatsappMonitorRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 // Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
