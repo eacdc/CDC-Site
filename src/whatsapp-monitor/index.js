@@ -89,20 +89,36 @@ export async function startWhatsappMonitor() {
   return true;
 }
 
-/** Feeds the backend's health endpoint. Never throws. */
+/**
+ * Feeds the backend's health endpoint. Never throws.
+ *
+ * Reports the last run even when the poller is disabled: runs happen from the
+ * CLI scripts too, and showing "-" when the database holds a run from twenty
+ * minutes ago is less honest than showing it alongside `enabled: false`.
+ */
 export async function whatsappMonitorHealth() {
-  if (!config.enabled) return { enabled: false };
+  const out = { enabled: config.enabled };
 
-  const out = { enabled: true };
   try {
+    await connect();
     const lastRun = await runs().find({}).sort({ startedAt: -1 }).limit(1).next();
     out.db = 'ok';
     out.lastRunAt = lastRun?.startedAt ?? null;
     out.lastRunAgeSeconds = lastRun ? Math.round((Date.now() - lastRun.startedAt.getTime()) / 1000) : null;
     out.lastRunErrors = lastRun?.errors ?? [];
   } catch (err) {
-    out.db = String(err);
+    // Not configured at all is the normal case on a machine without Maytapi
+    // credentials, and is not worth surfacing as a database failure.
+    out.db = config.mongodbUri ? String(err) : 'not configured';
   }
+
+  // Skip the Maytapi call when the monitor is off - it is a network round trip
+  // whose answer nobody is acting on.
+  if (!config.enabled) {
+    out.maytapiSession = 'not running';
+    return out;
+  }
+
   try {
     out.maytapiSession = (await checkSession()).ok ? 'logged_in' : 'logged_out';
   } catch (err) {
