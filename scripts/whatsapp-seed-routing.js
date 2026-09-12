@@ -8,7 +8,7 @@ import { CONCERN_CATEGORIES } from '../src/whatsapp-monitor/llm/types.js';
 
 // Phones in international format — no "+", no spaces. Same form Maytapi wants.
 const OWNERS = [
-  // { _id: '919830000001', name: 'Production Head', role: 'production', department: 'tangra', escalationTo: '919830000009' },
+  { _id: '916290177265', name: 'Production Head', role: 'production', department: 'tangra', escalationTo: '919073457510' },
 ];
 
 const ROUTING = [
