@@ -9,8 +9,8 @@ unset or `false` the module does nothing at all: no Mongo connection, no cron, n
 Maytapi calls. The rest of the backend is unaffected either way — a startup
 failure here is logged and swallowed rather than stopping the server.
 
-Status: **Phase 2** (poller + detector + router/alerts). Phases 3–6
-(escalation/ACK, summariser, dashboard API, deploy) are not built yet. The
+Status: **Phase 3** (poller + detector + alerts + escalation + ACK). Phases 4–6
+(summariser, dashboard API, deploy) are not built yet. The
 dashboard itself lives in the separate `WhatsAppSummarizer` repo and will talk
 to JSON routes added here, behind this backend's existing JWT auth.
 
@@ -36,7 +36,10 @@ npm run whatsapp:seed-routing                  # owners + routing (edit the scri
 npm run whatsapp:poll-once                     # one cycle: fetch, classify, alert
 npm run whatsapp:classify-once -- "<groupId>"  # classify now, skip the fetch
 npm run whatsapp:dump-messages -- "<id>"       # raw Maytapi response
-npm test:whatsapp                              # unit tests
+npm run whatsapp:concerns                      # open + acknowledged concerns
+npm run whatsapp:concerns -- all               # including resolved
+npm run whatsapp:escalate-once                 # one ack + escalation pass
+npm run test:whatsapp                          # unit tests
 ```
 
 `GET /health` reports the monitor's status alongside the backend's.
@@ -90,6 +93,46 @@ there would be the worst possible failure.
 
 **Alerts are written to `alerts` before the send**, then updated with the result,
 so a crash mid-send leaves a record that we tried.
+
+## Acknowledgement and escalation
+
+Both run on every poll cycle, **acknowledgements first** — a concern
+acknowledged in this cycle must not then be escalated a moment later for being
+unacknowledged.
+
+**ACK.** The poller reads the CDC number's 1:1 chat with anyone who has an open
+concern assigned or escalated to them, and looks for the word `ACK` as a whole
+word, case-insensitive. Their **newest open** concern becomes `acknowledged`,
+and they get a one-line confirmation DM — without it, silence looks like
+failure and people send the reply again.
+
+`ok`, `done` and `thik hai` are deliberately **not** acknowledgements. They are
+the commonest words in any work group, and accepting them would silently
+swallow concerns nobody actually picked up. `ack` inside another word ("my back
+hurts", "Jack") does not match either.
+
+Each owner has a `lastAckTs` cursor, set to *now* the first time their thread is
+read, so an old "ack" typed months ago cannot acknowledge today's concern. Only
+messages the owner sent count — the CDC number's own alerts contain the word ACK
+in their instruction line, and counting those would acknowledge every concern
+the instant it was raised.
+
+Only owners with a live concern are polled, so Maytapi calls stay proportional
+to real activity rather than to the size of the owners table.
+
+**Escalation.** An `open` concern still unacknowledged after `escalateAfterMin`
+(default 30) is re-sent to the owner's `escalationTo`, then once more up that
+person's chain. **Two hops is the cap** — past that, DMing ever more senior
+people about something nobody has picked up stops being an alert and becomes
+noise; the dashboard is the right place to see it.
+
+The clock restarts at each hop, so every person gets the full window. The
+target is recorded before the send, like the first alert, so a crash mid-send
+cannot escalate to the same person twice. Escalating to someone already on the
+thread is skipped, which also breaks a loop in the config (A escalates to B, B
+back to A). When the chain simply ends, that is logged **once** per concern and
+flagged with `escalationChainExhausted` rather than repeating every five
+minutes for the life of the concern.
 
 ## Changing the prompt
 

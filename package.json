@@ -33,7 +33,9 @@
     "whatsapp:poll-once": "node scripts/whatsapp-poll-once.js",
     "whatsapp:classify-once": "node scripts/whatsapp-classify-once.js",
     "whatsapp:dump-messages": "node scripts/whatsapp-dump-messages.js",
-    "test:whatsapp": "node --test \"src/whatsapp-monitor/*.test.js\""
+    "test:whatsapp": "node --test \"src/whatsapp-monitor/*.test.js\"",
+    "whatsapp:escalate-once": "node scripts/whatsapp-escalate-once.js",
+    "whatsapp:concerns": "node scripts/whatsapp-concerns.js"
   },
   "keywords": [],
   "author": "",

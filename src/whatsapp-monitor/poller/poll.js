@@ -5,6 +5,8 @@ import { maytapi } from '../maytapi/client.js';
 import { normaliseMessages, isLoggedIn } from '../maytapi/normalise.js';
 import { filterNewMessages, newestOf } from './cursor.js';
 import { detectForGroup } from '../detector/detect.js';
+import { runEscalations } from '../router/escalate.js';
+import { runAckPoll } from '../router/acknowledge.js';
 
 let lastSessionAlertAt = 0;
 const SESSION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -119,6 +121,8 @@ export async function runPoll() {
     groupsPolled: 0,
     messagesIngested: 0,
     concernsRaised: 0,
+    concernsAcknowledged: 0,
+    concernsEscalated: 0,
     errors: [],
   };
 
@@ -145,6 +149,11 @@ export async function runPoll() {
     }
   }
 
+  // Acknowledgements before escalations, so a concern acknowledged in this same
+  // cycle is not escalated a moment later for being unacknowledged.
+  run.concernsAcknowledged = await runAckPoll();
+  run.concernsEscalated = await runEscalations();
+
   run.finishedAt = new Date();
   await runs().insertOne(run);
   logger.info(
@@ -152,6 +161,8 @@ export async function runPoll() {
       groups: run.groupsPolled,
       ingested: run.messagesIngested,
       concerns: run.concernsRaised,
+      acknowledged: run.concernsAcknowledged,
+      escalated: run.concernsEscalated,
       errors: run.errors.length,
     },
     'poll run finished',
