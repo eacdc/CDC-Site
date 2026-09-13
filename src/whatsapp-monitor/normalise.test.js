@@ -100,3 +100,24 @@ test('isLoggedIn recognises live and dead sessions', () => {
   assert.equal(isLoggedIn({ data: { loggedIn: false } }), false);
   assert.equal(isLoggedIn(null), false);
 });
+
+test('getMessages builds count and page into the query string', async () => {
+  // The parameter is `count`, not `limit` - a `limit` is silently ignored, which
+  // is why the response kept growing before this was pinned down.
+  const seen = [];
+  const { maytapi } = await import('./maytapi/client.js');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    seen.push(String(url));
+    return new Response('{"success":true,"data":{"messages":[]}}', { status: 200 });
+  };
+  try {
+    await maytapi.getMessages('120363000000000000@g.us', { count: 100, page: 2 });
+    await maytapi.getMessages('120363000000000000@g.us');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.match(seen[0], /getMessages\/120363000000000000%40g\.us\?count=100&page=2$/);
+  assert.doesNotMatch(seen[1], /\?/, 'no query string when no options are given');
+});

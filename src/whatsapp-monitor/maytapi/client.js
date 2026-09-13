@@ -79,7 +79,23 @@ export const maytapi = {
   getStatus: () => request(`${phoneScope()}/status`),
   getGroups: () => request(`${phoneScope()}/getGroups`),
   getGroup: (conversationId) => request(`${phoneScope()}/getGroups/${encodeURIComponent(conversationId)}`),
-  getMessages: (conversationId) => request(`${phoneScope()}/getMessages/${encodeURIComponent(conversationId)}`),
+  /**
+   * `count` caps how many of the most recent messages come back, and `page`
+   * walks backwards through older ones. Without `count` the response grows on
+   * every call as the WhatsApp-Web session lazily loads more history - one
+   * group went 51 -> 101 -> 148 across three consecutive polls.
+   *
+   * Note the parameter is `count`, not `limit`; a `limit` is silently ignored.
+   */
+  getMessages: (conversationId, { count, page } = {}) => {
+    const query = new URLSearchParams();
+    if (count != null) query.set('count', String(count));
+    if (page != null) query.set('page', String(page));
+    const qs = query.toString();
+    return request(
+      `${phoneScope()}/getMessages/${encodeURIComponent(conversationId)}${qs ? `?${qs}` : ''}`,
+    );
+  },
   getMessage: (msgId) => request(`${phoneScope()}/getMessage/${encodeURIComponent(msgId)}`),
   /** All chats, 1:1 included — this is how phase 3 will find owners' ACK replies. */
   getConversations: () => request(`${phoneScope()}/getConversations`),

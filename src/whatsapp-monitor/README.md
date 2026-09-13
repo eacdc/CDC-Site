@@ -62,12 +62,43 @@ Per group we keep `lastTs` and `lastMsgId`. Each run keeps messages with
 deliberate; duplicates are dropped by the unique index on `msgId`
 (`insertMany` is unordered and duplicate-key errors are swallowed).
 
-`getMessages` has **no pagination** and needs none — it returns whatever history
-the WhatsApp-Web session has lazily loaded, and that set grows between calls (51
-then 101 on two consecutive polls of the same group). Messages cannot be lost by
-the window sliding past them, so `possible_gap` should stay silent. The cost is
-that the fetched count climbs over time; worth capping before many groups are
-monitored.
+### Pagination
+
+`getMessages` takes **`count`** (how many of the most recent messages to return)
+and **`page`** (walk backwards through older ones). The parameter is `count`, not
+`limit` — a `limit` is accepted and silently ignored, which is worth knowing
+because it looks like it is working.
+
+Without `count` the response grows on every call as the WhatsApp-Web session
+lazily loads more history: one group went 51 → 101 → 148 across three
+consecutive polls and would have kept climbing. `MAYTAPI_MESSAGE_COUNT`
+(default 100) keeps each response bounded.
+
+A bounded page can miss messages when a group is busier than one page per
+interval, so `fetchBackToCursor` walks back a page at a time until a page holds
+something at or older than the cursor — at which point nothing older is missing.
+It stops at `MAYTAPI_MAX_PAGES` (default 5), and reaching that limit is the real
+`possible_gap`: messages arrived faster than we could page back.
+
+The first poll never pages back. There is no cursor to close a gap against, and
+paging would drag in exactly the history `joinedAt` exists to keep out.
+
+### When Maytapi is unwell
+
+`getMessages` runs against a live WhatsApp-Web session, so it fails in ways a
+database-backed API would not. Both of these were seen in one afternoon:
+
+- **504 from Cloudflare**, ~50s — the session is wedged, typically while a phone
+  instance is being re-paired or redeployed. *Every* endpoint hangs, `/status`
+  included.
+- **500 `"Connection to Api is failed."`**, ~16s — Maytapi's API layer cannot
+  reach the session worker. `/status` and `/getGroups` keep returning 200 while
+  every `getMessages` fails, for large and small groups alike.
+
+Neither is caused by group size and no client setting fixes either. Check
+`/status` first: if the lightweight endpoints fail too, it is the session rather
+than your request. `GET /{phone_id}/redeploy` restarts the worker, which is the
+usual cure — have the handset to hand in case it needs re-pairing.
 
 ## How a concern becomes an alert
 

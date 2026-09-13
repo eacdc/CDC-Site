@@ -31,6 +31,56 @@ export async function checkSession() {
   return { ok, raw };
 }
 
+/**
+ * Fetches back far enough to reach the cursor, a page at a time.
+ *
+ * `count` keeps each response bounded; without it the payload grows on every
+ * call as the WhatsApp-Web session lazily loads more history - one group went
+ * 51 -> 101 -> 148 across three consecutive polls. But a bounded page can miss
+ * messages when a group is busier than one page per interval, so when a page
+ * holds nothing at or older than the cursor there is more to find, and we walk
+ * back another page.
+ *
+ * Stopping at maxPages is the real possible_gap: messages arrived faster than
+ * we could page back, and some may have been missed.
+ */
+async function fetchBackToCursor(groupId, state) {
+  const { messageCount, maxPages } = config.maytapi;
+  const seen = new Set();
+  const all = [];
+  let pages = 0;
+  let reachedCursor = false;
+
+  for (let page = 0; page < maxPages; page++) {
+    const batch = normaliseMessages(
+      await maytapi.getMessages(groupId, { count: messageCount, page }),
+    );
+    pages += 1;
+
+    for (const m of batch) {
+      if (!seen.has(m.msgId)) {
+        seen.add(m.msgId);
+        all.push(m);
+      }
+    }
+
+    // No more history to walk back through.
+    if (batch.length === 0) {
+      reachedCursor = true;
+      break;
+    }
+
+    // This page reaches at or past the cursor, so nothing older is missing.
+    const { possibleGap } = filterNewMessages(batch, state, config.cursorOverlapSeconds);
+    if (!possibleGap) {
+      reachedCursor = true;
+      break;
+    }
+  }
+
+  return { fetched: all, pages, reachedCursor };
+}
+
 /** Poll one group. Never throws — errors are recorded on the group doc. */
 export async function pollGroup(group) {
   const now = new Date();
@@ -44,18 +94,15 @@ export async function pollGroup(group) {
   }
 
   try {
-    const fetched = normaliseMessages(await maytapi.getMessages(group._id));
+    const state = { joinedAt, lastTs: group.lastTs ?? null };
+    const { fetched, pages, reachedCursor } = await fetchBackToCursor(group._id, state);
 
-    const { keep, possibleGap } = filterNewMessages(
-      fetched,
-      { joinedAt, lastTs: group.lastTs ?? null },
-      config.cursorOverlapSeconds,
-    );
+    const { keep } = filterNewMessages(fetched, state, config.cursorOverlapSeconds);
 
-    if (possibleGap) {
+    if (!reachedCursor) {
       logger.warn(
-        { groupId: group._id, fetched: fetched.length, lastTs: group.lastTs },
-        'possible_gap: every fetched message is newer than the cursor',
+        { groupId: group._id, fetched: fetched.length, pages, lastTs: group.lastTs },
+        'possible_gap: paged back the maximum and still found nothing older than the cursor',
       );
     }
 
@@ -100,7 +147,10 @@ export async function pollGroup(group) {
     }
     await groups().updateOne({ _id: group._id }, { $set: update });
 
-    logger.info({ groupId: group._id, fetched: fetched.length, kept: keep.length, ingested }, 'group polled');
+    logger.info(
+      { groupId: group._id, fetched: fetched.length, pages, kept: keep.length, ingested },
+      'group polled',
+    );
     return { ingested };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

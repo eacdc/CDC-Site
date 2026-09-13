@@ -29,6 +29,10 @@ export const config = {
     token: opt('MAYTAPI_TOKEN', ''),
     timeoutMs: num('MAYTAPI_TIMEOUT_MS', 20000),
     retries: num('MAYTAPI_RETRIES', 3),
+    /** Most recent messages to fetch per page. Keeps the response bounded. */
+    messageCount: num('MAYTAPI_MESSAGE_COUNT', 100),
+    /** Extra pages to walk back when a page holds nothing older than the cursor. */
+    maxPages: num('MAYTAPI_MAX_PAGES', 5),
   },
 
   llm: {
