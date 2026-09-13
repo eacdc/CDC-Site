@@ -121,3 +121,29 @@ test('getMessages builds count and page into the query string', async () => {
   assert.match(seen[0], /getMessages\/120363000000000000%40g\.us\?count=100&page=2$/);
   assert.doesNotMatch(seen[1], /\?/, 'no query string when no options are given');
 });
+
+test('unset options never reach the query string', async () => {
+  // `?count=undefined` would be sent verbatim and silently change the result.
+  const seen = [];
+  const { maytapi } = await import('./maytapi/client.js');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    seen.push(String(url));
+    return new Response('{"success":true,"data":[]}', { status: 200 });
+  };
+  try {
+    await maytapi.getMessages('g@g.us', { count: 50 });
+    await maytapi.getConversations({ days: 1 });
+    await maytapi.getConversations();
+    await maytapi.getConversationMessages('g@g.us', { count: 50, page: 0 });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert.match(seen[0], /\?count=50$/, 'omits page when unset');
+  assert.match(seen[1], /getConversations\?days=1$/);
+  assert.doesNotMatch(seen[2], /\?/, 'no query string at all when nothing is passed');
+  // page=0 is a real value and must survive - it is the first page, not "unset".
+  assert.match(seen[3], /getConversations\/g%40g\.us\?count=50&page=0$/);
+  assert.doesNotMatch(seen.join(' '), /undefined|null/);
+});

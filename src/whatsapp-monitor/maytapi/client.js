@@ -74,6 +74,16 @@ async function request(path, init = {}) {
 
 const phoneScope = () => `${config.maytapi.productId}/${config.maytapi.phoneId}`;
 
+/** Omits anything unset, so an absent option never becomes `?count=undefined`. */
+function buildQuery(params) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value != null) query.set(key, String(value));
+  }
+  const qs = query.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export const maytapi = {
   /** Session status. Note: the endpoint is `/status`, NOT `/getStatus`. */
   getStatus: () => request(`${phoneScope()}/status`),
@@ -87,18 +97,36 @@ export const maytapi = {
    *
    * Note the parameter is `count`, not `limit`; a `limit` is silently ignored.
    */
-  getMessages: (conversationId, { count, page } = {}) => {
-    const query = new URLSearchParams();
-    if (count != null) query.set('count', String(count));
-    if (page != null) query.set('page', String(page));
-    const qs = query.toString();
-    return request(
-      `${phoneScope()}/getMessages/${encodeURIComponent(conversationId)}${qs ? `?${qs}` : ''}`,
-    );
-  },
+  getMessages: (conversationId, { count, page } = {}) =>
+    request(
+      `${phoneScope()}/getMessages/${encodeURIComponent(conversationId)}${buildQuery({ count, page })}`,
+    ),
   getMessage: (msgId) => request(`${phoneScope()}/getMessage/${encodeURIComponent(msgId)}`),
-  /** All chats, 1:1 included — this is how phase 3 will find owners' ACK replies. */
-  getConversations: () => request(`${phoneScope()}/getConversations`),
+  /**
+   * All chats, 1:1 included - this is how the ACK poll finds owners' replies.
+   *
+   * `days` returns only conversations whose last message falls inside that
+   * window, which is a cheap way to skip dormant groups instead of asking every
+   * monitored group for messages every five minutes.
+   */
+  getConversations: ({ days, page } = {}) => {
+    const qs = buildQuery({ days, page });
+    return request(`${phoneScope()}/getConversations${qs}`);
+  },
+
+  /**
+   * The same payload as getMessages - same users/messages/me shape, same
+   * count/page parameters - reached through the conversations endpoint instead.
+   *
+   * Kept as a fallback: getMessages has been seen returning 500 "Connection to
+   * Api is failed" for every group while the lighter endpoints stayed healthy,
+   * and a second door to the same data is worth having when the first one is
+   * the one that is stuck.
+   */
+  getConversationMessages: (conversationId, { count, page } = {}) =>
+    request(
+      `${phoneScope()}/getConversations/${encodeURIComponent(conversationId)}${buildQuery({ count, page })}`,
+    ),
   listPhones: () => request(`${config.maytapi.productId}/listPhones`),
   sendMessage: (to, message) =>
     request(`${phoneScope()}/sendMessage`, {

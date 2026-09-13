@@ -36,6 +36,8 @@ npm run whatsapp:seed-routing                  # owners + routing (edit the scri
 npm run whatsapp:poll-once                     # one cycle: fetch, classify, alert
 npm run whatsapp:classify-once -- "<groupId>"  # classify now, skip the fetch
 npm run whatsapp:dump-messages -- "<id>"       # raw Maytapi response
+npm run whatsapp:probe                         # which Maytapi endpoints are healthy
+npm run whatsapp:probe -- "<groupId>"          # ...including both message routes
 npm run whatsapp:concerns                      # open + acknowledged concerns
 npm run whatsapp:concerns -- all               # including resolved
 npm run whatsapp:escalate-once                 # one ack + escalation pass
@@ -99,6 +101,24 @@ Neither is caused by group size and no client setting fixes either. Check
 `/status` first: if the lightweight endpoints fail too, it is the session rather
 than your request. `GET /{phone_id}/redeploy` restarts the worker, which is the
 usual cure — have the handset to hand in case it needs re-pairing.
+
+```bash
+npm run whatsapp:probe                 # session + group list
+npm run whatsapp:probe -- "<groupId>"  # also both message-fetch routes
+```
+
+`whatsapp:probe` calls each endpoint in turn and prints status, size and
+timing. It exists to separate the three failures that look identical from the
+outside — wrong credentials, a wedged session, and one broken endpoint — which
+otherwise take an afternoon of hand-built curl commands to tell apart.
+
+**There are two routes to the same messages.**
+`getConversations/{conversation_id}` returns the identical payload to
+`getMessages`, with the same `count`/`page` parameters. The client exposes it as
+`getConversationMessages`. It is not used by the poller: if the probe ever shows
+`getMessages` failing while `getConversationMessages` succeeds, that is the
+moment to wire it in as a fallback — and not before, since it is untested
+against a real instance.
 
 ## How a concern becomes an alert
 

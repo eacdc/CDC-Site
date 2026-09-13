@@ -37,7 +37,8 @@
     "whatsapp:escalate-once": "node scripts/whatsapp-escalate-once.js",
     "whatsapp:concerns": "node scripts/whatsapp-concerns.js",
     "whatsapp:summarise": "node scripts/whatsapp-summarise-once.js",
-    "whatsapp:summaries": "node scripts/whatsapp-summaries.js"
+    "whatsapp:summaries": "node scripts/whatsapp-summaries.js",
+    "whatsapp:probe": "node scripts/whatsapp-probe.js"
   },
   "keywords": [],
   "author": "",
