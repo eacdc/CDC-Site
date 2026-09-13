@@ -41,20 +41,24 @@ export async function checkSession() {
  * holds nothing at or older than the cursor there is more to find, and we walk
  * back another page.
  *
- * Stopping at maxPages is the real possible_gap: messages arrived faster than
- * we could page back, and some may have been missed.
+ * Stopping at maxPages, or running out of time, is the real possible_gap:
+ * messages arrived faster than we could page back, and some may have been
+ * missed.
  */
-async function fetchBackToCursor(groupId, state) {
-  const { messageCount, maxPages } = config.maytapi;
+export async function fetchBackToCursor(groupId, state, fetchPage = maytapi.getMessages) {
+  const { messageCount, maxPages, groupBudgetMs } = config.maytapi;
+  const deadline = Date.now() + groupBudgetMs;
   const seen = new Set();
   const all = [];
   let pages = 0;
   let reachedCursor = false;
 
   for (let page = 0; page < maxPages; page++) {
-    const batch = normaliseMessages(
-      await maytapi.getMessages(groupId, { count: messageCount, page }),
-    );
+    // Checked before the call, not after: one group having a bad day must not
+    // stop the others from being polled at all.
+    if (page > 0 && Date.now() > deadline) break;
+
+    const batch = normaliseMessages(await fetchPage(groupId, { count: messageCount, page }));
     pages += 1;
 
     for (const m of batch) {
@@ -84,6 +88,7 @@ async function fetchBackToCursor(groupId, state) {
 /** Poll one group. Never throws — errors are recorded on the group doc. */
 export async function pollGroup(group) {
   const now = new Date();
+  const startedAt = Date.now();
 
   // First ever poll: start the clock now, ingest nothing older.
   let joinedAt = group.joinedAt;
@@ -148,7 +153,14 @@ export async function pollGroup(group) {
     await groups().updateOne({ _id: group._id }, { $set: update });
 
     logger.info(
-      { groupId: group._id, fetched: fetched.length, pages, kept: keep.length, ingested },
+      {
+        groupId: group._id,
+        fetched: fetched.length,
+        pages,
+        kept: keep.length,
+        ingested,
+        ms: Date.now() - startedAt,
+      },
       'group polled',
     );
     return { ingested };

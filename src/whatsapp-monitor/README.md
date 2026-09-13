@@ -85,6 +85,24 @@ It stops at `MAYTAPI_MAX_PAGES` (default 5), and reaching that limit is the real
 The first poll never pages back. There is no cursor to close a gap against, and
 paging would drag in exactly the history `joinedAt` exists to keep out.
 
+### Timing
+
+A successful `getMessages` against a real group measures **12–14 seconds**, so
+`MAYTAPI_TIMEOUT_MS` defaults to 45s. At the original 20s a slightly slow
+response was aborted mid-flight and retried, turning a call that would have
+worked into three slow failures — and only under load, which is when nobody is
+watching.
+
+`MAYTAPI_GROUP_BUDGET_MS` (default 120s) caps how long one group may take in a
+cycle. Without it, retries across `maxPages` can occupy the whole poll interval;
+the "previous poll still running" guard then skips tick after tick and the
+monitor quietly stops keeping up. Hitting the budget surfaces as `possible_gap`
+rather than silent truncation. The first page always runs, so a slow group still
+gets its most recent messages.
+
+The `group polled` log line reports `ms`, so the cost of each group is visible
+without adding instrumentation later.
+
 ### When Maytapi is unwell
 
 `getMessages` runs against a live WhatsApp-Web session, so it fails in ways a

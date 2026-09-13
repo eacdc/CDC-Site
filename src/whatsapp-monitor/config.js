@@ -27,12 +27,25 @@ export const config = {
     productId: opt('MAYTAPI_PRODUCT_ID', ''),
     phoneId: opt('MAYTAPI_PHONE_ID', ''),
     token: opt('MAYTAPI_TOKEN', ''),
-    timeoutMs: num('MAYTAPI_TIMEOUT_MS', 20000),
+    /**
+     * A successful getMessages against a real group measured 12-14s. At the
+     * old 20s a slightly slow response was aborted mid-flight and retried,
+     * turning a call that would have worked into three slow failures - and only
+     * under load, which is when nobody is watching.
+     */
+    timeoutMs: num('MAYTAPI_TIMEOUT_MS', 45000),
     retries: num('MAYTAPI_RETRIES', 3),
     /** Most recent messages to fetch per page. Keeps the response bounded. */
     messageCount: num('MAYTAPI_MESSAGE_COUNT', 100),
     /** Extra pages to walk back when a page holds nothing older than the cursor. */
     maxPages: num('MAYTAPI_MAX_PAGES', 5),
+    /**
+     * The most wall-clock time one group may consume in a cycle. Without it,
+     * retries across maxPages can occupy the whole poll interval, and the
+     * "previous poll still running" guard then skips tick after tick while the
+     * monitor quietly stops keeping up.
+     */
+    groupBudgetMs: num('MAYTAPI_GROUP_BUDGET_MS', 120000),
   },
 
   llm: {
