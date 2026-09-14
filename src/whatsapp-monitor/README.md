@@ -41,6 +41,8 @@ npm run whatsapp:probe                         # which Maytapi endpoints are hea
 npm run whatsapp:probe -- "<groupId>"          # ...including both message routes
 npm run whatsapp:concerns                      # open + acknowledged concerns
 npm run whatsapp:concerns -- all               # including resolved
+npm run whatsapp:close -- "<id>" resolve       # resolve without the dashboard
+npm run whatsapp:close -- all resolve          # clear the board
 npm run whatsapp:escalate-once                 # one ack + escalation pass
 npm run whatsapp:summarise                     # rolling summaries now
 npm run whatsapp:summarise -- daily            # today's daily summary
