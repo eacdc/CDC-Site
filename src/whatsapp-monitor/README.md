@@ -32,6 +32,7 @@ number does nothing.
 npm run whatsapp:seed                          # indexes + import groups (all off)
 npm run whatsapp:groups                        # list groups and their state
 npm run whatsapp:groups -- "<groupId>" on      # start watching a group
+npm run whatsapp:groups -- "<id>" on --since <ISO>  # ...from an earlier point
 npm run whatsapp:seed-routing                  # owners + routing (edit the script first)
 npm run whatsapp:poll-once                     # one cycle: fetch, classify, alert
 npm run whatsapp:classify-once -- "<groupId>"  # classify now, skip the fetch
@@ -45,8 +46,30 @@ npm run whatsapp:summarise                     # rolling summaries now
 npm run whatsapp:summarise -- daily            # today's daily summary
 npm run whatsapp:summarise -- both
 npm run whatsapp:summaries                     # print the latest summaries
+npm run whatsapp:smoke                         # end-to-end check of every stage
 npm run test:whatsapp                          # unit tests
 ```
+
+### The smoke test
+
+`whatsapp:smoke` runs the whole pipeline once — Maytapi, Mongo, OpenAI and a
+real WhatsApp DM — and prints PASS/FAIL per stage: fetch, normalise, ingest,
+idempotence, TTL, classify, alert, ACK, escalation, summaries, dashboard API.
+Every stage calls the function the poller calls, so a pass means the production
+path works rather than a parallel copy of it.
+
+Two things it does deliberately:
+
+- It **inserts one synthetic message** into `messages` (never into the group) so
+  the alert chain always has a concern to work with. Ten real messages may be
+  pure chatter, and stages that silently had nothing to do would report a false
+  pass.
+- It **lowers `joinedAt`** to cover the messages it fetched, because by design
+  nothing older than `joinedAt` is ingested. The floor is not raised back — the
+  messages are real and belong in the shadow-run data.
+
+It pauses once for you to reply `ACK` to the DM (`--yes` skips that), and
+cleans up its own rows afterwards (`--keep` leaves them).
 
 `GET /health` reports the monitor's status alongside the backend's.
 

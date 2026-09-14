@@ -4,13 +4,27 @@
  *   npm run whatsapp:groups                    # list groups + their state
  *   npm run whatsapp:groups -- "<id>" on       # start watching (sets joinedAt = now)
  *   npm run whatsapp:groups -- "<id>" off      # stop watching
+ *   npm run whatsapp:groups -- "<id>" on --since 2026-09-01T00:00:00Z
  *
  * Turning a group ON sets joinedAt to this moment only if it has never been
- * set, so toggling off and on again does not move the ingest floor.
+ * set, so toggling off and on again does not move the ingest floor. --since
+ * moves it deliberately, which is the only way to reach messages that were
+ * already in the group before it was switched on.
  */
 import { connect, groups, close } from '../src/whatsapp-monitor/db.js';
 
-const [groupId, state] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const sinceAt = argv.indexOf('--since');
+const since = sinceAt >= 0 ? new Date(argv[sinceAt + 1] ?? '') : null;
+if (since && Number.isNaN(since.getTime())) {
+  console.error('--since needs a date, e.g. --since 2026-09-01T00:00:00Z');
+  process.exit(1);
+}
+// Remove the flag and its value by position, not by matching their text - a
+// groupId that happened to equal the date string would otherwise vanish too.
+const positional = argv.filter((_, i) => sinceAt < 0 || (i !== sinceAt && i !== sinceAt + 1));
+const [groupId, state] = positional;
+
 await connect();
 
 if (!groupId) {
@@ -46,7 +60,8 @@ if (!group) {
 
 const monitored = state === 'on';
 const update = { monitored };
-if (monitored && !group.joinedAt) update.joinedAt = new Date();
+if (since) update.joinedAt = since;
+else if (monitored && !group.joinedAt) update.joinedAt = new Date();
 
 await groups().updateOne({ _id: groupId }, { $set: update });
 console.log(`${group.name} - monitoring ${monitored ? 'ON' : 'off'}`);
