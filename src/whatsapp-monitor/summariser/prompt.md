@@ -55,3 +55,8 @@ still true — an issue that was open then and was not resolved in the new
 messages is still open now — and drop anything the new messages settle. Do not
 repeat a decision that is already in the previous summary unless something
 changed.
+
+
+A message reading exactly `[image]`, `[voice message]` or `[video]` is a
+placeholder for media shared without words. Do not report it as an event; use
+the words around it.

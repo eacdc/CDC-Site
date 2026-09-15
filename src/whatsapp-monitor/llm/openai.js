@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import { readFileSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
@@ -137,6 +137,25 @@ export class OpenAiLlm {
 
     const strong = config.llm.strongModel;
     return { bullets: parseSummary(await this.chat(strong, SUMMARY_PROMPT, user)), model: strong };
+  }
+
+  /**
+   * Transcribes a voice note.
+   *
+   * `audio` is the raw bytes and `filename` carries the extension, which is how
+   * the API knows the format - WhatsApp sends .oga (audio/ogg, opus), which it
+   * accepts directly, so nothing is transcoded.
+   *
+   * No fallback model: a failed transcription leaves the message reading
+   * "[voice message]", which is the same as before this existed.
+   */
+  async transcribe(audio, filename) {
+    const model = config.llm.transcribeModel;
+    const res = await this.client.audio.transcriptions.create({
+      model,
+      file: await toFile(audio, filename),
+    });
+    return { text: typeof res?.text === 'string' ? res.text.trim() : '', model };
   }
 
   /**

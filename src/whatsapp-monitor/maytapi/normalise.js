@@ -20,6 +20,33 @@
 const SYSTEM_TYPES = new Set(['info', 'notification', 'e2e_notification', 'gp2']);
 
 /**
+ * A recorded voice note comes back as `ptt` (push-to-talk); a forwarded audio
+ * file as `audio`. Both are worth transcribing.
+ */
+export const VOICE_TYPES = new Set(['ptt', 'audio']);
+
+/**
+ * What a media message says when it carries no caption.
+ *
+ * Without this the text is empty, and every consumer drops empty text - so the
+ * message vanishes from classification, summaries and the thread view, and the
+ * conversation reads as though nothing was sent. The placeholder keeps the
+ * thread honest: something was shared, and this is what kind.
+ *
+ * Confirmed against a real getMessages response: 27 of 95 messages in CDC
+ * Maintenance were images.
+ */
+function placeholderFor(type, filename) {
+  if (VOICE_TYPES.has(type)) return '[voice message]';
+  if (type === 'image') return '[image]';
+  if (type === 'video') return '[video]';
+  if (type === 'document') return filename ? `[document: ${filename}]` : '[document]';
+  if (type === 'sticker') return '[sticker]';
+  if (type === 'location') return '[location]';
+  return `[${type}]`;
+}
+
+/**
  * Maytapi sends epoch SECONDS. Accept millis too, and always return a BSON
  * Date — the TTL index does nothing on a number.
  */
@@ -66,10 +93,17 @@ export function normaliseMessages(payload) {
       senderId: uid,
       senderName: nameOf(users, uid),
       ts,
-      // Media messages carry a caption instead of text.
-      text: str(msg?.text) ?? str(msg?.caption) ?? '',
+      // Media messages carry a caption instead of text; with neither, a
+      // placeholder so the message does not silently disappear downstream.
+      text: str(msg?.text) ?? str(msg?.caption) ?? (type === 'text' ? '' : placeholderFor(type, str(msg?.filename))),
       type,
+      // Confirmed against a real response: the field is `url`, and the media is
+      // public - no auth header needed to fetch it.
       mediaUrl: str(msg?.url) ?? str(msg?.media) ?? null,
+      mime: str(msg?.mime) ?? str(msg?.mimetype) ?? null,
+      filename: str(msg?.filename) ?? null,
+      // Distinguishes a placeholder from something a person actually typed.
+      isMedia: type !== 'text' && Boolean(str(msg?.url) ?? str(msg?.media)),
       quotedMsgId: str(row?.quotedMsg?.id) ?? str(row?.quotedMsg?._serialized) ?? null,
       fromMe: row?.fromMe === true,
     });

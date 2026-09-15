@@ -79,3 +79,14 @@ part is the message it quotes.
 
 Put each concern's ids in `messageIds`. Never mix ids from different reply
 chains into one concern.
+
+
+## Media
+
+A message reading exactly `[image]`, `[voice message]`, `[video]` or
+`[document: ...]` is a placeholder for something shared that has no words with
+it. It is **not** evidence of a problem and never on its own justifies a
+concern. Judge the words around it.
+
+A photo or video **with** a caption is ordinary text - "Lift stop please solve
+it" under a photo is a fault report like any other.

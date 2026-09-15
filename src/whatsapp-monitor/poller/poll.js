@@ -9,6 +9,7 @@ import { detectForGroup } from '../detector/detect.js';
 import { runEscalations } from '../router/escalate.js';
 import { runAckPoll } from '../router/acknowledge.js';
 import { runResolutionChecks } from '../detector/resolution.js';
+import { runTranscriptions } from '../media/transcribe.js';
 
 let lastSessionAlertAt = 0;
 const SESSION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -195,6 +196,7 @@ export async function runPoll() {
     groupsPolled: 0,
     messagesIngested: 0,
     concernsRaised: 0,
+    voiceTranscribed: 0,
     concernsAcknowledged: 0,
     concernsPossiblyResolved: 0,
     concernsEscalated: 0,
@@ -214,6 +216,14 @@ export async function runPoll() {
     run.groupsPolled += 1;
     run.messagesIngested += ingested;
     if (error) run.errors.push({ groupId: group._id, scope: 'poll', message: error });
+
+    // Before the detector, so a voice note reported this cycle is classified in
+    // the same cycle rather than the next one.
+    try {
+      run.voiceTranscribed += await runTranscriptions(group);
+    } catch (err) {
+      run.errors.push({ groupId: group._id, scope: 'transcribe', message: String(err) });
+    }
 
     // Runs even when this cycle ingested nothing — an earlier cycle may have
     // stored messages the detector has not reached yet.

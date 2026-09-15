@@ -22,6 +22,27 @@ to JSON routes added here, behind this backend's existing JWT auth.
 documents are plain objects. Collections: `groups`, `messages`, `concerns`,
 `alerts`, `summaries`, `owners`, `routing`, `runs`.
 
+### Media
+
+A caption is the message text, so a photo captioned "Lift stop please solve it"
+is read like any other report - and 27 of 95 messages in CDC Maintenance were
+images, so this is the common case, not the rare one. Media with no caption gets
+a placeholder (`[image]`, `[voice message]`) rather than empty text, because
+every consumer drops empty text and the message would otherwise disappear from
+classification, summaries and the thread view.
+
+Voice notes are transcribed when `TRANSCRIBE_VOICE=true`, and the transcript
+becomes the message text so everything downstream works unchanged. **This sends
+staff voice recordings to OpenAI** - a step beyond sending their typed text, so
+tell the groups before switching it on. Transcripts live in `messages` and
+expire with the same TTL. A failed transcription is stamped and not retried; the
+message keeps its placeholder. `transcribeVoice: false` on a group document
+excludes that group.
+
+Media URLs (`message.url`) are public - confirmed by `whatsapp:media-probe` -
+and the auth header is deliberately not sent when fetching them: with it, the
+audio came back as `application/octet-stream` instead of `audio/ogg`.
+
 `messages` expires 60 days after `receivedAt` via a TTL index. Nothing else is
 TTL'd. Timestamps are stored as BSON `Date`, never numbers — a TTL index on a
 number does nothing.

@@ -52,7 +52,22 @@ export const config = {
     provider: opt('LLM_PROVIDER', 'openai'),
     fastModel: opt('LLM_MODEL_FAST', 'gpt-5-mini'),
     strongModel: opt('LLM_MODEL_STRONG', 'gpt-5'),
+    transcribeModel: opt('LLM_MODEL_TRANSCRIBE', 'gpt-4o-mini-transcribe'),
     contextMessages: num('LLM_CONTEXT_MESSAGES', 15),
+  },
+
+  transcription: {
+    /**
+     * Off unless asked for: it sends staff voice recordings to OpenAI, which is
+     * a step beyond sending their typed text, and the groups should be told
+     * before it is switched on.
+     */
+    enabled: opt('TRANSCRIBE_VOICE', 'false') === 'true',
+    /** A backlog drains over several cycles rather than blowing one interval. */
+    maxPerRun: num('TRANSCRIBE_MAX_PER_RUN', 20),
+    /** The API's own upload limit; anything larger would fail after the download. */
+    maxBytes: num('TRANSCRIBE_MAX_BYTES', 25 * 1024 * 1024),
+    downloadTimeoutMs: num('TRANSCRIBE_DOWNLOAD_TIMEOUT_MS', 30000),
   },
 
   pollCron: opt('POLL_CRON', '*/5 * * * *'),
