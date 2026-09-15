@@ -19,6 +19,12 @@ export const MAX_ESCALATIONS = 2;
 export function dueForEscalation(concern, now, escalateAfterMin) {
   if (concern.status !== 'open') return false;
 
+  // Raised by a backfill from messages that were already history when the tool
+  // read them. Nobody was DMed about it, so escalating it would be the first
+  // anyone heard - about a problem that may have ended yesterday. It becomes a
+  // normal concern the moment its thread sees new activity.
+  if (concern.backfilledAt) return false;
+
   // Someone in the thread has said it is running again. Waking the next person
   // up the chain over a problem the floor considers over is exactly the noise
   // that makes people stop reading these. The hint is cleared the moment the

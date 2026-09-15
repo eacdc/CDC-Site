@@ -66,6 +66,8 @@ npm run whatsapp:concerns -- all               # including resolved
 npm run whatsapp:close -- "<id>" resolve       # resolve without the dashboard
 npm run whatsapp:close -- all resolve          # clear the board
 npm run whatsapp:backfill-threads              # thread roots for older messages
+npm run whatsapp:catchup                       # pull recent history into the list
+npm run whatsapp:catchup -- --count 50
 npm run whatsapp:escalate-once                 # one ack + escalation pass
 npm run whatsapp:summarise                     # rolling summaries now
 npm run whatsapp:summarise -- daily            # today's daily summary

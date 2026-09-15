@@ -54,3 +54,27 @@ test('clearing the hint resumes escalation', () => {
   delete concern.resolutionHint;
   assert.equal(dueForEscalation(concern, new Date(), 30), true);
 });
+
+// --- backfilled concerns --------------------------------------------------
+
+test('a backfilled concern never escalates', () => {
+  // It was history when the tool read it and nobody was DMed, so an escalation
+  // would be the first anyone heard - about a problem that may be long over.
+  assert.equal(dueForEscalation(overdue({ backfilledAt: new Date() }), new Date(), 30), false);
+});
+
+test('a backfilled concern escalates again once the flag is cleared', () => {
+  // detect.js clears it when new messages land in the thread during a normal
+  // poll: still being talked about means it is live after all.
+  const concern = overdue({ backfilledAt: new Date() });
+  assert.equal(dueForEscalation(concern, new Date(), 30), false);
+  delete concern.backfilledAt;
+  assert.equal(dueForEscalation(concern, new Date(), 30), true);
+});
+
+test('backfilled outranks the resolution hint - both mean do not escalate', () => {
+  assert.equal(
+    dueForEscalation(overdue({ backfilledAt: new Date(), resolutionHint: { msgId: 'M2' } }), new Date(), 30),
+    false,
+  );
+});

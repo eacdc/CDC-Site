@@ -24,8 +24,12 @@ const toLlm = (m) => ({
  * Messages are marked classified whatever happens downstream: a routing gap or a
  * failed DM must not cause the same batch to be re-sent to the LLM every five
  * minutes forever, at real cost.
+ *
+ * `silent` is for backfilling history: concerns are raised and appear on the
+ * dashboard, but nobody is DMed and nothing escalates. A problem from two days
+ * ago should not ring a phone tonight, and it may well be fixed already.
  */
-export async function detectForGroup(group) {
+export async function detectForGroup(group, { silent = false } = {}) {
   const unclassified = await messages()
     .find({ groupId: group._id, classified: false })
     .sort({ ts: 1 })
@@ -104,7 +108,9 @@ export async function detectForGroup(group) {
                 threadRootIds: { $each: candidate.threadRootIds },
               },
               // New trouble in a thread someone called fixed means it was not.
-              $unset: { resolutionHint: '' },
+              // And a backfilled concern that is still being talked about is a
+              // live problem after all, so it stops being silent.
+              $unset: silent ? { resolutionHint: '' } : { resolutionHint: '', backfilledAt: '' },
             },
           );
           logger.info(
@@ -135,6 +141,10 @@ export async function detectForGroup(group) {
           escalatedTo: [],
           threadRootIds: candidate.threadRootIds,
           alertedAt: null,
+          // Reconstructed from history rather than seen as it happened, so it
+          // is a dashboard item, not an alert. Cleared if the thread comes back
+          // to life in a normal poll.
+          ...(silent ? { backfilledAt: now } : {}),
         };
         const { insertedId } = await concerns().insertOne(doc);
         doc._id = insertedId;
@@ -148,6 +158,8 @@ export async function detectForGroup(group) {
           );
           continue;
         }
+        if (silent) continue;
+
         // Identity is per-thread, so one breakdown reported by three people who
         // did not quote each other is three concerns. All three belong on the
         // dashboard; three DMs in as many minutes is just noise.
