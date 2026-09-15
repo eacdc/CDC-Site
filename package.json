@@ -41,7 +41,8 @@
     "whatsapp:probe": "node scripts/whatsapp-probe.js",
     "whatsapp:smoke": "node scripts/whatsapp-smoke-test.js",
     "whatsapp:close": "node scripts/whatsapp-close.js",
-    "whatsapp:backfill-threads": "node scripts/whatsapp-backfill-threads.js"
+    "whatsapp:backfill-threads": "node scripts/whatsapp-backfill-threads.js",
+    "whatsapp:media-probe": "node scripts/whatsapp-media-probe.js"
   },
   "keywords": [],
   "author": "",

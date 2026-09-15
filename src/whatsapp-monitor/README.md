@@ -39,6 +39,7 @@ npm run whatsapp:classify-once -- "<groupId>"  # classify now, skip the fetch
 npm run whatsapp:dump-messages -- "<id>"       # raw Maytapi response
 npm run whatsapp:probe                         # which Maytapi endpoints are healthy
 npm run whatsapp:probe -- "<groupId>"          # ...including both message routes
+npm run whatsapp:media-probe -- "<groupId>"    # what Maytapi sends for voice/images
 npm run whatsapp:concerns                      # open + acknowledged concerns
 npm run whatsapp:concerns -- all               # including resolved
 npm run whatsapp:close -- "<id>" resolve       # resolve without the dashboard
