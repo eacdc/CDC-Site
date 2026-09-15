@@ -69,3 +69,42 @@ test('converts epoch seconds and millis to Date, rejects junk', () => {
   assert.equal(toDate('not a date'), null);
   assert.equal(toDate(null), null);
 });
+
+// --- reading history, cursor ignored --------------------------------------
+//
+// What the catch-up script does. The first version of it lowered joinedAt and
+// left the cursor in place, which kept only the overlap window and ingested
+// nothing at all - the two filters are independent and history needs both open.
+
+test('a null cursor keeps messages older than the live cursor', () => {
+  const old = { msgId: 'OLD', ts: new Date('2026-09-10T09:00:00Z') };
+  const recent = { msgId: 'NEW', ts: new Date('2026-09-15T09:00:00Z') };
+
+  const withCursor = filterNewMessages(
+    [old, recent],
+    { joinedAt: new Date('2026-09-01T00:00:00Z'), lastTs: new Date('2026-09-14T00:00:00Z') },
+    60,
+  );
+  assert.deepEqual(withCursor.keep.map((m) => m.msgId), ['NEW'], 'the cursor hides history');
+
+  const ignoringCursor = filterNewMessages(
+    [old, recent],
+    { joinedAt: new Date('2026-09-01T00:00:00Z'), lastTs: null },
+    0,
+  );
+  assert.deepEqual(ignoringCursor.keep.map((m) => m.msgId), ['OLD', 'NEW']);
+});
+
+test('ignoring the cursor still honours joinedAt', () => {
+  // The floor is the one rule a catch-up must not break: it is what keeps the
+  // years of history before monitoring started out of the database.
+  const before = { msgId: 'BEFORE', ts: new Date('2026-08-01T00:00:00Z') };
+  const after = { msgId: 'AFTER', ts: new Date('2026-09-10T00:00:00Z') };
+
+  const { keep } = filterNewMessages(
+    [before, after],
+    { joinedAt: new Date('2026-09-01T00:00:00Z'), lastTs: null },
+    0,
+  );
+  assert.deepEqual(keep.map((m) => m.msgId), ['AFTER']);
+});

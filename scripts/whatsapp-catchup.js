@@ -5,10 +5,12 @@
  *   npm run whatsapp:catchup -- --count 50
  *   npm run whatsapp:catchup -- --group "<id>"
  *
- * Normally nothing older than a group's joinedAt is ever ingested, so the
- * conversation that was already happening when monitoring started is invisible.
- * This lowers that floor just far enough to cover the messages it fetched, and
- * leaves it there - they are real messages and belong in the data.
+ * Two things normally keep history out: a group's joinedAt, and its lastTs
+ * cursor. Lowering joinedAt alone achieves nothing - the cursor drops everything
+ * older than the last message already seen, which is the whole of history. So
+ * this reads with the cursor ignored, and with the joinedAt floor lowered just
+ * far enough to cover what came back. The floor stays lowered: those are real
+ * messages and belong in the data.
  *
  * Concerns raised here are SILENT: no DMs, no escalation. Something reported
  * two days ago should not ring a phone tonight, and it may already be fixed.
@@ -21,7 +23,8 @@
  */
 import { config, assertConfigured } from '../src/whatsapp-monitor/config.js';
 import { connect, ensureIndexes, groups, concerns, close } from '../src/whatsapp-monitor/db.js';
-import { fetchBackToCursor, pollGroup } from '../src/whatsapp-monitor/poller/poll.js';
+import { fetchBackToCursor, storeMessages } from '../src/whatsapp-monitor/poller/poll.js';
+import { filterNewMessages, newestOf } from '../src/whatsapp-monitor/poller/cursor.js';
 import { detectForGroup } from '../src/whatsapp-monitor/detector/detect.js';
 import { runTranscriptions } from '../src/whatsapp-monitor/media/transcribe.js';
 import { runResolutionChecks } from '../src/whatsapp-monitor/detector/resolution.js';
@@ -65,42 +68,57 @@ let ingestedTotal = 0;
 let raisedTotal = 0;
 
 for (const group of selected) {
-  process.stdout.write(`${group.name}\n`);
-
   try {
+    // One fetch, reused. Calling pollGroup would fetch a second time, on an
+    // endpoint that takes seconds and intermittently 500s.
     const { fetched } = await fetchBackToCursor(group._id, { joinedAt: null, lastTs: null });
     if (fetched.length === 0) {
-      console.log('  nothing returned\n');
+      console.log(`${group.name}\n  nothing returned\n`);
       continue;
     }
 
     // Lower the ingest floor to cover exactly what came back, and no further.
     const oldest = fetched.reduce((a, b) => (b.ts < a.ts ? b : a)).ts;
     const floor = new Date(oldest.getTime() - 1000);
-    if (!group.joinedAt || group.joinedAt > floor) {
-      await groups().updateOne({ _id: group._id }, { $set: { joinedAt: floor } });
-      console.log(`  joinedAt lowered to ${floor.toISOString()}`);
-    }
+    const lowered = !group.joinedAt || group.joinedAt > floor;
+    if (lowered) await groups().updateOne({ _id: group._id }, { $set: { joinedAt: floor } });
 
+    // lastTs null is the point of this script: the joinedAt floor still
+    // applies, the cursor does not. With the cursor in play only the overlap
+    // window survives, which is what made the first version a no-op.
+    const { keep } = filterNewMessages(fetched, { joinedAt: floor, lastTs: null }, 0);
+
+    const now = new Date();
     const fresh = await groups().findOne({ _id: group._id });
-    const { ingested, error } = await pollGroup(fresh);
-    if (error) {
-      console.log(`  poll failed: ${error}\n`);
-      continue;
-    }
+    const ingested = await storeMessages(fresh, keep, now);
     ingestedTotal += ingested;
+
+    // Forwards only. Rewinding the live cursor would make the next poll refetch
+    // everything since.
+    const newest = newestOf(keep);
+    if (newest && (!fresh.lastTs || newest.ts > fresh.lastTs)) {
+      await groups().updateOne(
+        { _id: group._id },
+        { $set: { lastTs: newest.ts, lastMsgId: newest.msgId } },
+      );
+    }
 
     const transcribed = await runTranscriptions(fresh);
     const raised = await detectForGroup(fresh, { silent: true });
     raisedTotal += raised;
 
+    // Printed after the work, not before it: console.log is synchronous and the
+    // logger is not, so a heading printed first ends up above another group's
+    // log lines and reads like a mix-up that is not happening.
     console.log(
-      `  fetched ${fetched.length}, ingested ${ingested}` +
+      `${group.name}\n` +
+        (lowered ? `  joinedAt lowered to ${floor.toISOString()}\n` : '') +
+        `  fetched ${fetched.length}, kept ${keep.length}, ingested ${ingested}` +
         (transcribed ? `, transcribed ${transcribed}` : '') +
         `, raised ${raised} concern(s)\n`,
     );
   } catch (err) {
-    console.log(`  failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    console.log(`${group.name}\n  failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
 

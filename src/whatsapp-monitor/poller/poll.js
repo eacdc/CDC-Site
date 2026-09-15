@@ -88,6 +88,60 @@ export async function fetchBackToCursor(groupId, state, fetchPage = maytapi.getM
   return { fetched: all, pages, reachedCursor };
 }
 
+/**
+ * Stores a batch of normalised messages, ignoring the ones already there.
+ *
+ * Shared by the poller and the catch-up script, which differ only in how they
+ * decide what to keep - the storing itself, thread roots and duplicate handling
+ * included, must not be written twice.
+ */
+export async function storeMessages(group, keep, now) {
+  if (keep.length === 0) return 0;
+
+  // A quoted message is always older than the message quoting it, so its
+  // root is already stored - unless it predates joinedAt or has aged out,
+  // which assignThreadRoots handles by rooting the thread at the id itself.
+  const quoted = [...new Set(keep.map((m) => m.quotedMsgId).filter(Boolean))];
+  const known = new Map(
+    (await messages().find({ msgId: { $in: quoted } }).toArray()).map((m) => [m.msgId, m]),
+  );
+  const rooted = assignThreadRoots(keep, (id) => known.get(id) ?? null);
+
+  const docs = rooted.map((m) => ({
+    msgId: m.msgId,
+    groupId: group._id,
+    senderId: m.senderId,
+    senderName: m.senderName,
+    ts: m.ts,
+    receivedAt: now,
+    text: m.text,
+    type: m.type,
+    mediaUrl: m.mediaUrl,
+    // The transcriber reads filename to pick the upload extension, so without
+    // these it always guesses .oga - right for a voice note only by luck.
+    mime: m.mime ?? null,
+    filename: m.filename ?? null,
+    quotedMsgId: m.quotedMsgId,
+    threadRootId: m.threadRootId,
+    fromMe: m.fromMe,
+    classified: false,
+  }));
+
+  try {
+    const res = await messages().insertMany(docs, { ordered: false });
+    return res.insertedCount;
+  } catch (err) {
+    // Duplicate-key errors are expected — that is the overlap window working.
+    const writeErrors = err?.writeErrors ?? [];
+    if (err?.code === 11000 || writeErrors.length) {
+      const nonDup = writeErrors.filter((e) => e.code !== 11000);
+      if (nonDup.length) throw err;
+      return err.result?.nInserted ?? err.insertedCount ?? 0;
+    }
+    throw err;
+  }
+}
+
 /** Poll one group. Never throws — errors are recorded on the group doc. */
 export async function pollGroup(group) {
   const now = new Date();
@@ -114,48 +168,7 @@ export async function pollGroup(group) {
       );
     }
 
-    let ingested = 0;
-    if (keep.length > 0) {
-      // A quoted message is always older than the message quoting it, so its
-      // root is already stored - unless it predates joinedAt or has aged out,
-      // which assignThreadRoots handles by rooting the thread at the id itself.
-      const quoted = [...new Set(keep.map((m) => m.quotedMsgId).filter(Boolean))];
-      const known = new Map(
-        (await messages().find({ msgId: { $in: quoted } }).toArray()).map((m) => [m.msgId, m]),
-      );
-      const rooted = assignThreadRoots(keep, (id) => known.get(id) ?? null);
-
-      const docs = rooted.map((m) => ({
-        msgId: m.msgId,
-        groupId: group._id,
-        senderId: m.senderId,
-        senderName: m.senderName,
-        ts: m.ts,
-        receivedAt: now,
-        text: m.text,
-        type: m.type,
-        mediaUrl: m.mediaUrl,
-        quotedMsgId: m.quotedMsgId,
-        threadRootId: m.threadRootId,
-        fromMe: m.fromMe,
-        classified: false,
-      }));
-
-      try {
-        const res = await messages().insertMany(docs, { ordered: false });
-        ingested = res.insertedCount;
-      } catch (err) {
-        // Duplicate-key errors are expected — that is the overlap window working.
-        const writeErrors = err?.writeErrors ?? [];
-        if (err?.code === 11000 || writeErrors.length) {
-          const nonDup = writeErrors.filter((e) => e.code !== 11000);
-          if (nonDup.length) throw err;
-          ingested = err.result?.nInserted ?? err.insertedCount ?? 0;
-        } else {
-          throw err;
-        }
-      }
-    }
+    const ingested = await storeMessages(group, keep, now);
 
     const newest = newestOf(keep) ?? newestOf(fetched);
     const update = { lastRunAt: now, lastRunStatus: 'ok', lastRunError: null };
