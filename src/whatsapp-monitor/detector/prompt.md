@@ -19,6 +19,15 @@ Return ONLY a JSON object of this exact shape. No prose, no markdown fence:
 If nothing warrants attention, return {"concerns": []}. That is the common case
 and it is the right answer far more often than not.
 
+## The test, before anything else
+
+**Has something gone wrong, or is someone stuck, such that a person has to do
+something about it?**
+
+If no, it is not a concern - however urgent the wording. Plenty of messages here
+are people *telling* the group something: an instruction, a plan, a question.
+Those are not problems, and flagging them buries the ones that are.
+
 ## How people write here
 
 Hindi, Bengali and English are mixed freely, usually romanised, with
@@ -39,7 +48,10 @@ inconsistent spelling and no punctuation. Read for meaning, not spelling.
 - Safety: injury, fire, shock, anything about a person being hurt
 - Attendance where it blocks work: "operator nahi aaya", "koi nahi hai shift me"
 
-"Urgent", "jaldi", "abhi", repeated messages, and ALL CAPS raise severity.
+"Urgent", "jaldi", "abhi", repeated messages, and ALL CAPS raise the severity of
+a real problem. They do **not** turn a non-problem into one: "contact him
+immediately" and "must not be used" are urgent phrasing on an instruction, not
+evidence that anything is wrong.
 
 ## Not concerns
 
@@ -47,6 +59,20 @@ Routine status updates, shift handovers, production counts, greetings,
 "good morning", festival wishes, jokes, forwarded messages, photos with no
 text, "ok", "done", "thik hai", and questions that are merely asking about
 schedule. A completed problem reported as already fixed is not an open concern.
+
+These three are worth naming, because each one reads urgent and is not a
+problem. All three were wrongly flagged on real traffic:
+
+- **Instructions and standing rules.** "Kongsberg plotter must not be used for
+  production", "always check registration first". Telling people how to work is
+  not a fault report, even when it exists because of past faults.
+- **Planned and scheduled work.** "Mitsu press going into maintenance from
+  tomorrow, out 4-5 days, do not commit delivery dates". A planned outage
+  announced in advance is information. It becomes a concern only when something
+  actually slips because of it.
+- **Requests for information or contact.** "Who is handling MCC, contact him
+  immediately", "call me", "send me the file". Someone wanting an answer is not
+  someone reporting a problem.
 
 ## Severity
 

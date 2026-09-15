@@ -79,8 +79,27 @@ npm run whatsapp:summarise -- daily            # today's daily summary
 npm run whatsapp:summarise -- both
 npm run whatsapp:summaries                     # print the latest summaries
 npm run whatsapp:smoke                         # end-to-end check of every stage
+npm run whatsapp:eval                          # classifier against labelled cases
 npm run test:whatsapp                          # unit tests
 ```
+
+### Tuning the classifier
+
+`detector/eval-cases.json` holds labelled cases from real traffic, and
+`npm run whatsapp:eval` runs the live classifier over them. Change `prompt.md`,
+run the eval, and the effect is a number rather than a feeling - in particular
+whether a change that stops one kind of false positive has also stopped catching
+a real breakdown.
+
+The first measured batch (15 Sept) was **3 false positives in 9, no misses**.
+All three were announcements rather than faults: a standing instruction, planned
+maintenance announced in advance, and a request for contact. Each reads urgent,
+which is why the prompt now says in as many words that urgency raises the
+severity of a real problem but does not create one.
+
+Add to the fixture whenever the tool gets something wrong on live traffic; that
+is what makes the next change measurable too. Names are generalised in it -
+the file is in git permanently.
 
 ### The smoke test
 
