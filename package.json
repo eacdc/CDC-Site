@@ -43,7 +43,8 @@
     "whatsapp:close": "node scripts/whatsapp-close.js",
     "whatsapp:backfill-threads": "node scripts/whatsapp-backfill-threads.js",
     "whatsapp:media-probe": "node scripts/whatsapp-media-probe.js",
-    "whatsapp:catchup": "node scripts/whatsapp-catchup.js"
+    "whatsapp:catchup": "node scripts/whatsapp-catchup.js",
+    "whatsapp:retry-transcripts": "node scripts/whatsapp-retry-transcripts.js"
   },
   "keywords": [],
   "author": "",

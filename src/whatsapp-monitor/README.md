@@ -32,7 +32,11 @@ every consumer drops empty text and the message would otherwise disappear from
 classification, summaries and the thread view.
 
 Voice notes are transcribed when `TRANSCRIBE_VOICE=true`, and the transcript
-becomes the message text so everything downstream works unchanged. **This sends
+becomes the message text so everything downstream works unchanged. The model
+**must be `whisper-1`** - WhatsApp sends Ogg/Opus and the gpt-4o transcribe
+models reject it outright, so switching to one silently stops every voice note
+being read. `npm run whatsapp:retry-transcripts` clears failed attempts so they
+are tried again after a fix. **This sends
 staff voice recordings to OpenAI** - a step beyond sending their typed text, so
 tell the groups before switching it on. Transcripts live in `messages` and
 expire with the same TTL. A failed transcription is stamped and not retried; the
@@ -68,6 +72,7 @@ npm run whatsapp:close -- all resolve          # clear the board
 npm run whatsapp:backfill-threads              # thread roots for older messages
 npm run whatsapp:catchup                       # pull recent history into the list
 npm run whatsapp:catchup -- --count 50
+npm run whatsapp:retry-transcripts             # let failed transcriptions retry
 npm run whatsapp:escalate-once                 # one ack + escalation pass
 npm run whatsapp:summarise                     # rolling summaries now
 npm run whatsapp:summarise -- daily            # today's daily summary

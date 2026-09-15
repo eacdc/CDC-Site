@@ -79,16 +79,29 @@ async function transcribeOne(message) {
     );
     return true;
   } catch (err) {
+    const detail = String(err?.message ?? err);
+
     // Stamped on failure too. Retrying forever would re-download and re-bill the
     // same unreadable clip every five minutes for sixty days.
     await messages().updateOne(
       { msgId: message.msgId },
-      { $set: { transcriptAttemptedAt: attemptedAt, transcriptError: String(err?.message ?? err) } },
+      { $set: { transcriptAttemptedAt: attemptedAt, transcriptError: detail } },
     );
-    logger.warn(
-      { msgId: message.msgId, groupId: message.groupId, err: String(err) },
-      'could not transcribe voice note - it keeps its [voice message] placeholder',
-    );
+
+    // A bare "400 Unsupported file format oga" does not tell an operator what
+    // to do, and this one has a single cause and a one-line fix.
+    if (/unsupported file format|does not support the format/i.test(detail)) {
+      logger.error(
+        { msgId: message.msgId, model: config.llm.transcribeModel, err: detail },
+        'transcription model cannot read WhatsApp audio (Ogg/Opus) - set LLM_MODEL_TRANSCRIBE=whisper-1, ' +
+          'then run `npm run whatsapp:retry-transcripts`',
+      );
+    } else {
+      logger.warn(
+        { msgId: message.msgId, groupId: message.groupId, err: detail },
+        'could not transcribe voice note - it keeps its [voice message] placeholder',
+      );
+    }
     return false;
   }
 }

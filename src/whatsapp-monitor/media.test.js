@@ -112,3 +112,27 @@ test('system rows are still dropped, placeholders or not', () => {
   });
   assert.deepEqual(out, []);
 });
+
+// --- the transcription model ----------------------------------------------
+
+test('the transcription model can actually read WhatsApp audio', async () => {
+  // WhatsApp sends Ogg/Opus (.oga). Only some models accept it:
+  //
+  //   gpt-4o-transcribe, gpt-4o-mini-transcribe:
+  //       mp3, mp4, mpeg, mpga, m4a, wav, webm        <- no ogg, no oga
+  //   whisper-1:
+  //       flac, oga, ogg + all of the above
+  //
+  // Defaulting to a gpt-4o model returned "400 Unsupported file format oga" on
+  // every voice note - it reads none of our audio at all. This test exists so
+  // that switching to the newer, cheaper-looking model fails here rather than
+  // silently going deaf in production.
+  const { config } = await import('./config.js');
+  const READS_OGG = new Set(['whisper-1']);
+
+  assert.ok(
+    READS_OGG.has(config.llm.transcribeModel),
+    `LLM_MODEL_TRANSCRIBE is "${config.llm.transcribeModel}", which cannot read Ogg/Opus. ` +
+      `Use one of: ${[...READS_OGG].join(', ')}.`,
+  );
+});

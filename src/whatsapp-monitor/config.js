@@ -52,7 +52,21 @@ export const config = {
     provider: opt('LLM_PROVIDER', 'openai'),
     fastModel: opt('LLM_MODEL_FAST', 'gpt-5-mini'),
     strongModel: opt('LLM_MODEL_STRONG', 'gpt-5'),
-    transcribeModel: opt('LLM_MODEL_TRANSCRIBE', 'gpt-4o-mini-transcribe'),
+    /**
+     * whisper-1, and not one of the newer gpt-4o transcription models, because
+     * they cannot read a WhatsApp voice note at all:
+     *
+     *   gpt-4o-transcribe, gpt-4o-mini-transcribe:
+     *       mp3, mp4, mpeg, mpga, m4a, wav, webm
+     *   whisper-1:
+     *       flac, oga, ogg + all of the above
+     *
+     * WhatsApp sends Ogg/Opus (.oga), so a gpt-4o model returns
+     * "400 Unsupported file format oga" on every single one. The newer model
+     * costs about half as much and reads none of our audio; the difference is
+     * roughly a dollar a month.
+     */
+    transcribeModel: opt('LLM_MODEL_TRANSCRIBE', 'whisper-1'),
     contextMessages: num('LLM_CONTEXT_MESSAGES', 15),
   },
 
