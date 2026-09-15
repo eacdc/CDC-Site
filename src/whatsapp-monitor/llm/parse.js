@@ -58,3 +58,32 @@ export function parseConcerns(raw, knownMsgIds) {
   }
   return out;
 }
+
+/**
+ * Parses the resolution verdict.
+ *
+ * Unparseable output is not an error worth escalating or throwing over: this
+ * only decides a label next to a button, so anything unclear means "not
+ * resolved", which is the safe direction - it leaves the concern escalating.
+ */
+export function parseResolution(raw, knownMsgIds) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stripFence(raw));
+  } catch {
+    return { resolved: false, msgId: null, reason: null };
+  }
+
+  if (parsed?.resolved !== true) return { resolved: false, msgId: null, reason: null };
+
+  // A verdict pointing at a message we never sent cannot be shown as evidence,
+  // and a "resolved" with no evidence is not one we act on.
+  const msgId = typeof parsed.msgId === 'string' && knownMsgIds.has(parsed.msgId) ? parsed.msgId : null;
+  if (!msgId) return { resolved: false, msgId: null, reason: null };
+
+  return {
+    resolved: true,
+    msgId,
+    reason: typeof parsed.reason === 'string' && parsed.reason.trim() ? parsed.reason.trim() : null,
+  };
+}

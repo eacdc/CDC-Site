@@ -63,3 +63,19 @@ ambiguous, leave it out.
 
 One concern may cover several messages — put all their ids in `messageIds`.
 Do not raise two concerns for the same underlying problem.
+
+
+## One reply thread is one concern
+
+Each message is shown as `[id] sender (reply to [id]): text`. The `reply to`
+part is the message it quotes.
+
+- Messages in the same reply chain are **one** concern, however long the chain
+  runs - a follow-up the next morning is the same problem, not a new one.
+- Two messages where **neither quotes the other** are **separate** concerns,
+  even when they sound alike and arrive minutes apart. "Eterna foil machine
+  stop" and "Same problem, machine stop" are two machines until somebody says
+  otherwise by replying.
+
+Put each concern's ids in `messageIds`. Never mix ids from different reply
+chains into one concern.

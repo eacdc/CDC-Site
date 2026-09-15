@@ -14,6 +14,7 @@ const concern = (over = {}) => ({
   summary: 'Kolbus down',
   status: 'open',
   createdAt: minsAgo(10),
+  threadRootIds: ['t1'],
   ...over,
 });
 
@@ -23,41 +24,47 @@ const candidate = (over = {}) => ({
   severity: 'high',
   summary: 'Kolbus still down',
   ownerHint: null,
+  threadRootIds: ['t1'],
   ...over,
 });
 
 // --- de-duplication -------------------------------------------------------
+//
+// Identity is the reply thread, not the category-and-time-window it used to be.
+// See threads.test.js for the thread walking itself.
 
-test('matches a live concern of the same category inside the cooldown', () => {
-  assert.notEqual(findDuplicate(candidate(), [concern()], NOW, 30), null);
+test('matches a live concern sharing the reply thread', () => {
+  assert.notEqual(findDuplicate(candidate(), [concern()]), null);
 });
 
-test('does not match once the cooldown has passed', () => {
-  assert.equal(findDuplicate(candidate(), [concern({ createdAt: minsAgo(31) })], NOW, 30), null);
+test('still matches long after the old cooldown would have expired', () => {
+  // A follow-up the next morning belongs to the problem already being tracked.
+  assert.notEqual(findDuplicate(candidate(), [concern({ createdAt: minsAgo(60 * 20) })]), null);
 });
 
 test('treats an acknowledged concern as still live', () => {
-  assert.notEqual(findDuplicate(candidate(), [concern({ status: 'acknowledged' })], NOW, 30), null);
+  assert.notEqual(findDuplicate(candidate(), [concern({ status: 'acknowledged' })]), null);
 });
 
 test('does not match a resolved concern - a recurrence deserves a fresh alert', () => {
-  assert.equal(findDuplicate(candidate(), [concern({ status: 'resolved' })], NOW, 30), null);
+  assert.equal(findDuplicate(candidate(), [concern({ status: 'resolved' })]), null);
 });
 
-test('does not match a different category', () => {
-  assert.equal(findDuplicate(candidate({ category: 'quality_reprint' }), [concern()], NOW, 30), null);
+test('does not match a different thread, even in the same category', () => {
+  // Two machines failing minutes apart are two problems.
+  assert.equal(findDuplicate(candidate({ threadRootIds: ['t2'] }), [concern()]), null);
+});
+
+test('matches on thread alone, whatever the category says', () => {
+  // The model can label a follow-up differently from the message it replies to;
+  // the reply chain is the more reliable signal.
+  assert.notEqual(findDuplicate(candidate({ category: 'quality_reprint' }), [concern()]), null);
 });
 
 test('picks the newest match so appends follow the live thread', () => {
   const older = concern({ createdAt: minsAgo(20), summary: 'older' });
   const newer = concern({ createdAt: minsAgo(2), summary: 'newer' });
-  assert.equal(findDuplicate(candidate(), [older, newer], NOW, 30).summary, 'newer');
-});
-
-test('honours a per-route cooldown that differs from the default', () => {
-  const c = concern({ createdAt: minsAgo(45) });
-  assert.equal(findDuplicate(candidate(), [c], NOW, 30), null);
-  assert.notEqual(findDuplicate(candidate(), [c], NOW, 60), null);
+  assert.equal(findDuplicate(candidate(), [older, newer]).summary, 'newer');
 });
 
 // --- classifier output parsing -------------------------------------------

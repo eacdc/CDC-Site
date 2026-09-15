@@ -4,9 +4,11 @@ import { groups, messages, runs } from '../db.js';
 import { maytapi } from '../maytapi/client.js';
 import { normaliseMessages, isLoggedIn } from '../maytapi/normalise.js';
 import { filterNewMessages, newestOf } from './cursor.js';
+import { assignThreadRoots } from '../detector/threads.js';
 import { detectForGroup } from '../detector/detect.js';
 import { runEscalations } from '../router/escalate.js';
 import { runAckPoll } from '../router/acknowledge.js';
+import { runResolutionChecks } from '../detector/resolution.js';
 
 let lastSessionAlertAt = 0;
 const SESSION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -113,7 +115,16 @@ export async function pollGroup(group) {
 
     let ingested = 0;
     if (keep.length > 0) {
-      const docs = keep.map((m) => ({
+      // A quoted message is always older than the message quoting it, so its
+      // root is already stored - unless it predates joinedAt or has aged out,
+      // which assignThreadRoots handles by rooting the thread at the id itself.
+      const quoted = [...new Set(keep.map((m) => m.quotedMsgId).filter(Boolean))];
+      const known = new Map(
+        (await messages().find({ msgId: { $in: quoted } }).toArray()).map((m) => [m.msgId, m]),
+      );
+      const rooted = assignThreadRoots(keep, (id) => known.get(id) ?? null);
+
+      const docs = rooted.map((m) => ({
         msgId: m.msgId,
         groupId: group._id,
         senderId: m.senderId,
@@ -124,6 +135,7 @@ export async function pollGroup(group) {
         type: m.type,
         mediaUrl: m.mediaUrl,
         quotedMsgId: m.quotedMsgId,
+        threadRootId: m.threadRootId,
         fromMe: m.fromMe,
         classified: false,
       }));
@@ -184,6 +196,7 @@ export async function runPoll() {
     messagesIngested: 0,
     concernsRaised: 0,
     concernsAcknowledged: 0,
+    concernsPossiblyResolved: 0,
     concernsEscalated: 0,
     errors: [],
   };
@@ -212,8 +225,12 @@ export async function runPoll() {
   }
 
   // Acknowledgements before escalations, so a concern acknowledged in this same
-  // cycle is not escalated a moment later for being unacknowledged.
+  // cycle is not escalated a moment later for being unacknowledged. The
+  // resolution check sits between them for the same reason: a thread that says
+  // the machine is running again should not produce an escalation DM seconds
+  // later.
   run.concernsAcknowledged = await runAckPoll();
+  run.concernsPossiblyResolved = await runResolutionChecks();
   run.concernsEscalated = await runEscalations();
 
   run.finishedAt = new Date();

@@ -4,9 +4,18 @@ import { messages, concerns, routing } from '../db.js';
 import { llm } from '../llm/index.js';
 import { resolveRouting } from '../router/resolve.js';
 import { sendAlert } from '../router/alert.js';
-import { findDuplicate } from './concerns.js';
+import { findDuplicate, recentlyAlerted } from './concerns.js';
+import { splitByThread } from './threads.js';
 
-const toLlm = (m) => ({ msgId: m.msgId, senderName: m.senderName, ts: m.ts, text: m.text });
+const toLlm = (m) => ({
+  msgId: m.msgId,
+  senderName: m.senderName,
+  ts: m.ts,
+  text: m.text,
+  // What this message quotes, so the model can tell a follow-up from a second,
+  // unrelated problem reported in the same few minutes.
+  replyTo: m.quotedMsgId ?? null,
+});
 
 /**
  * Classify this group's unclassified messages, open concerns for anything real,
@@ -56,6 +65,14 @@ export async function detectForGroup(group) {
       'classified',
     );
 
+    // One thread is one concern, enforced here rather than trusted to the
+    // prompt. rootOf falls back to the message's own id for anything not in
+    // this batch, which matches how ingest roots an unknown parent.
+    const rootById = new Map(
+      [...judgeable, ...context].map((m) => [m.msgId, m.threadRootId ?? m.msgId]),
+    );
+    result.concerns = splitByThread(result.concerns, (id) => rootById.get(id));
+
     if (result.concerns.length > 0) {
       const now = new Date();
       const live = await concerns()
@@ -75,17 +92,20 @@ export async function detectForGroup(group) {
           escalateAfterMin: config.defaultEscalateAfterMin,
         });
 
-        const duplicate = findDuplicate(
-          candidate,
-          live,
-          now,
-          route?.cooldownMin ?? config.defaultCooldownMin,
-        );
+        const duplicate = findDuplicate(candidate, live);
         if (duplicate) {
-          // Same problem, still inside the cooldown: attach the evidence, stay quiet.
+          // Same reply thread: this is the problem we are already tracking, so
+          // attach the evidence and stay quiet.
           await concerns().updateOne(
             { _id: duplicate._id },
-            { $addToSet: { messageIds: { $each: candidate.messageIds } } },
+            {
+              $addToSet: {
+                messageIds: { $each: candidate.messageIds },
+                threadRootIds: { $each: candidate.threadRootIds },
+              },
+              // New trouble in a thread someone called fixed means it was not.
+              $unset: { resolutionHint: '' },
+            },
           );
           logger.info(
             { concernId: String(duplicate._id), category: candidate.category },
@@ -113,6 +133,8 @@ export async function detectForGroup(group) {
           acknowledgedAt: null,
           resolvedAt: null,
           escalatedTo: [],
+          threadRootIds: candidate.threadRootIds,
+          alertedAt: null,
         };
         const { insertedId } = await concerns().insertOne(doc);
         doc._id = insertedId;
@@ -126,7 +148,22 @@ export async function detectForGroup(group) {
           );
           continue;
         }
-        await sendAlert(doc, group.name, route.ownerPhone);
+        // Identity is per-thread, so one breakdown reported by three people who
+        // did not quote each other is three concerns. All three belong on the
+        // dashboard; three DMs in as many minutes is just noise.
+        const throttled = recentlyAlerted(candidate, live, now, config.alertCooldownMin);
+        if (throttled) {
+          logger.info(
+            { concernId: String(insertedId), category: candidate.category, like: String(throttled._id) },
+            'alert suppressed - same category alerted inside the cooldown',
+          );
+          continue;
+        }
+
+        if (await sendAlert(doc, group.name, route.ownerPhone)) {
+          doc.alertedAt = now;
+          await concerns().updateOne({ _id: insertedId }, { $set: { alertedAt: now } });
+        }
       }
     }
   } catch (err) {

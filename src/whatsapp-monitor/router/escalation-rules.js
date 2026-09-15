@@ -19,6 +19,12 @@ export const MAX_ESCALATIONS = 2;
 export function dueForEscalation(concern, now, escalateAfterMin) {
   if (concern.status !== 'open') return false;
 
+  // Someone in the thread has said it is running again. Waking the next person
+  // up the chain over a problem the floor considers over is exactly the noise
+  // that makes people stop reading these. The hint is cleared the moment the
+  // thread says otherwise, and the clock resumes from there.
+  if (concern.resolutionHint) return false;
+
   const level = concern.escalatedTo?.length ?? 0;
   if (level >= MAX_ESCALATIONS) return false;
 

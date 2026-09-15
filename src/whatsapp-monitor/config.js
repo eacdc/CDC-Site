@@ -64,6 +64,13 @@ export const config = {
   defaultOwnerPhone: opt('DEFAULT_OWNER_PHONE', ''),
   adminPhone: opt('ADMIN_PHONE', ''),
   defaultCooldownMin: num('DEFAULT_COOLDOWN_MIN', 30),
+  /**
+   * Holds back a DM when a concern of the same category was alerted this
+   * recently. Concern identity is per reply thread, so one breakdown reported
+   * by three people who did not quote each other is three concerns - all on the
+   * dashboard, but not all on the phone. Set to 0 to alert on every one.
+   */
+  alertCooldownMin: num('ALERT_COOLDOWN_MIN', 30),
   defaultEscalateAfterMin: num('DEFAULT_ESCALATE_AFTER_MIN', 30),
 
   dashboardBaseUrl: opt('DASHBOARD_BASE_URL', 'http://localhost:3000'),

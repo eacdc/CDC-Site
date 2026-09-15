@@ -52,6 +52,9 @@ export async function ensureIndexes() {
     { name: 'receivedAt_ttl', expireAfterSeconds: config.messageTtlSeconds },
   );
   await messages().createIndex({ groupId: 1, classified: 1 }, { name: 'group_classified' });
+  // The concern detail view reads a whole reply thread in time order; without
+  // this it would be a collection scan on every open.
+  await messages().createIndex({ groupId: 1, threadRootId: 1, ts: 1 }, { name: 'group_thread_ts' });
 
   await concerns().createIndex({ groupId: 1, category: 1, status: 1 }, { name: 'group_cat_status' });
   await concerns().createIndex({ createdAt: -1 }, { name: 'createdAt_desc' });

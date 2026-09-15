@@ -2,15 +2,24 @@ import OpenAI from 'openai';
 import { readFileSync } from 'node:fs';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import { parseConcerns, MalformedLlmOutput } from './parse.js';
+import { parseConcerns, parseResolution, MalformedLlmOutput } from './parse.js';
 import { parseSummary, MalformedSummary } from '../summariser/parse.js';
 
 const SYSTEM_PROMPT = readFileSync(new URL('../detector/prompt.md', import.meta.url), 'utf8');
 const SUMMARY_PROMPT = readFileSync(new URL('../summariser/prompt.md', import.meta.url), 'utf8');
+const RESOLUTION_PROMPT = readFileSync(
+  new URL('../detector/resolution-prompt.md', import.meta.url),
+  'utf8',
+);
 
 function renderMessages(label, msgs) {
   if (msgs.length === 0) return '';
-  const lines = msgs.map((m) => `[${m.msgId}] ${m.senderName ?? 'unknown'}: ${m.text.replace(/\n/g, ' ')}`);
+  // The reply link is what separates a follow-up from a second, unrelated
+  // problem reported minutes later, so the model has to be able to see it.
+  const lines = msgs.map((m) => {
+    const reply = m.replyTo ? ` (reply to [${m.replyTo}])` : '';
+    return `[${m.msgId}] ${m.senderName ?? 'unknown'}${reply}: ${m.text.replace(/\n/g, ' ')}`;
+  });
   return `${label}\n${lines.join('\n')}\n`;
 }
 
@@ -128,5 +137,26 @@ export class OpenAiLlm {
 
     const strong = config.llm.strongModel;
     return { bullets: parseSummary(await this.chat(strong, SUMMARY_PROMPT, user)), model: strong };
+  }
+
+  /**
+   * Does this thread say the problem is fixed?
+   *
+   * Fast model only, and never escalated. The answer is a hint shown next to a
+   * button a human still has to press - getting it wrong costs a slightly wrong
+   * label, not a missed breakdown - so it does not warrant the strong model's
+   * price on every follow-up message in every thread.
+   */
+  async checkResolved(input) {
+    const known = new Set(input.messages.map((m) => m.msgId));
+    const model = config.llm.fastModel;
+    const user = [
+      `Concern: ${input.summary}`,
+      '',
+      renderMessages(`THREAD (${input.messages.length} messages, oldest first):`, input.messages),
+    ].join('\n');
+
+    const verdict = parseResolution(await this.chat(model, RESOLUTION_PROMPT, user), known);
+    return { ...verdict, model };
   }
 }

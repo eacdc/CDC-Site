@@ -70,7 +70,9 @@ function toObjectId(value) {
   return ObjectId.isValid(value) ? new ObjectId(value) : null;
 }
 
-const STATUSES = ['open', 'acknowledged', 'resolved'];
+// `possibly_resolved` is a view of open concerns, not a stored status - the
+// resolution hint is advisory and only a human moves a concern out of `open`.
+const STATUSES = ['open', 'possibly_resolved', 'acknowledged', 'resolved'];
 
 // ---------------------------------------------------------------- reads
 
@@ -142,7 +144,12 @@ router.get('/concerns', requireCdcBillsAuth, handle(async (req, res) => {
   const { status, category, groupId, limit } = req.query;
 
   const query = {};
-  if (status && STATUSES.includes(status)) query.status = status;
+  if (status === 'possibly_resolved') {
+    query.status = 'open';
+    query.resolutionHint = { $exists: true };
+  } else if (status && STATUSES.includes(status)) {
+    query.status = status;
+  }
   if (category && CONCERN_CATEGORIES.includes(category)) query.category = category;
   if (groupId) query.groupId = groupId;
 
@@ -168,18 +175,28 @@ router.get('/concerns/:id', requireCdcBillsAuth, handle(async (req, res) => {
   const concern = await concerns().findOne({ _id });
   if (!concern) return res.status(404).json({ error: 'Concern not found' });
 
-  const [group, triggering, alertLog] = await Promise.all([
+  // The whole reply thread, not just the messages the classifier cited: the
+  // question a person opens this page to answer is "what happened", and a
+  // conversation with its replies removed does not answer it.
+  const roots = concern.threadRootIds ?? [];
+  const threadQuery = roots.length
+    ? { groupId: concern.groupId, threadRootId: { $in: roots } }
+    : { msgId: { $in: concern.messageIds ?? [] } };
+
+  const [group, thread, alertLog] = await Promise.all([
     groups().findOne({ _id: concern.groupId }),
-    messages().find({ msgId: { $in: concern.messageIds ?? [] } }).sort({ ts: 1 }).toArray(),
+    messages().find(threadQuery).sort({ ts: 1 }).toArray(),
     alerts().find({ concernId: _id }).sort({ sentAt: 1 }).toArray(),
   ]);
+
+  const cited = new Set(concern.messageIds ?? []);
 
   res.json({
     concern,
     groupName: group?.name ?? concern.groupId,
     // Messages may already have aged out under the 60-day TTL while the concern
     // itself lives on, so this can legitimately be shorter than messageIds.
-    messages: triggering,
+    messages: thread.map((m) => ({ ...m, triggered: cited.has(m.msgId) })),
     alerts: alertLog,
   });
 }));
