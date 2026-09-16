@@ -45,7 +45,8 @@
     "whatsapp:media-probe": "node scripts/whatsapp-media-probe.js",
     "whatsapp:catchup": "node scripts/whatsapp-catchup.js",
     "whatsapp:retry-transcripts": "node scripts/whatsapp-retry-transcripts.js",
-    "whatsapp:eval": "node scripts/whatsapp-eval.js"
+    "whatsapp:eval": "node scripts/whatsapp-eval.js",
+    "whatsapp:why-open": "node scripts/whatsapp-why-open.js"
   },
   "keywords": [],
   "author": "",

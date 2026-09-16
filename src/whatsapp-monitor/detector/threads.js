@@ -108,3 +108,23 @@ export function splitByThread(candidates, rootOf) {
 
   return out;
 }
+
+/**
+ * The Mongo filter for "every message in this concern's reply thread".
+ *
+ * A concern normally anchors to thread roots. It may have none: the messages it
+ * cites can age out under the TTL before the backfill stamps them, and
+ * `whatsapp-backfill-threads` deliberately leaves `threadRootIds` empty in that
+ * case. Then the cited messages themselves are the best thread we have.
+ *
+ * This lives in one place because it did not used to: the detail route had the
+ * fallback and the resolution checker did not, so a concern with no roots
+ * rendered its whole conversation on screen while the checker saw nothing and
+ * silently never asked whether it was fixed.
+ */
+export function threadQueryFor(concern) {
+  const roots = concern.threadRootIds ?? [];
+  return roots.length
+    ? { groupId: concern.groupId, threadRootId: { $in: roots } }
+    : { msgId: { $in: concern.messageIds ?? [] } };
+}

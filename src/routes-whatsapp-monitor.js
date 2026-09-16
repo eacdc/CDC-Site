@@ -44,6 +44,7 @@ import {
 } from './whatsapp-monitor/db.js';
 import { whatsappMonitorHealth } from './whatsapp-monitor/index.js';
 import { CONCERN_CATEGORIES } from './whatsapp-monitor/llm/types.js';
+import { threadQueryFor } from './whatsapp-monitor/detector/threads.js';
 
 const router = Router();
 
@@ -178,10 +179,7 @@ router.get('/concerns/:id', requireCdcBillsAuth, handle(async (req, res) => {
   // The whole reply thread, not just the messages the classifier cited: the
   // question a person opens this page to answer is "what happened", and a
   // conversation with its replies removed does not answer it.
-  const roots = concern.threadRootIds ?? [];
-  const threadQuery = roots.length
-    ? { groupId: concern.groupId, threadRootId: { $in: roots } }
-    : { msgId: { $in: concern.messageIds ?? [] } };
+  const threadQuery = threadQueryFor(concern);
 
   const [group, thread, alertLog] = await Promise.all([
     groups().findOne({ _id: concern.groupId }),

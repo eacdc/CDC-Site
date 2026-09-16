@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseResolution } from './llm/parse.js';
 import { dueForEscalation } from './router/escalation-rules.js';
+import { threadQueryFor } from './detector/threads.js';
 
 const known = new Set(['M1', 'M2']);
 
@@ -77,4 +78,34 @@ test('backfilled outranks the resolution hint - both mean do not escalate', () =
     dueForEscalation(overdue({ backfilledAt: new Date(), resolutionHint: { msgId: 'M2' } }), new Date(), 30),
     false,
   );
+});
+
+// --- which messages count as the thread -----------------------------------
+//
+// The detail route and the resolution checker must agree. They once did not:
+// the route fell back to the cited messages when a concern had no thread roots
+// and the checker bailed out, so the page showed a conversation ending in
+// "Running..." while the checker never read a word of it.
+
+test('a concern with thread roots is read by its roots', () => {
+  assert.deepEqual(threadQueryFor({ groupId: 'G1', threadRootIds: ['R1', 'R2'], messageIds: ['M1'] }), {
+    groupId: 'G1',
+    threadRootId: { $in: ['R1', 'R2'] },
+  });
+});
+
+test('a concern with no roots falls back to the messages it cited', () => {
+  assert.deepEqual(threadQueryFor({ groupId: 'G1', threadRootIds: [], messageIds: ['M1', 'M2'] }), {
+    msgId: { $in: ['M1', 'M2'] },
+  });
+});
+
+test('a concern predating thread roots entirely still has a query', () => {
+  // whatsapp-backfill-threads leaves threadRootIds absent or empty by design.
+  assert.deepEqual(threadQueryFor({ groupId: 'G1', messageIds: ['M1'] }), { msgId: { $in: ['M1'] } });
+});
+
+test('a concern with nothing to anchor to yields a query that matches nothing', () => {
+  // Rather than throwing, or worse, matching every message in the collection.
+  assert.deepEqual(threadQueryFor({ groupId: 'G1' }), { msgId: { $in: [] } });
 });

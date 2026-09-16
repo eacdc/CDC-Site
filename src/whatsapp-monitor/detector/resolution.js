@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { concerns, messages } from '../db.js';
 import { llm } from '../llm/index.js';
+import { threadQueryFor } from './threads.js';
 
 const toLlm = (m) => ({ msgId: m.msgId, senderName: m.senderName, ts: m.ts, text: m.text });
 
@@ -41,16 +42,19 @@ export async function runResolutionChecks() {
 }
 
 async function checkOne(concern) {
-  const roots = concern.threadRootIds ?? [];
-  if (roots.length === 0) return false;
-
-  const thread = await messages()
-    .find({ groupId: concern.groupId, threadRootId: { $in: roots } })
-    .sort({ ts: 1 })
-    .toArray();
+  const thread = await messages().find(threadQueryFor(concern)).sort({ ts: 1 }).toArray();
 
   const withText = thread.filter((m) => (m.text ?? '').trim().length > 0);
-  if (withText.length === 0) return false;
+  if (withText.length === 0) {
+    // Everything it cited has aged out, or the thread is photos with no words.
+    // Logged rather than returned in silence: a concern the checker never looks
+    // at looks exactly like one it looked at and found unresolved.
+    logger.debug(
+      { concernId: String(concern._id), roots: concern.threadRootIds?.length ?? 0 },
+      'resolution check skipped - no readable messages in thread',
+    );
+    return false;
+  }
 
   const newest = withText[withText.length - 1];
 
