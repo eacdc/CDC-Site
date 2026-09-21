@@ -65,9 +65,22 @@ export async function runFirstAlerts() {
         continue;
       }
 
-      // Stamped before the send, like an escalation, so a crash mid-send cannot
-      // DM the same person about the same concern twice.
-      await concerns().updateOne({ _id: concern._id }, { $set: { alertedAt: now } });
+      // Stamped before the send, so a crash mid-send cannot DM the same person
+      // about the same concern twice - and stamped CONDITIONALLY, so neither
+      // can a second process. Two instances can both read "not yet alerted";
+      // only one of them can be the one that changes it, and the other stands
+      // down here rather than sending a duplicate.
+      const claimed = await concerns().updateOne(
+        { _id: concern._id, alertedAt: null },
+        { $set: { alertedAt: now } },
+      );
+      if (claimed.modifiedCount !== 1) {
+        logger.info(
+          { concernId: String(concern._id) },
+          'another instance alerted this concern first - not sending',
+        );
+        continue;
+      }
       concern.alertedAt = now;
       live.push(concern);
 

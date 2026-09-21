@@ -8,6 +8,7 @@ import { assignThreadRoots } from '../detector/threads.js';
 import { detectForGroup } from '../detector/detect.js';
 import { runEscalations } from '../router/escalate.js';
 import { runFirstAlerts } from '../router/first-alert.js';
+import { takePollLease, releasePollLease, WHO } from './lock.js';
 import { runAckPoll } from '../router/acknowledge.js';
 import { runResolutionChecks } from '../detector/resolution.js';
 import { runTranscriptions } from '../media/transcribe.js';
@@ -202,11 +203,40 @@ export async function pollGroup(group) {
   }
 }
 
-/** One full cycle across every monitored group: fetch, then classify. Never throws. */
+/**
+ * One full cycle across every monitored group: fetch, then classify. Never
+ * throws.
+ *
+ * One database is polled by one process. A second instance - a laptop left
+ * running `npm start` alongside the deployed service - would classify the same
+ * messages again, pay for it again, race the same cursors and could DM the
+ * same person twice. The lease makes the second one stand down quietly rather
+ * than making it an error, because running two during a cutover is a normal
+ * thing to do.
+ */
 export async function runPoll() {
+  // Long enough that a slow cycle is not overtaken by the next machine along,
+  // short enough that a process killed mid-run frees it within one interval.
+  const leaseMs = 10 * 60_000;
+  if (!(await takePollLease(leaseMs))) return null;
+
+  // The release is in a finally rather than at the end of the cycle: a throw
+  // on the way through would otherwise hold the lease until it lapsed, and
+  // every other instance would sit out the cycles in between.
+  try {
+    return await runPollCycle();
+  } finally {
+    await releasePollLease();
+  }
+}
+
+async function runPollCycle() {
   const run = {
     startedAt: new Date(),
     finishedAt: null,
+    // Which instance ran this. "Who sent that alert" should be answerable from
+    // the Runs tab rather than by reading the shape of the message.
+    host: WHO,
     groupsPolled: 0,
     messagesIngested: 0,
     concernsRaised: 0,
@@ -265,6 +295,7 @@ export async function runPoll() {
   await runs().insertOne(run);
   logger.info(
     {
+      host: WHO,
       groups: run.groupsPolled,
       ingested: run.messagesIngested,
       concerns: run.concernsRaised,

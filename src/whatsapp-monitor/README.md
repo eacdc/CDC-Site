@@ -287,6 +287,28 @@ localhost value is worse than dead - WhatsApp will not even make it tappable,
 because a bare hostname with no dot does not look like a web address - so the
 monitor logs a warning at startup if it finds one.
 
+## One database, one poller
+
+`runPoll` takes a lease in the `locks` collection before it does anything, and
+a second instance stands down for that cycle. Two pollers on one database
+classify the same messages twice, pay OpenAI twice, race each other's cursors,
+and can DM the same person about the same concern.
+
+It is a lease with a ten-minute expiry rather than a flag, so a process killed
+mid-cycle frees it on its own. Taking it is one conditional write, so two
+instances arriving together cannot both conclude it was free. If the lock
+itself cannot be read, the poll goes ahead anyway - not polling at all is the
+worse of the two failures.
+
+Belt and braces on top: `alertedAt` and the escalation push are both written
+**conditionally**, so even without the lease nobody is DMed twice about the
+same thing.
+
+Each run records the `host` that ran it, shown on the Admin -> Runs tab, which
+warns when it sees more than one. This exists because a laptop was left running
+`npm start` alongside the deployed service, and the only way that surfaced was
+an alert arriving in an old message format.
+
 ## Deployed at
 
 | | |

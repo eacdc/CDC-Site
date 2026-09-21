@@ -42,6 +42,7 @@ export const alerts = () => coll('alerts');
 export const summaries = () => coll('summaries');
 export const owners = () => coll('owners');
 export const routing = () => coll('routing');
+export const locks = () => coll('locks');
 
 /** Idempotent. Safe to run on every boot. */
 export async function ensureIndexes() {

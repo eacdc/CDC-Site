@@ -88,11 +88,20 @@ export async function runEscalations() {
       }
 
       // Recorded before the send, like the first alert, so a crash mid-send
-      // cannot cause the same person to be escalated to twice.
-      await concerns().updateOne(
-        { _id: concern._id },
+      // cannot cause the same person to be escalated to twice - and guarded on
+      // the target not already being on the list, so a second process racing
+      // this one cannot either.
+      const claimed = await concerns().updateOne(
+        { _id: concern._id, escalatedTo: { $ne: target } },
         { $push: { escalatedTo: target }, $set: { lastEscalatedAt: now } },
       );
+      if (claimed.modifiedCount !== 1) {
+        logger.info(
+          { concernId: String(concern._id), to: target },
+          'another instance escalated to this person first - not sending',
+        );
+        continue;
+      }
 
       const groupName = groupNames.get(concern.groupId) ?? concern.groupId;
       await sendAlert(concern, groupName, target, 'escalation');
