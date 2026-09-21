@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normaliseMessages, VOICE_TYPES } from './maytapi/normalise.js';
+import { needsRomanising } from './media/romanise.js';
 
 /**
  * Taken verbatim from `npm run whatsapp:media-probe` against CDC Maintenance,
@@ -135,4 +136,51 @@ test('the transcription model can actually read WhatsApp audio', async () => {
     `LLM_MODEL_TRANSCRIBE is "${config.llm.transcribeModel}", which cannot read Ogg/Opus. ` +
       `Use one of: ${[...READS_OGG].join(', ')}.`,
   );
+});
+
+// --- romanising transcripts -----------------------------------------------
+//
+// Whisper writes in the script of the language. The floor types romanised, and
+// detector/prompt.md was tuned entirely on romanised Hindi and Bengali, so a
+// native-script transcript is the one input the classifier never saw.
+
+test('a Bengali transcript is sent to be romanised', () => {
+  assert.equal(needsRomanising('আমি ভাত খাবো'), true);
+});
+
+test('Devanagari and Gujarati too', () => {
+  // Gujarati matters for Ahmedabad, and the rule covers it without naming it.
+  assert.equal(needsRomanising('मशीन बंद है'), true);
+  assert.equal(needsRomanising('મશીન બંધ છે'), true);
+});
+
+test('a sentence already in Latin is left exactly alone', () => {
+  // Nothing to transliterate, and a round trip through a model can only
+  // misspell it - "bondho" is not a word it has any reason to preserve.
+  assert.equal(needsRomanising('machine bondho hai, Kolbus stopped'), false);
+});
+
+test('accents and punctuation are not another script', () => {
+  assert.equal(needsRomanising('café — ok'), false);
+});
+
+test('an emoji does not send a good sentence off to be rewritten', () => {
+  // The rule is "any letter that is not Latin". An emoji is not a letter, and
+  // rewriting the line risks losing it for nothing.
+  assert.equal(needsRomanising('machine down 🔧'), false);
+  assert.equal(needsRomanising('cost Rs 500 ₹'), false);
+});
+
+test('one non-Latin word in an English sentence is enough', () => {
+  assert.equal(needsRomanising('machine বন্ধ'), true);
+});
+
+test('romanising can be switched off without a code change', () => {
+  assert.equal(needsRomanising('আমি ভাত খাবো', false), false);
+});
+
+test('empty and whitespace transcripts are never sent', () => {
+  assert.equal(needsRomanising('   '), false);
+  assert.equal(needsRomanising(''), false);
+  assert.equal(needsRomanising(null), false);
 });

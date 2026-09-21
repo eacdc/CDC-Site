@@ -36,7 +36,17 @@ becomes the message text so everything downstream works unchanged. The model
 **must be `whisper-1`** - WhatsApp sends Ogg/Opus and the gpt-4o transcribe
 models reject it outright, so switching to one silently stops every voice note
 being read. `npm run whatsapp:retry-transcripts` clears failed attempts so they
-are tried again after a fix. **This sends
+are tried again after a fix.
+
+The transcript is then **romanised** - rewritten into the Latin alphabet with
+the speaker's words kept, so a Bengali voice note is stored as "ami vat khabo"
+and not translated to "I will eat rice". Whisper writes in the script of the
+language, which is unreadable to anyone on the floor who types romanised, and
+`detector/prompt.md` is written entirely around romanised Hindi and Bengali, so
+a native-script transcript is the one input the classifier was never tuned on.
+One extra fast-model call per voice note, `ROMANISE_TRANSCRIPTS=false` to turn
+it off. If it fails the raw transcript is kept: a message in the wrong script
+beats no message. **This sends
 staff voice recordings to OpenAI** - a step beyond sending their typed text, so
 tell the groups before switching it on. Transcripts live in `messages` and
 expire with the same TTL. A failed transcription is stamped and not retried; the
@@ -263,6 +273,17 @@ The wait applies to **every severity**, high included. A machine stopping at
 09:00 in an internal group reaches a phone at 09:30 at the earliest. That is a
 deliberate trade of speed for quiet; if it proves too slow, it is an env var per
 kind, not a code change.
+
+Every alert ends with a link to the concern's page, where the whole reply
+thread is shown in order. A WhatsApp DM is plain text - there is no button that
+expands in place - so the link is the "read more". It is built by `concernUrl`
+in `router/alert.js` as `<DASHBOARD_BASE_URL>/concerns.html#id=<id>`, matching
+the fragment the dashboard routes on; `alert-format.test.js` parses the link
+the same way the frontend does, so the two cannot drift apart again.
+
+**`DASHBOARD_BASE_URL` is opened on somebody else's phone**, so `localhost`
+makes the link dead for everyone but the machine running the dashboard. Set it
+to a LAN address or a public hostname.
 
 **Alerts are written to `alerts` before the send**, then updated with the result,
 so a crash mid-send leaves a record that we tried. `alertedAt` is likewise

@@ -2,6 +2,7 @@ import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { messages, groups } from '../db.js';
 import { llm } from '../llm/index.js';
+import { romanise } from './romanise.js';
 import { VOICE_TYPES } from '../maytapi/normalise.js';
 
 /**
@@ -54,8 +55,14 @@ async function transcribeOne(message) {
   try {
     const audio = await download(message.mediaUrl);
 
-    const { text, model } = await llm().transcribe(audio, filenameFor(message));
-    if (!text) throw new Error('transcription came back empty');
+    const { text: heard, model } = await llm().transcribe(audio, filenameFor(message));
+    if (!heard) throw new Error('transcription came back empty');
+
+    // Whisper writes in the script of the language. The floor types romanised
+    // and the classifier was tuned on romanised, so the transcript is rewritten
+    // into the Latin alphabet before it is stored. If that fails it returns
+    // what it was given - a message in the wrong script beats no message.
+    const text = await romanise(heard);
 
     await messages().updateOne(
       { msgId: message.msgId },
@@ -74,7 +81,13 @@ async function transcribeOne(message) {
     );
 
     logger.info(
-      { msgId: message.msgId, groupId: message.groupId, model, chars: text.length },
+      {
+        msgId: message.msgId,
+        groupId: message.groupId,
+        model,
+        chars: text.length,
+        romanised: text !== heard,
+      },
       'voice note transcribed',
     );
     return true;

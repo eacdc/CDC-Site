@@ -3,13 +3,34 @@ import { logger } from '../logger.js';
 import { alerts, owners } from '../db.js';
 import { maytapi } from '../maytapi/client.js';
 
+/**
+ * The dashboard link for a concern.
+ *
+ * `concerns.html#id=` and not `/concerns/<id>`, which is what this used to
+ * build and which nothing has ever served: the dashboard routes on the
+ * fragment (see routeParams() in the frontend's app.js), so every alert went
+ * out carrying a dead link.
+ *
+ * A real file rather than the `/concerns` rewrite, because a rewrite only
+ * exists where serve.json does, and a fragment on a real path cannot be caught
+ * by a cached redirect.
+ */
+export const concernUrl = (concernId) =>
+  `${config.dashboardBaseUrl}/concerns.html#id=${concernId}`;
+
 export function formatAlert(concern, groupName) {
   return [
     `⚠️ ${concern.severity} · ${concern.category}`,
     `Group: ${groupName}`,
     concern.summary,
+    '',
+    // A WhatsApp DM is plain text - there is no button that expands in place -
+    // so this link is the "read more": it opens the whole reply thread, every
+    // message, in order.
+    'Read the full conversation:',
+    concernUrl(concern._id),
+    '',
     'Reply ACK to acknowledge.',
-    `${config.dashboardBaseUrl}/concerns/${concern._id}`,
   ].join('\n');
 }
 

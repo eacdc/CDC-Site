@@ -22,6 +22,7 @@ const DETECTOR_PROMPTS = {
 
 export const promptForKind = (kind) => DETECTOR_PROMPTS[kind] ?? DETECTOR_PROMPTS.internal;
 const SUMMARY_PROMPT = readFileSync(new URL('../summariser/prompt.md', import.meta.url), 'utf8');
+const ROMANISE_PROMPT = readFileSync(new URL('../media/romanise-prompt.md', import.meta.url), 'utf8');
 const RESOLUTION_PROMPT = readFileSync(
   new URL('../detector/resolution-prompt.md', import.meta.url),
   'utf8',
@@ -171,6 +172,24 @@ export class OpenAiLlm {
       file: await toFile(audio, filename),
     });
     return { text: typeof res?.text === 'string' ? res.text.trim() : '', model };
+  }
+
+  /**
+   * Rewrites a transcript into the Latin alphabet, keeping the words.
+   *
+   * Fast model, no fallback: this is a tidying step, and the caller keeps the
+   * raw transcript if it fails rather than paying twice to improve legibility.
+   */
+  async romanise(text) {
+    const raw = await this.chat(config.llm.fastModel, ROMANISE_PROMPT, text);
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed?.text === 'string' ? parsed.text.trim() : '';
+    } catch {
+      // JSON mode makes this unlikely, and an unparseable answer is not worth a
+      // second call - the caller falls back to the original.
+      return '';
+    }
   }
 
   /**

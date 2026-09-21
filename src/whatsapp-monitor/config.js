@@ -113,6 +113,19 @@ export const config = {
    * Client groups wait half as long: a customer left waiting is the problem
    * itself, not something the group can quietly resolve between themselves.
    */
+  /**
+   * Rewrites voice-note transcripts into the Latin alphabet, keeping the words
+   * rather than translating them: `আমি ভাত খাবো` becomes `ami vat khabo`.
+   *
+   * Whisper transcribes in the script of the language, which is unreadable to
+   * anyone on the floor who types romanised - and the classifier prompt is
+   * written entirely around romanised Hindi and Bengali, so a native-script
+   * transcript is the one input it was never tuned on.
+   *
+   * One extra fast-model call per voice note.
+   */
+  romaniseTranscripts: opt('ROMANISE_TRANSCRIPTS', 'true') === 'true',
+
   alertAfterMin: {
     internal: num('ALERT_AFTER_MIN_INTERNAL', 30),
     client: num('ALERT_AFTER_MIN_CLIENT', 15),
