@@ -6,6 +6,18 @@ function opt(name, fallback) {
   return process.env[name] || fallback;
 }
 
+/**
+ * A base URL, with trailing slashes trimmed.
+ *
+ * Everything that uses one appends a path with its own leading slash, and a
+ * URL pasted out of a browser's address bar usually carries a trailing one -
+ * which would otherwise produce `...com//concerns.html`. It still works, and
+ * it still looks broken in a message sent to a manager.
+ */
+function url(name, fallback) {
+  return (process.env[name] || fallback).replace(/\/+$/, '');
+}
+
 function num(name, fallback) {
   const v = process.env[name];
   if (!v) return fallback;
@@ -147,7 +159,16 @@ export const config = {
     client: num('ALERT_AFTER_MIN_CLIENT', 15),
   },
 
-  dashboardBaseUrl: opt('DASHBOARD_BASE_URL', 'http://localhost:3000'),
+  /**
+   * Where the dashboard lives, used to build the "Read the full conversation"
+   * link in every alert.
+   *
+   * Defaults to the deployed dashboard, not localhost: this runs on Render
+   * talking to a dashboard on Render, and a localhost link is the one value
+   * that produces an unusable alert - WhatsApp will not even make it tappable,
+   * because a bare hostname with no dot does not look like a web address.
+   */
+  dashboardBaseUrl: url('DASHBOARD_BASE_URL', 'https://whatsappsummarizer.onrender.com'),
   tz: opt('TZ', 'Asia/Kolkata'),
   logLevel: opt('LOG_LEVEL', 'info'),
   nodeEnv: opt('NODE_ENV', 'development'),

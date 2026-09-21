@@ -49,3 +49,28 @@ test('the alert still carries the summary and how to acknowledge', () => {
   assert.match(text, /production halted/);
   assert.match(text, /Reply ACK/);
 });
+
+// --- the link has to be tappable ------------------------------------------
+//
+// WhatsApp only linkifies something that looks like a web address. A bare
+// hostname with no dot does not, so a localhost base produces a DM with a line
+// of plain text where the link should be - and the person who notices is the
+// one who received it, not the one running the service.
+
+import { config } from './config.js';
+
+test('the dashboard base is a real host over https', () => {
+  assert.match(config.dashboardBaseUrl, /^https:\/\/[^/]+\.[^/]+/);
+});
+
+test('the base carries no trailing slash', () => {
+  // Every caller appends a path with its own leading slash. A URL pasted out
+  // of an address bar usually brings one, and "...com//concerns.html" works
+  // but reads as broken in a message to a manager.
+  assert.doesNotMatch(config.dashboardBaseUrl, /\/$/);
+  assert.doesNotMatch(concernUrl('abc'), /\/\/concerns/);
+});
+
+test('the built link has exactly one slash before the page', () => {
+  assert.match(concernUrl('abc'), /^https:\/\/[^/]+\/concerns\.html#id=abc$/);
+});

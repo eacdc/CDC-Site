@@ -281,9 +281,11 @@ in `router/alert.js` as `<DASHBOARD_BASE_URL>/concerns.html#id=<id>`, matching
 the fragment the dashboard routes on; `alert-format.test.js` parses the link
 the same way the frontend does, so the two cannot drift apart again.
 
-**`DASHBOARD_BASE_URL` is opened on somebody else's phone**, so `localhost`
-makes the link dead for everyone but the machine running the dashboard. It is
-`https://whatsappsummarizer.onrender.com` in production.
+**`DASHBOARD_BASE_URL` is opened on somebody else's phone.** It defaults to
+`https://whatsappsummarizer.onrender.com`; trailing slashes are trimmed. A
+localhost value is worse than dead - WhatsApp will not even make it tappable,
+because a bare hostname with no dot does not look like a web address - so the
+monitor logs a warning at startup if it finds one.
 
 ## Deployed at
 

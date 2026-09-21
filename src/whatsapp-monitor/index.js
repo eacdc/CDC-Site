@@ -38,6 +38,17 @@ export async function startWhatsappMonitor() {
     return false;
   }
 
+  // A misconfiguration that only surfaces as "the link isn't clickable", noticed
+  // by whoever received the DM rather than whoever runs the service, should say
+  // so where it can be seen.
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)\b/i.test(config.dashboardBaseUrl)) {
+    logger.warn(
+      { dashboardBaseUrl: config.dashboardBaseUrl },
+      'alerts will carry a link to localhost - it resolves to the recipient\'s own phone, ' +
+        'and WhatsApp will not even make it tappable. Set DASHBOARD_BASE_URL.',
+    );
+  }
+
   try {
     await connect();
     await ensureIndexes();
