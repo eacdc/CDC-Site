@@ -151,6 +151,28 @@ apart. That query groups by the lot before aggregating: a GPN spanning several
 jobs fans out across the joins, and a straight `SUM` over that would count the
 same lot's cartons twice.
 
+**Lot size is the GPN's quantity, not the job's.** `GetPendingFGQCList` reports
+a `LotSize` that is the job quantity, so the sampling plan was being matched
+against the whole order while the inspector stood in front of one delivery. A
+GPN of 100 pieces was asked for a sample of 315 — drawn from a lot of 100.
+
+`/api/qc/pending` now replaces that figure with
+`SUM(outercarton x innercarton x quantityperpack)` over the GPN's own detail
+lines, which is how `GPNAgg` in `src/job-card-queries.js` has always read a
+GPN, and re-reads the required sample from the plan for that size. It is done
+in the route rather than the procedure because the arithmetic is already the
+repo's, and does not depend on procedure source this API cannot see. If the
+lookup fails the queue still renders, marked, rather than quietly serving the
+job-sized numbers again.
+
+**A GPN under `FGQC_MIN_LOT_QTY` pieces (default 50) does not need QC.** The
+queue dims the row and labels the button "No QC needed"; pressing it explains
+why instead of opening the form. The form refuses the same lot when reached by
+its URL, and `POST /api/qc/inspections` refuses to save it — a rule only the
+browser enforces is not a rule. The save's check does not block on a failed
+lookup: refusing to record an inspection someone has already carried out, over
+a supporting query, loses real work to protect a threshold.
+
 ---
 
 ## Waiting on the database

@@ -8,6 +8,8 @@ import {
 	mapAql,
 	isMissingProcedure,
 	isStaleProcedure,
+	sampleForLot,
+	lotKey,
 	SEVERITY_UNCLASSIFIED
 } from './routes-fg-qc.js';
 
@@ -167,6 +169,67 @@ test('isStaleProcedure recognises a procedure that is behind the route', () => {
 		false
 	);
 	assert.equal(isStaleProcedure(null, 'GetFGQCInspectionList'), false);
+});
+
+/*
+ * Carter / Z1.4 level II normal. Confirmed against four inspections CDC had
+ * already saved: samples of 125, 200, 315 and 500 carried accept numbers of
+ * 5/7, 7/10, 10/14 and 14/21 respectively, which is this table exactly.
+ */
+const CARTER_BANDS = [
+	{ from: 2,      to: 8,      sampleSize: 2 },
+	{ from: 9,      to: 15,     sampleSize: 3 },
+	{ from: 16,     to: 25,     sampleSize: 5 },
+	{ from: 26,     to: 50,     sampleSize: 8 },
+	{ from: 51,     to: 90,     sampleSize: 13 },
+	{ from: 91,     to: 150,    sampleSize: 20 },
+	{ from: 151,    to: 280,    sampleSize: 32 },
+	{ from: 281,    to: 500,    sampleSize: 50 },
+	{ from: 501,    to: 1200,   sampleSize: 80 },
+	{ from: 1201,   to: 3200,   sampleSize: 125 },
+	{ from: 3201,   to: 10000,  sampleSize: 200 },
+	{ from: 10001,  to: 35000,  sampleSize: 315 },
+	{ from: 35001,  to: 150000, sampleSize: 500 }
+];
+
+test('sampleForLot reads the band the lot actually falls in', () => {
+	assert.equal(sampleForLot(CARTER_BANDS, 100), 20);
+	assert.equal(sampleForLot(CARTER_BANDS, 50), 8);
+	assert.equal(sampleForLot(CARTER_BANDS, 1500), 125);
+	assert.equal(sampleForLot(CARTER_BANDS, 30000), 315);
+	// Band edges belong to the band, both ends.
+	assert.equal(sampleForLot(CARTER_BANDS, 10001), 315);
+	assert.equal(sampleForLot(CARTER_BANDS, 35000), 315);
+	assert.equal(sampleForLot(CARTER_BANDS, 35001), 500);
+});
+
+/*
+ * The bug this change exists to kill: a GPN of 100 was being sized against a
+ * job of 30,000, so the inspector was asked for 315 pieces out of 100.
+ */
+test('the GPN quantity and the job quantity give different samples', () => {
+	const jobSample = sampleForLot(CARTER_BANDS, 30000);
+	const gpnSample = sampleForLot(CARTER_BANDS, 100);
+	assert.equal(jobSample, 315);
+	assert.equal(gpnSample, 20);
+	assert.ok(gpnSample <= 100, 'a sample must never exceed the lot it is drawn from');
+	assert.ok(jobSample > 100, 'the job-sized sample is what used to exceed it');
+});
+
+test('sampleForLot returns null when no band covers the lot', () => {
+	assert.equal(sampleForLot(CARTER_BANDS, 1), null);
+	assert.equal(sampleForLot(CARTER_BANDS, 200000), null);
+	assert.equal(sampleForLot(CARTER_BANDS, null), null);
+	assert.equal(sampleForLot(null, 100), null);
+	// An open-ended band swallows everything above its floor.
+	assert.equal(sampleForLot([{ from: 35001, to: null, sampleSize: 500 }], 9e9), 500);
+});
+
+test('lotKey separates two jobs shipped on one GPN', () => {
+	assert.notEqual(lotKey(7068, 2192), lotKey(7068, 3095));
+	assert.equal(lotKey(7068, 2192), lotKey(7068, 2192));
+	// A lot with no job resolved must not collide with job 0.
+	assert.notEqual(lotKey(7068, null), lotKey(7068, 0));
 });
 
 test('isMissingProcedure recognises only a missing procedure', () => {
