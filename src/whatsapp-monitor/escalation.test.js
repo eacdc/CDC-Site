@@ -162,3 +162,58 @@ test('the first hop is measured from the alert, not from when it was raised', ()
   assert.equal(dueForEscalation(c, NOW, 30), false);
   assert.equal(dueForEscalation({ ...c, alertedAt: minsAgo(31) }, NOW, 30), true);
 });
+
+// --- a group's own escalation ladder --------------------------------------
+//
+// Where a group has a list, that list is the whole ladder for it: the older
+// per-person escalationTo chain is not consulted at all, so there is one place
+// to look when asking who hears about this group.
+
+const LADDER = ['91000000005', '91000000006', '91000000007'];
+const noOwners = new Map();
+
+test('walks the ladder in order, one person per hop', () => {
+  const c = concern({ escalatedTo: [] });
+  assert.equal(nextEscalationTarget(c, noOwners, LADDER), '91000000005');
+  assert.equal(nextEscalationTarget(concern({ escalatedTo: LADDER.slice(0, 1) }), noOwners, LADDER), '91000000006');
+  assert.equal(nextEscalationTarget(concern({ escalatedTo: LADDER.slice(0, 2) }), noOwners, LADDER), '91000000007');
+});
+
+test('the ladder ends when everyone on it has been pulled in', () => {
+  assert.equal(nextEscalationTarget(concern({ escalatedTo: LADDER }), noOwners, LADDER), null);
+});
+
+test('skips the owner if they were put on their own ladder', () => {
+  // A configuration mistake, and it must not silently disable everyone below
+  // them on the list.
+  const withOwner = ['91000000001', '91000000005'];
+  assert.equal(nextEscalationTarget(concern(), noOwners, withOwner), '91000000005');
+});
+
+test('goes deeper than two hops when the ladder is longer', () => {
+  // The old cap was two. A group's ladder climbs as far as the list goes.
+  const c = concern({ escalatedTo: LADDER.slice(0, 2), lastEscalatedAt: minsAgo(31) });
+  assert.equal(dueForEscalation(c, NOW, 30, LADDER.length), true);
+  assert.equal(dueForEscalation(c, NOW, 30, MAX_ESCALATIONS), false, 'and would have stopped before');
+});
+
+test('stops once the ladder is spent', () => {
+  const c = concern({ escalatedTo: LADDER, lastEscalatedAt: minsAgo(31) });
+  assert.equal(dueForEscalation(c, NOW, 30, LADDER.length), false);
+});
+
+test('a group with no ladder still uses the per-person chain', () => {
+  const owners = new Map([['91000000001', { _id: '91000000001', escalationTo: '91000000002' }]]);
+  assert.equal(nextEscalationTarget(concern(), owners, []), '91000000002');
+  assert.equal(nextEscalationTarget(concern(), owners), '91000000002', 'and with the argument omitted');
+});
+
+test("a group's ladder overrides the per-person chain entirely", () => {
+  const owners = new Map([['91000000001', { _id: '91000000001', escalationTo: '91000000002' }]]);
+  assert.equal(nextEscalationTarget(concern(), owners, LADDER), '91000000005');
+});
+
+test('the per-person chain still stops after two hops', () => {
+  const c = concern({ escalatedTo: ['91000000002', '91000000003'], lastEscalatedAt: minsAgo(31) });
+  assert.equal(dueForEscalation(c, NOW, 30), false);
+});

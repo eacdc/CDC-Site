@@ -25,6 +25,9 @@ for (const g of found) {
         // bury a manager in alerts.
         kind: 'internal',
         ownerPhone: null,
+        // The escalation ladder for this group, in order. Empty means fall back
+        // to the older per-person escalationTo chain.
+        escalationTo: [],
         department: null,
         joinedAt: null,
         lastTs: null,

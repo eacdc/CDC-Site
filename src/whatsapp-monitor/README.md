@@ -418,9 +418,16 @@ New groups are `internal`, because the client prompt raises far more and
 applying it to a plant group by accident would bury someone in alerts.
 
 A group can also name one **person**, set in Admin. They receive every concern
-from that group — first alert and escalations both — sitting above the wildcard
-routing rules and the default owner, but below a rule naming this exact group
-*and* category. See `router/resolve.js`.
+from that group — the first alert — sitting above the wildcard routing rules and
+the default owner, but below a rule naming this exact group *and* category. See
+`router/resolve.js`.
+
+Below that sits the group's **escalation ladder**, `escalationTo` — an ordered
+list of people, each pulled in only if the one before them has not
+acknowledged. Where a group has a ladder it is the whole story for that group,
+and it climbs as deep as the list goes. A group with an empty ladder falls back
+to the older arrangement, where the chain belongs to the person
+(`owner.escalationTo`) and stops after `MAX_ESCALATIONS` hops.
 
 ## Changing the prompt
 

@@ -1,10 +1,13 @@
 /**
  * Pure escalation decisions — no I/O, so the timing rules are directly testable.
  *
- * A concern escalates at most twice: owner -> owner's escalationTo -> that
- * person's escalationTo. Two hops is the cap. Beyond that, repeatedly DMing
- * more senior people about a concern nobody has acknowledged stops being an
- * alert and becomes noise, and the dashboard is the right place to see it.
+ * A group with its own ladder escalates as deep as that ladder goes: you decide
+ * how far it climbs by how many people you put on the list.
+ *
+ * A group without one falls back to the older arrangement — owner -> owner's
+ * escalationTo -> that person's escalationTo — and stops after two hops. That
+ * chain has no natural end, and repeatedly DMing more senior people about a
+ * concern nobody has acknowledged stops being an alert and becomes noise.
  */
 export const MAX_ESCALATIONS = 2;
 
@@ -16,7 +19,7 @@ export const MAX_ESCALATIONS = 2;
  * The clock restarts at each hop: the first runs from createdAt, later ones
  * from the previous escalation, so each person gets the full window to respond.
  */
-export function dueForEscalation(concern, now, escalateAfterMin) {
+export function dueForEscalation(concern, now, escalateAfterMin, maxHops = MAX_ESCALATIONS) {
   if (concern.status !== 'open') return false;
 
   // Raised by a backfill from messages that were already history when the tool
@@ -32,7 +35,7 @@ export function dueForEscalation(concern, now, escalateAfterMin) {
   if (concern.resolutionHint) return false;
 
   const level = concern.escalatedTo?.length ?? 0;
-  if (level >= MAX_ESCALATIONS) return false;
+  if (level >= maxHops) return false;
 
   // The first hop is measured from the ALERT, not from when the concern was
   // raised. The two used to be the same moment; now a concern waits 15 or 30
@@ -49,14 +52,33 @@ export function dueForEscalation(concern, now, escalateAfterMin) {
 }
 
 /**
- * Who is next up the chain. `ownersByPhone` maps phone -> owner doc.
+ * Who is next up the chain.
  *
- * Returns null when the chain ends (nobody configured an escalationTo) or when
- * the next person has already been alerted about this concern — escalating to
- * someone who is already on the thread would just be a duplicate DM.
+ * Two arrangements, and the group's own ladder wins where it exists:
+ *
+ * 1. **`groupChain`** — an ordered list set against the group in Admin. Walked
+ *    in order, one person per hop. This is the whole ladder for that group;
+ *    `escalationTo` is not consulted at all, so there is one place to look when
+ *    asking who hears about this group.
+ * 2. **`owner.escalationTo`** — the older arrangement, a chain that belongs to
+ *    the person rather than the group. Still used by every group with no list
+ *    of its own.
+ *
+ * `ownersByPhone` maps phone -> owner doc. Returns null when the ladder is
+ * exhausted, which the caller treats as "nobody left to escalate to".
  */
-export function nextEscalationTarget(concern, ownersByPhone) {
+export function nextEscalationTarget(concern, ownersByPhone, groupChain = []) {
   const escalated = concern.escalatedTo ?? [];
+
+  if (groupChain.length > 0) {
+    // Skipping rather than stopping: the owner appearing in their own group's
+    // ladder is a configuration mistake, and it should not silently disable
+    // everyone below them on the list.
+    return (
+      groupChain.find((phone) => phone !== concern.ownerId && !escalated.includes(phone)) ?? null
+    );
+  }
+
   const from = escalated.length === 0 ? concern.ownerId : escalated[escalated.length - 1];
   if (!from) return null;
 

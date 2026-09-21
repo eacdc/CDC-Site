@@ -228,7 +228,7 @@ router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(as
   const group = await groups().findOne({ _id: req.params.id });
   if (!group) return res.status(404).json({ error: 'Group not found' });
 
-  const { monitored, department, joinedAt, kind, ownerPhone } = req.body ?? {};
+  const { monitored, department, joinedAt, kind, ownerPhone, escalationTo } = req.body ?? {};
   const update = {};
 
   if (kind !== undefined) {
@@ -267,6 +267,44 @@ router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(as
     const parsed = new Date(joinedAt);
     if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'Invalid joinedAt' });
     update.joinedAt = parsed;
+  }
+
+  // The group's escalation ladder, in order. Replaced whole rather than
+  // patched entry by entry, so there is one validation path and no way to end
+  // up half-applied.
+  if (escalationTo !== undefined) {
+    if (!Array.isArray(escalationTo)) {
+      return res.status(400).json({ error: 'escalationTo must be a list of phone numbers' });
+    }
+    if (escalationTo.length > MAX_LADDER) {
+      return res.status(400).json({ error: `At most ${MAX_LADDER} people in the ladder` });
+    }
+    if (new Set(escalationTo).size !== escalationTo.length) {
+      return res.status(400).json({ error: 'The same person appears twice in the ladder' });
+    }
+
+    for (const phone of escalationTo) {
+      if (typeof phone !== 'string' || !PHONE.test(phone)) {
+        return res.status(400).json({ error: `"${phone}" is not a phone number` });
+      }
+      if (!(await owners().findOne({ _id: phone }))) {
+        return res.status(400).json({ error: `Add ${phone} as a person first` });
+      }
+    }
+    update.escalationTo = escalationTo;
+  }
+
+  // Checked against the state this request would leave behind, not just the
+  // field it happened to touch - otherwise moving the alerted person onto their
+  // own ladder slips through by changing the other end of the pair.
+  //
+  // Told rather than silently dropped: in Admin this is almost always a
+  // mistake, and quietly ignoring it leaves someone believing the ladder is one
+  // person longer than it is.
+  const finalOwner = update.ownerPhone !== undefined ? update.ownerPhone : group.ownerPhone;
+  const finalLadder = update.escalationTo ?? group.escalationTo ?? [];
+  if (finalOwner && finalLadder.includes(finalOwner)) {
+    return res.status(400).json({ error: 'The person alerted cannot also be on the ladder' });
   }
 
   if (Object.keys(update).length === 0) return res.status(400).json({ error: 'Nothing to update' });
@@ -312,6 +350,8 @@ router.post('/concerns/:id/resolve', requireCdcBillsAuth, handle((req, res) =>
 
 /** Phones are stored bare (no "+", no spaces) because that is what Maytapi wants. */
 const PHONE = /^\d{10,15}$/;
+// A ladder longer than this is not an escalation path, it is a mailing list.
+const MAX_LADDER = 10;
 
 router.put('/owners/:phone', requireCdcBillsAuth, requireCdcBillsAdmin, handle(async (req, res) => {
   const phone = String(req.params.phone).trim();

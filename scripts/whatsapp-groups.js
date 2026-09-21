@@ -41,7 +41,8 @@ if (!groupId) {
       const last = g.lastTs ? ` lastTs=${g.lastTs.toISOString()}` : '';
       const kind = g.kind === 'client' ? ' CLIENT' : '';
       const person = g.ownerPhone ? ` alerts ${g.ownerPhone}` : '';
-      console.log(`${flag}${kind} ${g._id}\n      ${g.name}${since}${last}${person}`);
+      const ladder = g.escalationTo?.length ? ` then ${g.escalationTo.join(' -> ')}` : '';
+      console.log(`${flag}${kind} ${g._id}\n      ${g.name}${since}${last}${person}${ladder}`);
     }
     console.log('\nUsage: npm run whatsapp:groups -- "<groupId>" on|off|client|internal');
   }
