@@ -32,6 +32,7 @@ import { checkSession, fetchBackToCursor, pollGroup } from '../src/whatsapp-moni
 import { detectForGroup } from '../src/whatsapp-monitor/detector/detect.js';
 import { runAckPoll } from '../src/whatsapp-monitor/router/acknowledge.js';
 import { runEscalations } from '../src/whatsapp-monitor/router/escalate.js';
+import { runFirstAlerts } from '../src/whatsapp-monitor/router/first-alert.js';
 import {
   runRollingSummaries,
   runDailySummaries,
@@ -212,6 +213,15 @@ async function main() {
     const concern = await smokeConcern();
     if (!concern) return skip('no concern to alert on');
     if (!concern.ownerId) return fail('concern has no owner - routing resolved to nobody');
+
+    // The first DM is no longer sent at detection: a concern waits 15 or 30
+    // minutes so the people already in the group can deal with it. Backdating
+    // the synthetic one exercises the real path without a half-hour pause.
+    await concerns().updateOne(
+      { _id: concern._id },
+      { $set: { firstMsgTs: new Date(Date.now() - 24 * 60 * 60_000) } },
+    );
+    await runFirstAlerts();
 
     const row = await alerts().findOne({ concernId: concern._id, channel: 'owner' });
     if (!row) return fail('no alert row was written');

@@ -34,7 +34,15 @@ export function dueForEscalation(concern, now, escalateAfterMin) {
   const level = concern.escalatedTo?.length ?? 0;
   if (level >= MAX_ESCALATIONS) return false;
 
-  const since = level === 0 ? concern.createdAt : concern.lastEscalatedAt;
+  // The first hop is measured from the ALERT, not from when the concern was
+  // raised. The two used to be the same moment; now a concern waits 15 or 30
+  // minutes for its first DM, and measuring from createdAt would escalate the
+  // owner past in the same cycle their phone buzzed.
+  //
+  // A concern that was never alerted has no `alertedAt`, and the guard below
+  // stops it escalating at all - which is right: escalation means nobody
+  // answered the alert, and there was no alert.
+  const since = level === 0 ? concern.alertedAt : concern.lastEscalatedAt;
   if (!since) return false;
 
   return now.getTime() - since.getTime() >= escalateAfterMin * 60_000;

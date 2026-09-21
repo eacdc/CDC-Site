@@ -101,6 +101,22 @@ export const config = {
    */
   alertCooldownMin: num('ALERT_COOLDOWN_MIN', 30),
   defaultEscalateAfterMin: num('DEFAULT_ESCALATE_AFTER_MIN', 30),
+  /**
+   * How long a concern waits before its first DM, by kind of group.
+   *
+   * Most problems are handled by the people already in the group. A DM that
+   * arrives after the fitter has fixed the machine is noise, and noise is what
+   * stops managers reading alerts at all - so the alert is held back to give
+   * the group a chance to deal with it, and dropped entirely if the thread
+   * says it is fixed.
+   *
+   * Client groups wait half as long: a customer left waiting is the problem
+   * itself, not something the group can quietly resolve between themselves.
+   */
+  alertAfterMin: {
+    internal: num('ALERT_AFTER_MIN_INTERNAL', 30),
+    client: num('ALERT_AFTER_MIN_CLIENT', 15),
+  },
 
   dashboardBaseUrl: opt('DASHBOARD_BASE_URL', 'http://localhost:3000'),
   tz: opt('TZ', 'Asia/Kolkata'),

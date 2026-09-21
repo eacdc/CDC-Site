@@ -3,8 +3,7 @@ import { logger } from '../logger.js';
 import { messages, concerns, routing } from '../db.js';
 import { llm } from '../llm/index.js';
 import { resolveRouting } from '../router/resolve.js';
-import { sendAlert } from '../router/alert.js';
-import { findDuplicate, recentlyAlerted } from './concerns.js';
+import { findDuplicate } from './concerns.js';
 import { splitByThread } from './threads.js';
 
 const toLlm = (m) => ({
@@ -153,31 +152,14 @@ export async function detectForGroup(group, { silent = false } = {}) {
         live.push(doc);
         raised += 1;
 
-        if (!route) {
-          logger.error(
-            { concernId: String(insertedId), category: candidate.category },
-            'no routing rule and no DEFAULT_OWNER_PHONE - concern raised but NOBODY was alerted',
-          );
-          continue;
-        }
-        if (silent) continue;
-
-        // Identity is per-thread, so one breakdown reported by three people who
-        // did not quote each other is three concerns. All three belong on the
-        // dashboard; three DMs in as many minutes is just noise.
-        const throttled = recentlyAlerted(candidate, live, now, config.alertCooldownMin);
-        if (throttled) {
-          logger.info(
-            { concernId: String(insertedId), category: candidate.category, like: String(throttled._id) },
-            'alert suppressed - same category alerted inside the cooldown',
-          );
-          continue;
-        }
-
-        if (await sendAlert(doc, group.name, route.ownerPhone)) {
-          doc.alertedAt = now;
-          await concerns().updateOne({ _id: insertedId }, { $set: { alertedAt: now } });
-        }
+        // Nobody is DMed here. The concern waits - 30 minutes in an internal
+        // group, 15 in a client one - and router/first-alert.js decides on a
+        // later cycle whether anyone still needs telling. A problem the group
+        // fixed in the meantime never reaches a phone.
+        logger.info(
+          { concernId: String(insertedId), category: candidate.category, severity: candidate.severity },
+          'concern raised - waiting before the first alert',
+        );
       }
     }
   } catch (err) {
