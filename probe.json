@@ -1,0 +1,8 @@
+
+> backend@1.0.0 whatsapp:dump-messages
+> node scripts/whatsapp-dump-messages.js 919830312721-1551352436@g.us
+
+[dotenv@17.2.2] injecting env (40) from .env -- tip: ⚙️  suppress all logs with { quiet: true }
+{"level":40,"time":1789272284646,"pid":5464,"hostname":"DESKTOP-2A5SIL1","name":"whatsapp-monitor","path":"303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","attempt":1,"backoff":500,"err":"MaytapiError: Maytapi 504 on 303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","msg":"maytapi call failed, retrying"}
+{"level":40,"time":1789272335446,"pid":5464,"hostname":"DESKTOP-2A5SIL1","name":"whatsapp-monitor","path":"303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","attempt":2,"backoff":1000,"err":"MaytapiError: Maytapi 504 on 303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","msg":"maytapi call failed, retrying"}
+{"level":50,"time":1789272386752,"pid":5464,"hostname":"DESKTOP-2A5SIL1","name":"whatsapp-monitor","path":"303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","err":"MaytapiError: Maytapi 504 on 303c7e43-1f60-43f5-9169-d18f6949accf/152557/getMessages/919830312721-1551352436%40g.us","msg":"maytapi call failed after all retries"}
