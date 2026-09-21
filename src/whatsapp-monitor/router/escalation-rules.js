@@ -12,6 +12,21 @@
 export const MAX_ESCALATIONS = 2;
 
 /**
+ * How long this concern waits before the next person hears about it.
+ *
+ * `baseMin` is whatever window already applies - a routing row's
+ * escalateAfterMin, or the default - and the severity multiplies it. So the
+ * per-route window keeps meaning what it said, and severity stretches it.
+ *
+ * An unknown or missing severity gets the base window. That is the SHORTEST
+ * of the three on purpose: a concern whose severity we cannot read should not
+ * end up being the one that sits quietest.
+ */
+export function escalationWindowFor(severity, baseMin, multipliers) {
+  return baseMin * (multipliers?.[severity] ?? 1);
+}
+
+/**
  * Only `open` concerns escalate. An `acknowledged` one has reached a human who
  * said so — that is the whole point of acknowledging — and a `resolved` one is
  * finished.

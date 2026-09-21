@@ -102,6 +102,22 @@ export const config = {
   alertCooldownMin: num('ALERT_COOLDOWN_MIN', 30),
   defaultEscalateAfterMin: num('DEFAULT_ESCALATE_AFTER_MIN', 30),
   /**
+   * Scales the escalation window by how bad the concern is, so a low-severity
+   * note does not climb the ladder at the pace of a stopped press.
+   *
+   * Multiplies whatever window already applies - a routing row's
+   * escalateAfterMin or the default - rather than replacing it, so a 5-minute
+   * safety route still means 5 for a high, 15 for a medium, 30 for a low.
+   *
+   * `high` is 1 and not configurable: it is the base the other two are defined
+   * against, and letting it drift would make them mean nothing.
+   */
+  escalationSeverityMultiplier: {
+    high: 1,
+    medium: num('ESCALATE_MULTIPLIER_MEDIUM', 3),
+    low: num('ESCALATE_MULTIPLIER_LOW', 6),
+  },
+  /**
    * How long a concern waits before its first DM, by kind of group.
    *
    * Most problems are handled by the people already in the group. A DM that

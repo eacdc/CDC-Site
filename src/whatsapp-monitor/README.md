@@ -316,6 +316,22 @@ Both run on every poll cycle, **acknowledgements first** — a concern
 acknowledged in this cycle must not then be escalated a moment later for being
 unacknowledged.
 
+**Severity stretches the window.** It multiplies whatever window applies - a
+routing row's `escalateAfterMin` or `DEFAULT_ESCALATE_AFTER_MIN` - and applies
+to every hop, so a low concern does not sprint up the ladder after a slow
+start:
+
+| severity | | with the default 30 min |
+|---|---|---|
+| high | base | 30 min |
+| medium | x3 | 90 min |
+| low | x6 | 3 hours |
+
+`high` is fixed at 1 and the other two are `ESCALATE_MULTIPLIER_MEDIUM` and
+`ESCALATE_MULTIPLIER_LOW`. A concern whose severity cannot be read gets the
+base window - the shortest of the three, so an unreadable one is never the
+quietest. `escalationWindowFor` in `router/escalation-rules.js`.
+
 Escalation's first hop is measured from **`alertedAt`**, not from when the
 concern was raised — otherwise a concern that waited 30 minutes for its first DM
 would be escalated past its owner in the same cycle. A concern that was never

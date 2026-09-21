@@ -3,7 +3,12 @@ import { logger } from '../logger.js';
 import { concerns, owners, routing, groups } from '../db.js';
 import { sendAlert } from './alert.js';
 import { resolveRouting } from './resolve.js';
-import { dueForEscalation, nextEscalationTarget, MAX_ESCALATIONS } from './escalation-rules.js';
+import {
+  dueForEscalation,
+  nextEscalationTarget,
+  escalationWindowFor,
+  MAX_ESCALATIONS,
+} from './escalation-rules.js';
 
 /**
  * Escalates open concerns nobody has acknowledged. Runs on every poll cycle.
@@ -41,7 +46,15 @@ export async function runEscalations() {
         cooldownMin: config.defaultCooldownMin,
         escalateAfterMin: config.defaultEscalateAfterMin,
       });
-      const after = route?.escalateAfterMin ?? config.defaultEscalateAfterMin;
+      // Stretched by severity: a medium waits three times as long as a high,
+      // a low six times. Applied to every hop, not just the first - a low that
+      // waited three hours for its first escalation should not then sprint up
+      // the rest of the ladder.
+      const after = escalationWindowFor(
+        concern.severity,
+        route?.escalateAfterMin ?? config.defaultEscalateAfterMin,
+        config.escalationSeverityMultiplier,
+      );
 
       // A group with a ladder climbs exactly as far as that ladder goes. Without
       // one, the older per-person chain applies and still stops after two hops.
@@ -90,6 +103,10 @@ export async function runEscalations() {
           concernId: String(concern._id),
           to: target,
           hop: (concern.escalatedTo?.length ?? 0) + 1,
+          severity: concern.severity,
+          // So "why did this one take ninety minutes" is answerable from the
+          // log rather than by arithmetic.
+          windowMin: after,
           unackedMin: Math.round((now - concern.createdAt) / 60_000),
         },
         'concern escalated',

@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dueForEscalation, nextEscalationTarget, MAX_ESCALATIONS } from './router/escalation-rules.js';
+import {
+  dueForEscalation,
+  nextEscalationTarget,
+  escalationWindowFor,
+  MAX_ESCALATIONS,
+} from './router/escalation-rules.js';
 import { isAck, findAckTarget } from './router/ack-rules.js';
 
 const NOW = new Date('2026-09-12T12:00:00Z');
@@ -216,4 +221,59 @@ test("a group's ladder overrides the per-person chain entirely", () => {
 test('the per-person chain still stops after two hops', () => {
   const c = concern({ escalatedTo: ['91000000002', '91000000003'], lastEscalatedAt: minsAgo(31) });
   assert.equal(dueForEscalation(c, NOW, 30), false);
+});
+
+// --- severity stretches the escalation window ------------------------------
+//
+// A low-severity note nobody has acknowledged should not climb the ladder at
+// the pace of a stopped press.
+
+const MULTIPLIERS = { high: 1, medium: 3, low: 6 };
+
+test('high escalates on the base window', () => {
+  assert.equal(escalationWindowFor('high', 30, MULTIPLIERS), 30);
+});
+
+test('medium waits three times as long, low six', () => {
+  assert.equal(escalationWindowFor('medium', 30, MULTIPLIERS), 90);
+  assert.equal(escalationWindowFor('low', 30, MULTIPLIERS), 180);
+});
+
+test('the multiplier rides on the route window rather than replacing it', () => {
+  // A safety route set to 5 minutes still means 5 for a high - the per-route
+  // window keeps saying what it said, and severity stretches it.
+  assert.equal(escalationWindowFor('high', 5, MULTIPLIERS), 5);
+  assert.equal(escalationWindowFor('medium', 5, MULTIPLIERS), 15);
+  assert.equal(escalationWindowFor('low', 5, MULTIPLIERS), 30);
+});
+
+test('an unreadable severity gets the base window, which is the shortest', () => {
+  // The safe direction: a concern whose severity we cannot read must not end
+  // up being the one that sits quietest.
+  assert.equal(escalationWindowFor(undefined, 30, MULTIPLIERS), 30);
+  assert.equal(escalationWindowFor('nonsense', 30, MULTIPLIERS), 30);
+  assert.equal(escalationWindowFor('high', 30, undefined), 30);
+});
+
+test('a medium is not due at the window a high would have escalated on', () => {
+  const c = concern({ alertedAt: minsAgo(31), severity: 'medium' });
+  assert.equal(dueForEscalation(c, NOW, escalationWindowFor('high', 30, MULTIPLIERS)), true);
+  assert.equal(dueForEscalation(c, NOW, escalationWindowFor('medium', 30, MULTIPLIERS)), false);
+});
+
+test('a medium escalates once its own window has passed', () => {
+  const c = concern({ alertedAt: minsAgo(91), severity: 'medium' });
+  assert.equal(dueForEscalation(c, NOW, escalationWindowFor('medium', 30, MULTIPLIERS)), true);
+});
+
+test('the stretch applies to the second hop too', () => {
+  // Escalated an hour ago: a high would be due again, a low is nowhere near.
+  const c = concern({
+    alertedAt: minsAgo(300),
+    escalatedTo: ['91000000002'],
+    lastEscalatedAt: minsAgo(60),
+    severity: 'low',
+  });
+  assert.equal(dueForEscalation(c, NOW, escalationWindowFor('high', 30, MULTIPLIERS)), true);
+  assert.equal(dueForEscalation(c, NOW, escalationWindowFor('low', 30, MULTIPLIERS)), false);
 });
