@@ -8,7 +8,10 @@ import {
 	mapAql,
 	isMissingProcedure,
 	isStaleProcedure,
-	SEVERITY_UNCLASSIFIED
+	sampleForLot,
+	lotKey,
+	SEVERITY_UNCLASSIFIED,
+	MIN_QC_LOT_QTY
 } from './routes-fg-qc.js';
 
 /*
@@ -167,6 +170,96 @@ test('isStaleProcedure recognises a procedure that is behind the route', () => {
 		false
 	);
 	assert.equal(isStaleProcedure(null, 'GetFGQCInspectionList'), false);
+});
+
+/*
+ * CDC's Carter's AQL Table, as printed and hung at Panchla: single sampling
+ * plan, normal inspection level II, Critical not allowed / Major 1.5 /
+ * Minor 2.5.
+ *
+ * Nine bands, not the fifteen of the textbook Z1.4 table. The small ones are
+ * absent: CDC's first band is 0-150 and asks for 20, so a lot of 60 is
+ * sampled at 20, not at the 13 a full Z1.4 table would give. Any test that
+ * assumes the textbook table is testing a plan CDC does not use.
+ *
+ * The stored number is ACCEPT, the left half of each printed pair.
+ */
+const CARTER_BANDS = [
+	{ from: 0,      to: 150,    sampleSize: 20,  major: 0,  minor: 1 },
+	{ from: 151,    to: 280,    sampleSize: 32,  major: 1,  minor: 2 },
+	{ from: 281,    to: 500,    sampleSize: 50,  major: 2,  minor: 3 },
+	{ from: 501,    to: 1200,   sampleSize: 80,  major: 3,  minor: 5 },
+	{ from: 1201,   to: 3200,   sampleSize: 125, major: 5,  minor: 7 },
+	{ from: 3201,   to: 10000,  sampleSize: 200, major: 7,  minor: 10 },
+	{ from: 10001,  to: 35000,  sampleSize: 315, major: 10, minor: 14 },
+	{ from: 35001,  to: 150000, sampleSize: 500, major: 14, minor: 21 },
+	{ from: 150001, to: 500000, sampleSize: 500, major: 14, minor: 21 }
+];
+
+test('sampleForLot reads the band the lot actually falls in', () => {
+	assert.equal(sampleForLot(CARTER_BANDS, 60), 20);
+	assert.equal(sampleForLot(CARTER_BANDS, 100), 20);
+	assert.equal(sampleForLot(CARTER_BANDS, 1500), 125);
+	assert.equal(sampleForLot(CARTER_BANDS, 30000), 315);
+	// Band edges belong to the band, both ends.
+	assert.equal(sampleForLot(CARTER_BANDS, 150), 20);
+	assert.equal(sampleForLot(CARTER_BANDS, 151), 32);
+	assert.equal(sampleForLot(CARTER_BANDS, 35000), 315);
+	assert.equal(sampleForLot(CARTER_BANDS, 35001), 500);
+});
+
+/*
+ * The bug this change exists to kill: a GPN of 100 was being sized against a
+ * job of 30,000, so the inspector was asked for 315 pieces out of 100.
+ */
+test('the GPN quantity and the job quantity give different samples', () => {
+	assert.equal(sampleForLot(CARTER_BANDS, 30000), 315);
+	assert.equal(sampleForLot(CARTER_BANDS, 100), 20);
+	assert.ok(sampleForLot(CARTER_BANDS, 100) <= 100, 'a sample must never exceed the lot it is drawn from');
+	assert.ok(sampleForLot(CARTER_BANDS, 30000) > 100, 'the job-sized sample is what used to exceed it');
+});
+
+/*
+ * The first band starts at 0 and asks for 20, so a lot under 20 cannot satisfy
+ * its own plan. MIN_QC_LOT_QTY is what keeps those out of the queue, and this
+ * fails if anyone lowers it under the smallest band's sample size.
+ */
+test('the minimum lot quantity is large enough for the first band', () => {
+	const first = CARTER_BANDS[0];
+	assert.ok(
+		MIN_QC_LOT_QTY >= first.sampleSize,
+		`MIN_QC_LOT_QTY (${MIN_QC_LOT_QTY}) is below the first band's sample size (${first.sampleSize}), `
+		+ 'so a lot could be queued that cannot supply its own sample'
+	);
+	for (const band of CARTER_BANDS) {
+		const smallest = Math.max(band.from, MIN_QC_LOT_QTY);
+		assert.ok(
+			band.sampleSize <= smallest,
+			`band ${band.from}-${band.to} asks for ${band.sampleSize} from a lot of ${smallest}`
+		);
+	}
+});
+
+/* Critical is "not allowed" on every band — the accept number is always 0. */
+test('every band accepts zero critical defects', () => {
+	for (const band of CARTER_BANDS) {
+		assert.equal(mapAql({ critical: 0, major: band.major, minor: band.minor }).critical, 0);
+	}
+});
+
+test('sampleForLot returns null when no band covers the lot', () => {
+	assert.equal(sampleForLot(CARTER_BANDS, 500001), null);
+	assert.equal(sampleForLot(CARTER_BANDS, null), null);
+	assert.equal(sampleForLot(null, 100), null);
+	// An open-ended band swallows everything above its floor.
+	assert.equal(sampleForLot([{ from: 35001, to: null, sampleSize: 500 }], 9e9), 500);
+});
+
+test('lotKey separates two jobs shipped on one GPN', () => {
+	assert.notEqual(lotKey(7068, 2192), lotKey(7068, 3095));
+	assert.equal(lotKey(7068, 2192), lotKey(7068, 2192));
+	// A lot with no job resolved must not collide with job 0.
+	assert.notEqual(lotKey(7068, null), lotKey(7068, 0));
 });
 
 test('isMissingProcedure recognises only a missing procedure', () => {

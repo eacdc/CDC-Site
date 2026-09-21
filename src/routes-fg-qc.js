@@ -42,6 +42,110 @@ const DEFAULT_COMPANY_ID = Number(process.env.FGQC_COMPANY_ID || 2);
 const DEFAULT_FROM_GPN_DATE = process.env.FGQC_FROM_GPN_DATE || '2026-09-01';
 const DOUBLE_SUBMIT_WINDOW_MS = 8000;
 
+/*
+ * A GPN below this many pieces is not worth inspecting: the AQL plan for a lot
+ * that small asks for nearly all of it, and CDC does not want the queue
+ * carrying them. Such lots are still listed, marked, and refused at save time —
+ * a rule the browser alone enforces is not a rule.
+ */
+const MIN_QC_LOT_QTY = Number(process.env.FGQC_MIN_LOT_QTY || 50);
+
+/*
+ * The lot is the GPN, so lot size is what this GPN delivered, in pieces.
+ *
+ * outercarton x innercarton x quantityperpack is how the rest of this codebase
+ * already reads a GPN — see GPNAgg in src/job-card-queries.js. (A dispatch note
+ * drops the outer carton; a GPN does not.)
+ *
+ * GetPendingFGQCList reports a LotSize of its own, and it is the job quantity,
+ * not the GPN's. Matching a sampling plan against that asks for a sample drawn
+ * from the whole job while the inspector is standing in front of one delivery —
+ * which is how a lot of 100 came to be inspected against a sample of 315.
+ */
+const GPN_UNITS_SQL_HEAD = `
+SELECT
+  fgd.FGTransactionID,
+  fgd.JobBookingID,
+  SUM(
+    ISNULL(fgd.outercarton, 0)
+    * ISNULL(fgd.innercarton, 0)
+    * ISNULL(fgd.quantityperpack, 0)
+  ) AS GpnUnits
+FROM dbo.FinishGoodsTransactionDetail fgd
+WHERE ISNULL(fgd.IsDeletedTransaction, 0) = 0
+  AND fgd.FGTransactionID IN (`;
+
+const GPN_UNITS_SQL_TAIL = `)
+GROUP BY fgd.FGTransactionID, fgd.JobBookingID;`;
+
+function fmtQty(n) {
+	return Number(n || 0).toLocaleString('en-IN');
+}
+
+function lotKey(fgTransactionId, jobBookingId) {
+	return `${fgTransactionId}:${jobBookingId == null ? '' : jobBookingId}`;
+}
+
+/**
+ * GPN quantity per lot, for the transaction ids on one page of the queue.
+ * Returns a Map keyed by lotKey(). An empty id list skips the round trip.
+ */
+async function fetchGpnUnits(pool, fgTransactionIds) {
+	const ids = [...new Set(fgTransactionIds.filter((id) => id != null))];
+	const out = new Map();
+	if (!ids.length) return out;
+
+	const request = pool.request();
+	const names = ids.map((id, i) => {
+		request.input(`fg${i}`, sql.BigInt, id);
+		return `@fg${i}`;
+	});
+	const result = await request.query(GPN_UNITS_SQL_HEAD + names.join(', ') + GPN_UNITS_SQL_TAIL);
+
+	for (const row of result.recordset || []) {
+		const key = lotKey(asInt(pick(row, 'FGTransactionID')), asInt(pick(row, 'JobBookingID')));
+		out.set(key, asNum(pick(row, 'GpnUnits')) || 0);
+	}
+	return out;
+}
+
+/**
+ * The sampling plan bands, so the queue can show the sample a lot will need.
+ *
+ * The number that counts still comes from GetFinishGoodsQCTemplate when the
+ * form opens, and the verdict from SaveFinishGoodsQCInspection. This is the
+ * same table read for display, so the inspector sees the size of the job
+ * before walking to it.
+ */
+async function fetchSamplingBands(pool, companyId) {
+	const result = await pool.request()
+		.input('CompanyID', sql.BigInt, companyId)
+		.query(`
+			SELECT LotRangeFrom, LotRangeTo, SampleSize
+			FROM dbo.FinishGoodsQCSamplingPlan
+			WHERE (@CompanyID IS NULL OR CompanyID = @CompanyID)
+			  AND (SamplingMethodType IS NULL OR SamplingMethodType = 'Carter')
+			ORDER BY LotRangeFrom;
+		`);
+	return (result.recordset || []).map((row) => ({
+		from: asNum(pick(row, 'LotRangeFrom')),
+		to: asNum(pick(row, 'LotRangeTo')),
+		sampleSize: asNum(pick(row, 'SampleSize'))
+	}));
+}
+
+/** The first band covering this lot size, or null when none does. */
+function sampleForLot(bands, lotSize) {
+	if (!Array.isArray(bands) || lotSize == null) return null;
+	for (const band of bands) {
+		const from = band.from == null ? -Infinity : band.from;
+		const to = band.to == null ? Infinity : band.to;
+		if (lotSize >= from && lotSize <= to) return band.sampleSize;
+	}
+	return null;
+}
+
+
 /** In-memory guard against double-clicks. Rework resubmits are allowed after the window. */
 const recentSubmits = new Map();
 
@@ -497,9 +601,59 @@ router.get('/qc/pending', async (req, res) => {
 
 		const result = await request.execute('GetPendingFGQCList');
 		const paged = parsePaged(result);
+		const rows = paged.rows.map(mapPendingRow);
+
+		/*
+		 * Replace the procedure's LotSize with this GPN's own quantity.
+		 *
+		 * The lot is the delivery, so the plan has to be matched against what
+		 * was delivered. Done here rather than in the procedure because the
+		 * arithmetic is the repo's existing reading of a GPN and does not
+		 * depend on a procedure this API cannot see.
+		 *
+		 * If the lookup fails the queue still renders — with the old numbers,
+		 * which is worse than useless, so it says so per row rather than
+		 * letting a job-sized sample pass for a delivery-sized one.
+		 */
+		let gpnUnits = new Map();
+		let unitsFailed = false;
+		try {
+			gpnUnits = await fetchGpnUnits(pool, rows.map((r) => r.fgTransactionId));
+		} catch (unitsErr) {
+			unitsFailed = true;
+			console.warn('[fg-qc] GPN quantity lookup failed:', unitsErr?.message);
+		}
+
+		let bands = null;
+		try {
+			bands = await fetchSamplingBands(pool, companyId);
+		} catch (bandErr) {
+			console.warn('[fg-qc] sampling plan lookup failed:', bandErr?.message);
+		}
+
+		for (const row of rows) {
+			const units = gpnUnits.get(lotKey(row.fgTransactionId, row.jobBookingId));
+			if (units != null) {
+				row.lotSize = units;
+				/*
+				 * The procedure sized this against the job, so it is wrong for
+				 * the same reason LotSize was. Re-read it from the plan, or
+				 * leave it empty — never carry the old number forward.
+				 */
+				row.requiredSample = bands ? sampleForLot(bands, units) : null;
+			} else if (unitsFailed) {
+				row.lotSizeUnverified = true;
+			}
+			row.qcRequired = !(row.lotSize > 0 && row.lotSize < MIN_QC_LOT_QTY);
+			row.qcSkipReason = row.qcRequired
+				? null
+				: `GPN quantity is ${fmtQty(row.lotSize)}, below the ${fmtQty(MIN_QC_LOT_QTY)} minimum. This lot does not need QC.`;
+		}
+
 		return res.json({
 			status: true,
-			rows: paged.rows.map(mapPendingRow),
+			rows,
+			minLotQty: MIN_QC_LOT_QTY,
 			total: paged.total,
 			page,
 			pageSize,
@@ -623,6 +777,33 @@ router.post('/qc/inspections', async (req, res) => {
 
 	try {
 		const pool = await getPool(db);
+
+		/*
+		 * The same minimum the queue shows, enforced where it counts. The
+		 * browser greys the button out; this is what makes it a rule — a
+		 * bookmarked form URL, a stale tab or a direct POST all land here.
+		 *
+		 * A lookup failure does not block the submit. Refusing to record an
+		 * inspection someone has already carried out, because a supporting
+		 * query failed, loses real work to protect a threshold.
+		 */
+		try {
+			const units = await fetchGpnUnits(pool, [inspection.fgTransactionID]);
+			const qty = units.get(lotKey(inspection.fgTransactionID, inspection.jobBookingID));
+			if (qty != null && qty > 0 && qty < MIN_QC_LOT_QTY) {
+				recentSubmits.delete(submitKey);
+				return res.status(400).json({
+					status: false,
+					success: false,
+					error: `GPN quantity is ${fmtQty(qty)}, below the ${fmtQty(MIN_QC_LOT_QTY)} minimum. This lot does not need QC.`,
+					lotSize: qty,
+					minLotQty: MIN_QC_LOT_QTY
+				});
+			}
+		} catch (minErr) {
+			console.warn('[fg-qc] minimum-quantity check skipped:', minErr?.message);
+		}
+
 		const result = await pool.request()
 			.input('UserID', sql.BigInt, userId)
 			.input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspection))
@@ -1565,4 +1746,8 @@ export default router;
  * number, which is the failure mode spec section 3 exists to prevent, so it
  * is worth a test rather than a read-through.
  */
-export { severityOf, mapTemplateItem, mapTemplate, mapAql, isMissingProcedure, isStaleProcedure, SEVERITY_UNCLASSIFIED };
+export {
+	severityOf, mapTemplateItem, mapTemplate, mapAql,
+	isMissingProcedure, isStaleProcedure, sampleForLot, lotKey,
+	SEVERITY_UNCLASSIFIED, MIN_QC_LOT_QTY
+};
