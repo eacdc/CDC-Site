@@ -51,12 +51,35 @@ app.use((req, res, next) => {
 	res.setHeader('Access-Control-Allow-Private-Network', 'true');
 	next();
 });
+
+// Set CORS_ORIGINS to a comma-separated list to restrict which sites' pages may
+// call this API from a browser, e.g.
+//
+//   CORS_ORIGINS=https://whatsappsummarizer.onrender.com,http://localhost:3000
+//
+// Left UNSET, every origin is reflected back, which is what this has always
+// done. That is the default on purpose: this server also carries the CDC Bills
+// routes, and quietly cutting off a caller nobody remembered would be a worse
+// failure than a permissive header. Turn it on deliberately, once the list of
+// callers is known.
+//
+// It only governs what a BROWSER will allow one page to do to another; it is
+// not authentication, and anything holding a token can still call the API
+// directly.
+const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
+	.split(',')
+	.map((o) => o.trim())
+	.filter(Boolean);
+
 app.use(cors({
 	origin: (origin, callback) => {
 		if (!origin || origin === 'null') {
 			return callback(null, '*');
 		}
-		return callback(null, origin);
+		if (allowedOrigins.length === 0) {
+			return callback(null, origin);
+		}
+		return callback(null, allowedOrigins.includes(origin) ? origin : false);
 	},
 	credentials: true
 }));

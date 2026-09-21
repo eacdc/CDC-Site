@@ -282,8 +282,28 @@ the fragment the dashboard routes on; `alert-format.test.js` parses the link
 the same way the frontend does, so the two cannot drift apart again.
 
 **`DASHBOARD_BASE_URL` is opened on somebody else's phone**, so `localhost`
-makes the link dead for everyone but the machine running the dashboard. Set it
-to a LAN address or a public hostname.
+makes the link dead for everyone but the machine running the dashboard. It is
+`https://whatsappsummarizer.onrender.com` in production.
+
+## Deployed at
+
+| | |
+|---|---|
+| dashboard | `https://whatsappsummarizer.onrender.com` (static) |
+| API | `https://cdcapi.onrender.com` |
+
+The dashboard chooses its API by the hostname it was served from
+(`apiBaseFor` in the frontend's `app.js`): localhost for development, the
+deployed API otherwise, with the `wa_api_base` localStorage key overriding
+both. A static site has no environment variables at runtime, which is why that
+address is a constant in the file rather than configuration.
+
+Every page links with an explicit `.html`, so no rewrite rules are needed on
+the host. `serve.json` is for local `npx serve` only and is not read by Render.
+
+Set on the API service: `DASHBOARD_BASE_URL`, and everything in `.env.example`
+- the backend reads `.env` from the repo root locally, and that file is not
+deployed, so anything missing fails at runtime rather than at deploy.
 
 **Alerts are written to `alerts` before the send**, then updated with the result,
 so a crash mid-send leaves a record that we tried. `alertedAt` is likewise
