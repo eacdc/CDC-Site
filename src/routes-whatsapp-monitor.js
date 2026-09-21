@@ -212,6 +212,7 @@ router.get('/owners', requireCdcBillsAuth, handle(async (_req, res) => {
     owners: ownerRows,
     routing: routingRows,
     groupKinds: GROUP_KINDS,
+    alertAfterMin: config.alertAfterMin,
     categories: CONCERN_CATEGORIES,
     defaults: {
       ownerPhone: config.defaultOwnerPhone || null,

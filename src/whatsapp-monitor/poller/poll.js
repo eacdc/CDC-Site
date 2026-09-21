@@ -7,6 +7,7 @@ import { filterNewMessages, newestOf } from './cursor.js';
 import { assignThreadRoots } from '../detector/threads.js';
 import { detectForGroup } from '../detector/detect.js';
 import { runEscalations } from '../router/escalate.js';
+import { runFirstAlerts } from '../router/first-alert.js';
 import { runAckPoll } from '../router/acknowledge.js';
 import { runResolutionChecks } from '../detector/resolution.js';
 import { runTranscriptions } from '../media/transcribe.js';
@@ -254,6 +255,10 @@ export async function runPoll() {
   // later.
   run.concernsAcknowledged = await runAckPoll();
   run.concernsPossiblyResolved = await runResolutionChecks();
+  // First alerts go after the resolution check, so a thread that has just said
+  // "running" suppresses its own alert in this same cycle, and before
+  // escalations, so nothing is escalated in the cycle it was first alerted.
+  run.concernsAlerted = await runFirstAlerts();
   run.concernsEscalated = await runEscalations();
 
   run.finishedAt = new Date();

@@ -40,6 +40,9 @@ test('a markdown fence is stripped like everywhere else', () => {
 const overdue = (extra = {}) => ({
   status: 'open',
   createdAt: new Date(Date.now() - 60 * 60_000),
+  // Escalation is measured from the alert, so an overdue concern is one that
+  // was DMed an hour ago and answered by nobody.
+  alertedAt: new Date(Date.now() - 60 * 60_000),
   escalatedTo: [],
   ...extra,
 });

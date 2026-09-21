@@ -14,6 +14,9 @@ const concern = (over = {}) => ({
   ownerId: '91000000001',
   status: 'open',
   createdAt: minsAgo(31),
+  // The first hop runs from the ALERT, not from when the concern was raised -
+  // a concern now waits 15 or 30 minutes for its first DM.
+  alertedAt: minsAgo(31),
   lastEscalatedAt: null,
   escalatedTo: [],
   ...over,
@@ -26,7 +29,7 @@ test('escalates an open concern once the window has passed', () => {
 });
 
 test('does not escalate before the window', () => {
-  assert.equal(dueForEscalation(concern({ createdAt: minsAgo(29) }), NOW, 30), false);
+  assert.equal(dueForEscalation(concern({ alertedAt: minsAgo(29) }), NOW, 30), false);
 });
 
 test('never escalates an acknowledged concern - a human said they have it', () => {
@@ -39,14 +42,14 @@ test('never escalates a resolved concern', () => {
 
 test('the clock restarts at each hop, giving each person the full window', () => {
   // Raised 60 min ago but escalated 10 min ago: the second person still has time.
-  const c = concern({ createdAt: minsAgo(60), escalatedTo: ['91000000002'], lastEscalatedAt: minsAgo(10) });
+  const c = concern({ alertedAt: minsAgo(60), escalatedTo: ['91000000002'], lastEscalatedAt: minsAgo(10) });
   assert.equal(dueForEscalation(c, NOW, 30), false);
   assert.equal(dueForEscalation({ ...c, lastEscalatedAt: minsAgo(31) }, NOW, 30), true);
 });
 
 test('stops after two hops however long it stays open', () => {
   const c = concern({
-    createdAt: minsAgo(600),
+    alertedAt: minsAgo(600),
     escalatedTo: ['91000000002', '91000000003'],
     lastEscalatedAt: minsAgo(300),
   });
@@ -55,7 +58,7 @@ test('stops after two hops however long it stays open', () => {
 });
 
 test('honours a per-route escalation window', () => {
-  const c = concern({ createdAt: minsAgo(10) });
+  const c = concern({ alertedAt: minsAgo(10) });
   assert.equal(dueForEscalation(c, NOW, 30), false);
   assert.equal(dueForEscalation(c, NOW, 5), true);
 });
@@ -141,4 +144,21 @@ test('someone escalated into a concern can acknowledge it', () => {
 test('returns null when none of the open concerns are theirs', () => {
   assert.equal(findAckTarget('91000000009', [concern()]), null);
   assert.equal(findAckTarget('91000000001', []), null);
+});
+
+// --- never alerted, never escalated ---------------------------------------
+
+test('a concern nobody was ever alerted about does not escalate', () => {
+  // Escalation means "nobody answered the alert". With no alert there is
+  // nothing to answer, and waking the next person up the chain would be the
+  // first anyone had heard of it.
+  assert.equal(dueForEscalation(concern({ alertedAt: null }), NOW, 30), false);
+});
+
+test('the first hop is measured from the alert, not from when it was raised', () => {
+  // Raised an hour ago but only DMed five minutes ago: the owner still has the
+  // full window before anyone goes over their head.
+  const c = concern({ createdAt: minsAgo(60), alertedAt: minsAgo(5) });
+  assert.equal(dueForEscalation(c, NOW, 30), false);
+  assert.equal(dueForEscalation({ ...c, alertedAt: minsAgo(31) }, NOW, 30), true);
 });

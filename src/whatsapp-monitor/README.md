@@ -228,24 +228,58 @@ routing is missing or the DM fails. Otherwise a permanent misconfiguration would
 re-send the same batch to the LLM every five minutes forever, at real cost.
 
 **De-duplication.** A candidate is absorbed by a live (`open` or `acknowledged`)
-concern of the same group and category raised within `cooldownMin` (default 30):
-its message ids are appended and **no second alert is sent**. One machine going
-down generates a dozen messages; that is one problem. A `resolved` concern never
-absorbs — a recurrence deserves a fresh alert.
+concern in the same reply thread: its message ids are appended and **no second
+alert is sent**. One machine going down generates a dozen messages; that is one
+problem. A `resolved` concern never absorbs — a recurrence deserves a fresh
+alert.
 
 **Routing**, most specific first: a `routing` row matching `groupId + category`,
-then `"*" + category`, then `DEFAULT_OWNER_PHONE`. If none resolves, the concern
-is still recorded and an **error** is logged saying nobody was alerted — silence
-there would be the worst possible failure.
+then the group's own person, then `"*" + category`, then `DEFAULT_OWNER_PHONE`.
+If none resolves, the concern is still recorded and an **error** is logged
+saying nobody will be alerted — silence there would be the worst possible
+failure.
+
+### Nothing is DMed straight away
+
+Raising a concern and alerting about it are separate steps, on separate cycles.
+`detect.js` records what it found; `router/first-alert.js` decides later whether
+anyone still needs telling.
+
+| group kind | waits | env |
+|---|---|---|
+| `internal` | 30 min | `ALERT_AFTER_MIN_INTERNAL` |
+| `client` | 15 min | `ALERT_AFTER_MIN_CLIENT` |
+
+The clock runs from the **triggering message**, not from when the poll noticed
+it — a slow cycle must not silently extend the window.
+
+No DM is sent at all if, before the window expires, the concern is acknowledged
+or resolved, or the resolution check decides the thread says it is fixed. That
+last one is the point of the whole arrangement: most problems are handled by the
+people already in the group, and an alert that arrives after the fitter has
+fixed the machine is noise. Noise is what stops managers reading alerts.
+
+The wait applies to **every severity**, high included. A machine stopping at
+09:00 in an internal group reaches a phone at 09:30 at the earliest. That is a
+deliberate trade of speed for quiet; if it proves too slow, it is an env var per
+kind, not a code change.
 
 **Alerts are written to `alerts` before the send**, then updated with the result,
-so a crash mid-send leaves a record that we tried.
+so a crash mid-send leaves a record that we tried. `alertedAt` is likewise
+stamped on the concern before the send, so a crash cannot DM the same person
+twice.
 
 ## Acknowledgement and escalation
 
 Both run on every poll cycle, **acknowledgements first** — a concern
 acknowledged in this cycle must not then be escalated a moment later for being
 unacknowledged.
+
+Escalation's first hop is measured from **`alertedAt`**, not from when the
+concern was raised — otherwise a concern that waited 30 minutes for its first DM
+would be escalated past its owner in the same cycle. A concern that was never
+alerted never escalates: escalation means nobody answered the alert, and there
+was no alert.
 
 **ACK.** The poller reads the CDC number's 1:1 chat with anyone who has an open
 concern assigned or escalated to them, and looks for the word `ACK` as a whole
