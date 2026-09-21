@@ -27,11 +27,13 @@ export async function runEscalations() {
     const groupIds = [...new Set(open.map((c) => c.groupId))];
     const groupDocs = await groups().find({ _id: { $in: groupIds } }).toArray();
     const groupNames = new Map(groupDocs.map((g) => [g._id, g.name]));
+    const groupOwners = new Map(groupDocs.map((g) => [g._id, g.ownerPhone ?? null]));
 
     const routes = await routing().find({}).toArray();
 
     for (const concern of open) {
       const route = resolveRouting(concern.groupId, concern.category, routes, {
+        groupOwnerPhone: groupOwners.get(concern.groupId) ?? null,
         ownerPhone: config.defaultOwnerPhone,
         cooldownMin: config.defaultCooldownMin,
         escalateAfterMin: config.defaultEscalateAfterMin,

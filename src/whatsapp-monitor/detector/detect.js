@@ -54,6 +54,7 @@ export async function detectForGroup(group, { silent = false } = {}) {
   try {
     const result = await llm().classify({
       groupName: group.name,
+      groupKind: group.kind,
       newMessages: judgeable.map(toLlm),
       contextMessages: context.map(toLlm),
     });
@@ -91,6 +92,7 @@ export async function detectForGroup(group, { silent = false } = {}) {
 
       for (const candidate of result.concerns) {
         const route = resolveRouting(group._id, candidate.category, routes, {
+          groupOwnerPhone: group.ownerPhone,
           ownerPhone: config.defaultOwnerPhone,
           cooldownMin: config.defaultCooldownMin,
           escalateAfterMin: config.defaultEscalateAfterMin,

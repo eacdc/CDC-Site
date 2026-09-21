@@ -6,92 +6,254 @@
     "",
     "Staff and customer names are generalised because this file lives in git",
     "forever. Machine names are kept: that vocabulary is exactly what the",
-    "classifier has to recognise."
+    "classifier has to recognise.",
+    "",
+    "Cases carry a `kind`: 'internal' (the default, omitted) or 'client'. A client",
+    "case is judged by client-prompt.md, which deliberately flags far more - an",
+    "unanswered customer question is a concern there and is not one internally.",
+    "Both prompts are exercised in one run so tightening one cannot quietly",
+    "loosen the other."
   ],
   "cases": [
     {
       "name": "machine down, no response to repeated messages",
       "group": "CDC Maintenance",
       "messages": [
-        { "msgId": "m1", "senderName": "Operator A", "text": "Sudarshan cutting machine abhi tak down hai, sirf Proteck cutter chal raha hai. Kal se bol rahe hain koi jawab nahi mila" }
+        {
+          "msgId": "m1",
+          "senderName": "Operator A",
+          "text": "Sudarshan cutting machine abhi tak down hai, sirf Proteck cutter chal raha hai. Kal se bol rahe hain koi jawab nahi mila"
+        }
       ],
-      "expect": { "concern": true, "category": "machine_breakdown" }
+      "expect": {
+        "concern": true,
+        "category": "machine_breakdown"
+      }
     },
     {
       "name": "production halted by a broken lock",
       "group": "CDC Maintenance",
       "messages": [
-        { "msgId": "m1", "senderName": "Operator B", "text": "machine ka lock tut gaya, production band hai" }
+        {
+          "msgId": "m1",
+          "senderName": "Operator B",
+          "text": "machine ka lock tut gaya, production band hai"
+        }
       ],
-      "expect": { "concern": true, "category": "machine_breakdown" }
+      "expect": {
+        "concern": true,
+        "category": "machine_breakdown"
+      }
     },
     {
       "name": "photosensor fault, reported with a photo caption",
       "group": "CDC Maintenance",
       "messages": [
-        { "msgId": "m1", "senderName": "Operator C", "text": "Eterna foil machine. stop photosel not working" }
+        {
+          "msgId": "m1",
+          "senderName": "Operator C",
+          "text": "Eterna foil machine. stop photosel not working"
+        }
       ],
-      "expect": { "concern": true, "category": "machine_breakdown" }
+      "expect": {
+        "concern": true,
+        "category": "machine_breakdown"
+      }
     },
     {
       "name": "lift stopped, reported as a photo caption",
       "group": "CDC Maintenance",
       "messages": [
-        { "msgId": "m1", "senderName": "Operator D", "text": "Lift stop please solve it" }
+        {
+          "msgId": "m1",
+          "senderName": "Operator D",
+          "text": "Lift stop please solve it"
+        }
       ],
-      "expect": { "concern": true, "category": "machine_breakdown" }
+      "expect": {
+        "concern": true,
+        "category": "machine_breakdown"
+      }
     },
     {
       "name": "material not received",
       "group": "CDC Tangra Production",
       "messages": [
-        { "msgId": "m1", "senderName": "Supervisor A", "text": "outer foam die abhi tak nahi aaya, die cutting ruka hua hai" }
+        {
+          "msgId": "m1",
+          "senderName": "Supervisor A",
+          "text": "outer foam die abhi tak nahi aaya, die cutting ruka hua hai"
+        }
       ],
-      "expect": { "concern": true, "category": "material_shortage" }
+      "expect": {
+        "concern": true,
+        "category": "material_shortage"
+      }
     },
     {
       "name": "customer rejection",
       "group": "CDC Tangra Production",
       "messages": [
-        { "msgId": "m1", "senderName": "Supervisor B", "text": "customer ne 250 pcs boxes reject kar diye, ek piece repair karke reconfirm karwana hai" }
+        {
+          "msgId": "m1",
+          "senderName": "Supervisor B",
+          "text": "customer ne 250 pcs boxes reject kar diye, ek piece repair karke reconfirm karwana hai"
+        }
       ],
-      "expect": { "concern": true, "category": "customer_complaint" }
+      "expect": {
+        "concern": true,
+        "category": "customer_complaint"
+      }
     },
-
     {
       "name": "FALSE POSITIVE: a standing instruction, not a fault",
       "group": "CDC Commercial Sales",
       "messages": [
-        { "msgId": "m1", "senderName": "Manager", "text": "Kongsberg plotter is not to be used for production jobs due to recurring faults. Instruction from management." }
+        {
+          "msgId": "m1",
+          "senderName": "Manager",
+          "text": "Kongsberg plotter is not to be used for production jobs due to recurring faults. Instruction from management."
+        }
       ],
-      "expect": { "concern": false, "why": "telling people how to work is not a fault report, even though it exists because of past faults" }
+      "expect": {
+        "concern": false,
+        "why": "telling people how to work is not a fault report, even though it exists because of past faults"
+      }
     },
     {
       "name": "FALSE POSITIVE: planned maintenance announced in advance",
       "group": "CDC Commercial Sales",
       "messages": [
-        { "msgId": "m1", "senderName": "Manager", "text": "Mitsu press is going into maintenance from tomorrow and will be out of service for 4-5 days. Please do not commit delivery dates without discussion." }
+        {
+          "msgId": "m1",
+          "senderName": "Manager",
+          "text": "Mitsu press is going into maintenance from tomorrow and will be out of service for 4-5 days. Please do not commit delivery dates without discussion."
+        }
       ],
-      "expect": { "concern": false, "why": "a planned outage is information; it becomes a concern only when something actually slips" }
+      "expect": {
+        "concern": false,
+        "why": "a planned outage is information; it becomes a concern only when something actually slips"
+      }
     },
     {
       "name": "FALSE POSITIVE: a request for contact",
       "group": "CDC Commercial Sales",
       "messages": [
-        { "msgId": "m1", "senderName": "Colleague", "text": "Who is handling the MCC job? Please contact me immediately, it is urgent" }
+        {
+          "msgId": "m1",
+          "senderName": "Colleague",
+          "text": "Who is handling the MCC job? Please contact me immediately, it is urgent"
+        }
       ],
-      "expect": { "concern": false, "why": "wanting an answer is not reporting a problem; 'immediately' and 'urgent' are phrasing, not evidence" }
+      "expect": {
+        "concern": false,
+        "why": "wanting an answer is not reporting a problem; 'immediately' and 'urgent' are phrasing, not evidence"
+      }
     },
-
     {
       "name": "quiet chatter stays quiet",
       "group": "CDC Tangra Production",
       "messages": [
-        { "msgId": "m1", "senderName": "Operator A", "text": "good morning" },
-        { "msgId": "m2", "senderName": "Operator B", "text": "aaj ka production 4200 pcs" },
-        { "msgId": "m3", "senderName": "Operator A", "text": "ok thik hai" }
+        {
+          "msgId": "m1",
+          "senderName": "Operator A",
+          "text": "good morning"
+        },
+        {
+          "msgId": "m2",
+          "senderName": "Operator B",
+          "text": "aaj ka production 4200 pcs"
+        },
+        {
+          "msgId": "m3",
+          "senderName": "Operator A",
+          "text": "ok thik hai"
+        }
       ],
-      "expect": { "concern": false, "why": "greetings and production counts - the common case" }
+      "expect": {
+        "concern": false,
+        "why": "greetings and production counts - the common case"
+      }
+    },
+    {
+      "name": "client says colour is not matching the approved proof",
+      "group": "CDC - Customer Orders",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "c1",
+          "senderName": "Customer Contact",
+          "text": "Colour is not matching the proof we approved. Second time this is happening, kindly look into this."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "category": "quality_reprint"
+      }
+    },
+    {
+      "name": "client chasing a dispatch date",
+      "group": "CDC - Customer Orders",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "c2",
+          "senderName": "Customer Contact",
+          "text": "Any update on dispatch? We are still waiting."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "category": "delivery_delay"
+      }
+    },
+    {
+      "name": "client asks a plain question nobody has answered",
+      "group": "CDC - Customer Orders",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "c3",
+          "senderName": "Customer Contact",
+          "text": "Who is handling this job now? Please ask him to call me."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "why": "in a client group an unanswered ask is itself the problem - the opposite of the internal rule"
+      }
+    },
+    {
+      "name": "client simply approving is not a concern",
+      "group": "CDC - Customer Orders",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "c4",
+          "senderName": "Customer Contact",
+          "text": "Received, thanks. Approved for print."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "a customer confirming is the outcome we want, not a problem"
+      }
+    },
+    {
+      "name": "our own staff posting an update is not a concern",
+      "group": "CDC - Customer Orders",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "c5",
+          "senderName": "CDC Coordinator",
+          "text": "Sir, proof sent on mail just now. Dispatch planned Thursday."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "CDC's own update is not a customer concern"
+      }
     }
   ]
 }

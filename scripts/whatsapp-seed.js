@@ -20,6 +20,11 @@ for (const g of found) {
       $set: { name: g.name },
       $setOnInsert: {
         monitored: false,
+        // Internal until somebody says otherwise in Admin: the client prompt
+        // raises far more, and applying it to a plant group by accident would
+        // bury a manager in alerts.
+        kind: 'internal',
+        ownerPhone: null,
         department: null,
         joinedAt: null,
         lastTs: null,

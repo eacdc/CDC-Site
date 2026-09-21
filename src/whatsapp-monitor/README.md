@@ -361,12 +361,42 @@ warrant a second opinion.
 
 Its prompt is `summariser/prompt.md`, same arrangement as the detector's.
 
+## Internal groups and client groups
+
+Every group has a `kind`, set in Admin or from the CLI:
+
+    npm run whatsapp:groups -- "<id>" client
+    npm run whatsapp:groups -- "<id>" internal
+
+It decides which prompt judges the group, and nothing else:
+
+| kind | prompt | the question it asks |
+|---|---|---|
+| `internal` (default) | `detector/prompt.md` | has something gone wrong on the floor? |
+| `client` | `detector/client-prompt.md` | has the customer said something we must answer? |
+
+The client bar is deliberately much lower. A customer question nobody has
+answered is a concern there, and is explicitly *not* one in an internal group —
+the same message, judged two different ways, because in a plant a question is
+just a question and in a customer thread an unanswered one loses accounts.
+
+New groups are `internal`, because the client prompt raises far more and
+applying it to a plant group by accident would bury someone in alerts.
+
+A group can also name one **person**, set in Admin. They receive every concern
+from that group — first alert and escalations both — sitting above the wildcard
+routing rules and the default owner, but below a rule naming this exact group
+*and* category. See `router/resolve.js`.
+
 ## Changing the prompt
 
-`detector/prompt.md` is the classifier's system prompt — plain Markdown, no code
-around it. Edit and restart. It holds the CDC vocabulary (romanised
-Hindi/Bengali signals, machine names, what counts as routine chatter) and the
-severity definitions.
+`detector/prompt.md` and `detector/client-prompt.md` are the classifier's system
+prompts — plain Markdown, no code around it. Edit and restart. They hold the CDC
+vocabulary (romanised Hindi/Bengali signals, machine names, what counts as
+routine chatter) and the severity definitions.
+
+`npm run whatsapp:eval` exercises **both** in one run, so tightening one cannot
+quietly loosen the other.
 
 ## Swapping the LLM
 
@@ -407,7 +437,8 @@ poller/cursor.js       pure cursor/overlap filtering (unit tested)
 poller/poll.js         per-group poll, session check, run recording
 llm/                   the only place a vendor SDK is imported
 llm/parse.js           validates classifier JSON; throws to trigger escalation
-detector/prompt.md     the classifier's system prompt — edit freely
+detector/prompt.md     the internal-group system prompt — edit freely
+detector/client-prompt.md  the client-group system prompt — edit freely
 detector/concerns.js   de-duplication rules (pure, unit tested)
 detector/detect.js     classify -> de-dup -> open concern -> alert
 summariser/prompt.md   the summariser's system prompt — edit freely

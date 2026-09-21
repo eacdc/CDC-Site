@@ -21,7 +21,8 @@ const { cases } = JSON.parse(
   readFileSync(new URL('../src/whatsapp-monitor/detector/eval-cases.json', import.meta.url), 'utf8'),
 );
 
-console.log(`${cases.length} case(s)\n`);
+const byKind = (k) => cases.filter((c) => (c.kind ?? 'internal') === k).length;
+console.log(`${cases.length} case(s) - ${byKind('internal')} internal, ${byKind('client')} client\n`);
 
 const failures = [];
 
@@ -32,6 +33,9 @@ for (const testCase of cases) {
   try {
     result = await llm().classify({
       groupName: testCase.group,
+      // Which prompt this case is judged by. Both are exercised in one run, so
+      // tightening the internal prompt cannot quietly loosen the client one.
+      groupKind: testCase.kind ?? 'internal',
       newMessages: testCase.messages.map((m) => ({ ...m, ts: new Date(), replyTo: m.replyTo ?? null })),
       contextMessages: [],
     });

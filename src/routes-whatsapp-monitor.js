@@ -43,7 +43,7 @@ import {
   runs,
 } from './whatsapp-monitor/db.js';
 import { whatsappMonitorHealth } from './whatsapp-monitor/index.js';
-import { CONCERN_CATEGORIES } from './whatsapp-monitor/llm/types.js';
+import { CONCERN_CATEGORIES, GROUP_KINDS } from './whatsapp-monitor/llm/types.js';
 import { threadQueryFor } from './whatsapp-monitor/detector/threads.js';
 
 const router = Router();
@@ -211,6 +211,7 @@ router.get('/owners', requireCdcBillsAuth, handle(async (_req, res) => {
   res.json({
     owners: ownerRows,
     routing: routingRows,
+    groupKinds: GROUP_KINDS,
     categories: CONCERN_CATEGORIES,
     defaults: {
       ownerPhone: config.defaultOwnerPhone || null,
@@ -226,8 +227,32 @@ router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(as
   const group = await groups().findOne({ _id: req.params.id });
   if (!group) return res.status(404).json({ error: 'Group not found' });
 
-  const { monitored, department, joinedAt } = req.body ?? {};
+  const { monitored, department, joinedAt, kind, ownerPhone } = req.body ?? {};
   const update = {};
+
+  if (kind !== undefined) {
+    if (!GROUP_KINDS.includes(kind)) {
+      return res.status(400).json({ error: `kind must be one of: ${GROUP_KINDS.join(', ')}` });
+    }
+    update.kind = kind;
+  }
+
+  // The one person alerted for everything in this group. Cleared with null or
+  // an empty string, which is how the Admin dropdown says "no-one in
+  // particular" and falls back to the category routing rules.
+  if (ownerPhone !== undefined) {
+    if (!ownerPhone) {
+      update.ownerPhone = null;
+    } else if (!PHONE.test(ownerPhone)) {
+      return res.status(400).json({ error: 'ownerPhone must be 10-15 digits, no + or spaces' });
+    } else if (!(await owners().findOne({ _id: ownerPhone }))) {
+      // Alerting a number with no owner doc would send a DM signed "unknown"
+      // and give the escalation chain nowhere to go next.
+      return res.status(400).json({ error: `Add ${ownerPhone} as a person first` });
+    } else {
+      update.ownerPhone = ownerPhone;
+    }
+  }
 
   if (typeof monitored === 'boolean') {
     update.monitored = monitored;

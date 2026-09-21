@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { findDuplicate } from './detector/concerns.js';
 import { parseConcerns, MalformedLlmOutput } from './llm/parse.js';
 import { resolveRouting } from './router/resolve.js';
+import { promptForKind } from './llm/openai.js';
 
 const NOW = new Date('2026-09-11T12:00:00Z');
 const minsAgo = (n) => new Date(NOW.getTime() - n * 60_000);
@@ -152,4 +153,56 @@ test('inherits unset cooldown and escalation from the defaults', () => {
 
 test('returns null when nobody can be alerted at all', () => {
   assert.equal(resolveRouting('g1', 'hr_attendance', [], { ...defaults, ownerPhone: '' }), null);
+});
+
+// --- the group's own person -----------------------------------------------
+//
+// A client group has one person who owns that customer. They should get
+// everything from that group without anyone writing one routing row per
+// category to say so.
+
+const withPerson = { ...defaults, groupOwnerPhone: '919000000009' };
+
+test("the group's person beats the wildcard rule", () => {
+  const r = resolveRouting('g2', 'machine_breakdown', rows, withPerson);
+  assert.equal(r.ownerPhone, '919000000009');
+  assert.equal(r.matched, 'group');
+});
+
+test("the group's person beats the default owner", () => {
+  const r = resolveRouting('g1', 'hr_attendance', rows, withPerson);
+  assert.equal(r.ownerPhone, '919000000009');
+  assert.equal(r.matched, 'group');
+});
+
+test("an exact group+category rule still beats the group's person", () => {
+  // Naming both the group and the category is a deliberate override, and the
+  // more specific statement wins.
+  const r = resolveRouting('g1', 'machine_breakdown', rows, withPerson);
+  assert.equal(r.ownerPhone, '919000000001');
+  assert.equal(r.matched, 'group_category');
+});
+
+test('no person on the group changes nothing', () => {
+  const r = resolveRouting('g2', 'machine_breakdown', rows, { ...defaults, groupOwnerPhone: null });
+  assert.equal(r.matched, 'any_group_category');
+});
+
+// --- one prompt per kind of group -----------------------------------------
+
+test('a client group is judged by the client prompt', () => {
+  assert.match(promptForKind('client'), /customers/);
+  assert.match(promptForKind('client'), /unanswered ask is a concern/);
+});
+
+test('an internal group is judged by the internal prompt', () => {
+  assert.match(promptForKind('internal'), /Has something gone wrong/);
+});
+
+test('an unknown or missing kind falls back to internal', () => {
+  // The client prompt raises far more. Applying it to a plant group because a
+  // field was never set would bury somebody in alerts, so the quiet prompt is
+  // the one you get by accident.
+  assert.equal(promptForKind(undefined), promptForKind('internal'));
+  assert.equal(promptForKind('nonsense'), promptForKind('internal'));
 });

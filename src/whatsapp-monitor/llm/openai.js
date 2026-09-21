@@ -5,7 +5,22 @@ import { logger } from '../logger.js';
 import { parseConcerns, parseResolution, MalformedLlmOutput } from './parse.js';
 import { parseSummary, MalformedSummary } from '../summariser/parse.js';
 
-const SYSTEM_PROMPT = readFileSync(new URL('../detector/prompt.md', import.meta.url), 'utf8');
+/**
+ * One prompt per kind of group. An internal group asks "has something gone
+ * wrong on the floor"; a client group asks "has the customer said something we
+ * must answer", which is a much lower bar - an unanswered question is itself
+ * the problem when a customer is reading the thread.
+ *
+ * Unknown or missing kind falls back to internal, because the client prompt
+ * raises far more and applying it to a plant group by accident would bury
+ * someone in alerts.
+ */
+const DETECTOR_PROMPTS = {
+  internal: readFileSync(new URL('../detector/prompt.md', import.meta.url), 'utf8'),
+  client: readFileSync(new URL('../detector/client-prompt.md', import.meta.url), 'utf8'),
+};
+
+export const promptForKind = (kind) => DETECTOR_PROMPTS[kind] ?? DETECTOR_PROMPTS.internal;
 const SUMMARY_PROMPT = readFileSync(new URL('../summariser/prompt.md', import.meta.url), 'utf8');
 const RESOLUTION_PROMPT = readFileSync(
   new URL('../detector/resolution-prompt.md', import.meta.url),
@@ -84,7 +99,7 @@ export class OpenAiLlm {
   }
 
   async call(model, input) {
-    return this.chat(model, SYSTEM_PROMPT, buildUserPrompt(input));
+    return this.chat(model, promptForKind(input.groupKind), buildUserPrompt(input));
   }
 
   /**
