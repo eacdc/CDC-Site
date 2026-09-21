@@ -173,6 +173,27 @@ browser enforces is not a rule. The save's check does not block on a failed
 lookup: refusing to record an inspection someone has already carried out, over
 a supporting query, loses real work to protect a threshold.
 
+**CDC's Carter table has nine bands, not the textbook fifteen.** The sheet at
+Panchla starts at "0 To 150" and asks for a sample of 20, so the small bands a
+full Z1.4 table carries (2-8, 9-15, 16-25, 26-50, 51-90) do not exist here: a
+lot of 60 is sampled at 20, not 13. `sql/fgqc/022_sampling_plan_from_paper.sql`
+compares `FinishGoodsQCSamplingPlan` against that sheet and corrects it.
+
+The stored number is the ACCEPT figure — the left half of each printed pair.
+Storing the reject figure would let one more defect through per class, quietly.
+
+Because the first band starts at 0 and asks for 20, a lot under 20 cannot
+supply its own sample. `FGQC_MIN_LOT_QTY` is what keeps those out of the queue,
+and a test fails if anyone sets it below the smallest band's sample size.
+
+**Verdicts already saved were computed against the wrong band.** The error runs
+one way: a job is never smaller than one of its deliveries, so the band used
+was always at or above the right one, and a higher band always accepts more
+defects. Everything affected was judged more leniently than the table allows.
+`sql/fgqc/023_recheck_saved_verdicts.sql` lists which verdicts change. It
+reports and does not rewrite — goods have shipped against those verdicts, so
+each one is a decision, not a data fix.
+
 ---
 
 ## Waiting on the database
