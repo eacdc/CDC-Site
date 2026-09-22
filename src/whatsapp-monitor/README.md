@@ -244,10 +244,20 @@ problem. A `resolved` concern never absorbs — a recurrence deserves a fresh
 alert.
 
 **Routing**, most specific first: a `routing` row matching `groupId + category`,
-then the group's own person, then `"*" + category`, then `DEFAULT_OWNER_PHONE`.
-If none resolves, the concern is still recorded and an **error** is logged
-saying nobody will be alerted — silence there would be the worst possible
-failure.
+then the group's own person, then `"*" + category`, then `DEFAULT_OWNER_PHONE`,
+then **the first rung of the group's escalation ladder**.
+
+That last one exists because a group with a ladder and no person alerted names
+an ordered list of people and no first recipient — read literally it alerts
+nobody, since the ladder only ever climbs after a first alert that never
+happens. Nobody writing a list of names meant that. It sits last, so an
+explicit rule, person or default always wins.
+
+If none of the five resolves, the concern is still recorded and an **error** is
+logged saying nobody will be alerted — silence there would be the worst
+possible failure. Admin shows a banner for any monitored group in that state,
+and `npm run whatsapp:reroute` fills in the owner on concerns raised before the
+configuration was fixed, which would otherwise carry `ownerId: null` for ever.
 
 ### Nothing is DMed straight away
 

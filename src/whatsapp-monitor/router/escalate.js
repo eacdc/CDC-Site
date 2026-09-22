@@ -42,6 +42,7 @@ export async function runEscalations() {
     for (const concern of open) {
       const route = resolveRouting(concern.groupId, concern.category, routes, {
         groupOwnerPhone: groupOwners.get(concern.groupId) ?? null,
+        groupLadder: chain,
         ownerPhone: config.defaultOwnerPhone,
         cooldownMin: config.defaultCooldownMin,
         escalateAfterMin: config.defaultEscalateAfterMin,

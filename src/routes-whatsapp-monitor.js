@@ -303,8 +303,20 @@ router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(as
   // person longer than it is.
   const finalOwner = update.ownerPhone !== undefined ? update.ownerPhone : group.ownerPhone;
   const finalLadder = update.escalationTo ?? group.escalationTo ?? [];
+
   if (finalOwner && finalLadder.includes(finalOwner)) {
-    return res.status(400).json({ error: 'The person alerted cannot also be on the ladder' });
+    if (update.ownerPhone !== undefined) {
+      // Naming someone as the person alerted while they sit on the ladder is a
+      // promotion, not a mistake: they now get the first DM instead of a later
+      // one. Rejecting it left a group whose only two people were both on the
+      // ladder with no valid choice on the screen at all.
+      update.escalationTo = finalLadder.filter((phone) => phone !== finalOwner);
+    } else {
+      // The other direction - adding the alerted person to their own ladder -
+      // is a mistake, and saying so beats silently dropping the entry and
+      // leaving somebody believing the ladder is one person longer.
+      return res.status(400).json({ error: 'The person alerted cannot also be on the ladder' });
+    }
   }
 
   if (Object.keys(update).length === 0) return res.status(400).json({ error: 'Nothing to update' });

@@ -206,3 +206,52 @@ test('an unknown or missing kind falls back to internal', () => {
   assert.equal(promptForKind(undefined), promptForKind('internal'));
   assert.equal(promptForKind('nonsense'), promptForKind('internal'));
 });
+
+// --- the ladder's first rung is better than nobody --------------------------
+//
+// A group with an escalation ladder and no person alerted names an ordered list
+// of people and no first recipient. Read literally that alerts nobody: the
+// first alert never fires, so the ladder that only climbs after one never runs.
+// Nobody writing a list of names meant that.
+
+const LADDER = ['919000000005', '919000000006'];
+
+test("the ladder's first rung is alerted when nothing else names anyone", () => {
+  const r = resolveRouting('g9', 'machine_breakdown', [], {
+    cooldownMin: 30,
+    escalateAfterMin: 30,
+    ownerPhone: '',
+    groupLadder: LADDER,
+  });
+  assert.equal(r.ownerPhone, '919000000005');
+  assert.equal(r.matched, 'ladder_first');
+});
+
+test('but the default owner still beats it', () => {
+  const r = resolveRouting('g9', 'machine_breakdown', [], { ...defaults, groupLadder: LADDER });
+  assert.equal(r.ownerPhone, defaults.ownerPhone);
+  assert.equal(r.matched, 'default');
+});
+
+test("and the group's own person beats it", () => {
+  const r = resolveRouting('g9', 'machine_breakdown', [], {
+    ...defaults,
+    groupOwnerPhone: '919000000009',
+    groupLadder: LADDER,
+  });
+  assert.equal(r.ownerPhone, '919000000009');
+  assert.equal(r.matched, 'group');
+});
+
+test('an empty ladder and nothing else still reaches nobody', () => {
+  // The caller has to say so loudly rather than pretending someone was alerted.
+  assert.equal(
+    resolveRouting('g9', 'machine_breakdown', [], {
+      cooldownMin: 30,
+      escalateAfterMin: 30,
+      ownerPhone: '',
+      groupLadder: [],
+    }),
+    null,
+  );
+});
