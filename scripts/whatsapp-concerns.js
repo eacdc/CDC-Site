@@ -27,7 +27,7 @@ if (rows.length === 0) {
     // live problems when two of them already read as fixed.
     const flags = [
       c.status === 'open' && c.resolutionHint ? 'possibly resolved' : null,
-      c.backfilledAt ? 'from history, silent' : null,
+      c.silencedAt ? 'silenced, no DM' : c.backfilledAt ? 'from history, silent' : null,
     ].filter(Boolean);
     const label = [c.status, ...flags].join(' - ');
 
