@@ -146,6 +146,17 @@ to press the button. New groups arrive `monitored: false`, `internal`, with no
 owner and no ladder, so an import can never start watching or DMing about
 something by itself.
 
+**Deleting** a group, from Admin or `npm run whatsapp:delete-group`, removes
+the group and its stored messages. Its concerns, their alerts and the summaries
+stay - those are the record of what happened and who was told, while the
+messages are the bulk of the storage. A concern whose group is gone shows the
+raw group id until the group is refreshed back.
+
+It refuses while the group has open or acknowledged concerns, saying how many.
+Deleting is a tidy-up, not something final - anything the number is still in
+comes back on the next refresh - and a tidy-up must not erase a breakdown
+somebody is being alerted about. `--force` on the CLI overrides it.
+
 A group we know about that Maytapi stops returning - the number left, or one
 bad API call - is **reported and never deleted or switched off**. A group with
 months of concerns behind it should not vanish over a flaky request, and

@@ -4,6 +4,7 @@ import { concerns, groups } from '../db.js';
 import { sendAlert } from './alert.js';
 import { recentlyAlerted } from '../detector/concerns.js';
 import { dueForFirstAlert, alertDelayFor } from './alert-rules.js';
+import { LIVE_STATUSES } from '../concerns-live.js';
 
 /**
  * Sends the first DM for concerns whose waiting window has expired.
@@ -33,7 +34,7 @@ export async function runFirstAlerts() {
     // The cooldown compares against concerns that HAVE been alerted, so the
     // whole live set is needed, not just the waiting ones.
     const live = await concerns()
-      .find({ groupId: { $in: groupIds }, status: { $in: ['open', 'acknowledged'] } })
+      .find({ groupId: { $in: groupIds }, status: { $in: LIVE_STATUSES } })
       .toArray();
 
     for (const concern of waiting) {

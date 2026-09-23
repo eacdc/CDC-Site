@@ -48,7 +48,8 @@
     "whatsapp:eval": "node scripts/whatsapp-eval.js",
     "whatsapp:why-open": "node scripts/whatsapp-why-open.js",
     "whatsapp:reroute": "node scripts/whatsapp-reroute.js",
-    "whatsapp:silence": "node scripts/whatsapp-silence.js"
+    "whatsapp:silence": "node scripts/whatsapp-silence.js",
+    "whatsapp:delete-group": "node scripts/whatsapp-delete-group.js"
   },
   "keywords": [],
   "author": "",

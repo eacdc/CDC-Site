@@ -1,4 +1,5 @@
 import { sharesThread } from './threads.js';
+import { isLive } from '../concerns-live.js';
 
 /**
  * An existing concern absorbs a new candidate when they are part of the same
@@ -15,7 +16,7 @@ import { sharesThread } from './threads.js';
 export function findDuplicate(candidate, live) {
   let best = null;
   for (const existing of live) {
-    if (existing.status !== 'open' && existing.status !== 'acknowledged') continue;
+    if (!isLive(existing)) continue;
     if (!sharesThread(existing.threadRootIds, candidate.threadRootIds)) continue;
     if (!best || existing.createdAt > best.createdAt) best = existing;
   }

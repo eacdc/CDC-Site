@@ -4,6 +4,7 @@ import { findDuplicate } from './detector/concerns.js';
 import { parseConcerns, MalformedLlmOutput } from './llm/parse.js';
 import { resolveRouting } from './router/resolve.js';
 import { promptForKind } from './llm/openai.js';
+import { isLive } from './concerns-live.js';
 
 const NOW = new Date('2026-09-11T12:00:00Z');
 const minsAgo = (n) => new Date(NOW.getTime() - n * 60_000);
@@ -254,4 +255,26 @@ test('an empty ladder and nothing else still reaches nobody', () => {
     }),
     null,
   );
+});
+
+// --- what counts as still somebody's problem --------------------------------
+//
+// Four places ask this: de-duplication, the dashboard's open counts, the alert
+// cooldown, and the guard that refuses to delete a group out from under live
+// work. One list, so they cannot drift apart.
+
+test('open and acknowledged concerns are live', () => {
+  assert.equal(isLive({ status: 'open' }), true);
+  assert.equal(isLive({ status: 'acknowledged' }), true);
+});
+
+test('a resolved concern is not', () => {
+  assert.equal(isLive({ status: 'resolved' }), false);
+});
+
+test('a missing or malformed concern is not live', () => {
+  // The delete guard counts these: treating an unreadable document as live
+  // would block a tidy-up for ever with nothing a person could resolve.
+  assert.equal(isLive(undefined), false);
+  assert.equal(isLive({}), false);
 });

@@ -46,6 +46,7 @@ import { whatsappMonitorHealth } from './whatsapp-monitor/index.js';
 import { CONCERN_CATEGORIES, GROUP_KINDS } from './whatsapp-monitor/llm/types.js';
 import { threadQueryFor } from './whatsapp-monitor/detector/threads.js';
 import { importGroups } from './whatsapp-monitor/maytapi/import.js';
+import { LIVE_STATUSES } from './whatsapp-monitor/concerns-live.js';
 
 const router = Router();
 
@@ -89,7 +90,7 @@ router.get('/groups', requireCdcBillsAuth, handle(async (_req, res) => {
   // dashboard's front page and is the most frequently hit route.
   const counts = await concerns()
     .aggregate([
-      { $match: { status: { $in: ['open', 'acknowledged'] } } },
+      { $match: { status: { $in: LIVE_STATUSES } } },
       { $group: { _id: { groupId: '$groupId', status: '$status' }, n: { $sum: 1 } } },
     ])
     .toArray();
@@ -127,7 +128,7 @@ router.get('/groups/:id', requireCdcBillsAuth, handle(async (req, res) => {
     summaries().find({ groupId: group._id, kind: 'daily' }).sort({ periodEnd: -1 }).limit(30).toArray(),
     summaries().find({ groupId: group._id, kind: 'rolling' }).sort({ periodEnd: -1 }).limit(1).next(),
     concerns()
-      .find({ groupId: group._id, status: { $in: ['open', 'acknowledged'] } })
+      .find({ groupId: group._id, status: { $in: LIVE_STATUSES } })
       .sort({ createdAt: -1 })
       .toArray(),
     messages().find({ groupId: group._id }).sort({ ts: -1 }).limit(50).toArray(),
@@ -255,6 +256,45 @@ router.post('/groups/refresh', requireCdcBillsAuth, requireCdcBillsAdmin, handle
     'groups refreshed from whatsapp',
   );
   res.json(summary);
+}));
+
+/**
+ * Removes a group and its stored messages.
+ *
+ * Its concerns, their alerts and the summaries stay: those are the record of
+ * what happened and who was told, while the messages are the bulk of the
+ * storage. A concern whose group is gone falls back to showing the raw group
+ * id, and refreshing the group back restores the name.
+ *
+ * Refuses while concerns are still live. Deleting is a tidy-up - anything the
+ * number is still in comes back on the next refresh - and a tidy-up must not
+ * quietly erase a breakdown somebody is being alerted about.
+ */
+router.delete('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(async (req, res) => {
+  const group = await groups().findOne({ _id: req.params.id });
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+
+  const live = await concerns().countDocuments({
+    groupId: group._id,
+    status: { $in: LIVE_STATUSES },
+  });
+  if (live > 0) {
+    return res.status(409).json({
+      error:
+        `${live} concern${live === 1 ? ' is' : 's are'} still open in this group - ` +
+        'resolve them first, or delete it from the command line with --force.',
+      openConcerns: live,
+    });
+  }
+
+  const { deletedCount } = await messages().deleteMany({ groupId: group._id });
+  await groups().deleteOne({ _id: group._id });
+
+  logger.info(
+    { groupId: group._id, name: group.name, deletedMessages: deletedCount, by: req.cdcBillsUser?.userKey },
+    'group deleted from dashboard',
+  );
+  res.json({ deleted: group.name, deletedMessages: deletedCount });
 }));
 
 router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(async (req, res) => {

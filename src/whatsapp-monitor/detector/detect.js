@@ -5,6 +5,7 @@ import { llm } from '../llm/index.js';
 import { resolveRouting } from '../router/resolve.js';
 import { findDuplicate } from './concerns.js';
 import { splitByThread } from './threads.js';
+import { LIVE_STATUSES } from '../concerns-live.js';
 
 const toLlm = (m) => ({
   msgId: m.msgId,
@@ -80,7 +81,7 @@ export async function detectForGroup(group, { silent = false } = {}) {
     if (result.concerns.length > 0) {
       const now = new Date();
       const live = await concerns()
-        .find({ groupId: group._id, status: { $in: ['open', 'acknowledged'] } })
+        .find({ groupId: group._id, status: { $in: LIVE_STATUSES } })
         .toArray();
 
       const routes = await routing()
