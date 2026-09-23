@@ -134,6 +134,24 @@ cleans up its own rows afterwards (`--keep` leaves them).
 
 `GET /health` reports the monitor's status alongside the backend's.
 
+## How a group gets in
+
+Groups enter the database one way: an import from Maytapi, run either by
+`npm run whatsapp:seed` or by **Refresh from WhatsApp** in Admin. Both call
+`importGroups()` in `maytapi/import.js` - one function, so the button and the
+script cannot drift apart.
+
+A group the CDC number is added to does **not** appear on its own; somebody has
+to press the button. New groups arrive `monitored: false`, `internal`, with no
+owner and no ladder, so an import can never start watching or DMing about
+something by itself.
+
+A group we know about that Maytapi stops returning - the number left, or one
+bad API call - is **reported and never deleted or switched off**. A group with
+months of concerns behind it should not vanish over a flaky request, and
+leaving a group is a decision for a person. If it was monitored, Admin says so
+in red: it will never see another message.
+
 ## Adding a group
 
 The CDC number must already be a member. `npm run whatsapp:seed` to import, then

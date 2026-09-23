@@ -45,6 +45,7 @@ import {
 import { whatsappMonitorHealth } from './whatsapp-monitor/index.js';
 import { CONCERN_CATEGORIES, GROUP_KINDS } from './whatsapp-monitor/llm/types.js';
 import { threadQueryFor } from './whatsapp-monitor/detector/threads.js';
+import { importGroups } from './whatsapp-monitor/maytapi/import.js';
 
 const router = Router();
 
@@ -223,6 +224,38 @@ router.get('/owners', requireCdcBillsAuth, handle(async (_req, res) => {
 }));
 
 // --------------------------------------------------------------- writes
+
+/**
+ * Pulls the group list from WhatsApp again, so a group the CDC number was just
+ * added to shows up without anyone running a script on a machine they may not
+ * have.
+ *
+ * New groups arrive OFF. A button that silently started monitoring - and
+ * paying to classify - a thirteenth group would be the wrong kind of helpful.
+ */
+router.post('/groups/refresh', requireCdcBillsAuth, requireCdcBillsAdmin, handle(async (req, res) => {
+  let summary;
+  try {
+    summary = await importGroups();
+  } catch (err) {
+    // 502 and the real message: "the session is logged out" is something an
+    // admin can act on, and "Internal error" is not.
+    logger.error({ err: String(err) }, 'group refresh failed');
+    return res.status(502).json({ error: `WhatsApp did not answer: ${String(err.message ?? err)}` });
+  }
+
+  logger.info(
+    {
+      found: summary.found,
+      added: summary.added.length,
+      renamed: summary.renamed.length,
+      missing: summary.missing.length,
+      by: req.cdcBillsUser?.userKey,
+    },
+    'groups refreshed from whatsapp',
+  );
+  res.json(summary);
+}));
 
 router.patch('/groups/:id', requireCdcBillsAuth, requireCdcBillsAdmin, handle(async (req, res) => {
   const group = await groups().findOne({ _id: req.params.id });
