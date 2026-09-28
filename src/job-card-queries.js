@@ -406,7 +406,7 @@ SELECT TOP 1000
         WHEN ISNULL(PBJ.JobPrintPlanQty, 0) = 0 THEN NULL
         ELSE CAST(ROUND(100.0 * ISNULL(PBJ.JobPrintDoneQty, 0)
                         / NULLIF(PBJ.JobPrintPlanQty, 0), 1) AS DECIMAL(6,1))
-    END  
+    END                                                 AS [PrintCompletion%],
 
     -- Print Status
     CASE
