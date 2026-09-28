@@ -1949,6 +1949,79 @@ router.get('/production/search-by-machine', async (req, res) => {
 	}
 });
 
+// Job diagnostics: every component, form and process of a job card, plus the
+// three conditions GetPendingProcesses_ForMachineAndContent applies, so a
+// process that never shows up on a machine can be explained without opening
+// SSMS. ShowsInApp is that procedure's filter expressed as a flag — when it is
+// 0, the row tells you which of the three conditions failed.
+router.get('/jobs/diagnostics', async (req, res) => {
+	try {
+		const { jobNumber, database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const search = String(jobNumber || '').trim();
+		if (search.length < 3) {
+			return res.status(400).json({ status: false, error: 'Enter at least 3 characters of the job number' });
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('Search', sql.NVarChar(120), `%${search}%`)
+			.query(`
+				SELECT
+					c.JobCardContentNo,
+					c.PlanContName                                   AS ComponentName,
+					j.JobBookingNo,
+					j.JobName,
+					jsr.JobCardFormNo,
+					jsr.ProcessID,
+					pm.ProcessName,
+					jsr.SequenceNo,
+					jsr.ScheduleQty,
+					jsr.Status,
+					CAST(ISNULL(jsr.IsOnlineProcess, 0) AS INT)      AS IsOnlineProcess,
+					CAST(ISNULL(jsr.IsDeletedTransaction, 0) AS INT) AS IsDeleted,
+					(
+						SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName)
+						FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
+						JOIN dbo.MachineMaster mm
+						     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
+						    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
+					)                                                AS Machines,
+					ISNULL((
+						SELECT SUM(ISNULL(pe.ProductionQuantity, 0))
+						FROM dbo.ProductionEntry pe
+						WHERE pe.JobBookingJobCardContentsID = jsr.JobBookingJobCardContentsID
+						  AND pe.ProcessID = jsr.ProcessID
+						  AND ISNULL(pe.JobCardFormNo, N'') = ISNULL(jsr.JobCardFormNo, N'')
+					), 0)                                            AS ProducedQty,
+					CASE WHEN jsr.Status IN (N'In Queue', N'Part Complete', N'Running')
+					      AND ISNULL(jsr.IsOnlineProcess, 0) = 0
+					      AND ISNULL(jsr.IsDeletedTransaction, 0) = 0
+					     THEN 1 ELSE 0 END                           AS ShowsInApp
+				FROM dbo.JobBookingJobCardContents c
+				JOIN dbo.JobBookingJobCard j
+				     ON j.JobBookingID = c.JobBookingID
+				JOIN dbo.JobScheduleRelease jsr
+				     ON jsr.JobBookingJobCardContentsID = c.JobBookingJobCardContentsID
+				LEFT JOIN dbo.ProcessMaster pm
+				     ON pm.ProcessID = jsr.ProcessID
+				    AND ISNULL(pm.isdeletedtransaction, 0) = 0
+				WHERE c.JobCardContentNo LIKE @Search
+				ORDER BY c.JobCardContentNo, pm.ProcessName,
+				         LEN(jsr.JobCardFormNo), jsr.JobCardFormNo
+			`);
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Job diagnostics error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
 // Client master list (active clients only, from LedgerMaster)
 router.get('/clients/master-list', async (req, res) => {
 	try {
@@ -2088,19 +2161,43 @@ router.post('/processes/start-async', async (req, res) => {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
+    // Production_Start_Manu_v2's "machine already has an active status" check
+    // sits before its BEGIN TRAN, so the UPDLOCK it asks for is released as
+    // soon as that SELECT ends. Two starts for the same machine that overlap
+    // therefore both pass the check and both insert, leaving the machine with
+    // two production entries; completing one marks the shared
+    // JobScheduleRelease row Complete, which hides the component from the
+    // search and strands the other with its machine row open forever — the
+    // machine can then never be started again. Refuse the second start here,
+    // where the first is still visibly running.
+    const machineIdNum = Number(MachineID);
+    for (const existing of jobs.values()) {
+      if (existing.type === 'start'
+        && (existing.status === 'pending' || existing.status === 'processing')
+        && existing.database === selectedDatabase
+        && existing.requestData.MachineID === machineIdNum) {
+        console.log(`[JOB] Rejected start for machine ${machineIdNum}: job ${existing.id} is still ${existing.status}`);
+        return res.status(409).json({
+          status: false,
+          error: 'A start is already running for this machine. Please wait for it to finish before starting another job.'
+        });
+      }
+    }
+
     const jobId = generateJobId();
-    
+
     // Store job in memory
     jobs.set(jobId, {
       id: jobId,
       type: 'start',
       status: 'pending',
+      database: selectedDatabase,
       requestData: {
         UserID: Number(UserID),
         EmployeeID: Number(EmployeeID),
         ProcessID: Number(ProcessID),
         JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: Number(MachineID),
+        MachineID: machineIdNum,
         JobCardFormNo: String(JobCardFormNo)
       },
       createdAt: new Date()
