@@ -401,6 +401,13 @@ SELECT TOP 1000
     -- Binding Production Qty
     ISNULL(BA.BindingQty, 0)                           AS BindingProdQty,
 
+    -- Print Completion % (same as portal_order_processes Printing row)
+    CASE
+        WHEN ISNULL(PBJ.JobPrintPlanQty, 0) = 0 THEN NULL
+        ELSE CAST(ROUND(100.0 * ISNULL(PBJ.JobPrintDoneQty, 0)
+                        / NULLIF(PBJ.JobPrintPlanQty, 0), 1) AS DECIMAL(6,1))
+    END  
+
     -- Print Status
     CASE
         WHEN ISNULL(PBJ.JobPrintPlanQty, 0) = 0
