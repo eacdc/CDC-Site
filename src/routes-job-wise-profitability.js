@@ -1,10 +1,13 @@
 /**
  * CDC Job Wise Profitability
- * GET /job-wise-profitability?database=KOL|AHM&fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD
- * — dbo.rpt_job_gp_per_impression_v11 (@start, @end) + computed GP %
+ * GET /job-wise-profitability?database=KOL|AHM&fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD&clientId=
+ * — dbo.rpt_job_gp_per_impression_v11 (@start, @end, @clientId) + computed GP %
+ * GET /job-wise-profitability/clients?database=KOL|AHM
+ * — client dropdown (LedgerID + LedgerName from JobBookingJobCard)
  */
 import { Router } from 'express';
-import { getLongQueryPool, sql } from './db.js';
+import { getPool, getLongQueryPool, sql } from './db.js';
+import { ClientNamesFilterQuery } from './job-card-queries.js';
 
 const router = Router();
 
@@ -195,9 +198,40 @@ function computeExceptionCause(row) {
 	return 'Low pricing';
 }
 
+router.get('/job-wise-profitability/clients', async (req, res) => {
+	try {
+		const selectedDatabase = String(req.query?.database || '')
+			.trim()
+			.toUpperCase();
+		if (!ALLOWED_DATABASES.includes(selectedDatabase)) {
+			return res.status(400).json({
+				status: false,
+				error: 'Invalid or missing database (must be KOL or AHM)'
+			});
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request().query(ClientNamesFilterQuery);
+		const clients = (result.recordset || [])
+			.map((row) => ({
+				clientId: row.LedgerID ?? row.ledgerid ?? null,
+				clientName: String(row.LedgerName ?? row.ledgername ?? '').trim()
+			}))
+			.filter((c) => c.clientId != null && c.clientName);
+
+		return res.json({ status: true, clients });
+	} catch (err) {
+		console.error('Job wise profitability clients error:', err);
+		return res.status(500).json({
+			status: false,
+			error: err?.message || 'Failed to fetch clients'
+		});
+	}
+});
+
 router.get('/job-wise-profitability', async (req, res) => {
 	try {
-		const { database, fromDate, toDate } = req.query || {};
+		const { database, fromDate, toDate, clientId } = req.query || {};
 		const selectedDatabase = String(database || '').trim().toUpperCase();
 		if (!ALLOWED_DATABASES.includes(selectedDatabase)) {
 			return res.status(400).json({
@@ -221,13 +255,24 @@ router.get('/job-wise-profitability', async (req, res) => {
 			});
 		}
 
+		const clientIdNum = Number(clientId);
+		if (!Number.isFinite(clientIdNum) || clientIdNum <= 0) {
+			return res.status(400).json({
+				status: false,
+				error: 'Invalid or missing clientId'
+			});
+		}
+
 		const pool = await getLongQueryPool(selectedDatabase);
 		// Positional EXEC so we do not depend on the SP's declared parameter names.
 		const result = await pool
 			.request()
 			.input('StartDate', sql.VarChar(10), safeFromDate)
 			.input('EndDate', sql.VarChar(10), safeToDate)
-			.query('EXEC dbo.rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+			.input('ClientID', sql.Int, clientIdNum)
+			.query(
+				'EXEC dbo.rpt_job_gp_per_impression_v11 @StartDate, @EndDate, @ClientID'
+			);
 
 		const rawRows = result.recordset || [];
 		const baseColumns = orderColumnsFromRows(rawRows);
@@ -247,6 +292,7 @@ router.get('/job-wise-profitability', async (req, res) => {
 			status: true,
 			fromDate: safeFromDate,
 			toDate: safeToDate,
+			clientId: clientIdNum,
 			database: selectedDatabase,
 			columns,
 			qtyColumns: [...QTY_COLUMNS],
