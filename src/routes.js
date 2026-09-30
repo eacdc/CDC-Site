@@ -3479,6 +3479,122 @@ router.get('/grn/delivery-note-dispatch-pdf', async (req, res) => {
     }
 });
 
+function escapeExcelXml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function excelSsCell(value) {
+    if (value == null || value === '') {
+        return '<Cell><Data ss:Type="String"></Data></Cell>';
+    }
+    const text = String(value).trim();
+    if (/^-?\d+(\.\d+)?$/.test(text)) {
+        return `<Cell><Data ss:Type="Number">${text}</Data></Cell>`;
+    }
+    return `<Cell><Data ss:Type="String">${escapeExcelXml(text)}</Data></Cell>`;
+}
+
+function excelSsRow(values) {
+    return `<Row>${values.map((v) => excelSsCell(v)).join('')}</Row>`;
+}
+
+function buildDispatchExcelXml(header, lines, username) {
+    const infoRows = [
+        excelSsRow(['Challan No', header.challanNo || '']),
+        excelSsRow(['Date', header.challanDate || '']),
+        excelSsRow(['PO No', header.poNo || '']),
+        excelSsRow(['Client', header.clientName || '']),
+        excelSsRow(['Client Address', header.clientAddress || '']),
+        excelSsRow(['Delivered To', header.deliveredToName || '']),
+        excelSsRow(['Delivered To Address', header.deliveredToAddress || '']),
+        excelSsRow(['Container No', header.containerNo || '']),
+        excelSsRow(['Seal No', header.sealNo || '']),
+        excelSsRow(['Transporter', header.transporterName || '']),
+        excelSsRow(['Vehicle No', header.vehicleNo || '']),
+        excelSsRow(['Remark', header.remark || '']),
+        excelSsRow(['Created By', username || '']),
+        excelSsRow(['']),
+        excelSsRow([
+            'PWO No',
+            'Product Name',
+            'HSN Code',
+            'No of Boxes',
+            'Total Quantity',
+            'Gross Weight (Kg)',
+            'Batch No.',
+            'Barcode Range'
+        ])
+    ].join('');
+
+    const lineRows = (lines || []).map((line) => excelSsRow([
+        line.pwoNo,
+        line.productName,
+        line.hsnCode,
+        line.noOfBoxes,
+        line.totalQuantity,
+        line.grossWeightKg,
+        line.batchNo,
+        line.barcodeRange
+    ])).join('');
+
+    return [
+        '<?xml version="1.0"?>',
+        '<?mso-application progid="Excel.Sheet"?>',
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"',
+        ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">',
+        '<Worksheet ss:Name="Dispatch Details">',
+        `<Table>${infoRows}${lineRows}</Table>`,
+        '</Worksheet>',
+        '</Workbook>'
+    ].join('');
+}
+
+router.get('/grn/delivery-note-dispatch-excel', async (req, res) => {
+    try {
+        const { database, voucherNo, username } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const voucherNoText = String(voucherNo || '').trim();
+        if (!voucherNoText) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing voucherNo' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('VoucherNo', sql.NVarChar(255), voucherNoText)
+            .execute('dbo.GetDeliveryNoteDetailsByBarcode_Manu');
+
+        const headerRow = (result.recordsets?.[0] || result.recordset || [])[0];
+        const header = normalizeDispatchHeader(headerRow);
+        if (!header) {
+            return res.status(404).json({ status: false, error: 'Delivery note not found' });
+        }
+
+        const statusLower = String(header.status || '').toLowerCase();
+        if (statusLower && statusLower !== 'success') {
+            return res.status(400).json({ status: false, error: header.status || 'Failed to load delivery note details' });
+        }
+
+        const lineRows = result.recordsets?.[1] || [];
+        const lines = lineRows.map(normalizeDispatchLine).filter(Boolean);
+        const xml = buildDispatchExcelXml(header, lines, String(username || '').trim());
+        const safeName = voucherNoText.replace(/[^\w.-]+/g, '_');
+        res.setHeader('Content-Type', 'application/vnd.ms-excel');
+        res.setHeader('Content-Disposition', `attachment; filename="Dispatch_${safeName}.xls"`);
+        return res.send(xml);
+    } catch (err) {
+        console.error('GRN delivery note dispatch Excel error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to generate dispatch Excel' });
+    }
+});
+
 // GRN: Pending purchase orders where GRN is not fully delivered
 router.get('/grn/pending-po-not-fully-delivered', async (req, res) => {
     try {
