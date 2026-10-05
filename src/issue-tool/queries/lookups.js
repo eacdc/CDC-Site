@@ -10,7 +10,7 @@ import { str } from './shared.js';
  * "Floor-Panchla / Paper"), so the list is grouped by warehouse name and the
  * client picks a bin, which resolves to a WarehouseID.
  *
- * ASSUMPTION (discovery item 2): floor warehouses are IsFloorWarehouse = 1.
+ * Floor warehouses are IsFloorWarehouse = 1 (confirmed by discovery).
  */
 export async function floorWarehouses({ site, companyId }) {
 	const rows = await query(site, `
@@ -35,12 +35,17 @@ export function groupWarehouses(rows) {
 	return [...byName.values()];
 }
 
-/** ASSUMPTION (discovery item 3): DepartmentMaster(DepartmentID, DepartmentName, CompanyID). */
+/**
+ * DepartmentMaster.DepartmentID is the ID the ERP stores on vouchers (100 =
+ * PRINTING); the table's own key column `ID` is not used.
+ */
 export async function departments({ site, companyId }) {
 	const rows = await query(site, `
 		SELECT DepartmentID, DepartmentName
 		FROM dbo.DepartmentMaster
 		WHERE CompanyID = @companyId
+		  AND ISNULL(IsDeletedTransaction, 0) = 0
+		  AND ISNULL(IsBlocked, 0) = 0
 		ORDER BY DepartmentName
 	`, { companyId: [sql.Int, companyId] });
 	return {

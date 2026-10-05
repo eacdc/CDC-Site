@@ -31,7 +31,7 @@ BEGIN
                              CONSTRAINT DF_IssueTool_PostLog_CreatedAt DEFAULT (GETDATE()),
         Mode                 VARCHAR(10)          NOT NULL,   -- ALLOCATED | DIRECT
         Payload              NVARCHAR(MAX)        NOT NULL,   -- the full request body as JSON
-        TransactionID        INT                  NULL,       -- NULL for dry runs
+        TransactionID        BIGINT               NULL,       -- NULL for dry runs (ITM.TransactionID is BIGINT)
         VoucherNo            NVARCHAR(50)         NULL,       -- NULL for dry runs
         WarningsAcknowledged BIT                  NOT NULL
                              CONSTRAINT DF_IssueTool_PostLog_WarningsAck DEFAULT (0),

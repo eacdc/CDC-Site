@@ -33,14 +33,14 @@
 CREATE OR ALTER PROCEDURE dbo.usp_IssueTool_DeleteIssue
     @CompanyID     INT,
     @UserID        INT,
-    @TransactionID INT,
+    @TransactionID BIGINT,
     @DryRun        BIT = 1
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE @VoucherNo NVARCHAR(50), @VoucherID INT, @IsDeleted BIT;
+    DECLARE @VoucherNo NVARCHAR(50), @VoucherID BIGINT, @IsDeleted BIT;
 
     IF @UserID IS NULL OR @UserID <= 0
         THROW 51012, N'MISSING_FIELD: UserID is required.', 1;
@@ -60,7 +60,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM dbo.ItemConsumptionDetail WHERE IssueTransactionID = @TransactionID)
         THROW 51023, N'ISSUE_CONSUMED: Material from this issue has been consumed, so it cannot be deleted.', 1;
 
-    DECLARE @Items TABLE (ItemID INT NOT NULL PRIMARY KEY);
+    DECLARE @Items TABLE (ItemID BIGINT NOT NULL PRIMARY KEY);
     INSERT INTO @Items (ItemID)
     SELECT DISTINCT ItemID
     FROM dbo.ItemTransactionDetail

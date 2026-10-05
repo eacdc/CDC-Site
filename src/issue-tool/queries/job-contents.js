@@ -155,9 +155,10 @@ export function buildRequirements(planned, issued) {
  * process on the content's material requirement rows, the most common one if
  * there are several.
  *
- * ASSUMPTION (brief 5.1, discovery item 3): ProcessMaster.DepartmentID and
- * DepartmentMaster.DepartmentName. A suggestion is a convenience, so if those
- * columns turn out not to exist the search still works and suggests nothing.
+ * Both columns are confirmed by discovery (process 10337 "Printing Front
+ * Side" → department 100 PRINTING). That the ERP itself suggests this way is
+ * still an inference (brief 5.1). A suggestion is a convenience, so if the
+ * query fails the search still works and suggests nothing.
  */
 async function suggestedDepartments({ site, companyId, contentIds }) {
 	const list = inList('c', contentIds);

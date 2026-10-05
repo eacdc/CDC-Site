@@ -95,7 +95,7 @@ export async function itemBatches({ site, companyId, itemId }) {
 			FROM dbo.ItemMaster IM
 			LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
 			WHERE IM.ItemID = @itemId AND IM.CompanyID = @companyId
-		`, { itemId: [sql.Int, itemId], companyId: [sql.Int, companyId] }),
+		`, { itemId: [sql.BigInt, itemId], companyId: [sql.Int, companyId] }),
 		query(site, `
 			WITH G AS (
 				SELECT ISNULL(D.ParentTransactionID, 0) AS ParentTransactionID,
@@ -133,7 +133,7 @@ export async function itemBatches({ site, companyId, itemId }) {
 			) R
 			LEFT JOIN dbo.WarehouseMaster WM ON WM.WarehouseID = G.WarehouseID AND WM.CompanyID = @companyId
 			ORDER BY CASE WHEN PM.VoucherDate IS NULL THEN 1 ELSE 0 END, PM.VoucherDate, G.ParentTransactionID, G.BatchNo
-		`, { itemId: [sql.Int, itemId], companyId: [sql.Int, companyId] }),
+		`, { itemId: [sql.BigInt, itemId], companyId: [sql.Int, companyId] }),
 	]);
 
 	if (!itemRows.length) throw new ApiError(404, 'UNKNOWN_ITEM', 'The item does not exist.');

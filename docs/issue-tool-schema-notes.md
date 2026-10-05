@@ -1,50 +1,74 @@
 # Stock Issue Tool — schema notes
 
-Brief section 4 asks for read-only discovery before any code that writes. **This environment had no access to the database**, so discovery has not been run yet. This file records:
+Discovery (`npm run issue-tool:discover`) was run against Kolkata (`IndusEnterprise`, CompanyID 2) on **5 Oct 2026**. It regenerates `docs/issue-tool-schema-discovery.md`; this file records what it showed and what the code does about it. Re-run it against Ahmedabad (`-- --site AHM`) before going live there, and after any ERP upgrade.
 
-1. what is already known, and where it comes from;
-2. what the code currently assumes for each open item, and where in the code that assumption lives;
-3. how to run discovery and what each finding decides.
+## Server
 
-Run `npm run issue-tool:discover` against Kolkata (and later Ahmedabad with `--site AHM`). It writes `docs/issue-tool-schema-discovery.md`. Then update the "Status" column below and adjust the code where a finding contradicts an assumption.
-
-## Known
-
-| Fact | Source |
+| Finding | Consequence |
 |---|---|
-| ITM / ITD column names for vouchers, items, batches, picklist links, job links, audit (section 5 of the brief) | Before/after snapshots of 3 Oct 2026 |
-| `FYear` is stored as `2026-2027`; the voucher suffix is `_26_27` | Brief 5.1. Also `routes-concern-person.js` writes `2026-2027` into an ERP table. **Note:** `src/supplier-portal/services/erp-voucher.js` uses `26_27` for FYear; one of the two is wrong for ITM, and discovery section 6 shows which. |
-| Voucher prefix `IS`, number padded to 5 digits (`IS17252_26_27`, `IPIC03454_26_27`) | Brief section 8 |
-| `WarehouseMaster` has `WarehouseName`, `BinName`, `IsFloorWarehouse`, `IsDeleted`, `IsDeletedTransaction` | `src/supplier-portal/services/erp-ledgers.js` already queries them |
-| `JobBookingJobCard`: `JobBookingNo`, `JobName`, `ClientName`, `OrderBookingID`; client fallback via `JobOrderBooking.LedgerID` → `LedgerMaster.LedgerName` | `src/job-card-queries.js`, `src/routes-fg-qc.js` |
-| `JobBookingJobCardContents`: `JobCardContentNo`, `PlanContName` | `src/job-card-queries.js` |
-| `JobBookingJobCardProcessMaterialRequirement.RequiredQuantityInStockUnit` (`RequiredQty` reads 0); key JobBookingID + JobBookingJobCardContentsID + ProcessID + MachineID + CompanyID | Brief 4.5; `src/job-card-queries.js` |
-| `ItemMaster`: `ItemCode`, `ItemName`, `ItemGroupID`, `Quality`, `GSM`, `SizeW`, `SizeL`, `Manufecturer` (sic), `StockUnit`, `PhysicalStock` | Existing queries in this repo; brief 3 |
-| `ItemGroupMaster.ItemGroupName` | `src/routes*.js` |
-| `UPDATE_ITEM_STOCK_VALUES @CompanyID, @TransactionID, @DeletedItemID` | Brief 5.3; `src/supplier-portal/services/erp-receiving.js` |
-| `UserMaster(UserID, UserName)` | `src/supplier-portal/services/erp-ledgers.js` |
+| SQL Server 2022 (16.0), compatibility level 150 | OPENJSON, FOR JSON and `CREATE OR ALTER` are all available. |
+| `READ_COMMITTED_SNAPSHOT` **on** | A plain read does not wait for another session's uncommitted insert. The procedure's MAX read and duplicate check use `WITH (READCOMMITTEDLOCK)`, so they wait for an in-flight ERP save and see its number. |
+| Server clock is IST | `GETDATE()` timestamps are correct as written. |
 
-## Open items and current assumptions
+## Columns and types
 
-| # | Item (brief §4) | Current assumption | Where in code | Status |
-|---|---|---|---|---|
-| 1 | Full ITM / ITD columns, defaults, ITM indexes | Only the columns in brief §5 are written; all others take their default | `TEMPLATE` markers in `sql/issue-tool/002_usp_IssueTool_PostIssue.sql`; lists in `src/issue-tool/schema-manifest.js` | Discovery §2 |
-| 2 | How a floor warehouse is distinguished | `WarehouseMaster.IsFloorWarehouse = 1` | `002_…PostIssue.sql` (floor check), `queries/lookups.js` | Discovery §3 |
-| 3 | Department / process / machine / ledger name columns | `DepartmentMaster(DepartmentID, DepartmentName, CompanyID)`; `ProcessMaster.DepartmentID` for the suggested department | `002_…PostIssue.sql`, `queries/lookups.js`, `queries/job-contents.js`, `queries/issues.js` | Discovery §1, §4 |
-| 4 | Job card / content number, names, client, release date | As in "Known". Release date is not used | `queries/job-contents.js`, `queries/picklists.js` | Discovery §5 |
-| 5 | Requirement column | `RequiredQuantityInStockUnit` | `queries/job-contents.js`, `002_…PostIssue.sql` | Known |
-| 6 | Numbering scope | One sequence per VoucherID + FYear **across companies** (`@NumberPerCompany = 0`), deleted vouchers included. If numbering is really per company, this can only leave a gap, never reuse a number | `002_…PostIssue.sql`, top of procedure | Discovery §6 |
-| 7 | Template vouchers; blank as `''`, `' '` or `NULL` | Blank string columns written as `''` (`@Blank`) | `002_…PostIssue.sql` | Discovery §7 |
-| — | Remark column | `ItemTransactionMain.Narration` (brief §7) | `002_…PostIssue.sql`, `queries/issues.js` | Discovery §1 |
-| — | Picklist line required quantity | `ItemTransactionDetail.RequiredQuantity` on the -17 line (brief 6.4) | `queries/picklists.js`, `002_…PostIssue.sql` | Discovery §1 |
-| — | Consumption link for the delete guard | `ItemConsumptionDetail.IssueTransactionID` (brief 6.2) | `003_…DeleteIssue.sql`, `queries/issues.js` | Discovery §1 |
-| — | Server compatibility | SQL Server 2016 SP1+, compatibility level ≥ 130 (OPENJSON, FOR JSON, CREATE OR ALTER) | all three SQL scripts | Discovery §0 |
+- **Every column the module references exists** (section 1 of the report).
+- **All IDs in ITM / ITD are BIGINT** (TransactionID, ItemID, JobBookingID, BatchID, WarehouseID, …). The procedures use BIGINT throughout. The `mssql` driver returns BIGINT as a string (`"66933"`), so `src/issue-tool/db.js` converts BIGINT columns back to numbers before anything compares or returns them.
+- `TotalQuantity` is `real`, `IssueQuantity` / `RequiredQuantity` are `float`.
+- `FYear` is stored as **`2026-2027`** on -19 vouchers (17,416 vouchers this year), as the brief said. **Note:** `src/supplier-portal/services/erp-voucher.js` builds FYear as `26_27`. That is wrong for this database: its voucher-number MAX would find nothing and restart at 1. It is outside this module, but it should be fixed before Supplier Portal GRN posting is switched on.
 
-A missing column breaks deployment loudly rather than silently: `CREATE OR ALTER PROCEDURE` fails on a column that does not exist in an existing table, and the read endpoints return a 500 naming the column. Discovery §1 lists every referenced column so this is found before deploying.
+## What an ERP-made issue looks like (template vouchers)
+
+Compared against IS17300_26_27 (allocated, TransactionID 66933) and IS17302_26_27 (direct, 66936), every column the procedure does not write holds its table default. **No template gaps.**
+
+Blank strings, exactly as the ERP writes them:
+
+| Column | ERP value | Column default | Procedure writes |
+|---|---|---|---|
+| `ITM.DeliveryNoteNo` (allocated) | `' '` (one space) | `' '` | `' '` |
+| `ITM.DeliveryNoteNo` (direct, no slip) | the voucher number | `' '` | the voucher number |
+| `ITM.Narration` | `''` (empty) | `' '` | `''` when no remark |
+| other ITM text columns (Particular, Transporter, …) | `' '` | `' '` | not written → default |
+
+Differences that do not matter:
+- The ERP stamps each line with its own `GETDATE()` a few milliseconds apart; the procedure uses one timestamp for the header and all lines. Timestamps are excluded from the compare.
+- IS17302 is a direct issue **without a job card** (job and content 0 on header and lines). That case is out of scope. The captured IS17254 is the template for a direct issue with a job.
+
+## Warehouses, departments, job tables
+
+| Item | Finding |
+|---|---|
+| Floor warehouse | `WarehouseMaster.IsFloorWarehouse = 1`. Two exist: 16 Floor-Panchla / Paper, 14 Floor-Tangra / Floor. |
+| Warehouse / bin names | `WarehouseName`, `BinName` (13 = Panchla / Paper warehouse, 17 = Panchla / Outside 1). |
+| Department | `DepartmentMaster.DepartmentID` (100 = PRINTING) is what vouchers store; the table's own key is `ID`. It has `CompanyID`, `IsDeletedTransaction`, `IsBlocked`. |
+| Suggested department | `ProcessMaster.DepartmentID` exists; process 10337 "Printing Front Side" → 100. That the ERP suggests this way is still an inference. |
+| Job card / content | `JobBookingJobCard.JobBookingNo`, `JobName`, `ClientName`; `JobBookingJobCardContents.JobCardContentNo`, `PlanContName`. |
+| Requirement | `RequiredQuantityInStockUnit` (`RequiredQty` reads 0). For J06482_26_27[1_1] the planned R01312 now reads **137.69 Kg** (the brief had 68.84), plus inks and varnish in other groups. Test B still over-issues (152 > 137.69). |
+
+## Voucher numbering
+
+| Check | Result | Decision |
+|---|---|---|
+| Companies with -19 vouchers | Only CompanyID 2 | `@NumberPerCompany = 1`. Same number as global today, uses the (VoucherID, CompanyID, FYear) index. |
+| Same number in two companies | None | — |
+| Same number on a live and a deleted voucher | 20+ cases | Most likely duplicates the ERP made and someone later deleted one of. The procedure counts deleted vouchers in the MAX, so it can never reuse a number. If the ERP skips deleted ones, the worst case is a gap. |
+| Duplicate numbers within the company | Yes, e.g. 16888 three times | **The ERP's own numbering already races.** The applock, the locking reads and the post-insert check keep this tool from adding duplicates of its own. They cannot stop an ERP save that read MAX before ours committed, because the ERP takes no lock. |
+
+## Stock
+
+- For items 9409 and 9681, the batch total from the module's grouping equals `ItemMaster.PhysicalStock` (40,756 Sheet and 235 Kg). The batch query (including the `IsCancelled` filter) matches `UPDATE_ITEM_STOCK_VALUES`.
+- `UPDATE_ITEM_STOCK_VALUES(@CompanyID int, @TransactionID bigint, @DeletedItemID bigint)`.
+
+## Still assumptions
+
+| Assumption | Why it is still open |
+|---|---|
+| The remark goes in `ITM.Narration` | The column exists and the ERP writes `''` there, but no capture had a remark typed in. |
+| Allocated header `DepartmentID` comes from the picklist line | Consistent with every capture (100); not proven. |
+| Delete recalculates stock with `@TransactionID = 0, @DeletedItemID = item` | Not captured. |
+| A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
 
 ## Decisions taken without discovery (review these)
 
-- **Batch stock** is `ReceiptQuantity − IssueQuantity − RejectedQuantity` over live, not-cancelled ITD rows (vouchers not in -8, -9, -11), grouped by `ISNULL(ParentTransactionID,0)`, `ISNULL(WarehouseID,0)`, `NULLIF(BatchNo,'')`. The brief says this is the exact grouping `UPDATE_ITEM_STOCK_VALUES` uses. The `IsCancelled` filter follows the brief's general convention. Discovery §8 compares the batch total with `PhysicalStock` for the two test items; if they differ, look at this first.
 - **BatchID** of a batch is taken from the receipt row that created it (`TransactionID = ParentTransactionID`, same item, warehouse and batch no.), falling back to the highest BatchID in the group.
-- **Substitutes in a direct issue** count against the content's requirement for the same item group and stock unit. That is how test B (planned R01312, issued R01175, both group 2, Kg) gets its over-issue warning.
-- **Allocated issues** can only issue the picklist line's item (`ITEM_NOT_ON_PICKLIST`). A closed picklist line (`IsCompleted = 1`) is refused (`PICKLIST_LINE_CLOSED`). Future voucher dates are refused (`VOUCHER_DATE_IN_FUTURE`). These three are hard errors the brief did not list; they are in the frontend flow anyway.
+- **Allocated issues** can only issue the picklist line's item (`ITEM_NOT_ON_PICKLIST`). A closed picklist line (`IsCompleted = 1`) is refused (`PICKLIST_LINE_CLOSED`). Future voucher dates are refused (`VOUCHER_DATE_IN_FUTURE`).

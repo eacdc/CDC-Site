@@ -82,17 +82,13 @@ npm run supplier-portal:create-user -- --email store1@cdcprinters.com --password
 
 ### Assumptions to correct after the first live test
 
-Marked `ASSUMPTION` in the code and SQL:
+Discovery (5 Oct 2026, see `docs/issue-tool-schema-notes.md`) confirmed the floor-warehouse flag, the department and process columns, the blank-string values, the numbering scope and that no template column is missing. Still marked `ASSUMPTION` in the code:
 
-1. The remark is stored in `ItemTransactionMain.Narration` (it was blank in every capture).
+1. The remark is stored in `ItemTransactionMain.Narration` (the column exists; no capture had a remark).
 2. The header `DepartmentID` of an allocated issue comes from the picklist line.
 3. Slip Date is not stored (`DeliveryNoteDate` stayed NULL), so the API takes no slip date.
 4. Delete recalculates stock with `@TransactionID = 0, @DeletedItemID = <item>`, once per item.
-5. Floor warehouses are `WarehouseMaster.IsFloorWarehouse = 1`.
-6. `DepartmentMaster(DepartmentID, DepartmentName, CompanyID)`; the suggested department for a direct issue is `ProcessMaster.DepartmentID` of the processes on the content's material requirement.
-7. A substitute in a direct issue counts against the job's requirement for the same item group + stock unit.
-8. Voucher numbers are one sequence per FYear across companies (`@NumberPerCompany = 0`) until discovery item 6 says otherwise.
-9. Blank string columns are written as `''` (`@Blank`) until the template vouchers show otherwise.
+5. A substitute in a direct issue counts against the job's requirement for the same item group + stock unit.
 
 Two deliberate differences from the brief:
 

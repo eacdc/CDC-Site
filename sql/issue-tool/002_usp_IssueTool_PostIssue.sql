@@ -37,11 +37,17 @@
 
   Template columns
   ----------------
-  Only the columns the brief confirms (section 5) are written. Every other
-  column takes its table default. Run scripts/issue-tool-discover.js and check
-  its "template columns" section: any column where an ERP-created -19 voucher
-  holds a non-default value must be added to the two INSERTs below before the
-  first real post. Those places are marked TEMPLATE.
+  Only the columns the brief confirms (section 5) are written; every other
+  column takes its table default. Discovery on 5 Oct 2026 compared this list
+  with ERP-created vouchers IS17300_26_27 (allocated) and IS17302_26_27
+  (direct): no other column differs from its default, so nothing is missing.
+  Re-run scripts/issue-tool-discover.js after an ERP upgrade.
+
+  Note: the ERP's own -19 numbering already produces the odd duplicate
+  (discovery section 6), and the database runs READ_COMMITTED_SNAPSHOT. The
+  locking reads below narrow the window in which an ERP save and this
+  procedure can pick the same number; they cannot close it, because the ERP
+  does not take any lock of its own.
 
   Idempotent: CREATE OR ALTER (SQL Server 2016 SP1+). OPENJSON and FOR JSON need
   database compatibility level 130 or higher; the discovery script reports it.
@@ -53,11 +59,11 @@ CREATE OR ALTER PROCEDURE dbo.usp_IssueTool_PostIssue
     @UserID              INT,
     @VoucherDate         DATE,
     @Mode                VARCHAR(10),            -- ALLOCATED | DIRECT
-    @PicklistDetailID    INT            = NULL,  -- ALLOCATED: ItemTransactionDetail.TransactionDetailID of the -17 line
-    @JobContentID        INT            = NULL,  -- DIRECT: JobBookingJobCardContentsID
-    @DepartmentID        INT            = NULL,  -- DIRECT: chosen department
+    @PicklistDetailID    BIGINT         = NULL,  -- ALLOCATED: ItemTransactionDetail.TransactionDetailID of the -17 line
+    @JobContentID        BIGINT         = NULL,  -- DIRECT: JobBookingJobCardContentsID
+    @DepartmentID        BIGINT         = NULL,  -- DIRECT: chosen department
     @SlipNo              NVARCHAR(100)  = NULL,  -- DIRECT: Slip No.; voucher number when blank
-    @FloorWarehouseID    INT,
+    @FloorWarehouseID    BIGINT,
     @Remark              NVARCHAR(500)  = NULL,
     @LinesJson           NVARCHAR(MAX),          -- [{itemId, parentTransactionId, warehouseId, batchNo, quantity}]
     @RequestID           UNIQUEIDENTIFIER,
@@ -69,17 +75,21 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    /* Discovery item 6 decides this. 0 = one -19 sequence per FYear across all
-       companies; 1 = one sequence per CompanyID + FYear. 0 is the safe default:
-       if numbering is really per company, it can only leave a gap, never
-       reuse a number. */
-    DECLARE @NumberPerCompany BIT = 0;
+    /* One -19 sequence per CompanyID + FYear. Discovery (5 Oct 2026): only
+       CompanyID 2 has -19 vouchers and no number appears in two companies, so
+       per-company and global give the same number today; per-company matches
+       how every other ERP sequence is scoped and lets the MAX use the
+       (VoucherID, CompanyID, FYear) index. */
+    DECLARE @NumberPerCompany BIT = 1;
 
     DECLARE @VoucherID INT = -19;
     DECLARE @Prefix    NVARCHAR(10) = N'IS';
-    /* TEMPLATE: blank string columns. The ERP is inconsistent between '', ' '
-       and NULL; discovery item 7 shows which one an ERP-created -19 holds. */
-    DECLARE @Blank     NVARCHAR(10) = N'';
+    /* Blank strings exactly as the ERP writes them on a -19 (discovery item 7,
+       vouchers IS17300 and IS17302, and the captured IS17252): DeliveryNoteNo
+       is one space (the column default), Narration is an empty string (NOT the
+       column default, which is one space). */
+    DECLARE @BlankDeliveryNoteNo NVARCHAR(10) = N' ';
+    DECLARE @BlankNarration      NVARCHAR(10) = N'';
 
     DECLARE @StatusPosted   VARCHAR(10) = 'POSTED',
             @StatusReplayed VARCHAR(10) = 'REPLAYED',
@@ -90,16 +100,16 @@ BEGIN
         Seq       INT IDENTITY(1,1) PRIMARY KEY,
         Code      VARCHAR(40)    NOT NULL,
         LineNum    INT            NULL,
-        ItemID    INT            NULL,
+        ItemID    BIGINT         NULL,
         Quantity  DECIMAL(18,4)  NULL,
         Limit     DECIMAL(18,4)  NULL,
         StockUnit NVARCHAR(50)   NULL,
         Message   NVARCHAR(1000) NOT NULL
     );
-    DECLARE @LineIds TABLE (TransID INT NOT NULL, TransactionDetailID INT NOT NULL);
+    DECLARE @LineIds TABLE (TransID INT NOT NULL, TransactionDetailID BIGINT NOT NULL);
 
     /* ── 1. Idempotency ──────────────────────────────────────────────────── */
-    DECLARE @PrevTransactionID INT, @PrevVoucherNo NVARCHAR(50);
+    DECLARE @PrevTransactionID BIGINT, @PrevVoucherNo NVARCHAR(50);
     SELECT @PrevTransactionID = TransactionID, @PrevVoucherNo = VoucherNo
     FROM dbo.IssueTool_PostLog
     WHERE RequestId = @RequestID AND IsDryRun = 0;
@@ -121,18 +131,18 @@ BEGIN
 
     DECLARE @Lines TABLE (
         LineNum              INT            NOT NULL PRIMARY KEY,
-        ItemID              INT            NULL,
-        ParentTransactionID INT            NULL,
-        WarehouseID         INT            NULL,
+        ItemID              BIGINT         NULL,
+        ParentTransactionID BIGINT         NULL,
+        WarehouseID         BIGINT         NULL,
         BatchNo             NVARCHAR(200)  NULL,   -- normalised: NULLIF(batchNo, '')
         Quantity            DECIMAL(18,4)  NULL,
         -- resolved from the database
-        ItemGroupID         INT            NULL,
+        ItemGroupID         BIGINT         NULL,
         StockUnit           NVARCHAR(50)   NULL,
         StockUnitKey        NVARCHAR(50)   NULL,   -- UPPER(LTRIM(RTRIM(StockUnit)))
         GroupRows           INT            NULL,
         BatchStock          DECIMAL(18,4)  NULL,
-        BatchID             INT            NULL,
+        BatchID             BIGINT         NULL,
         BatchNoStored       NVARCHAR(200)  NULL    -- BatchNo exactly as on the receipt row
     );
 
@@ -145,9 +155,9 @@ BEGIN
            v.quantity
     FROM OPENJSON(@LinesJson) AS j
     CROSS APPLY OPENJSON(j.[value]) WITH (
-        itemId              INT            '$.itemId',
-        parentTransactionId INT            '$.parentTransactionId',
-        warehouseId         INT            '$.warehouseId',
+        itemId              BIGINT         '$.itemId',
+        parentTransactionId BIGINT         '$.parentTransactionId',
+        warehouseId         BIGINT         '$.warehouseId',
         batchNo             NVARCHAR(200)  '$.batchNo',
         quantity            DECIMAL(18,4)  '$.quantity'
     ) AS v;
@@ -157,8 +167,8 @@ BEGIN
     IF EXISTS (SELECT 1 FROM @Lines WHERE Quantity IS NULL OR Quantity <= 0)
         THROW 51002, N'INVALID_QUANTITY: Every quantity must be greater than zero.', 1;
 
-    /* Floor warehouse + bin. ASSUMPTION (discovery item 2): WarehouseMaster
-       marks floor warehouses with IsFloorWarehouse = 1. */
+    /* Floor warehouse + bin: WarehouseMaster.IsFloorWarehouse = 1 (confirmed by
+       discovery: 16 Floor-Panchla / Paper and 14 Floor-Tangra / Floor). */
     IF NOT EXISTS (
         SELECT 1 FROM dbo.WarehouseMaster
         WHERE WarehouseID = @FloorWarehouseID AND CompanyID = @CompanyID
@@ -228,9 +238,9 @@ BEGIN
     END
 
     /* Mode-specific context */
-    DECLARE @HdrDepartmentID INT, @JobBookingID INT, @ContentsID INT,
-            @PickTransactionID INT, @PickItemID INT, @PickRequired DECIMAL(18,4),
-            @PickMachineID INT, @PickDepartmentID INT, @PickProcessID INT,
+    DECLARE @HdrDepartmentID BIGINT, @JobBookingID BIGINT, @ContentsID BIGINT,
+            @PickTransactionID BIGINT, @PickItemID BIGINT, @PickRequired DECIMAL(18,4),
+            @PickMachineID BIGINT, @PickDepartmentID BIGINT, @PickProcessID BIGINT,
             @PickCompleted BIT, @HdrDeliveryNoteNo NVARCHAR(100);
 
     IF @Mode = 'ALLOCATED'
@@ -265,7 +275,7 @@ BEGIN
 
         -- ASSUMPTION (brief 7): the header department comes from the picklist line.
         SET @HdrDepartmentID   = @PickDepartmentID;
-        SET @HdrDeliveryNoteNo = @Blank;
+        SET @HdrDeliveryNoteNo = @BlankDeliveryNoteNo;
     END
     ELSE
     BEGIN
@@ -284,8 +294,11 @@ BEGIN
         IF @ContentsID IS NULL
             THROW 51009, N'UNKNOWN_JOB_CONTENT: The job content does not exist or has been deleted.', 1;
 
-        -- ASSUMPTION (discovery item 3): DepartmentMaster(DepartmentID, CompanyID).
-        IF NOT EXISTS (SELECT 1 FROM dbo.DepartmentMaster WHERE DepartmentID = @DepartmentID AND CompanyID = @CompanyID)
+        -- DepartmentMaster.DepartmentID is the ID the ERP stores (100 = PRINTING);
+        -- its own key column is ID, which is not used.
+        IF NOT EXISTS (SELECT 1 FROM dbo.DepartmentMaster
+                       WHERE DepartmentID = @DepartmentID AND CompanyID = @CompanyID
+                         AND ISNULL(IsDeletedTransaction, 0) = 0)
             THROW 51010, N'UNKNOWN_DEPARTMENT: The department does not exist.', 1;
 
         SET @HdrDepartmentID   = @DepartmentID;
@@ -382,8 +395,8 @@ BEGIN
 
     IF EXISTS (SELECT 1 FROM @Warnings) AND ISNULL(@AcknowledgeWarnings, 0) = 0
     BEGIN
-        SELECT @StatusWarnings AS Status, CAST(NULL AS INT) AS TransactionID, CAST(NULL AS NVARCHAR(50)) AS VoucherNo,
-               CAST(NULL AS INT) AS MaxVoucherNo, CAST(NULL AS NVARCHAR(20)) AS FYear, @VoucherDate AS VoucherDate,
+        SELECT @StatusWarnings AS Status, CAST(NULL AS BIGINT) AS TransactionID, CAST(NULL AS NVARCHAR(50)) AS VoucherNo,
+               CAST(NULL AS BIGINT) AS MaxVoucherNo, CAST(NULL AS NVARCHAR(20)) AS FYear, @VoucherDate AS VoucherDate,
                0 AS Attempts, CAST(NULL AS NVARCHAR(MAX)) AS DryRunHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunLinesJson;
         SELECT Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message FROM @Warnings ORDER BY Seq;
         SELECT TransID, TransactionDetailID FROM @LineIds;
@@ -403,9 +416,9 @@ BEGIN
     DECLARE @VoucherDateTime DATETIME = CAST(@VoucherDate AS DATETIME);   -- chosen date at 00:00
 
     DECLARE @Attempt INT = 0, @Done BIT = 0, @LockResult INT,
-            @MaxNo INT, @VoucherNo NVARCHAR(50), @NewID INT, @Now DATETIME,
+            @MaxNo BIGINT, @VoucherNo NVARCHAR(50), @NewID BIGINT, @Now DATETIME,
             @DryRunHeaderJson NVARCHAR(MAX), @DryRunLinesJson NVARCHAR(MAX);
-    DECLARE @NewHeader TABLE (TransactionID INT NOT NULL);
+    DECLARE @NewHeader TABLE (TransactionID BIGINT NOT NULL);
 
     BEGIN TRY
         WHILE @Done = 0
@@ -433,9 +446,15 @@ BEGIN
                 GOTO Replay;
             END
 
-            -- Deleted vouchers are included: the ERP never reuses their numbers.
+            -- Deleted vouchers are included, so a number is never handed out
+            -- twice even if the ERP itself skips deleted ones.
+            --
+            -- READCOMMITTEDLOCK: the database runs READ_COMMITTED_SNAPSHOT, so
+            -- a plain read would see the last committed MAX and miss an ERP
+            -- save that has inserted its header but not yet committed. With
+            -- the hint this read waits for that save and sees its number.
             SELECT @MaxNo = ISNULL(MAX(MaxVoucherNo), 0) + 1
-            FROM dbo.ItemTransactionMain
+            FROM dbo.ItemTransactionMain WITH (READCOMMITTEDLOCK)
             WHERE VoucherID = @VoucherID
               AND FYear = @FYear
               AND (@NumberPerCompany = 0 OR CompanyID = @CompanyID);
@@ -460,7 +479,7 @@ BEGIN
                 @ContentsID,
                 @TotalQty,
                 CASE WHEN @Mode = 'DIRECT' THEN ISNULL(@HdrDeliveryNoteNo, @VoucherNo) ELSE @HdrDeliveryNoteNo END,
-                ISNULL(NULLIF(LTRIM(RTRIM(@Remark)), N''), @Blank),
+                ISNULL(NULLIF(LTRIM(RTRIM(@Remark)), N''), @BlankNarration),
                 @CompanyID, @FYear, @UserID, @UserID, @UserID, @Now, @Now,
                 0
             );
@@ -469,8 +488,9 @@ BEGIN
 
             -- The ERP does not take our applock, so it can grab the same number
             -- in the same instant. If it did, give the number back and retry.
+            -- Locking read for the same reason as the MAX above.
             IF EXISTS (
-                SELECT 1 FROM dbo.ItemTransactionMain
+                SELECT 1 FROM dbo.ItemTransactionMain WITH (READCOMMITTEDLOCK)
                 WHERE VoucherID = @VoucherID
                   AND FYear = @FYear
                   AND MaxVoucherNo = @MaxNo

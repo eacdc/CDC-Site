@@ -43,11 +43,11 @@ export async function postIssue({ site, companyId, erpUserId, body }) {
 		UserID: [sql.Int, erpUserId],
 		VoucherDate: [sql.Date, body.voucherDate],
 		Mode: [sql.VarChar(10), body.mode],
-		PicklistDetailID: [sql.Int, body.mode === 'ALLOCATED' ? body.picklistDetailId : null],
-		JobContentID: [sql.Int, body.mode === 'DIRECT' ? body.jobContentId : null],
-		DepartmentID: [sql.Int, body.mode === 'DIRECT' ? body.departmentId : null],
+		PicklistDetailID: [sql.BigInt, body.mode === 'ALLOCATED' ? body.picklistDetailId : null],
+		JobContentID: [sql.BigInt, body.mode === 'DIRECT' ? body.jobContentId : null],
+		DepartmentID: [sql.BigInt, body.mode === 'DIRECT' ? body.departmentId : null],
 		SlipNo: [sql.NVarChar(100), body.mode === 'DIRECT' ? (body.slipNo || null) : null],
-		FloorWarehouseID: [sql.Int, body.floorWarehouseId],
+		FloorWarehouseID: [sql.BigInt, body.floorWarehouseId],
 		Remark: [sql.NVarChar(500), body.remark || null],
 		LinesJson: [sql.NVarChar(sql.MAX), JSON.stringify(lines)],
 		RequestID: [sql.UniqueIdentifier, body.requestId],
@@ -143,7 +143,7 @@ export async function deleteIssue({ site, companyId, erpUserId, transactionId })
 	const result = await execute(site, DELETE_PROC, {
 		CompanyID: [sql.Int, companyId],
 		UserID: [sql.Int, erpUserId],
-		TransactionID: [sql.Int, transactionId],
+		TransactionID: [sql.BigInt, transactionId],
 		DryRun: [sql.Bit, dryRun ? 1 : 0],
 	});
 
@@ -184,7 +184,7 @@ export async function deleteIssue({ site, companyId, erpUserId, transactionId })
  * a post; a deleted one item by item, as after a delete.
  */
 export async function retryStockRefresh({ site, companyId, transactionId }) {
-	const params = { transactionId: [sql.Int, transactionId], companyId: [sql.Int, companyId] };
+	const params = { transactionId: [sql.BigInt, transactionId], companyId: [sql.Int, companyId] };
 	const rows = await query(site, `
 		SELECT VoucherID, ISNULL(IsDeletedTransaction, 0) AS IsDeleted
 		FROM dbo.ItemTransactionMain
@@ -216,8 +216,8 @@ async function refreshStockForTransaction({ site, companyId, transactionId }) {
 	try {
 		await execute(site, STOCK_REFRESH_PROC, {
 			CompanyID: [sql.Int, companyId],
-			TransactionID: [sql.Int, transactionId],
-			DeletedItemID: [sql.Int, 0],
+			TransactionID: [sql.BigInt, transactionId],
+			DeletedItemID: [sql.BigInt, 0],
 		}, { long: true });
 		return { ok: true };
 	} catch (err) {
@@ -233,8 +233,8 @@ async function refreshStockForItems({ site, companyId, itemIds }) {
 		try {
 			await execute(site, STOCK_REFRESH_PROC, {
 				CompanyID: [sql.Int, companyId],
-				TransactionID: [sql.Int, 0],
-				DeletedItemID: [sql.Int, itemId],
+				TransactionID: [sql.BigInt, 0],
+				DeletedItemID: [sql.BigInt, itemId],
 			}, { long: true });
 		} catch (err) {
 			console.warn(`[issue-tool] stock refresh failed for item ${itemId}:`, err.message);

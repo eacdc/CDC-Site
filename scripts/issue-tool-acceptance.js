@@ -82,6 +82,8 @@ const TESTS = [
 			JobBookingID: 16077,
 			JobBookingJobCardContentsID: 24188,
 			TotalQuantity: 2958,
+			DeliveryNoteNo: ' ',   // one space, as on the ERP's IS17252
+			Narration: '',
 		},
 		lines: {
 			1: { IssueQuantity: 1500, ParentTransactionID: 60325, BatchID: 101864, BatchNo: '60325_PO02095_26_27_9409_1.00', WarehouseID: 17 },
@@ -120,6 +122,7 @@ const TESTS = [
 			JobBookingJobCardContentsID: 23524,
 			TotalQuantity: 152,
 			DeliveryNoteNo: 'IS17253_26_27',
+			Narration: '',
 		},
 		lines: {
 			1: { IssueQuantity: 152, ParentTransactionID: 52873, BatchID: 87880, BatchNo: '52873_PO01565_26_27_9681_1.00', WarehouseID: 13 },
@@ -147,11 +150,11 @@ async function dryRun(pool, test) {
 		.input('UserID', sql.Int, USER_ID)
 		.input('VoucherDate', sql.Date, '2026-10-03')
 		.input('Mode', sql.VarChar(10), rest.Mode)
-		.input('PicklistDetailID', sql.Int, rest.PicklistDetailID ?? null)
-		.input('JobContentID', sql.Int, rest.JobContentID ?? null)
-		.input('DepartmentID', sql.Int, rest.DepartmentID ?? null)
+		.input('PicklistDetailID', sql.BigInt, rest.PicklistDetailID ?? null)
+		.input('JobContentID', sql.BigInt, rest.JobContentID ?? null)
+		.input('DepartmentID', sql.BigInt, rest.DepartmentID ?? null)
 		.input('SlipNo', sql.NVarChar(100), rest.SlipNo ?? null)
-		.input('FloorWarehouseID', sql.Int, rest.FloorWarehouseID)
+		.input('FloorWarehouseID', sql.BigInt, rest.FloorWarehouseID)
 		.input('Remark', sql.NVarChar(500), null)
 		.input('LinesJson', sql.NVarChar(sql.MAX), JSON.stringify(lines))
 		.input('RequestID', sql.UniqueIdentifier, requestId)

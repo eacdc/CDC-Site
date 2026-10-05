@@ -9,7 +9,7 @@ import { buildRequirements } from './queries/job-contents.js';
 import { mergeItems } from './queries/items.js';
 import { groupWarehouses } from './queries/lookups.js';
 import { assembleIssues } from './queries/issues.js';
-import { likePattern, inList } from './db.js';
+import { likePattern, inList, bigIntsToNumbers, sql } from './db.js';
 import { companyIdFor } from './config.js';
 import { compareVouchers, checkExpectations, normalise } from './compare.js';
 
@@ -274,4 +274,19 @@ test('normalise keeps NULL, empty and space apart', () => {
 	assert.equal(normalise(true), 1);
 	assert.deepEqual(checkExpectations({ JobBookingID: 0, DepartmentID: 100 }, { JobBookingID: 0, DepartmentID: 100 }), []);
 	assert.equal(checkExpectations({ JobBookingID: 15607 }, { JobBookingID: 0 }).length, 1);
+});
+
+test('BIGINT columns come back from the driver as strings and are turned into numbers', () => {
+	const rs = [{ TransactionID: '66933', VoucherID: '-19', VoucherNo: 'IS17300_26_27', PicklistTransactionID: '0', Qty: 363 }];
+	rs.columns = {
+		TransactionID: { type: sql.BigInt },
+		VoucherID: { type: sql.BigInt },
+		VoucherNo: { type: sql.NVarChar },
+		PicklistTransactionID: { type: sql.BigInt },
+		Qty: { type: sql.Float },
+	};
+	bigIntsToNumbers(rs);
+	assert.deepEqual(rs[0], { TransactionID: 66933, VoucherID: -19, VoucherNo: 'IS17300_26_27', PicklistTransactionID: 0, Qty: 363 });
+	assert.equal(rs[0].PicklistTransactionID || null, null);   // "0" would have been truthy
+	assert.deepEqual(bigIntsToNumbers(undefined), []);
 });
