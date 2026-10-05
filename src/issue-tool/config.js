@@ -11,6 +11,8 @@
  *                               runs every post and delete as a dry run.
  *   ISSUE_TOOL_CORS_ORIGIN      The frontend's origin(s), comma-separated. Only
  *                               needed once CORS_ORIGINS restricts the server.
+ *   ISSUE_TOOL_SESSION_HOURS    How long a sign-in lasts (default 12). Tokens are
+ *                               signed with the backend's existing JWT_SECRET.
  *
  * The database itself comes from the shared settings in src/db.js
  * (DB_NAME_KOL / DB_NAME_AHM), chosen by the site on the user's session.

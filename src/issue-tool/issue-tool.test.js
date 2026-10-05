@@ -11,6 +11,9 @@ import { groupWarehouses } from './queries/lookups.js';
 import { assembleIssues } from './queries/issues.js';
 import { likePattern, inList, bigIntsToNumbers, sql } from './db.js';
 import { companyIdFor } from './config.js';
+import { pickUser, verifyToken } from './auth.js';
+import jwt from 'jsonwebtoken';
+import { loginBody } from './schemas.js';
 import { compareVouchers, checkExpectations, normalise } from './compare.js';
 
 // ── dates ───────────────────────────────────────────────────────────────────
@@ -289,4 +292,42 @@ test('BIGINT columns come back from the driver as strings and are turned into nu
 	assert.deepEqual(rs[0], { TransactionID: 66933, VoucherID: -19, VoucherNo: 'IS17300_26_27', PicklistTransactionID: 0, Qty: 363 });
 	assert.equal(rs[0].PicklistTransactionID || null, null);   // "0" would have been truthy
 	assert.deepEqual(bigIntsToNumbers(undefined), []);
+});
+
+// ── sign-in ─────────────────────────────────────────────────────────────────
+
+test('username lookup: one match wins, an exact UserName beats a LoginUserName, two exact names are refused', () => {
+	assert.equal(pickUser([], 'store1'), null);
+	assert.equal(pickUser([{ UserID: 24, UserName: 'STORE1' }], 'store1').UserID, 24);
+	assert.equal(pickUser([
+		{ UserID: 24, UserName: 'Store1', LoginUserName: 'x' },
+		{ UserID: 99, UserName: 'Other', LoginUserName: 'store1' },
+	], 'store1').UserID, 24);
+	assert.throws(() => pickUser([{ UserID: 1, UserName: 'A' }, { UserID: 2, UserName: 'a ' }], 'a'),
+		(err) => err.code === 'AMBIGUOUS_USERNAME' && err.status === 409);
+});
+
+test('login body takes a username and KOL / AHM in any case', () => {
+	assert.deepEqual(parse(loginBody, { username: ' store1 ', database: 'kol' }), { username: 'store1', database: 'KOL' });
+	assert.throws(() => parse(loginBody, { username: 'x', database: 'BOM' }), ApiError);
+	assert.throws(() => parse(loginBody, { username: '', database: 'KOL' }), ApiError);
+});
+
+test('session tokens: valid ones carry the ERP user and site, anything else is a 401', () => {
+	const saved = process.env.JWT_SECRET;
+	process.env.JWT_SECRET = 'test-secret';
+	try {
+		const good = jwt.sign({ kind: 'issue-tool', site: 'KOL', erpUserId: 24, userName: 'STORE1' }, 'test-secret', { expiresIn: 60 });
+		assert.equal(verifyToken(good).erpUserId, 24);
+
+		const expired = jwt.sign({ kind: 'issue-tool', site: 'KOL', erpUserId: 24, exp: Math.floor(Date.now() / 1000) - 10 }, 'test-secret');
+		const otherTool = jwt.sign({ username: 'x', tool: 'voice-note' }, 'test-secret');
+		const forged = jwt.sign({ kind: 'issue-tool', site: 'KOL', erpUserId: 24 }, 'wrong-secret');
+		for (const t of [expired, otherTool, forged, 'garbage']) {
+			assert.throws(() => verifyToken(t), (err) => err.status === 401 && err.code === 'SESSION_EXPIRED');
+		}
+	} finally {
+		if (saved === undefined) delete process.env.JWT_SECRET;
+		else process.env.JWT_SECRET = saved;
+	}
 });

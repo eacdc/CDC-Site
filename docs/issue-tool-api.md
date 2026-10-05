@@ -10,42 +10,43 @@ This file is the single source of truth for the frontend. It is kept in sync wit
 
 ## 1. Authentication
 
-The tool reuses the backend's existing internal login (the Supplier Portal's). There is no separate issue-tool login.
+Same sign-in as the production entry tool: a **username** and a **database**, no password. The username is looked up in the ERP's `UserMaster` (by `UserName` or `LoginUserName`, any case) in the chosen database, and the session carries that user's ERP `UserID`.
 
-### `POST /api/supplier-portal/auth/login` (note: not under `/api/issue-tool`)
+### `POST /auth/login`
+
+No token needed.
 
 ```json
-{ "email": "store1@cdcprinters.com", "password": "••••••••", "site": "KOL" }
+{ "username": "store1", "database": "KOL" }
 ```
 
-`site` is `KOL` (Kolkata) or `AHM` (Ahmedabad) and picks the database. Response `200`:
+`database` is `KOL` (Kolkata) or `AHM` (Ahmedabad); it picks the database every later call uses. Response `200`:
 
 ```json
 {
-  "token": "4f0c9e…64 hex chars…",
-  "expiresAt": "2026-10-12T05:30:00.000Z",
-  "user": { "id": "66f…", "email": "store1@cdcprinters.com", "displayName": "Store 1", "roles": ["STORE"], "allowedSites": ["KOL"] },
-  "context": { "site": "KOL", "erpUserId": 24, "employeeLedgerId": null, "warehouseId": null }
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…",
+  "expiresAt": "2026-10-05T19:30:00.000Z",
+  "user": { "userId": 24, "userName": "STORE1" },
+  "site": "KOL"
 }
 ```
 
-`401 { "error": "Email or password is incorrect." }` on bad credentials; `403` if the site is not allowed for the user.
+| Status | `code` | Meaning |
+|---|---|---|
+| 400 | `VALIDATION_FAILED` | Username blank, or database not KOL / AHM. |
+| 401 | `UNKNOWN_USER` | No active (not deleted, not blocked) ERP user with that name in that database. |
+| 409 | `AMBIGUOUS_USERNAME` | Two ERP users share the name. |
+| 500 | `AUTH_NOT_CONFIGURED` | The server has no `JWT_SECRET`. |
 
-### Every `/api/issue-tool` request
+The session lasts 12 hours by default (`ISSUE_TOOL_SESSION_HOURS` on the server). Signing out is local: drop the token.
+
+### Every other `/api/issue-tool` request
 
 ```
 Authorization: Bearer <token>
 ```
 
-| Status | Body | Meaning / what to do |
-|---|---|---|
-| `401` | `{ "error": "Not signed in." }` or `{ "error": "Session has expired. Sign in again." }` | Show the login, keep the form, retry after sign-in. |
-| `403` | `{ "error": "This action needs one of: STORE." }` | The account lacks the `STORE` role (`ADMIN` also passes). |
-| `403` | `{ "error": "…", "code": "ERP_USER_NOT_MAPPED" }` | Only on posting and deleting: the login has no ERP UserID. Reads still work. `GET /session` tells you in advance (`canPost`). |
-
-### `POST /api/supplier-portal/auth/logout`
-
-Header `Authorization: Bearer <token>`. Response `{ "ok": true }`.
+A missing, expired or invalid token is `401` with `code` `NOT_SIGNED_IN` or `SESSION_EXPIRED`. Show the sign-in again, keep the form, and retry after signing in.
 
 ---
 
@@ -57,7 +58,7 @@ Every error from `/api/issue-tool` has this shape:
 { "error": "Human-readable message, safe to show", "code": "MACHINE_CODE" }
 ```
 
-Some codes add fields (`details`, `warnings`). The `401`/`403` responses from the login layer carry only `error`.
+Some codes add fields (`details`, `warnings`).
 
 | HTTP | `code` | When |
 |---|---|---|
@@ -76,7 +77,8 @@ Some codes add fields (`details`, `warnings`). The `401`/`403` responses from th
 | 400 | `UNKNOWN_DEPARTMENT` | Department does not exist. |
 | 400 | `NOT_AN_ISSUE` | Delete: the voucher is not an issue (`-19`). |
 | 400 | `MISSING_FIELD` / `INVALID_MODE` | Defensive checks inside the procedure; the validator normally catches these first. |
-| 403 | `ERP_USER_NOT_MAPPED` | See section 1. |
+| 401 | `NOT_SIGNED_IN` / `SESSION_EXPIRED` | See section 1. |
+| 401 / 409 | `UNKNOWN_USER` / `AMBIGUOUS_USERNAME` | Sign-in only; see section 1. |
 | 404 | `UNKNOWN_ITEM` / `UNKNOWN_ISSUE` | Item or issue voucher not found. |
 | 409 | `WARNINGS_NOT_ACKNOWLEDGED` | The issue has warnings; see section 5.8. Body has `warnings`. |
 | 409 | `VOUCHER_NUMBER_CONFLICT` | The ERP took the same voucher number three times running. Nothing was saved. Save again with the same `requestId`. |
@@ -125,7 +127,7 @@ Who is signed in, and whether saves really write. Call it on load and show the *
 
 ```json
 {
-  "user": { "email": "store1@cdcprinters.com", "displayName": "Store 1", "roles": ["STORE"] },
+  "user": { "userId": 24, "userName": "STORE1" },
   "site": "KOL",
   "companyId": 2,
   "erpUserId": 24,
@@ -135,7 +137,7 @@ Who is signed in, and whether saves really write. Call it on load and show the *
 }
 ```
 
-`today` is today's date in India; use it as the default voucher date. `canPost` is `false` when the login has no ERP UserID.
+`today` is today's date in India; use it as the default voucher date. `canPost` is always `true` with this sign-in (every session has an ERP user); it is kept so the client need not change if that ever differs.
 
 ### 4.2 `GET /picklists?search=&page=&pageSize=&showFullyIssued=`
 
@@ -373,8 +375,6 @@ Until the backend sets `ISSUE_TOOL_ALLOW_WRITES=true`, **every** post and delete
 
 ### 5.2 `POST /issues`
 
-Needs `canPost` (an ERP UserID).
-
 Request:
 
 | Field | Type | Required | Notes |
@@ -499,7 +499,7 @@ No `transactionId` and no `voucherNo` at the top level: nothing was saved. `woul
 
 ### 5.6 `POST /issues/:id/delete`
 
-Needs `canPost`. No body. `:id` is `transactionId`. Soft-deletes the voucher (ERP behaviour), then recalculates stock for each item on it.
+No body. `:id` is `transactionId`. Soft-deletes the voucher (ERP behaviour), then recalculates stock for each item on it.
 
 `200` deleted:
 

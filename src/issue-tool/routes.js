@@ -17,16 +17,16 @@
  *   POST /issues/:id/delete            soft-delete an issue
  *   POST /issues/:id/refresh-stock     retry UPDATE_ITEM_STOCK_VALUES
  *
- * Sign-in is the Supplier Portal's: POST /api/supplier-portal/auth/login.
+ *   POST /auth/login                   username + database → session token
  */
 
 import { Router } from 'express';
-import { authenticate, requireErpUser } from './auth.js';
+import { authenticate, requireErpUser, login } from './auth.js';
 import { ApiError, errorHandler } from './errors.js';
 import { writesEnabled, RECENT_ISSUES_DEFAULT_DAYS, RECENT_ISSUES_MAX_DAYS } from './config.js';
 import { todayInKolkata, addDays, daysBetween } from './dates.js';
 import {
-	parse, picklistsQuery, jobContentsQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
+	parse, loginBody, picklistsQuery, jobContentsQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
 } from './schemas.js';
 import { listPicklistLines } from './queries/picklists.js';
 import { searchJobContents } from './queries/job-contents.js';
@@ -36,6 +36,13 @@ import { recentIssues } from './queries/issues.js';
 import { postIssue, deleteIssue, retryStockRefresh } from './services/issues.js';
 
 const router = Router();
+
+// Sign-in: username + database, as in the production entry tool. Everything
+// after this needs the token it returns.
+router.post('/auth/login', async (req, res) => {
+	const body = parse(loginBody, req.body);
+	res.json(await login(body));
+});
 
 router.use(authenticate);
 

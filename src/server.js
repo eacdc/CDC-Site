@@ -163,8 +163,9 @@ app.use('/api/supplier-portal', supplierPortalRoutes);
 app.use('/api/whatsapp-monitor', whatsappMonitorRoutes);
 
 // CDC Stock Issue Tool — issues paper and other stock to jobs (-19 vouchers).
-// Self-contained under its own prefix; signs in through the Supplier Portal's
-// login. Every post is a dry run until ISSUE_TOOL_ALLOW_WRITES=true.
+// Self-contained under its own prefix; signs in with username + database like
+// the production entry tool. Every post is a dry run until
+// ISSUE_TOOL_ALLOW_WRITES=true.
 app.use('/api/issue-tool', issueToolRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)

@@ -69,14 +69,10 @@ The tool only writes to `ItemTransactionMain`, `ItemTransactionDetail` and its o
 | `ISSUE_TOOL_ALLOW_WRITES` | `false` | Until `true`, every post and delete runs in a transaction that is rolled back, and the response says `dryRun: true` |
 | `ISSUE_TOOL_CORS_ORIGIN` | — | Frontend origin(s). Only matters once `CORS_ORIGINS` restricts the server (unset = all origins allowed) |
 | `DB_NAME_KOL` / `DB_NAME_AHM` and the other `DB_*` | existing | The database comes from the user's site, through the shared pool in `src/db.js` |
-| `MONGODB_URI_SupplierPortal` | existing | Sign-in uses the Supplier Portal login |
+| `JWT_SECRET` | existing | Signs the session token |
+| `ISSUE_TOOL_SESSION_HOURS` | `12` | How long a sign-in lasts |
 
-**Users.** Sign-in is the Supplier Portal's (`POST /api/supplier-portal/auth/login` with email, password, site). A storekeeper needs the `STORE` role, and an `erpUserId` (their ERP `UserMaster.UserID`) to post or delete. That ID is what goes into `UserID`, `CreatedBy`, `ModifiedBy` and `DeletedBy`:
-
-```
-npm run supplier-portal:create-user -- --email store1@cdcprinters.com --password '…' \
-  --name 'Store 1' --roles STORE --sites KOL --erp-user-id 24
-```
+**Users.** Sign-in is the same as the production entry tool: username + database (KOL / AHM), no password. The username is matched against the ERP's `UserMaster.UserName` or `LoginUserName` in that database (active, not blocked), and that user's `UserID` goes into `UserID`, `CreatedBy`, `ModifiedBy` and `DeletedBy`. There is no separate user list. As with the production tool, anyone who knows an ERP username can sign in as that user.
 
 **Dry run.** While `ISSUE_TOOL_ALLOW_WRITES` is off, a dry run still performs the inserts before rolling them back. That uses up identity values (gaps in TransactionID) and holds row locks for the length of one save.
 

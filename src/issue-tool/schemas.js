@@ -14,6 +14,11 @@ const flag = z
 	.transform((v) => v === 'true' || v === '1');
 const search = z.string().trim().max(100).optional().default('');
 
+export const loginBody = z.object({
+	username: z.string().trim().min(1, 'Enter your username.').max(100),
+	database: z.string().trim().toUpperCase().pipe(z.enum(['KOL', 'AHM'])),
+});
+
 export const picklistsQuery = z.object({
 	search,
 	page: z.coerce.number().int().min(1).default(1),
