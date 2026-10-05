@@ -310,7 +310,18 @@ PrintingByJob AS (
         SUM(ISNULL(PA.PrintPlanQty, 0))  AS JobPrintPlanQty,
         SUM(ISNULL(PA.PrintDoneQty, 0))  AS JobPrintDoneQty,
         MAX(PA.LastPrintPlanEnd)          AS JobLastPrintPlanEnd,
-        MAX(PA.LastPrintActualEnd)        AS JobLastPrintActualEnd
+        MAX(PA.LastPrintActualEnd)        AS JobLastPrintActualEnd,
+
+        -- NEW: component-wise print %, e.g. "Text 90%, Book Cover 80%"
+        STRING_AGG(
+            CAST(JEJC.PlanContName AS NVARCHAR(MAX)) + ' ' +
+            CASE
+                WHEN ISNULL(PA.PrintPlanQty, 0) = 0 THEN '-'
+                ELSE CAST(CAST(ROUND(100.0 * ISNULL(PA.PrintDoneQty, 0)
+                                     / PA.PrintPlanQty, 0) AS INT) AS VARCHAR(10)) + '%'
+            END,
+            ', '
+        ) WITHIN GROUP (ORDER BY JEJC.JobBookingJobCardContentsID) AS PrintByComponent
     FROM dbo.JobBookingJobCardContents JEJC
     LEFT JOIN PrintingAgg PA
            ON PA.JobBookingJobCardContentsID = JEJC.JobBookingJobCardContentsID
@@ -318,7 +329,7 @@ PrintingByJob AS (
 ),
 
 -- ============================================================
--- NEW: Binding Production Qty
+-- Binding Production Qty
 -- ============================================================
 BindingAgg AS (
     SELECT
@@ -407,6 +418,9 @@ SELECT TOP 1000
         ELSE CAST(ROUND(100.0 * ISNULL(PBJ.JobPrintDoneQty, 0)
                         / NULLIF(PBJ.JobPrintPlanQty, 0), 1) AS DECIMAL(6,1))
     END                                                 AS [PrintCompletion%],
+
+    -- NEW: Print Completion % per component
+    PBJ.PrintByComponent                                AS [PrintCompletion_ComponentWise],
 
     -- Print Status
     CASE
