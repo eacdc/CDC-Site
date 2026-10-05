@@ -657,6 +657,7 @@ router.get('/job-card/search', async (req, res) => {
         deliveredQty: get(r, 'DeliveredQty'),
         bindingProdQty: get(r, 'BindingProdQty'),
         printCompletionPct: get(r, 'PrintCompletion%') ?? get(r, 'PrintCompletionPct'),
+        printByComponent: get(r, 'PrintCompletion_ComponentWise') ?? get(r, 'PrintByComponent'),
         printStatus: get(r, 'PrintStatus'),
         printEnd: get(r, 'PrintEnd'),
         isCompletePacked: get(r, 'IsCompletePacked'),
