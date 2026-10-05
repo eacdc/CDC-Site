@@ -28,6 +28,8 @@ import pendingDashboardRoutes from './routes-pending-dashboard.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
 import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
 import supplierPortalRoutes from './supplier-portal/routes/index.js';
+import issueToolRoutes from './issue-tool/routes.js';
+import { corsOrigins as issueToolCorsOrigins } from './issue-tool/config.js';
 import { scheduleJobs as scheduleSupplierPortalJobs } from './supplier-portal/jobs/index.js';
 import { closeSupplierPortal } from './supplier-portal/db/mongo.js';
 import { closeWritePools as closeSupplierPortalWritePools } from './supplier-portal/db/mssql.js';
@@ -70,6 +72,11 @@ const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
 	.split(',')
 	.map((o) => o.trim())
 	.filter(Boolean);
+// The Stock Issue Tool frontend is added to the list only when the list is in
+// force; appending it to an empty list would switch the restriction on.
+if (allowedOrigins.length > 0) {
+	allowedOrigins.push(...issueToolCorsOrigins());
+}
 
 app.use(cors({
 	origin: (origin, callback) => {
@@ -154,6 +161,11 @@ app.use('/api/purchase-bills', purchaseBillsRoutes);
 // (MONGODB_URI_SupplierPortal) and its own site-scoped MSSQL access.
 app.use('/api/supplier-portal', supplierPortalRoutes);
 app.use('/api/whatsapp-monitor', whatsappMonitorRoutes);
+
+// CDC Stock Issue Tool — issues paper and other stock to jobs (-19 vouchers).
+// Self-contained under its own prefix; signs in through the Supplier Portal's
+// login. Every post is a dry run until ISSUE_TOOL_ALLOW_WRITES=true.
+app.use('/api/issue-tool', issueToolRoutes);
 
 // Contractor PO System routes (loaded as CommonJS via createRequire)
 // Keep Contractor PO under a dedicated prefix to avoid collisions with shared /api routes.
