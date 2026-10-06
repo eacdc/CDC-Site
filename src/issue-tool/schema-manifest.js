@@ -32,15 +32,20 @@ export const REFERENCED_COLUMNS = {
 	WarehouseMaster: ['WarehouseID', 'CompanyID', 'WarehouseName', 'BinName', 'IsFloorWarehouse', 'IsDeleted', 'IsDeletedTransaction'],
 	DepartmentMaster: ['DepartmentID', 'DepartmentName', 'CompanyID'],
 	ProcessMaster: ['ProcessID', 'CompanyID', 'DepartmentID'],
-	JobBookingJobCard: ['JobBookingID', 'CompanyID', 'JobBookingNo', 'JobName', 'ClientName', 'OrderBookingID', 'CategoryID', 'IsDeletedTransaction'],
+	JobBookingJobCard: [
+		'JobBookingID', 'CompanyID', 'JobBookingNo', 'JobName', 'ClientName', 'OrderBookingID', 'CategoryID', 'LedgerID',
+		'SalesEmployeeID', 'JobBookingDate', 'OrderQuantity', 'IsClose', 'IsCancel', 'IsDeletedTransaction',
+	],
+	FinishGoodsTransactionMain: ['FGTransactionID', 'VoucherID', 'VoucherPrefix', 'IsDeletedTransaction'],
+	FinishGoodsTransactionDetail: ['FGTransactionID', 'JobBookingID', 'InnerCarton', 'QuantityPerPack', 'IsDeletedTransaction'],
 	CategoryMaster: ['CategoryID', 'SegmentID'],
 	SegmentMaster: ['SegmentID', 'SegmentName'],
-	JobBookingJobCardContents: ['JobBookingJobCardContentsID', 'JobBookingID', 'CompanyID', 'JobCardContentNo', 'PlanContName', 'IsDeletedTransaction'],
+	JobBookingJobCardContents: ['JobBookingJobCardContentsID', 'JobBookingID', 'CompanyID', 'JobCardContentNo', 'PlanContName', 'ReleasedDate', 'IsDeletedTransaction'],
 	JobBookingJobCardProcessMaterialRequirement: [
 		'JobBookingJobCardContentsID', 'ItemID', 'CompanyID', 'RequiredQuantityInStockUnit', 'ProcessID', 'SequenceNo', 'IsDeletedTransaction',
 	],
 	JobOrderBooking: ['OrderBookingID', 'LedgerID'],
-	LedgerMaster: ['LedgerID', 'LedgerName'],
+	LedgerMaster: ['LedgerID', 'LedgerName', 'Designation'],
 	UserMaster: ['UserID', 'UserName'],
 	ItemConsumptionMain: [
 		'ConsumptionTransactionID', 'VoucherPrefix', 'MaxVoucherNo', 'VoucherID', 'VoucherNo', 'VoucherDate',

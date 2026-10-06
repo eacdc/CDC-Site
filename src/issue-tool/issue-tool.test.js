@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { todayInKolkata, addDays, daysBetween, financialYear, toIsoDate } from './dates.js';
-import { parse, postIssueBody, picklistsQuery, picklistDetailIdParam, itemsQuery } from './schemas.js';
+import { parse, postIssueBody, picklistsQuery, picklistDetailIdParam, itemsQuery, jobContentsQuery } from './schemas.js';
 import { ApiError, fromSqlError } from './errors.js';
 import { mapPicklistLine } from './queries/picklists.js';
 import { interpretPostResult, dryRunReason } from './services/issues.js';
@@ -97,6 +97,17 @@ test('query strings coerce and default', () => {
 	assert.throws(() => parse(picklistDetailIdParam, { picklistDetailId: 'x' }), ApiError);
 	assert.throws(() => parse(itemsQuery, { search: 'a' }), ApiError);
 	assert.deepEqual(parse(itemsQuery, { jobContentId: '23524' }), { search: '', jobContentId: 23524 });
+});
+
+test('job search takes the Job Card Generator filters and needs at least one', () => {
+	assert.deepEqual(parse(jobContentsQuery, { search: 'J07553' }), { search: 'J07553', clientName: '' });
+	const q = parse(jobContentsQuery, { clientName: 'RSH Global', salesPersonId: '312', fromDate: '2026-10-01', toDate: '2026-10-06', jobStatus: 'pending' });
+	assert.equal(q.salesPersonId, 312);
+	assert.equal(q.jobStatus, 'pending');
+	assert.throws(() => parse(jobContentsQuery, {}), /job number, or choose/);
+	assert.throws(() => parse(jobContentsQuery, { search: 'J0' }), /at least 3/);
+	assert.throws(() => parse(jobContentsQuery, { fromDate: '2026-10-06', toDate: '2026-10-01' }), /from date/);
+	assert.throws(() => parse(jobContentsQuery, { search: 'J07553', jobStatus: 'done' }), ApiError);
 });
 
 // ── procedure results ───────────────────────────────────────────────────────

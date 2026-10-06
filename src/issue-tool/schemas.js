@@ -32,9 +32,30 @@ export const picklistDetailIdParam = z.object({
 	picklistDetailId: z.coerce.number().int().positive(),
 });
 
-export const jobContentsQuery = z.object({
-	search: z.string().trim().min(3, 'Type at least 3 characters of the job card number.').max(100),
-});
+/**
+ * Job search for the direct tab, with the Job Card Generator's filters. At
+ * least one filter is needed, so a search never lists every job ever booked.
+ */
+export const jobContentsQuery = z
+	.object({
+		search,
+		clientName: z.string().trim().max(200).optional().default(''),
+		salesPersonId: z.coerce.number().int().positive().optional(),
+		fromDate: z.iso.date().optional(),
+		toDate: z.iso.date().optional(),
+		jobStatus: z.enum(['pending', 'closed', 'cancelled']).optional(),
+	})
+	.superRefine((q, ctx) => {
+		if (q.search && q.search.length < 3) {
+			ctx.addIssue({ code: 'custom', path: ['search'], message: 'Type at least 3 characters of the job number.' });
+		}
+		if (!q.search && !q.clientName && !q.salesPersonId && !q.fromDate && !q.toDate) {
+			ctx.addIssue({ code: 'custom', path: ['search'], message: 'Enter a job number, or choose a client, sales person or job date.' });
+		}
+		if (q.fromDate && q.toDate && q.fromDate > q.toDate) {
+			ctx.addIssue({ code: 'custom', path: ['fromDate'], message: 'The from date must not be after the to date.' });
+		}
+	});
 
 export const itemsQuery = z
 	.object({

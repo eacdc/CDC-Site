@@ -203,9 +203,19 @@ Response:
 
 `picklistDetailId` is the line's identity: it is what you send to post or close (5.10). `division` is the job's segment. Every `item` object in this API also carries `sizeW`, `sizeL`, `certification` (`ItemMaster.CertificationType`) and `allocatedStock` (`ItemMaster.AllocatedStock`); the examples elsewhere leave them out. `closedDate` (IST wall clock) and `closedBy` are set on closed lines. `total` is the number of matching lines across all pages (`0` when none; `null` only when a page past the end is requested).
 
-### 4.3 `GET /job-contents?search=`
+### 4.3 `GET /job-contents?search=&clientName=&salesPersonId=&fromDate=&toDate=&jobStatus=`
 
-Job contents for a direct issue, by job card number or content number. `search` needs at least 3 characters. Up to 25 contents, newest job first.
+Job contents for a direct issue, with the Job Card Generator's filters. Up to 500 contents, newest job first (`truncated: true` when there were more).
+
+| Param | Notes |
+|---|---|
+| `search` | Job card or content number, at least 3 characters. |
+| `clientName` | Part of the client name (`/lookups/clients`). |
+| `salesPersonId` | `ledgerId` from `/lookups/sales-persons` (the job card's sales employee). |
+| `fromDate`, `toDate` | Job booking date range, `YYYY-MM-DD`. |
+| `jobStatus` | `pending` / `closed` / `cancelled`, worked out as the Job Card Generator does: cancelled, else closed (closed by hand, or at least 90% of the order quantity dispatched on DN notes), else pending. |
+
+At least one of `search`, `clientName`, `salesPersonId`, `fromDate`, `toDate` is required (`400 VALIDATION_FAILED` otherwise).
 
 ```json
 {
@@ -218,6 +228,10 @@ Job contents for a direct issue, by job card number or content number. `search` 
       "jobName": "BETA TEA 100G CARTON",
       "contentName": "Outer",
       "clientName": "BETA TEA CO",
+      "salesPersonName": "AMIT SHARMA",
+      "jobBookingDate": "2026-09-28",
+      "releasedDate": "2026-09-29",
+      "jobStatus": "pending",
       "suggestedDepartmentId": 100,
       "suggestedDepartmentName": "PRINTING",
       "plannedItems": [
@@ -242,7 +256,8 @@ Job contents for a direct issue, by job card number or content number. `search` 
         { "itemGroupId": 2, "stockUnit": "Kg", "required": 68.84, "issued": 0, "pending": 68.84 }
       ]
     }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
@@ -320,6 +335,15 @@ Each warehouse + bin pair is one `warehouseId`; choose a warehouse, then a bin.
 
 ```json
 { "departments": [ { "departmentId": 100, "departmentName": "PRINTING" } ] }
+```
+
+### 4.7a `GET /lookups/clients` and `GET /lookups/sales-persons`
+
+The job search's filter lists, as the Job Card Generator builds them: client ledgers that have job cards, and ledgers with Designation `Sales Executive`.
+
+```json
+{ "clients": ["BERGER PAINTS INDIA LTD", "RSH GLOBAL PVT LTD"] }
+{ "salesPersons": [ { "ledgerId": 312, "ledgerName": "AMIT SHARMA" } ] }
 ```
 
 ### 4.8 `GET /issues?from=&to=`

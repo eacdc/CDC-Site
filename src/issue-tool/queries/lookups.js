@@ -52,3 +52,31 @@ export async function departments({ site, companyId }) {
 		departments: rows.map((r) => ({ departmentId: r.DepartmentID, departmentName: str(r.DepartmentName) })),
 	};
 }
+
+/**
+ * Clients for the direct tab's job search, as the Job Card Generator lists
+ * them: the ledgers that have job cards.
+ */
+export async function clients({ site, companyId }) {
+	const rows = await query(site, `
+		SELECT DISTINCT LM.LedgerName
+		FROM dbo.JobBookingJobCard JB
+		JOIN dbo.LedgerMaster LM ON LM.LedgerID = JB.LedgerID
+		WHERE JB.CompanyID = @companyId
+		  AND ISNULL(JB.IsDeletedTransaction, 0) = 0
+		  AND NULLIF(LTRIM(RTRIM(LM.LedgerName)), '') IS NOT NULL
+		ORDER BY LM.LedgerName
+	`, { companyId: [sql.Int, companyId] });
+	return { clients: rows.map((r) => str(r.LedgerName)).filter(Boolean) };
+}
+
+/** Sales persons, as the Job Card Generator lists them: ledgers with Designation 'Sales Executive'. */
+export async function salesPersons({ site }) {
+	const rows = await query(site, `
+		SELECT LedgerID, LedgerName
+		FROM dbo.LedgerMaster
+		WHERE Designation = 'Sales Executive'
+		ORDER BY LedgerName
+	`);
+	return { salesPersons: rows.map((r) => ({ ledgerId: r.LedgerID, ledgerName: str(r.LedgerName) })) };
+}

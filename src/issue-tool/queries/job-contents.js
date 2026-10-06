@@ -2,37 +2,81 @@
  * Job contents for the "Direct issue" tab (brief 6.4).
  *
  * Searched by job card number (JobBookingNo, e.g. J06482_26_27) or content
- * number (JobCardContentNo, e.g. J06482_26_27[1_1]). For each content: the
+ * number (JobCardContentNo, e.g. J06482_26_27[1_1]), and by the Job Card
+ * Generator's other filters. For each content: the
  * planned items with required / issued / pending, and the same figures per
  * item group + stock unit, which is what a substitute item counts against.
  */
 
 import { query, sql, likePattern, inList } from '../db.js';
 import { ITEM_COLUMNS, ITEM_GROUP_BY, ISSUE_FROM, LIVE_ISSUE, mapItem, qty, str, unitKey } from './shared.js';
+import { toIsoDate } from '../dates.js';
 
-const MAX_CONTENTS = 25;
+/** Most contents one search returns; `truncated` says when there were more. */
+export const MAX_CONTENTS = 500;
 
-export async function searchJobContents({ site, companyId, search }) {
+/**
+ * Job contents matching the Job Card Generator's filters: job number (job
+ * card or content number), client, sales person, job date range and status.
+ * Status is worked out as the generator does: Cancelled, Closed (closed by
+ * hand, or at least 90% of the order quantity dispatched), else Pending.
+ */
+export async function searchJobContents({ site, companyId, search = '', clientName = '', salesPersonId, fromDate, toDate, jobStatus }) {
 	const contents = await query(site, `
-		SELECT TOP (${MAX_CONTENTS})
-		       JC.JobBookingJobCardContentsID, JC.JobBookingID, JC.JobCardContentNo, JC.PlanContName,
-		       JB.JobBookingNo, JB.JobName,
-		       ISNULL(NULLIF(JB.ClientName, ''), LM.LedgerName) AS ClientName
-		FROM dbo.JobBookingJobCardContents JC
-		JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = JC.JobBookingID AND JB.CompanyID = JC.CompanyID
-		LEFT JOIN dbo.JobOrderBooking JOB ON JOB.OrderBookingID = JB.OrderBookingID
-		LEFT JOIN dbo.LedgerMaster LM ON LM.LedgerID = JOB.LedgerID
-		WHERE JC.CompanyID = @companyId
-		  AND ISNULL(JC.IsDeletedTransaction, 0) = 0
-		  AND ISNULL(JB.IsDeletedTransaction, 0) = 0
-		  AND (JB.JobBookingNo LIKE @like ESCAPE '\\' OR JC.JobCardContentNo LIKE @like ESCAPE '\\')
-		ORDER BY JB.JobBookingID DESC, JC.JobCardContentNo
+		WITH J AS (
+			SELECT JC.JobBookingJobCardContentsID, JC.JobBookingID, JC.JobCardContentNo, JC.PlanContName, JC.ReleasedDate,
+			       JB.JobBookingNo, JB.JobName, JB.JobBookingDate,
+			       ISNULL(NULLIF(JB.ClientName, ''), LM.LedgerName) AS ClientName,
+			       SP.LedgerName AS SalesPersonName,
+			       CASE
+			           WHEN ISNULL(JB.IsCancel, 0) = 1 THEN 'cancelled'
+			           WHEN ISNULL(JB.IsClose, 0) = 1 THEN 'closed'
+			           WHEN ISNULL(JB.OrderQuantity, 0) > 0 AND ISNULL(DISP.DispatchQty, 0) >= 0.9 * JB.OrderQuantity THEN 'closed'
+			           ELSE 'pending'
+			       END AS JobStatus
+			FROM dbo.JobBookingJobCardContents JC
+			JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = JC.JobBookingID AND JB.CompanyID = JC.CompanyID
+			LEFT JOIN dbo.JobOrderBooking JOB ON JOB.OrderBookingID = JB.OrderBookingID
+			LEFT JOIN dbo.LedgerMaster LM ON LM.LedgerID = JOB.LedgerID
+			LEFT JOIN dbo.LedgerMaster SP ON SP.LedgerID = JB.SalesEmployeeID
+			OUTER APPLY (
+				-- Delivered quantity, as the Job Card Generator counts it (DN dispatch notes).
+				SELECT SUM(ISNULL(FGD.InnerCarton, 0) * ISNULL(FGD.QuantityPerPack, 0)) AS DispatchQty
+				FROM dbo.FinishGoodsTransactionDetail FGD
+				JOIN dbo.FinishGoodsTransactionMain FGM ON FGM.FGTransactionID = FGD.FGTransactionID
+				WHERE FGD.JobBookingID = JB.JobBookingID
+				  AND FGM.VoucherID = -51 AND FGM.VoucherPrefix = 'DN'
+				  AND ISNULL(FGM.IsDeletedTransaction, 0) = 0
+				  AND ISNULL(FGD.IsDeletedTransaction, 0) = 0
+			) DISP
+			WHERE JC.CompanyID = @companyId
+			  AND ISNULL(JC.IsDeletedTransaction, 0) = 0
+			  AND ISNULL(JB.IsDeletedTransaction, 0) = 0
+			  AND (@search = '' OR JB.JobBookingNo LIKE @like ESCAPE '\\' OR JC.JobCardContentNo LIKE @like ESCAPE '\\')
+			  AND (@client = '' OR ISNULL(NULLIF(JB.ClientName, ''), LM.LedgerName) LIKE @clientLike ESCAPE '\\')
+			  AND (@salesPersonId IS NULL OR JB.SalesEmployeeID = @salesPersonId)
+			  AND (@fromDate IS NULL OR JB.JobBookingDate >= @fromDate)
+			  AND (@toDate IS NULL OR JB.JobBookingDate < DATEADD(DAY, 1, @toDate))
+		)
+		SELECT TOP (${MAX_CONTENTS + 1}) *
+		FROM J
+		WHERE @jobStatus IS NULL OR J.JobStatus = @jobStatus
+		ORDER BY J.JobBookingDate DESC, J.JobBookingID DESC, J.JobCardContentNo
 	`, {
 		companyId: [sql.Int, companyId],
+		search: [sql.NVarChar(100), search],
 		like: [sql.NVarChar(210), likePattern(search)],
+		client: [sql.NVarChar(200), clientName],
+		clientLike: [sql.NVarChar(410), likePattern(clientName)],
+		salesPersonId: [sql.BigInt, salesPersonId ?? null],
+		fromDate: [sql.Date, fromDate ?? null],
+		toDate: [sql.Date, toDate ?? null],
+		jobStatus: [sql.NVarChar(20), jobStatus ?? null],
 	});
 
-	if (contents.length === 0) return { rows: [] };
+	if (contents.length === 0) return { rows: [], truncated: false };
+	const truncated = contents.length > MAX_CONTENTS;
+	if (truncated) contents.length = MAX_CONTENTS;
 
 	const ids = contents.map((c) => c.JobBookingJobCardContentsID);
 	const [requirements, departments] = await Promise.all([
@@ -53,12 +97,17 @@ export async function searchJobContents({ site, companyId, search }) {
 				jobName: str(c.JobName),
 				contentName: str(c.PlanContName),
 				clientName: str(c.ClientName),
+				salesPersonName: str(c.SalesPersonName),
+				jobBookingDate: toIsoDate(c.JobBookingDate),
+				releasedDate: toIsoDate(c.ReleasedDate),
+				jobStatus: c.JobStatus,
 				suggestedDepartmentId: dept?.departmentId ?? null,
 				suggestedDepartmentName: dept?.departmentName ?? null,
 				plannedItems: req.plannedItems,
 				requirementGroups: req.requirementGroups,
 			};
 		}),
+		truncated,
 	};
 }
 

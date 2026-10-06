@@ -8,11 +8,13 @@
  *   GET  /session                      who is signed in, site, writes on/off, today
  *   GET  /picklists                    open (or closed) picklist lines (allocated tab)
  *   POST /picklists/:id/close          close a picklist line (dry run unless writes are on)
- *   GET  /job-contents                 job contents by job card number (direct tab)
+ *   GET  /job-contents                 job contents by job number, client, sales person, date, status (direct tab)
  *   GET  /items                        item search, planned items first
  *   GET  /items/:itemId/batches        batch stock for an item
  *   GET  /lookups/floor-warehouses
  *   GET  /lookups/departments
+ *   GET  /lookups/clients              clients with job cards (job search filter)
+ *   GET  /lookups/sales-persons        sales executives (job search filter)
  *   POST /issues                       post an issue (dry run unless writes are on)
  *   GET  /issues                       recent issues with lines
  *   POST /issues/:id/delete            soft-delete an issue
@@ -32,7 +34,7 @@ import {
 import { listPicklistLines } from './queries/picklists.js';
 import { searchJobContents } from './queries/job-contents.js';
 import { searchItems, itemBatches } from './queries/items.js';
-import { floorWarehouses, departments } from './queries/lookups.js';
+import { floorWarehouses, departments, clients, salesPersons } from './queries/lookups.js';
 import { recentIssues } from './queries/issues.js';
 import { postIssue, deleteIssue, retryStockRefresh } from './services/issues.js';
 import { closePicklistLine } from './services/picklists.js';
@@ -92,6 +94,14 @@ router.get('/lookups/floor-warehouses', async (req, res) => {
 
 router.get('/lookups/departments', async (req, res) => {
 	res.json(await departments(ctx(req)));
+});
+
+router.get('/lookups/clients', async (req, res) => {
+	res.json(await clients(ctx(req)));
+});
+
+router.get('/lookups/sales-persons', async (req, res) => {
+	res.json(await salesPersons(ctx(req)));
 });
 
 router.post('/issues', requireErpUser, async (req, res) => {
