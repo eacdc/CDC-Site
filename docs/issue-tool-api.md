@@ -452,7 +452,7 @@ Request:
 | `lines[].warehouseId` | integer ≥ 0 | yes | From `batchKey`. |
 | `lines[].batchNo` | string \| null | yes | From `batchKey`. |
 | `lines[].quantity` | number > 0 | yes | In the item's stock unit. A JSON number, not a string. |
-| `lines[].processId`, `lines[].machineId` | integer \| null | no | DIRECT only: the Process Name and Machine chosen when the line was added (`GET /lookups/processes`, `/lookups/machines`). Written to the issue line's and floor-receipt line's ProcessID / MachineID (0 when absent). Ignored on an allocated issue, which takes the picklist line's. |
+| `lines[].processId`, `lines[].machineId` | integer \| null | no | DIRECT only: the Process Name and Machine chosen when the line was added (`GET /lookups/processes`, `/lookups/machines`). The machine is written to the issue line's and floor-receipt line's MachineID (0 when absent); the process is checked but saved as 0, because the ERP saves 0 there. Ignored on an allocated issue, which takes the picklist line's. |
 | `dryRun` | boolean | no | Default `false`. |
 | `acknowledgeWarnings` | boolean | no | Default `false`. Send `true` only after the user ticked the acknowledgement. |
 

@@ -139,7 +139,7 @@ BEGIN
         WarehouseID         BIGINT         NULL,
         BatchNo             NVARCHAR(200)  NULL,   -- normalised: NULLIF(batchNo, '')
         Quantity            DECIMAL(18,4)  NULL,
-        ProcessID           BIGINT         NOT NULL DEFAULT 0,   -- DIRECT: the process chosen for the line, 0 when none
+        ProcessID           BIGINT         NOT NULL DEFAULT 0,   -- DIRECT: the process chosen for the line; validated, not saved (the ERP saves 0)
         MachineID           BIGINT         NOT NULL DEFAULT 0,   -- DIRECT: the machine chosen for the line, 0 when none
         -- resolved from the database
         ItemGroupID         BIGINT         NULL,
@@ -555,9 +555,11 @@ BEGIN
                 L.ParentTransactionID, L.BatchID, L.BatchNoStored, L.WarehouseID, @FloorWarehouseID,
                 @JobBookingID, @ContentsID,
                 CASE WHEN @Mode = 'ALLOCATED' THEN @PickTransactionID ELSE 0 END,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID     ELSE L.MachineID END,   -- direct: the line's chosen machine, 0 when none
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickDepartmentID  ELSE 0 END,             -- direct: 0, as on the ERP's IS17254
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID     ELSE L.ProcessID END,   -- direct: the line's chosen process, 0 when none
+                -- Direct: as the ERP's direct issues (IS17339, IS17375, IS17504, IS17523…, checked 6 Oct 2026):
+                -- the chosen machine is saved, the department and process are 0 on the line.
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID     ELSE L.MachineID END,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickDepartmentID  ELSE 0 END,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID     ELSE 0 END,
                 0,
                 @CompanyID, @FYear, @UserID, @UserID, @UserID, @Now, @Now,
                 0, 0
@@ -642,7 +644,7 @@ BEGIN
                 @HdrDepartmentID,                           -- the header's department, also on a direct issue
                 L.ItemID, L.ItemGroupID, @JobBookingID, @ContentsID,
                 CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID ELSE L.MachineID END,   -- the issue line's machine
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID ELSE L.ProcessID END,   -- the issue line's process
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID ELSE 0 END,             -- direct: 0, as the ERP's RFS lines
                 0, 0, 0, L.Quantity, 0,
                 L.StockUnit, L.BatchNoStored, L.BatchID, 0, L.WarehouseID, @FloorWarehouseID,
                 0, 0, NULL, 0, NULL,
