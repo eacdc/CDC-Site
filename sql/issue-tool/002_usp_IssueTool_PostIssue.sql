@@ -348,7 +348,34 @@ BEGIN
               AND D.ItemID = @PickItemID
               AND D.JobBookingJobCardContentsID = @ContentsID
         );
-        DECLARE @PickPending DECIMAL(18,4) = @PickRequired - @PickIssued;
+        /* An issue line records the picklist, not the line. Lines of this
+           picklist with the same item and content share what was issued, in
+           line order, over-issue on the last (as GET /picklists shows them). */
+        DECLARE @PickBefore DECIMAL(18,4) = (
+            SELECT ISNULL(SUM(ISNULL(P2.RequiredQuantity, 0)), 0)
+            FROM dbo.ItemTransactionDetail P2
+            WHERE P2.TransactionID = @PickTransactionID
+              AND P2.ItemID = @PickItemID
+              AND ISNULL(P2.JobBookingJobCardContentsID, 0) = ISNULL(@ContentsID, 0)
+              AND P2.TransactionDetailID < @PicklistDetailID
+              AND ISNULL(P2.IsDeletedTransaction, 0) = 0
+              AND ISNULL(P2.IsCancelled, 0) = 0
+        );
+        DECLARE @PickIsLast BIT = CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.ItemTransactionDetail P2
+            WHERE P2.TransactionID = @PickTransactionID
+              AND P2.ItemID = @PickItemID
+              AND ISNULL(P2.JobBookingJobCardContentsID, 0) = ISNULL(@ContentsID, 0)
+              AND P2.TransactionDetailID > @PicklistDetailID
+              AND ISNULL(P2.IsDeletedTransaction, 0) = 0
+              AND ISNULL(P2.IsCancelled, 0) = 0
+        ) THEN 0 ELSE 1 END;
+        DECLARE @LineIssued DECIMAL(18,4) =
+            CASE WHEN @PickIssued - @PickBefore <= 0 THEN 0
+                 WHEN @PickIsLast = 1 OR @PickIssued - @PickBefore < @PickRequired THEN @PickIssued - @PickBefore
+                 ELSE @PickRequired
+            END;
+        DECLARE @PickPending DECIMAL(18,4) = @PickRequired - @LineIssued;
         IF @TotalQty > @PickPending
             INSERT INTO @Warnings (Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message)
             SELECT TOP (1) 'OVER_PICKLIST_PENDING', NULL, @PickItemID, @TotalQty, @PickPending, L.StockUnit,

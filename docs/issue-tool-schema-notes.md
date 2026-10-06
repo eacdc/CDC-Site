@@ -108,6 +108,10 @@ If `ModifiedBy` / `ModifiedDate` equal the closing user and time, or other lines
 | Closing a picklist line sets only `IsCompleted`, `CompletedBy`, `CompletedDate` | No ERP close captured yet; query above. |
 | A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
 
+## Picklists with several lines for one item (6 Oct 2026)
+
+IPIC02376_25_26 has two lines for item 8044, content 7430, identical in machine (14), process (10337) and department (100), differing only in quantity (887 and 25). An issue line stores only `PicklistTransactionID` (the picklist), so nothing tells which line it was for. The tool shares what was issued to such lines in line order (TransactionDetailID): the first line fills first, any over-issue lands on the last. The two lines always add up to what was really issued, and the over-pending warning on save uses the same share. How the ERP's own picklist screen splits it is not known.
+
 ## Remark (confirmed 6 Oct 2026)
 
 The ERP stores the Remark typed on the issue screen in `ItemTransactionMain.Narration` (IS17497 … IS17518: "J07129-EXTRA", "INSIDE", "ASANTA SEND TO TANGRA FOR DIGITAL PRINT"…), with `Particular` left at `' '`. The procedure does the same. It trims leading and trailing spaces from the remark, which the ERP keeps ("J07281-EXTRA "); nothing reads them.

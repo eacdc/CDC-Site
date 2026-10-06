@@ -3,7 +3,9 @@
  *
  * A line is a -17 ITD row that is live, not cancelled and IsCompleted = 0.
  * Issued = live -19 IssueQuantity matched on PicklistTransactionID + ItemID +
- * JobBookingJobCardContentsID; Pending = RequiredQuantity - Issued.
+ * JobBookingJobCardContentsID, shared out in line order when the picklist
+ * has several lines for the same item and content; Pending = RequiredQuantity
+ * - Issued.
  *
  * showClosed lists closed lines (IsCompleted = 1) instead, like the ERP's
  * "Closed Allocation Picklist" box. Closing acts on picklistDetailId
@@ -19,29 +21,66 @@ import { toIsoDate, toLocalDateTime } from '../dates.js';
 
 export async function listPicklistLines({ site, companyId, search, page, pageSize, showFullyIssued, showClosed }) {
 	const rows = await query(site, `
-		WITH Lines AS (
+		WITH Sel AS (
 			SELECT P.TransactionDetailID, PM.TransactionID AS PicklistTransactionID,
 			       PM.VoucherNo AS PicklistNo, PM.VoucherDate AS PicklistDate,
 			       P.ItemID, P.JobBookingID, P.JobBookingJobCardContentsID,
+			       ISNULL(P.JobBookingJobCardContentsID, 0) AS ContentKey,
 			       ISNULL(P.RequiredQuantity, 0) AS RequiredQuantity,
-			       ISNULL(ISS.Issued, 0) AS IssuedQuantity,
 			       CAST(ISNULL(P.IsCompleted, 0) AS INT) AS IsCompleted, P.CompletedBy, P.CompletedDate
 			FROM dbo.ItemTransactionDetail P
 			JOIN dbo.ItemTransactionMain PM ON PM.TransactionID = P.TransactionID
-			OUTER APPLY (
-				SELECT SUM(ISNULL(D.IssueQuantity, 0)) AS Issued
-				FROM ${ISSUE_FROM}
-				WHERE ${LIVE_ISSUE}
-				  AND D.PicklistTransactionID = PM.TransactionID
-				  AND D.ItemID = P.ItemID
-				  AND D.JobBookingJobCardContentsID = P.JobBookingJobCardContentsID
-			) ISS
 			WHERE PM.VoucherID = -17
 			  AND PM.CompanyID = @companyId
 			  AND ISNULL(PM.IsDeletedTransaction, 0) = 0
 			  AND ISNULL(P.IsDeletedTransaction, 0) = 0
 			  AND ISNULL(P.IsCancelled, 0) = 0
 			  AND ISNULL(P.IsCompleted, 0) = @showClosed
+		),
+		-- An issue line records the picklist, not the picklist line. Lines of one
+		-- picklist with the same item and content (e.g. IPIC02376_25_26: 887 and
+		-- 25 of item 8044 for content 7430) therefore share what was issued: it
+		-- fills them in line order, and any over-issue lands on the last line.
+		Grp AS (
+			SELECT DISTINCT PicklistTransactionID, ItemID, ContentKey FROM Sel
+		),
+		GrpIssued AS (
+			SELECT G.PicklistTransactionID, G.ItemID, G.ContentKey, ISNULL(ISS.Issued, 0) AS Issued
+			FROM Grp G
+			OUTER APPLY (
+				SELECT SUM(ISNULL(D.IssueQuantity, 0)) AS Issued
+				FROM ${ISSUE_FROM}
+				WHERE ${LIVE_ISSUE}
+				  AND D.PicklistTransactionID = G.PicklistTransactionID
+				  AND D.ItemID = G.ItemID
+				  AND ISNULL(D.JobBookingJobCardContentsID, 0) = G.ContentKey
+			) ISS
+		),
+		GrpLines AS (
+			-- Every live line of those groups, open or closed.
+			SELECT P.TransactionDetailID, ISNULL(P.RequiredQuantity, 0) AS RequiredQuantity, GI.Issued,
+			       ISNULL(SUM(ISNULL(P.RequiredQuantity, 0)) OVER (
+			           PARTITION BY GI.PicklistTransactionID, GI.ItemID, GI.ContentKey
+			           ORDER BY P.TransactionDetailID ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS RequiredBefore,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY GI.PicklistTransactionID, GI.ItemID, GI.ContentKey
+			           ORDER BY P.TransactionDetailID DESC) AS FromLast
+			FROM GrpIssued GI
+			JOIN dbo.ItemTransactionDetail P
+			  ON P.TransactionID = GI.PicklistTransactionID
+			 AND P.ItemID = GI.ItemID
+			 AND ISNULL(P.JobBookingJobCardContentsID, 0) = GI.ContentKey
+			WHERE ISNULL(P.IsDeletedTransaction, 0) = 0
+			  AND ISNULL(P.IsCancelled, 0) = 0
+		),
+		Lines AS (
+			SELECT S.*,
+			       CASE WHEN GL.Issued - GL.RequiredBefore <= 0 THEN 0
+			            WHEN GL.FromLast = 1 OR GL.Issued - GL.RequiredBefore < GL.RequiredQuantity THEN GL.Issued - GL.RequiredBefore
+			            ELSE GL.RequiredQuantity
+			       END AS IssuedQuantity
+			FROM Sel S
+			JOIN GrpLines GL ON GL.TransactionDetailID = S.TransactionDetailID
 		)
 		SELECT L.TransactionDetailID, L.PicklistTransactionID, L.PicklistNo, L.PicklistDate,
 		       L.JobBookingID, L.JobBookingJobCardContentsID,

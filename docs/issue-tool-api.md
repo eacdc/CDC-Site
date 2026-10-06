@@ -202,7 +202,7 @@ Response:
 }
 ```
 
-`picklistDetailId` is the line's identity: it is what you send to post or close (5.10). `division` is the job's segment. Every `item` object in this API also carries `sizeW`, `sizeL`, `certification` (`ItemMaster.CertificationType`) and `allocatedStock` (`ItemMaster.AllocatedStock`); the examples elsewhere leave them out. `closedDate` (IST wall clock) and `closedBy` are set on closed lines. `total` is the number of matching lines across all pages (`0` when none; `null` only when a page past the end is requested).
+`picklistDetailId` is the line's identity: it is what you send to post or close (5.10). An issue line records only the picklist, not the line, so when a picklist has several lines for the same item and job content, `issued` is what was issued to them together, shared out in line order (the first line fills first; any over-issue shows on the last). The over-issue warning on save uses the same figure. `division` is the job's segment. Every `item` object in this API also carries `sizeW`, `sizeL`, `certification` (`ItemMaster.CertificationType`) and `allocatedStock` (`ItemMaster.AllocatedStock`); the examples elsewhere leave them out. `closedDate` (IST wall clock) and `closedBy` are set on closed lines. `total` is the number of matching lines across all pages (`0` when none; `null` only when a page past the end is requested).
 
 ### 4.3 `GET /job-contents?search=&clientName=&salesPersonId=&fromDate=&toDate=&jobStatus=`
 
