@@ -361,7 +361,7 @@ Recent live issue vouchers (`-19`) with lines, whether created by this tool or b
 }
 ```
 
-`mode` is `ALLOCATED` when any line carries a picklist. `canDelete` is `false` once material from the issue has been consumed (`deleteBlockedReason` says why).
+`mode` is `ALLOCATED` when any line carries a picklist. `canDelete` is `false` once material from the issue has been consumed or returned (`deleteBlockedReason` says why). Every issue has a floor receipt (RFS) in the consumption tables; that alone does not block.
 
 ---
 
@@ -444,6 +444,7 @@ Example — direct issue of a substitute:
   "replayed": false,
   "transactionId": 70011,
   "voucherNo": "IS17260_26_27",
+  "floorReceiptVoucherNo": "RFS17370_26_27",
   "voucherDate": "2026-10-05",
   "fYear": "2026-2027",
   "lines": [ { "transId": 1, "transactionDetailId": 120501 }, { "transId": 2, "transactionDetailId": 120502 } ],
@@ -453,6 +454,7 @@ Example — direct issue of a substitute:
 ```
 
 - Show `voucherNo` prominently with a "New issue" button. This is the first moment a number may be shown.
+- `floorReceiptVoucherNo` is the "received on floor" voucher (RFS, VoucherID -53) the ERP writes with every issue, and this tool writes too. Show it small; storekeepers rarely need it.
 - `replayed: true` means this `requestId` had already been saved (double click, network retry). Same voucher, nothing new written. Treat as success.
 - `warnings` lists the warnings that were acknowledged, if any.
 
@@ -490,7 +492,11 @@ The issue **is saved**. Say so plainly, and offer `POST /issues/{transactionId}/
     "header": { "TransactionID": 70011, "VoucherID": -19, "VoucherPrefix": "IS", "MaxVoucherNo": 17260, "VoucherNo": "IS17260_26_27", "VoucherDate": "2026-10-05T00:00:00", "DepartmentID": 100, "JobBookingID": 16077, "JobBookingJobCardContentsID": 24188, "TotalQuantity": 2958, "DeliveryNoteNo": "", "CompanyID": 2, "FYear": "2026-2027", "UserID": 24, "…": "every column of ItemTransactionMain" },
     "lines": [
       { "TransactionDetailID": 120501, "TransID": 1, "ItemID": 9409, "IssueQuantity": 1500, "BatchNo": "60325_PO02095_26_27_9409_1.00", "…": "every column of ItemTransactionDetail" }
-    ]
+    ],
+    "floorReceipt": {
+      "header": { "ConsumptionTransactionID": 36600, "VoucherID": -53, "VoucherPrefix": "RFS", "VoucherNo": "RFS17370_26_27", "ReturnTransactionID": 70011, "TotalQuantity": 2958, "…": "every column of ItemConsumptionMain" },
+      "lines": [ { "TransID": 1, "IssueTransactionID": 70011, "ReceivedQuantity": 1500, "…": "every column of ItemConsumptionDetail" } ]
+    }
   }
 }
 ```
@@ -499,7 +505,7 @@ No `transactionId` and no `voucherNo` at the top level: nothing was saved. `woul
 
 ### 5.6 `POST /issues/:id/delete`
 
-No body. `:id` is `transactionId`. Soft-deletes the voucher (ERP behaviour), then recalculates stock for each item on it.
+No body. `:id` is `transactionId`. Soft-deletes the voucher and its floor receipt (RFS), as the ERP does, then recalculates stock for each item on it. Refused (`ISSUE_CONSUMED`) once material from the issue has been consumed, returned or wasted, or another voucher points at it; the issue's own floor receipt does not count.
 
 `200` deleted:
 
@@ -510,7 +516,7 @@ No body. `:id` is `transactionId`. Soft-deletes the voucher (ERP behaviour), the
 `200` dry run (writes disabled):
 
 ```json
-{ "status": "DRY_RUN", "dryRun": true, "dryRunReason": "WRITES_DISABLED", "transactionId": 70011, "voucherNo": "IS17260_26_27", "itemIds": [9409], "wouldWrite": { "header": { "…": "…" }, "lines": [] } }
+{ "status": "DRY_RUN", "dryRun": true, "dryRunReason": "WRITES_DISABLED", "transactionId": 70011, "voucherNo": "IS17260_26_27", "itemIds": [9409], "wouldWrite": { "header": { "…": "…" }, "lines": [], "floorReceipt": { "headers": [], "lines": [] } } }
 ```
 
 Errors: `404 UNKNOWN_ISSUE`, `400 NOT_AN_ISSUE`, `409 ALREADY_DELETED`, `409 ISSUE_CONSUMED`. `stockRefreshFailed: true` (with `stockRefreshError`) means deleted but not recalculated; offer 5.7.

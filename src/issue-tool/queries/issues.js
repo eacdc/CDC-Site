@@ -19,7 +19,24 @@ export async function recentIssues({ site, companyId, from, to }) {
 		       M.JobBookingJobCardContentsID, JC.JobCardContentNo, JC.PlanContName,
 		       JB.JobBookingNo, JB.JobName,
 		       M.CreatedBy, UM.UserName AS CreatedByName, M.CreatedDate,
-		       CASE WHEN EXISTS (SELECT 1 FROM dbo.ItemConsumptionDetail C WHERE C.IssueTransactionID = M.TransactionID)
+		       -- Same rule as usp_IssueTool_DeleteIssue: the issue's own floor
+		       -- receipt (RFS, VoucherID -53) does not count; anything that
+		       -- consumed, returned or wasted material, or any other voucher
+		       -- pointing at the issue, does.
+		       CASE WHEN EXISTS (
+		              SELECT 1 FROM dbo.ItemConsumptionDetail C
+		              LEFT JOIN dbo.ItemConsumptionMain CM
+		                     ON CM.ConsumptionTransactionID = C.ConsumptionTransactionID
+		                    AND CM.VoucherID = -53
+		                    AND CM.ReturnTransactionID = M.TransactionID
+		                    AND ISNULL(CM.IsDeletedTransaction, 0) = 0
+		              WHERE C.IssueTransactionID = M.TransactionID
+		                AND C.CompanyID = M.CompanyID
+		                AND ISNULL(C.IsDeletedTransaction, 0) = 0
+		                AND (   ISNULL(C.ConsumeQuantity, 0) <> 0
+		                     OR ISNULL(C.ReturnQuantity, 0) <> 0
+		                     OR ISNULL(C.WasteQuantity, 0) <> 0
+		                     OR CM.ConsumptionTransactionID IS NULL))
 		            THEN 1 ELSE 0 END AS IsConsumed,
 		       CASE WHEN EXISTS (SELECT 1 FROM dbo.IssueTool_PostLog L WHERE L.TransactionID = M.TransactionID AND L.IsDryRun = 0)
 		            THEN 1 ELSE 0 END AS CreatedByIssueTool
@@ -110,7 +127,7 @@ export function assembleIssues(headers, lines) {
 			createdDate: toLocalDateTime(h.CreatedDate),
 			createdByIssueTool: h.CreatedByIssueTool === 1 || h.CreatedByIssueTool === true,
 			canDelete: !consumed,
-			deleteBlockedReason: consumed ? 'Material from this issue has been consumed.' : null,
+			deleteBlockedReason: consumed ? 'Material from this issue has been consumed or returned.' : null,
 			lines: issueLines,
 		};
 	});

@@ -130,7 +130,8 @@ test('a dry run returns the would-be rows and never a transaction id', () => {
 	const lines = [{ TransID: 1, IssueQuantity: 1500 }, { TransID: 2, IssueQuantity: 1458 }];
 	const out = interpretPostResult([
 		[{ Status: 'DRY_RUN', TransactionID: null, VoucherNo: 'IS17252_26_27', FYear: '2026-2027',
-			VoucherDate: new Date('2026-10-03T00:00:00Z'), DryRunHeaderJson: JSON.stringify(header), DryRunLinesJson: JSON.stringify(lines) }],
+			VoucherDate: new Date('2026-10-03T00:00:00Z'), DryRunHeaderJson: JSON.stringify(header), DryRunLinesJson: JSON.stringify(lines),
+			DryRunRfsHeaderJson: null, DryRunRfsLinesJson: null }],
 		[], [{ TransID: 1, TransactionDetailID: 5 }],
 	], { dryRunReason: 'WRITES_DISABLED' });
 	assert.equal(out.status, 'DRY_RUN');
@@ -138,18 +139,19 @@ test('a dry run returns the would-be rows and never a transaction id', () => {
 	assert.equal(out.dryRunReason, 'WRITES_DISABLED');
 	assert.equal(out.transactionId, undefined);
 	assert.equal(out.voucherNo, undefined);
-	assert.deepEqual(out.wouldWrite, { header, lines });
+	assert.deepEqual(out.wouldWrite, { header, lines, floorReceipt: { header: null, lines: [] } });
 });
 
 test('a posted or replayed issue returns the voucher number and line ids', () => {
 	const sets = (status) => [
-		[{ Status: status, TransactionID: 70001, VoucherNo: 'IS17255_26_27', FYear: '2026-2027', VoucherDate: new Date('2026-10-05T00:00:00Z') }],
+		[{ Status: status, TransactionID: 70001, VoucherNo: 'IS17255_26_27', RfsVoucherNo: 'RFS17363_26_27', FYear: '2026-2027', VoucherDate: new Date('2026-10-05T00:00:00Z') }],
 		[], [{ TransID: 1, TransactionDetailID: 120001 }],
 	];
 	const posted = interpretPostResult(sets('POSTED'), { dryRunReason: null });
 	assert.equal(posted.status, 'POSTED');
 	assert.equal(posted.replayed, false);
 	assert.equal(posted.voucherNo, 'IS17255_26_27');
+	assert.equal(posted.floorReceiptVoucherNo, 'RFS17363_26_27');
 	assert.equal(posted.voucherDate, '2026-10-05');
 	assert.deepEqual(posted.lines, [{ transId: 1, transactionDetailId: 120001 }]);
 	assert.equal(interpretPostResult(sets('REPLAYED'), { dryRunReason: null }).replayed, true);
@@ -330,4 +332,15 @@ test('session tokens: valid ones carry the ERP user and site, anything else is a
 		if (saved === undefined) delete process.env.JWT_SECRET;
 		else process.env.JWT_SECRET = saved;
 	}
+});
+
+test('a dry run also returns the floor receipt the ERP writes with every issue', () => {
+	const rfsHeader = { VoucherID: -53, VoucherPrefix: 'RFS', ReturnTransactionID: 70001, TotalQuantity: 152 };
+	const rfsLines = [{ TransID: 1, ReceivedQuantity: 152, IssueTransactionID: 70001 }];
+	const out = interpretPostResult([
+		[{ Status: 'DRY_RUN', VoucherDate: new Date('2026-10-03T00:00:00Z'), FYear: '2026-2027',
+			DryRunHeaderJson: '{}', DryRunLinesJson: '[]', DryRunRfsHeaderJson: JSON.stringify(rfsHeader), DryRunRfsLinesJson: JSON.stringify(rfsLines) }],
+		[], [],
+	], { dryRunReason: 'WRITES_DISABLED' });
+	assert.deepEqual(out.wouldWrite.floorReceipt, { header: rfsHeader, lines: rfsLines });
 });

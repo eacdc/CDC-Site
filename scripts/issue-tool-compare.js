@@ -7,6 +7,9 @@
  * CreatedDate, ModifiedDate); every other column of the header and of each line
  * (matched by TransID) is compared, with '' / ' ' / NULL kept distinct.
  *
+ * Also compares the floor receipt (RFS, ItemConsumptionMain/Detail) written
+ * with each issue, the same way.
+ *
  * Read-only.
  *
  * Run from the backend folder:
@@ -46,9 +49,20 @@ async function loadVoucher(pool, transactionId) {
 	const header = (await pool.request().input('id', sql.Int, transactionId)
 		.query('SELECT * FROM dbo.ItemTransactionMain WHERE TransactionID = @id')).recordset[0];
 	if (!header) throw new Error(`No ItemTransactionMain row with TransactionID ${transactionId}.`);
-	if (header.VoucherID !== -19) throw new Error(`TransactionID ${transactionId} is VoucherID ${header.VoucherID}, not an issue (-19).`);
+	if (Number(header.VoucherID) !== -19) throw new Error(`TransactionID ${transactionId} is VoucherID ${header.VoucherID}, not an issue (-19).`);
 	const lines = (await pool.request().input('id', sql.Int, transactionId)
 		.query('SELECT * FROM dbo.ItemTransactionDetail WHERE TransactionID = @id ORDER BY TransID')).recordset;
+	return { header, lines };
+}
+
+/** The floor receipt (RFS, -53) written with an issue. */
+async function loadFloorReceipt(pool, issueTransactionId) {
+	const header = (await pool.request().input('id', sql.BigInt, issueTransactionId)
+		.query(`SELECT TOP (1) * FROM dbo.ItemConsumptionMain
+		        WHERE ReturnTransactionID = @id AND VoucherID = -53 ORDER BY ConsumptionTransactionID`)).recordset[0];
+	if (!header) return null;
+	const lines = (await pool.request().input('id', sql.BigInt, header.ConsumptionTransactionID)
+		.query('SELECT * FROM dbo.ItemConsumptionDetail WHERE ConsumptionTransactionID = @id ORDER BY TransID')).recordset;
 	return { header, lines };
 }
 
@@ -60,6 +74,19 @@ async function main() {
 	console.log(`Comparing ${a.header.VoucherNo} (TransactionID ${ours}, this tool) with ${b.header.VoucherNo} (TransactionID ${theirs}, ERP) on ${SITE}`);
 	console.log(formatComparison(result, { oursLabel: 'tool', theirsLabel: 'erp' }));
 	if (!result.identical) process.exitCode = 1;
+
+	const [ra, rb] = await Promise.all([loadFloorReceipt(pool, ours), loadFloorReceipt(pool, theirs)]);
+	if (!ra || !rb) {
+		console.log(`Floor receipt (RFS): ${!ra ? 'MISSING for the tool voucher' : 'none'}${!rb ? ', none for the ERP voucher' : ''}.`);
+		if (!ra) process.exitCode = 1;
+		return;
+	}
+	console.log(`Floor receipt ${ra.header.VoucherNo} (tool) against ${rb.header.VoucherNo} (ERP):`);
+	const rfs = compareVouchers(ra, rb, {
+		ignore: [...ignore, 'ConsumptionTransactionID', 'ConsumptionTransactionDetailID', 'ReturnTransactionID', 'IssueTransactionID'],
+	});
+	console.log(formatComparison(rfs, { oursLabel: 'tool', theirsLabel: 'erp' }));
+	if (!rfs.identical) process.exitCode = 1;
 }
 
 main()

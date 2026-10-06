@@ -59,7 +59,7 @@ Lets storekeepers issue paper and other stock to jobs, replacing the ERP's two i
 | `docs/issue-tool-schema-notes.md` | What is known about the ERP schema, what is assumed, what discovery decides |
 | `scripts/issue-tool-*.js` | Discovery, acceptance tests A/B (dry run), voucher compare |
 
-The tool only writes to `ItemTransactionMain`, `ItemTransactionDetail` and its own `IssueTool_PostLog`, and only through the two procedures. The only ERP procedure it calls is `UPDATE_ITEM_STOCK_VALUES`, after commit. It never sets `IsCompleted` on a picklist line.
+The tool writes what the ERP's issue screen writes: `ItemTransactionMain` / `ItemTransactionDetail` (the issue) and `ItemConsumptionMain` / `ItemConsumptionDetail` (the "received on floor" voucher, VoucherID -53 "RFS", that the ERP writes with every issue, found on 6 Oct 2026), plus its own `IssueTool_PostLog`, and only through the two procedures. The only ERP procedure it calls is `UPDATE_ITEM_STOCK_VALUES`, after commit. It never sets `IsCompleted` on a picklist line.
 
 ### Configuration
 

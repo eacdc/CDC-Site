@@ -94,6 +94,10 @@ export function interpretPostResult(recordsets, { dryRunReason: reason }) {
 				wouldWrite: {
 					header: parseJson(s.DryRunHeaderJson, null),
 					lines: parseJson(s.DryRunLinesJson, []),
+					floorReceipt: {
+						header: parseJson(s.DryRunRfsHeaderJson, null),
+						lines: parseJson(s.DryRunRfsLinesJson, []),
+					},
 				},
 			};
 		case 'POSTED':
@@ -104,6 +108,7 @@ export function interpretPostResult(recordsets, { dryRunReason: reason }) {
 				replayed: s.Status === 'REPLAYED',
 				transactionId: s.TransactionID,
 				voucherNo: str(s.VoucherNo),
+				floorReceiptVoucherNo: str(s.RfsVoucherNo),
 				voucherDate: toIsoDate(s.VoucherDate),
 				fYear: str(s.FYear),
 				lines,
@@ -163,6 +168,10 @@ export async function deleteIssue({ site, companyId, erpUserId, transactionId })
 			wouldWrite: {
 				header: parseJson(s.DryRunHeaderJson, null),
 				lines: parseJson(s.DryRunLinesJson, []),
+				floorReceipt: {
+					headers: parseJson(s.DryRunRfsHeaderJson, []),
+					lines: parseJson(s.DryRunRfsLinesJson, []),
+				},
 			},
 		};
 	}

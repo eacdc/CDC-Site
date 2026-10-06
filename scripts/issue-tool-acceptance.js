@@ -169,8 +169,29 @@ async function dryRun(pool, test) {
 		warnings,
 		header: JSON.parse(status.DryRunHeaderJson),
 		lines: JSON.parse(status.DryRunLinesJson),
+		rfs: {
+			header: status.DryRunRfsHeaderJson ? JSON.parse(status.DryRunRfsHeaderJson) : null,
+			lines: status.DryRunRfsLinesJson ? JSON.parse(status.DryRunRfsLinesJson) : [],
+		},
 	};
 }
+
+/** The floor receipt (RFS, -53) the ERP wrote with an issue, deleted or not. */
+async function erpFloorReceipt(pool, issueTransactionId) {
+	const header = (await pool.request()
+		.input('id', sql.BigInt, issueTransactionId)
+		.input('c', sql.Int, COMPANY_ID)
+		.query(`SELECT TOP (1) * FROM dbo.ItemConsumptionMain
+		        WHERE ReturnTransactionID = @id AND VoucherID = -53 AND CompanyID = @c
+		        ORDER BY ConsumptionTransactionID`)).recordset[0];
+	if (!header) return null;
+	const lines = (await pool.request().input('id', sql.BigInt, header.ConsumptionTransactionID)
+		.query('SELECT * FROM dbo.ItemConsumptionDetail WHERE ConsumptionTransactionID = @id ORDER BY TransID')).recordset;
+	return { header, lines };
+}
+
+/** Columns that point at rows whose IDs differ between a dry run and the ERP's voucher. */
+const RFS_ID_COLUMNS = ['ConsumptionTransactionID', 'ConsumptionTransactionDetailID', 'ReturnTransactionID', 'IssueTransactionID'];
 
 async function erpVoucher(pool, voucherNo) {
 	const header = (await pool.request()
@@ -217,6 +238,33 @@ async function main() {
 			const result = compareVouchers(run, erp, { ignore: DELETION_COLUMNS });
 			console.log(formatComparison(result, { oursLabel: 'dry-run', theirsLabel: 'erp' }));
 			if (!result.identical) failed += 1;
+
+			// The floor receipt that goes with the issue.
+			const rfsProblems = [];
+			if (!run.rfs.header) rfsProblems.push('the dry run wrote no floor receipt (RFS)');
+			else {
+				if (Number(run.rfs.header.ReturnTransactionID) !== Number(run.header.TransactionID)) {
+					rfsProblems.push('RFS header ReturnTransactionID does not point at the issue');
+				}
+				for (const l of run.rfs.lines) {
+					const issueLine = run.lines.find((x) => x.TransID === l.TransID);
+					if (Number(l.IssueTransactionID) !== Number(run.header.TransactionID)) rfsProblems.push(`RFS line ${l.TransID}: IssueTransactionID does not point at the issue`);
+					if (!issueLine || Number(l.ReceivedQuantity) !== Number(issueLine.IssueQuantity)) rfsProblems.push(`RFS line ${l.TransID}: ReceivedQuantity differs from the issue line`);
+				}
+				if (run.rfs.lines.length !== run.lines.length) rfsProblems.push(`RFS has ${run.rfs.lines.length} line(s), the issue ${run.lines.length}`);
+			}
+			for (const msg of rfsProblems) console.log(`    ${msg}`);
+			if (rfsProblems.length) failed += 1;
+
+			const erpRfs = await erpFloorReceipt(pool, erp.header.TransactionID);
+			if (!erpRfs) {
+				console.log('  No ERP floor receipt found for this issue, so its comparison was skipped.');
+			} else if (run.rfs.header) {
+				console.log(`Floor receipt against the ERP's ${erpRfs.header.VoucherNo} (deleted columns ignored):`);
+				const rfsResult = compareVouchers(run.rfs, erpRfs, { ignore: [...DELETION_COLUMNS, ...RFS_ID_COLUMNS] });
+				console.log(formatComparison(rfsResult, { oursLabel: 'dry-run', theirsLabel: 'erp' }));
+				if (!rfsResult.identical) failed += 1;
+			}
 		}
 		if (problems.length) failed += 1;
 	}

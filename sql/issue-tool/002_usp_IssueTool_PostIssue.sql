@@ -4,9 +4,11 @@
 ================================================================================
   Called by POST /api/issue-tool/issues. Brief sections 5, 6.1, 6.3 and 6.6.
 
-  Writes exactly one ItemTransactionMain row and one ItemTransactionDetail row
-  per batch line, plus one IssueTool_PostLog row. Nothing else is inserted or
-  updated, and no ERP procedure is called from here.
+  Writes what the ERP's issue screen writes: one ItemTransactionMain row and one
+  ItemTransactionDetail row per batch line, plus the floor receipt that goes
+  with every issue (one ItemConsumptionMain row, VoucherID -53 "RFS", and one
+  ItemConsumptionDetail row per line), plus one IssueTool_PostLog row. Nothing
+  else is inserted or updated, and no ERP procedure is called from here.
 
   It does NOT call dbo.UPDATE_ITEM_STOCK_VALUES. The API runs that as a separate
   call after this procedure has committed and returned, so a slow or failing
@@ -31,7 +33,8 @@
   ---------------------------------------------
     1. Status    one row: Status (POSTED | REPLAYED | DRY_RUN | WARNINGS),
                  TransactionID, VoucherNo, MaxVoucherNo, FYear, VoucherDate,
-                 Attempts, DryRunHeaderJson, DryRunLinesJson
+                 Attempts, DryRunHeaderJson, DryRunLinesJson, RfsVoucherNo,
+                 DryRunRfsHeaderJson, DryRunRfsLinesJson
     2. Warnings  Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message
     3. Lines     TransID, TransactionDetailID
 
@@ -397,7 +400,9 @@ BEGIN
     BEGIN
         SELECT @StatusWarnings AS Status, CAST(NULL AS BIGINT) AS TransactionID, CAST(NULL AS NVARCHAR(50)) AS VoucherNo,
                CAST(NULL AS BIGINT) AS MaxVoucherNo, CAST(NULL AS NVARCHAR(20)) AS FYear, @VoucherDate AS VoucherDate,
-               0 AS Attempts, CAST(NULL AS NVARCHAR(MAX)) AS DryRunHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunLinesJson;
+               0 AS Attempts, CAST(NULL AS NVARCHAR(MAX)) AS DryRunHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunLinesJson,
+               CAST(NULL AS NVARCHAR(50)) AS RfsVoucherNo,
+               CAST(NULL AS NVARCHAR(MAX)) AS DryRunRfsHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunRfsLinesJson;
         SELECT Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message FROM @Warnings ORDER BY Seq;
         SELECT TransID, TransactionDetailID FROM @LineIds;
         RETURN;
@@ -420,12 +425,20 @@ BEGIN
             @DryRunHeaderJson NVARCHAR(MAX), @DryRunLinesJson NVARCHAR(MAX);
     DECLARE @NewHeader TABLE (TransactionID BIGINT NOT NULL);
 
+    /* The floor receipt (RFS) the ERP writes with every issue. */
+    DECLARE @RfsVoucherID INT = -53,
+            @RfsPrefix NVARCHAR(10) = N'RFS',
+            @RfsMaxNo BIGINT, @RfsVoucherNo NVARCHAR(50), @RfsID BIGINT,
+            @DryRunRfsHeaderJson NVARCHAR(MAX), @DryRunRfsLinesJson NVARCHAR(MAX);
+    DECLARE @NewRfs TABLE (ConsumptionTransactionID BIGINT NOT NULL);
+
     BEGIN TRY
         WHILE @Done = 0
         BEGIN
             SET @Attempt += 1;
             DELETE FROM @NewHeader;
             DELETE FROM @LineIds;
+            DELETE FROM @NewRfs;
 
             BEGIN TRANSACTION;
 
@@ -529,6 +542,97 @@ BEGIN
             FROM @Lines L
             ORDER BY L.LineNum;
 
+            /* ── Floor receipt (RFS) ───────────────────────────────────────
+               The ERP's issue screen writes, with every issue, a "received on
+               floor" voucher in ItemConsumptionMain (VoucherID -53, prefix
+               RFS, its own number sequence) with one ItemConsumptionDetail line
+               per issue line: ReceivedQuantity = the issued quantity, every
+               other quantity 0. Verified 6 Oct 2026 against RFS17275 /
+               RFS17277 (the captured IS17252 / IS17254) and RFS17362
+               (IS17339): 17,002 of 17,002 live issues have one. Without it
+               the issue would be invisible to floor-stock and consumption.
+
+               Every column is written explicitly, because these tables'
+               defaults have not been inspected. */
+            SELECT @RfsMaxNo = ISNULL(MAX(MaxVoucherNo), 0) + 1
+            FROM dbo.ItemConsumptionMain WITH (READCOMMITTEDLOCK)
+            WHERE VoucherID = @RfsVoucherID
+              AND FYear = @FYear
+              AND CompanyID = @CompanyID;
+
+            SET @RfsVoucherNo = CONCAT(@RfsPrefix, FORMAT(@RfsMaxNo, '00000'), @Suffix);   -- RFS17362_26_27
+
+            INSERT INTO dbo.ItemConsumptionMain (
+                VoucherPrefix, MaxVoucherNo, VoucherID, VoucherNo, VoucherDate,
+                DepartmentID, JobBookingID, OutsourceProductionID, ProductionID,
+                JobBookingJobCardContentsID, ReturnTransactionID, TotalQuantity,
+                Particular, Narration,
+                CompanyID, BranchID, UserID, IsBlocked, FYear, IsLocked,
+                CreatedBy, CreatedDate, ModifiedBy, ModifiedDate,
+                DeletedBy, DeletedDate, IsDeletedTransaction,
+                ProductionUnitID, IsIntegrated, IsJobWiseConsumption, ItemConversionTransactionID
+            )
+            OUTPUT INSERTED.ConsumptionTransactionID INTO @NewRfs (ConsumptionTransactionID)
+            VALUES (
+                @RfsPrefix, @RfsMaxNo, @RfsVoucherID, @RfsVoucherNo, @VoucherDateTime,
+                @HdrDepartmentID, 0, 0, 0,                  -- JobBookingID is 0 on the RFS header, allocated or direct
+                @ContentsID, @NewID, @TotalQty,             -- ReturnTransactionID carries the issue's TransactionID
+                NULL, N'',
+                @CompanyID, 0, @UserID, 0, @FYear, 0,
+                @UserID, @Now, @UserID, @Now,
+                0, NULL, 0,
+                0, 0, 0, NULL
+            );
+
+            SET @RfsID = (SELECT ConsumptionTransactionID FROM @NewRfs);
+
+            IF EXISTS (
+                SELECT 1 FROM dbo.ItemConsumptionMain WITH (READCOMMITTEDLOCK)
+                WHERE VoucherID = @RfsVoucherID
+                  AND FYear = @FYear
+                  AND CompanyID = @CompanyID
+                  AND MaxVoucherNo = @RfsMaxNo
+                  AND ConsumptionTransactionID <> @RfsID
+            )
+            BEGIN
+                ROLLBACK TRANSACTION;
+                IF @Attempt >= 3
+                    THROW 51091, N'VOUCHER_NUMBER_CONFLICT: The ERP took the same floor-receipt number three times in a row. Nothing was saved; try again.', 1;
+                CONTINUE;
+            END
+
+            INSERT INTO dbo.ItemConsumptionDetail (
+                ConsumptionTransactionID, TransID, ParentTransactionID, IssueTransactionID,
+                DepartmentID, ItemID, ItemGroupID, JobBookingID, JobBookingJobCardContentsID,
+                MachineID, ProcessID,
+                ConsumeQuantity, ReturnQuantity, IssueQuantity, ReceivedQuantity, WasteQuantity,
+                StockUnit, BatchNo, BatchID, ItemRate, WarehouseID, FloorWarehouseID,
+                ReturnTransactionID, ReelToSheetCuttingTransactionID, Remark, ProcessingQty, WIPUnit,
+                CompanyID, BranchID, UserID, IsBlocked, FYear, IsLocked,
+                CreatedBy, CreatedDate, ModifiedBy, ModifiedDate,
+                DeletedBy, DeletedDate, IsDeletedTransaction, ProductionUnitID,
+                PlyNo, Joints, ItemConversionTransactionID, JobCardFormNo,
+                PackingWaste, TearOff, ReelEndWaste, Core,
+                PackingWasteRemark, TearOffRemark, ReelEndWasteRemark, CoreRemark
+            )
+            SELECT
+                @RfsID, L.LineNum, L.ParentTransactionID, @NewID,
+                @HdrDepartmentID,                           -- the header's department, also on a direct issue
+                L.ItemID, L.ItemGroupID, @JobBookingID, @ContentsID,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID ELSE 0 END,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID ELSE 0 END,
+                0, 0, 0, L.Quantity, 0,
+                L.StockUnit, L.BatchNoStored, L.BatchID, 0, L.WarehouseID, @FloorWarehouseID,
+                0, 0, NULL, 0, NULL,
+                @CompanyID, 0, @UserID, 0, @FYear, 0,
+                @UserID, @Now, @UserID, @Now,
+                0, NULL, 0, 0,
+                NULL, NULL, NULL, NULL,
+                0, 0, 0, 0,
+                NULL, NULL, NULL, NULL
+            FROM @Lines L
+            ORDER BY L.LineNum;
+
             IF @DryRun = 1
             BEGIN
                 -- Variables survive the rollback; the rows do not.
@@ -538,6 +642,14 @@ BEGIN
                 );
                 SET @DryRunLinesJson = (
                     SELECT * FROM dbo.ItemTransactionDetail WHERE TransactionID = @NewID ORDER BY TransID
+                    FOR JSON PATH, INCLUDE_NULL_VALUES
+                );
+                SET @DryRunRfsHeaderJson = (
+                    SELECT * FROM dbo.ItemConsumptionMain WHERE ConsumptionTransactionID = @RfsID
+                    FOR JSON PATH, INCLUDE_NULL_VALUES, WITHOUT_ARRAY_WRAPPER
+                );
+                SET @DryRunRfsLinesJson = (
+                    SELECT * FROM dbo.ItemConsumptionDetail WHERE ConsumptionTransactionID = @RfsID ORDER BY TransID
                     FOR JSON PATH, INCLUDE_NULL_VALUES
                 );
                 ROLLBACK TRANSACTION;
@@ -584,7 +696,8 @@ BEGIN
     SELECT CASE WHEN @DryRun = 1 THEN @StatusDryRun ELSE @StatusPosted END AS Status,
            CASE WHEN @DryRun = 1 THEN NULL ELSE @NewID END AS TransactionID,
            @VoucherNo AS VoucherNo, @MaxNo AS MaxVoucherNo, @FYear AS FYear, @VoucherDate AS VoucherDate,
-           @Attempt AS Attempts, @DryRunHeaderJson AS DryRunHeaderJson, @DryRunLinesJson AS DryRunLinesJson;
+           @Attempt AS Attempts, @DryRunHeaderJson AS DryRunHeaderJson, @DryRunLinesJson AS DryRunLinesJson,
+           @RfsVoucherNo AS RfsVoucherNo, @DryRunRfsHeaderJson AS DryRunRfsHeaderJson, @DryRunRfsLinesJson AS DryRunRfsLinesJson;
     SELECT Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message FROM @Warnings ORDER BY Seq;
     SELECT TransID, TransactionDetailID FROM @LineIds ORDER BY TransID;
     RETURN;
@@ -592,7 +705,11 @@ BEGIN
 Replay:
     SELECT @StatusReplayed AS Status, M.TransactionID, M.VoucherNo, M.MaxVoucherNo, M.FYear,
            CAST(M.VoucherDate AS DATE) AS VoucherDate, 0 AS Attempts,
-           CAST(NULL AS NVARCHAR(MAX)) AS DryRunHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunLinesJson
+           CAST(NULL AS NVARCHAR(MAX)) AS DryRunHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunLinesJson,
+           (SELECT TOP (1) CM.VoucherNo FROM dbo.ItemConsumptionMain CM
+             WHERE CM.ReturnTransactionID = M.TransactionID AND CM.VoucherID = -53 AND CM.CompanyID = M.CompanyID
+             ORDER BY CM.ConsumptionTransactionID) AS RfsVoucherNo,
+           CAST(NULL AS NVARCHAR(MAX)) AS DryRunRfsHeaderJson, CAST(NULL AS NVARCHAR(MAX)) AS DryRunRfsLinesJson
     FROM dbo.ItemTransactionMain M
     WHERE M.TransactionID = @PrevTransactionID;
     SELECT Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message FROM @Warnings WHERE 1 = 0;

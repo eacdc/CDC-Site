@@ -38,7 +38,25 @@ export const REFERENCED_COLUMNS = {
 	JobOrderBooking: ['OrderBookingID', 'LedgerID'],
 	LedgerMaster: ['LedgerID', 'LedgerName'],
 	UserMaster: ['UserID', 'UserName'],
-	ItemConsumptionDetail: ['IssueTransactionID'],
+	ItemConsumptionMain: [
+		'ConsumptionTransactionID', 'VoucherPrefix', 'MaxVoucherNo', 'VoucherID', 'VoucherNo', 'VoucherDate',
+		'DepartmentID', 'JobBookingID', 'OutsourceProductionID', 'ProductionID', 'JobBookingJobCardContentsID',
+		'ReturnTransactionID', 'TotalQuantity', 'Particular', 'Narration', 'CompanyID', 'BranchID', 'UserID',
+		'IsBlocked', 'FYear', 'IsLocked', 'CreatedBy', 'CreatedDate', 'ModifiedBy', 'ModifiedDate', 'DeletedBy',
+		'DeletedDate', 'IsDeletedTransaction', 'ProductionUnitID', 'IsIntegrated', 'IsJobWiseConsumption',
+		'ItemConversionTransactionID',
+	],
+	ItemConsumptionDetail: [
+		'ConsumptionTransactionDetailID', 'ConsumptionTransactionID', 'TransID', 'ParentTransactionID',
+		'IssueTransactionID', 'DepartmentID', 'ItemID', 'ItemGroupID', 'JobBookingID', 'JobBookingJobCardContentsID',
+		'MachineID', 'ProcessID', 'ConsumeQuantity', 'ReturnQuantity', 'IssueQuantity', 'ReceivedQuantity',
+		'WasteQuantity', 'StockUnit', 'BatchNo', 'BatchID', 'ItemRate', 'WarehouseID', 'FloorWarehouseID',
+		'ReturnTransactionID', 'ReelToSheetCuttingTransactionID', 'Remark', 'ProcessingQty', 'WIPUnit', 'CompanyID',
+		'BranchID', 'UserID', 'IsBlocked', 'FYear', 'IsLocked', 'CreatedBy', 'CreatedDate', 'ModifiedBy',
+		'ModifiedDate', 'DeletedBy', 'DeletedDate', 'IsDeletedTransaction', 'ProductionUnitID', 'PlyNo', 'Joints',
+		'ItemConversionTransactionID', 'JobCardFormNo', 'PackingWaste', 'TearOff', 'ReelEndWaste', 'Core',
+		'PackingWasteRemark', 'TearOffRemark', 'ReelEndWasteRemark', 'CoreRemark',
+	],
 };
 
 /** The columns usp_IssueTool_PostIssue writes. Everything else takes its default. */

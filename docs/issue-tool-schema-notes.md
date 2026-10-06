@@ -59,6 +59,28 @@ Differences that do not matter:
 - For items 9409 and 9681, the batch total from the module's grouping equals `ItemMaster.PhysicalStock` (40,756 Sheet and 235 Kg). The batch query (including the `IsCancelled` filter) matches `UPDATE_ITEM_STOCK_VALUES`.
 - `UPDATE_ITEM_STOCK_VALUES(@CompanyID int, @TransactionID bigint, @DeletedItemID bigint)`.
 
+## The floor receipt (RFS) written with every issue
+
+Found 6 Oct 2026, after History showed every issue as "consumed". No trigger is involved (the only triggers on ITM / ITD are audit and history triggers, plus a disabled stock trigger). The ERP's issue screen writes, in the same save as each issue:
+
+| | Header — `ItemConsumptionMain` | Lines — `ItemConsumptionDetail`, one per issue line |
+|---|---|---|
+| Voucher | VoucherID **-53**, prefix **RFS**, own MaxVoucherNo sequence per CompanyID + FYear (e.g. `RFS17362_26_27`) | `TransID` = the issue line's TransID |
+| Link to the issue | `ReturnTransactionID` = issue TransactionID | `IssueTransactionID` = issue TransactionID |
+| Job | `JobBookingID` **0**; `JobBookingJobCardContentsID` = issue's | `JobBookingID` and content = the issue line's |
+| Department | issue header's | issue **header's** (100 also on a direct issue, whose ITD line has 0) |
+| Machine / process | — | the issue line's (picklist values, or 0 on a direct issue) |
+| Quantities | `TotalQuantity` = issue total | `ReceivedQuantity` = issued; Consume / Return / Issue / Waste = 0 |
+| Batch | — | `ParentTransactionID`, `BatchNo`, `BatchID`, `WarehouseID`, `FloorWarehouseID`, `StockUnit` = the issue line's |
+| Text | `Particular` NULL, `Narration` `''` | `Remark` NULL |
+| Other | Outsource/Production IDs 0, BranchID 0, ProductionUnitID 0, IsIntegrated 0, IsJobWiseConsumption 0, ItemConversionTransactionID NULL | ItemRate 0, ProcessingQty 0, ReturnTransactionID 0, ReelToSheetCuttingTransactionID 0, waste fields 0, remarks / PlyNo / Joints / JobCardFormNo NULL |
+
+On delete the ERP soft-deletes both: header and lines get `IsDeletedTransaction = 1`, `DeletedBy`, `DeletedDate`; the lines also get `ModifiedBy` / `ModifiedDate` set to the delete, the header keeps its `ModifiedDate`.
+
+Every live -19 voucher this year (17,002) has one, and no consumption row this year has `ConsumeQuantity > 0`. The ERP's floor-stock formula subtracts `ConsumeQuantity + ReturnQuantity` per issue. So "consumed" for the delete check means a live consumption row for the issue with consumed / returned / wasted quantity, or one belonging to any voucher other than the issue's own RFS.
+
+The procedures write and delete the RFS exactly as above, and the acceptance and compare scripts check it against the ERP's RFS17275 / RFS17277.
+
 ## Still assumptions
 
 | Assumption | Why it is still open |
@@ -66,6 +88,8 @@ Differences that do not matter:
 | The remark goes in `ITM.Narration` | The column exists and the ERP writes `''` there, but no capture had a remark typed in. |
 | Allocated header `DepartmentID` comes from the picklist line | Consistent with every capture (100); not proven. |
 | Delete recalculates stock with `@TransactionID = 0, @DeletedItemID = item` | Not captured. |
+| RFS numbering is MAX + 1 per CompanyID + FYear, deleted included | Same pattern as every other ERP sequence; three RFS numbers seen, not proven. |
+| RFS line MachineID / ProcessID copy the issue line's | True for both captured issues; IS17339 (direct) has machine 15 on its RFS line, so the ERP's direct screen may pass a chosen machine there. This tool has no machine choice (out of scope), so it writes 0 like the ITD line. |
 | A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
 
 ## Decisions taken without discovery (review these)
