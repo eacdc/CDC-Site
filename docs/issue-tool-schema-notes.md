@@ -101,13 +101,16 @@ If `ModifiedBy` / `ModifiedDate` equal the closing user and time, or other lines
 
 | Assumption | Why it is still open |
 |---|---|
-| The remark goes in `ITM.Narration` | The column exists and the ERP writes `''` there, but no capture had a remark typed in. |
 | Allocated header `DepartmentID` comes from the picklist line | Consistent with every capture (100); not proven. |
 | Delete recalculates stock with `@TransactionID = 0, @DeletedItemID = item` | Not captured. |
 | RFS numbering is MAX + 1 per CompanyID + FYear, deleted included | Same pattern as every other ERP sequence; three RFS numbers seen, not proven. |
 | RFS line MachineID / ProcessID copy the issue line's | True for both captured issues; IS17339 (direct) has machine 15 on its RFS line, so the ERP's direct screen may pass a chosen machine there. This tool has no machine choice (out of scope), so it writes 0 like the ITD line. |
 | Closing a picklist line sets only `IsCompleted`, `CompletedBy`, `CompletedDate` | No ERP close captured yet; query above. |
 | A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
+
+## Remark (confirmed 6 Oct 2026)
+
+The ERP stores the Remark typed on the issue screen in `ItemTransactionMain.Narration` (IS17497 … IS17518: "J07129-EXTRA", "INSIDE", "ASANTA SEND TO TANGRA FOR DIGITAL PRINT"…), with `Particular` left at `' '`. The procedure does the same. It trims leading and trailing spaces from the remark, which the ERP keeps ("J07281-EXTRA "); nothing reads them.
 
 ## Direct issue: machine, process, "Other", slip date (confirmed 6 Oct 2026)
 
