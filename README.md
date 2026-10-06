@@ -54,7 +54,7 @@ Lets storekeepers issue paper and other stock to jobs, replacing the ERP's two i
 | Where | What |
 |---|---|
 | `src/issue-tool/` | The module: routes, auth, validation, read queries, posting service |
-| `sql/issue-tool/` | The only three database objects it adds: `IssueTool_PostLog`, `usp_IssueTool_PostIssue`, `usp_IssueTool_DeleteIssue`. Idempotent; deploy them yourself, in order |
+| `sql/issue-tool/` | The only four database objects it adds: `IssueTool_PostLog`, `usp_IssueTool_PostIssue`, `usp_IssueTool_DeleteIssue`, `usp_IssueTool_ClosePicklistLine`. Idempotent; deploy them yourself, in order |
 | `docs/issue-tool-api.md` | API contract for the frontend |
 | `docs/issue-tool-schema-notes.md` | What is known about the ERP schema, what is assumed, what discovery decides |
 | `scripts/issue-tool-*.js` | Discovery, acceptance tests A/B (dry run), voucher compare |
@@ -94,7 +94,7 @@ Two deliberate differences from the brief:
 ### Go-live checklist
 
 1. **Discovery reviewed.** `npm run issue-tool:discover` (and `-- --site AHM`). Section 1 lists no missing columns. Sections 6 and 7 are read, `@NumberPerCompany`, `@Blank` and the `TEMPLATE` columns in `002_usp_IssueTool_PostIssue.sql` are set accordingly, and `docs/issue-tool-schema-notes.md` is updated.
-2. **Objects deployed** in order: `sql/issue-tool/001…`, `002…`, `003…`.
+2. **Objects deployed** in order: `sql/issue-tool/001…`, `002…`, `003…`, `004…`.
 3. **Dry-run tests A and B pass.** `npm run issue-tool:acceptance` prints "Acceptance tests A and B pass": every field the brief confirms matches, and the would-be rows equal the ERP's IS17252_26_27 and IS17254_26_27 column by column.
 4. **Frontend walk-through in dry run**, using the test checklist in the frontend repo.
 5. **First real post** (ask before doing it). Set `ISSUE_TOOL_ALLOW_WRITES=true`, post one small issue, then compare it with an ERP-made issue of the same kind: `npm run issue-tool:compare -- <ourTransactionId> <erpTransactionId>`. Check the ItemMaster stock moved as the ERP's would (test A: PhysicalStock down, FloorStock up, by the quantity), and the picklist line is still `IsCompleted = 0`.

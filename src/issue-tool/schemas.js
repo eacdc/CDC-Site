@@ -22,8 +22,14 @@ export const loginBody = z.object({
 export const picklistsQuery = z.object({
 	search,
 	page: z.coerce.number().int().min(1).default(1),
-	pageSize: z.coerce.number().int().min(1).max(200).default(50),
+	pageSize: z.coerce.number().int().min(1).max(500).default(50),
 	showFullyIssued: flag,
+	/** Closed lines (IsCompleted = 1) instead of open ones, like the ERP's "Closed Allocation Picklist". */
+	showClosed: flag,
+});
+
+export const picklistDetailIdParam = z.object({
+	picklistDetailId: z.coerce.number().int().positive(),
 });
 
 export const jobContentsQuery = z.object({

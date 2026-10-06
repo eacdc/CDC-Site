@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { todayInKolkata, addDays, daysBetween, financialYear, toIsoDate } from './dates.js';
-import { parse, postIssueBody, picklistsQuery, itemsQuery } from './schemas.js';
+import { parse, postIssueBody, picklistsQuery, picklistDetailIdParam, itemsQuery } from './schemas.js';
 import { ApiError, fromSqlError } from './errors.js';
+import { mapPicklistLine } from './queries/picklists.js';
 import { interpretPostResult, dryRunReason } from './services/issues.js';
 import { buildRequirements } from './queries/job-contents.js';
 import { mergeItems } from './queries/items.js';
@@ -89,8 +90,11 @@ test('a direct issue needs a job content and a department', () => {
 
 test('query strings coerce and default', () => {
 	assert.deepEqual(parse(picklistsQuery, { page: '2', showFullyIssued: 'true' }),
-		{ search: '', page: 2, pageSize: 50, showFullyIssued: true });
+		{ search: '', page: 2, pageSize: 50, showFullyIssued: true, showClosed: false });
 	assert.equal(parse(picklistsQuery, {}).showFullyIssued, false);
+	assert.equal(parse(picklistsQuery, { showClosed: 'true' }).showClosed, true);
+	assert.equal(parse(picklistDetailIdParam, { picklistDetailId: '64535' }).picklistDetailId, 64535);
+	assert.throws(() => parse(picklistDetailIdParam, { picklistDetailId: 'x' }), ApiError);
 	assert.throws(() => parse(itemsQuery, { search: 'a' }), ApiError);
 	assert.deepEqual(parse(itemsQuery, { jobContentId: '23524' }), { search: '', jobContentId: 23524 });
 });
@@ -107,6 +111,31 @@ test('procedure errors 51xxx become coded API errors', () => {
 	const conflict = fromSqlError(Object.assign(new Error('VOUCHER_NUMBER_CONFLICT: x'), { number: 51091 }));
 	assert.equal(conflict.status, 409);
 	assert.equal(fromSqlError(Object.assign(new Error('Deadlock'), { number: 1205 })), null);
+
+	const closed = fromSqlError(Object.assign(new Error('PICKLIST_LINE_CLOSED: The picklist line is already closed.'), { number: 51043 }));
+	assert.equal(closed.status, 409);
+	assert.equal(closed.code, 'PICKLIST_LINE_CLOSED');
+});
+
+test('picklist lines carry division, ERP item columns and closed state', () => {
+	const row = {
+		TransactionDetailID: 64535, PicklistTransactionID: 64534, PicklistNo: 'IPIC02376_25_26', PicklistDate: new Date('2026-09-22T00:00:00Z'),
+		ClientName: 'RSH Global Pvt Ltd', Division: 'Packaging', JobBookingID: 1, JobBookingJobCardContentsID: 2,
+		RequiredQuantity: 887, IssuedQuantity: 0, PendingQuantity: 887,
+		ItemID: 9409, ItemCode: 'R00642', ItemGroupID: 14, ItemGroupName: 'REEL', Quality: 'FBB', GSM: 350, SizeW: 800, SizeL: 0,
+		Manufacturer: 'Emami', CertificationType: 'NONE', StockUnit: 'Kg', PhysicalStock: 1603, AllocatedStock: 0,
+		IsCompleted: 1, CompletedDate: new Date('2026-10-06T15:20:00Z'), CompletedByName: 'Admin',
+	};
+	const line = mapPicklistLine(row);
+	assert.equal(line.division, 'Packaging');
+	assert.equal(line.item.certification, 'NONE');
+	assert.equal(line.item.sizeW, 800);
+	assert.equal(line.item.sizeL, 0);
+	assert.equal(line.item.allocatedStock, 0);
+	assert.equal(line.closed, true);
+	assert.equal(line.closedDate, '2026-10-06T15:20:00');
+	assert.equal(line.closedBy, 'Admin');
+	assert.equal(mapPicklistLine({ ...row, IsCompleted: 0, CompletedDate: null }).closed, false);
 });
 
 const warningRow = {

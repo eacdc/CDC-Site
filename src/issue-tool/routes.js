@@ -6,7 +6,8 @@
  * from — keep it in sync with this file.
  *
  *   GET  /session                      who is signed in, site, writes on/off, today
- *   GET  /picklists                    open picklist lines (allocated tab)
+ *   GET  /picklists                    open (or closed) picklist lines (allocated tab)
+ *   POST /picklists/:id/close          close a picklist line (dry run unless writes are on)
  *   GET  /job-contents                 job contents by job card number (direct tab)
  *   GET  /items                        item search, planned items first
  *   GET  /items/:itemId/batches        batch stock for an item
@@ -26,7 +27,7 @@ import { ApiError, errorHandler } from './errors.js';
 import { writesEnabled, RECENT_ISSUES_DEFAULT_DAYS, RECENT_ISSUES_MAX_DAYS } from './config.js';
 import { todayInKolkata, addDays, daysBetween } from './dates.js';
 import {
-	parse, loginBody, picklistsQuery, jobContentsQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
+	parse, loginBody, picklistsQuery, picklistDetailIdParam, jobContentsQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
 } from './schemas.js';
 import { listPicklistLines } from './queries/picklists.js';
 import { searchJobContents } from './queries/job-contents.js';
@@ -34,6 +35,7 @@ import { searchItems, itemBatches } from './queries/items.js';
 import { floorWarehouses, departments } from './queries/lookups.js';
 import { recentIssues } from './queries/issues.js';
 import { postIssue, deleteIssue, retryStockRefresh } from './services/issues.js';
+import { closePicklistLine } from './services/picklists.js';
 
 const router = Router();
 
@@ -62,6 +64,11 @@ router.get('/session', (req, res) => {
 router.get('/picklists', async (req, res) => {
 	const q = parse(picklistsQuery, req.query);
 	res.json(await listPicklistLines({ ...ctx(req), ...q }));
+});
+
+router.post('/picklists/:picklistDetailId/close', requireErpUser, async (req, res) => {
+	const { picklistDetailId } = parse(picklistDetailIdParam, req.params);
+	res.json(await closePicklistLine({ ...ctx(req), erpUserId: req.issueTool.erpUserId, picklistDetailId }));
 });
 
 router.get('/job-contents', async (req, res) => {

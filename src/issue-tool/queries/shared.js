@@ -24,7 +24,13 @@ export const LIVE_ISSUE = `
 export const ITEM_COLUMNS = `
 	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
 	IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer AS Manufacturer,
-	IM.StockUnit, IM.PhysicalStock`;
+	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock`;
+
+/** The same columns for a GROUP BY. */
+export const ITEM_GROUP_BY = `
+	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
+	IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer,
+	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock`;
 
 export function num(value) {
 	if (value === null || value === undefined || value === '') return null;
@@ -62,9 +68,13 @@ export function mapItem(row) {
 		quality: str(row.Quality),
 		gsm: num(row.GSM),
 		size: sizeOf(row),
+		sizeW: num(row.SizeW),
+		sizeL: num(row.SizeL),
 		manufacturer: str(row.Manufacturer),
+		certification: str(row.CertificationType),
 		stockUnit: str(row.StockUnit),
 		physicalStock: qty(row.PhysicalStock),
+		allocatedStock: qty(row.AllocatedStock),
 	};
 }
 

@@ -8,7 +8,7 @@
  */
 
 import { query, sql, likePattern, inList } from '../db.js';
-import { ITEM_COLUMNS, ISSUE_FROM, LIVE_ISSUE, mapItem, qty, str, unitKey } from './shared.js';
+import { ITEM_COLUMNS, ITEM_GROUP_BY, ISSUE_FROM, LIVE_ISSUE, mapItem, qty, str, unitKey } from './shared.js';
 
 const MAX_CONTENTS = 25;
 
@@ -84,9 +84,7 @@ export async function contentRequirements({ site, companyId, contentIds }) {
 			WHERE JM.CompanyID = @companyId
 			  AND ISNULL(JM.IsDeletedTransaction, 0) = 0
 			  AND JM.JobBookingJobCardContentsID IN (${list.sql})
-			GROUP BY JM.JobBookingJobCardContentsID,
-			         IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
-			         IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer, IM.StockUnit, IM.PhysicalStock
+			GROUP BY JM.JobBookingJobCardContentsID, ${ITEM_GROUP_BY}
 			ORDER BY JM.JobBookingJobCardContentsID, MIN(JM.SequenceNo), IM.ItemCode
 		`, { companyId: [sql.Int, companyId], ...list.params }),
 		query(site, `

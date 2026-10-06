@@ -71,7 +71,6 @@ Some codes add fields (`details`, `warnings`).
 | 400 | `UNKNOWN_ITEM` | An item does not exist. |
 | 400 | `BATCH_NOT_OF_ITEM` | A line's batch does not belong to its item. |
 | 400 | `UNKNOWN_PICKLIST_LINE` | Picklist line missing or deleted. |
-| 400 | `PICKLIST_LINE_CLOSED` | Picklist line is closed (`IsCompleted`). |
 | 400 | `ITEM_NOT_ON_PICKLIST` | An allocated issue tried to issue an item other than the picklist line's. Use a direct issue for a substitute. |
 | 400 | `UNKNOWN_JOB_CONTENT` | Job content missing or deleted. |
 | 400 | `UNKNOWN_DEPARTMENT` | Department does not exist. |
@@ -83,6 +82,8 @@ Some codes add fields (`details`, `warnings`).
 | 409 | `WARNINGS_NOT_ACKNOWLEDGED` | The issue has warnings; see section 5.8. Body has `warnings`. |
 | 409 | `VOUCHER_NUMBER_CONFLICT` | The ERP took the same voucher number three times running. Nothing was saved. Save again with the same `requestId`. |
 | 409 | `ALREADY_DELETED` / `ISSUE_CONSUMED` | Delete refused. |
+| 409 | `PICKLIST_LINE_CLOSED` | Picklist line is already closed (`IsCompleted`): posting against it, or closing it again. |
+| 409 | `PICKLIST_LINE_DELETED` / `PICKLIST_LINE_CANCELLED` | Close refused: the picklist was deleted or the line cancelled. |
 | 502 | `STOCK_REFRESH_FAILED` | Only from `refresh-stock`: the retry failed again. The issue itself is saved. |
 | 503 | `LOCK_TIMEOUT` | Another save held the numbering lock for 15 s. Nothing was saved. Save again with the same `requestId`. |
 | 500 | `INTERNAL_ERROR` | Unexpected. If it happened on a save, saving again with the same `requestId` is always safe. |
@@ -139,16 +140,17 @@ Who is signed in, and whether saves really write. Call it on load and show the *
 
 `today` is today's date in India; use it as the default voucher date. `canPost` is always `true` with this sign-in (every session has an ERP user); it is kept so the client need not change if that ever differs.
 
-### 4.2 `GET /picklists?search=&page=&pageSize=&showFullyIssued=`
+### 4.2 `GET /picklists?search=&page=&pageSize=&showFullyIssued=&showClosed=`
 
-Open picklist lines (against-picklist tab). Server-side search and paging.
+Open picklist lines (against-picklist tab), newest picklist first. Server-side search and paging.
 
 | Param | Default | Notes |
 |---|---|---|
-| `search` | `""` | Matches picklist no., job card no., content no., job name, content name, client, item code, item name. |
+| `search` | `""` | Matches picklist no., job card no., content no., job name, content name, client, item code, item name, division. |
 | `page` | `1` | 1-based. |
-| `pageSize` | `50` | 1–200. |
-| `showFullyIssued` | `false` | `true` / `false`. When false only lines with `pending > 0`. Closed lines (`IsCompleted`) never appear. |
+| `pageSize` | `50` | 1–500. |
+| `showFullyIssued` | `false` | `true` / `false`. When false only lines with `pending > 0`. |
+| `showClosed` | `false` | `true` lists closed lines (`IsCompleted = 1`, the ERP's "Closed Allocation Picklist") instead of open ones, whatever their pending. |
 
 Response:
 
@@ -161,6 +163,7 @@ Response:
       "picklistNo": "IPIC03454_26_27",
       "picklistDate": "2026-10-01",
       "clientName": "ACME FOODS PVT LTD",
+      "division": "Packaging",
       "jobBookingId": 16077,
       "jobContentId": 24188,
       "jobCardNo": "J06601_26_27",
@@ -176,13 +179,20 @@ Response:
         "quality": "SBS",
         "gsm": 300,
         "size": "1020 x 720",
+        "sizeW": 1020,
+        "sizeL": 720,
         "manufacturer": "ITC",
+        "certification": "NONE",
         "stockUnit": "Sheet",
-        "physicalStock": 40756
+        "physicalStock": 40756,
+        "allocatedStock": 0
       },
       "required": 2958,
       "issued": 0,
-      "pending": 2958
+      "pending": 2958,
+      "closed": false,
+      "closedDate": null,
+      "closedBy": null
     }
   ],
   "page": 1,
@@ -191,7 +201,7 @@ Response:
 }
 ```
 
-`picklistDetailId` is the line's identity: it is what you send to post, and what a future "close line" action will take. `total` is the number of matching lines across all pages (`0` when none; `null` only when a page past the end is requested).
+`picklistDetailId` is the line's identity: it is what you send to post or close (5.10). `division` is the job's segment. Every `item` object in this API also carries `sizeW`, `sizeL`, `certification` (`ItemMaster.CertificationType`) and `allocatedStock` (`ItemMaster.AllocatedStock`); the examples elsewhere leave them out. `closedDate` (IST wall clock) and `closedBy` are set on closed lines. `total` is the number of matching lines across all pages (`0` when none; `null` only when a page past the end is requested).
 
 ### 4.3 `GET /job-contents?search=`
 
@@ -278,6 +288,7 @@ Batches with stock above zero, oldest GRN first. The batch total equals `ItemMas
     {
       "batchKey": { "parentTransactionId": 60325, "warehouseId": 17, "batchNo": "60325_PO02095_26_27_9409_1.00" },
       "batchId": 101864,
+      "supplierBatchNo": null,
       "batchStock": 20000,
       "grnNo": "REC03101_26_27",
       "grnDate": "2026-08-14",
@@ -291,7 +302,7 @@ Batches with stock above zero, oldest GRN first. The batch total equals `ItemMas
 }
 ```
 
-`batchKey` identifies the batch. Send its three fields back unchanged on each issue line. `batchNo` may be `null`. `grnNo`/`grnDate` may be `null` for opening stock.
+`batchKey` identifies the batch. Send its three fields back unchanged on each issue line. `batchNo` may be `null`. `supplierBatchNo` comes from the receipt row that created the batch. `grnNo`/`grnDate` may be `null` for opening stock.
 
 ### 4.6 `GET /lookups/floor-warehouses`
 
@@ -555,3 +566,21 @@ Warnings are recomputed on every save. If stock changed in between, the acknowle
 ### 5.9 Retrying
 
 A save may be retried at any time with the same `requestId`: after a timeout, a network error, a `500`, `409 VOUCHER_NUMBER_CONFLICT` or `503 LOCK_TIMEOUT`. It produces at most one voucher; a retry of a save that did go through returns it with `replayed: true`. Generate a new `requestId` only when the user starts a new issue ("New issue").
+
+### 5.10 `POST /picklists/:picklistDetailId/close`
+
+No body. The ERP picklist screen's **Close** button: the line leaves the open list (and appears under `showClosed=true`) whatever is still pending. Writes `IsCompleted = 1`, `CompletedBy`, `CompletedDate` on that picklist line only; no stock changes, so no refresh. Dry run unless writes are on, like posting.
+
+`200`, closed:
+
+```json
+{ "status": "CLOSED", "dryRun": false, "picklistDetailId": 109873, "picklistNo": "IPIC03454_26_27" }
+```
+
+`200`, dry run (`wouldWrite.line` is the picklist's `ItemTransactionDetail` row as it would be):
+
+```json
+{ "status": "DRY_RUN", "dryRun": true, "dryRunReason": "WRITES_DISABLED", "picklistDetailId": 109873, "picklistNo": "IPIC03454_26_27", "wouldWrite": { "line": { "IsCompleted": true, "CompletedBy": 24, "CompletedDate": "2026-10-06T15:20:00.000" } } }
+```
+
+Errors: `400 UNKNOWN_PICKLIST_LINE`, `409 PICKLIST_LINE_CLOSED`, `409 PICKLIST_LINE_DELETED`, `409 PICKLIST_LINE_CANCELLED`, `403` when the login has no ERP user.

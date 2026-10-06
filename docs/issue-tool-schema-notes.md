@@ -81,6 +81,22 @@ Every live -19 voucher this year (17,002) has one, and no consumption row this y
 
 The procedures write and delete the RFS exactly as above, and the acceptance and compare scripts check it against the ERP's RFS17275 / RFS17277.
 
+## Closing a picklist line
+
+The ERP picklist screen has a **Close** button per line; a closed line drops out of the open list and shows under "Closed Allocation Picklist". `usp_IssueTool_ClosePicklistLine` (004) sets `IsCompleted = 1`, `CompletedBy`, `CompletedDate` on that picklist `ItemTransactionDetail` row and nothing else. Not yet confirmed against a line the ERP closed. To check, close one line in the ERP, then:
+
+```sql
+SELECT TOP (10) M.VoucherNo, D.TransactionDetailID, D.TransactionID, D.ItemID, D.RequiredQuantity,
+       D.IsCompleted, D.CompletedBy, D.CompletedDate, D.ModifiedBy, D.ModifiedDate, D.CreatedDate,
+       D.MachineID, D.ProcessID, D.DepartmentID, D.JobBookingJobCardContentsID
+FROM dbo.ItemTransactionDetail D
+JOIN dbo.ItemTransactionMain M ON M.TransactionID = D.TransactionID
+WHERE M.VoucherID = -17 AND M.CompanyID = 2 AND D.IsCompleted = 1
+ORDER BY D.CompletedDate DESC;
+```
+
+If `ModifiedBy` / `ModifiedDate` equal the closing user and time, or other lines of the same picklist changed too, the procedure needs to do the same.
+
 ## Still assumptions
 
 | Assumption | Why it is still open |
@@ -90,6 +106,7 @@ The procedures write and delete the RFS exactly as above, and the acceptance and
 | Delete recalculates stock with `@TransactionID = 0, @DeletedItemID = item` | Not captured. |
 | RFS numbering is MAX + 1 per CompanyID + FYear, deleted included | Same pattern as every other ERP sequence; three RFS numbers seen, not proven. |
 | RFS line MachineID / ProcessID copy the issue line's | True for both captured issues; IS17339 (direct) has machine 15 on its RFS line, so the ERP's direct screen may pass a chosen machine there. This tool has no machine choice (out of scope), so it writes 0 like the ITD line. |
+| Closing a picklist line sets only `IsCompleted`, `CompletedBy`, `CompletedDate` | No ERP close captured yet; query above. |
 | A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
 
 ## Decisions taken without discovery (review these)

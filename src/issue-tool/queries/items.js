@@ -115,13 +115,13 @@ export async function itemBatches({ site, companyId, itemId }) {
 				HAVING SUM(ISNULL(D.ReceiptQuantity, 0) - ISNULL(D.IssueQuantity, 0) - ISNULL(D.RejectedQuantity, 0)) > 0
 			)
 			SELECT G.ParentTransactionID, G.WarehouseID, G.BatchNo, G.BatchStock,
-			       COALESCE(R.BatchID, G.AnyBatchID) AS BatchID,
+			       COALESCE(R.BatchID, G.AnyBatchID) AS BatchID, R.SupplierBatchNo,
 			       PM.VoucherNo AS GrnNo, PM.VoucherDate AS GrnDate, PM.VoucherID AS ParentVoucherID,
 			       WM.WarehouseName, WM.BinName
 			FROM G
 			LEFT JOIN dbo.ItemTransactionMain PM ON PM.TransactionID = G.ParentTransactionID
 			OUTER APPLY (
-				SELECT TOP (1) RD.BatchID
+				SELECT TOP (1) RD.BatchID, RD.SupplierBatchNo
 				FROM dbo.ItemTransactionDetail RD
 				WHERE RD.TransactionID = G.ParentTransactionID
 				  AND RD.ItemID = @itemId
@@ -155,6 +155,7 @@ function mapBatch(row) {
 			batchNo: str(row.BatchNo),
 		},
 		batchId: row.BatchID ?? null,
+		supplierBatchNo: str(row.SupplierBatchNo),
 		batchStock: qty(row.BatchStock),
 		grnNo: str(row.GrnNo),
 		grnDate: toIsoDate(row.GrnDate),

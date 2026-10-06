@@ -47,4 +47,5 @@ export const RECENT_ISSUES_MAX_DAYS = 62;
 
 export const POST_PROC = 'dbo.usp_IssueTool_PostIssue';
 export const DELETE_PROC = 'dbo.usp_IssueTool_DeleteIssue';
+export const CLOSE_PICKLIST_LINE_PROC = 'dbo.usp_IssueTool_ClosePicklistLine';
 export const STOCK_REFRESH_PROC = 'dbo.UPDATE_ITEM_STOCK_VALUES';
