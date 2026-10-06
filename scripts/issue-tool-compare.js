@@ -14,6 +14,7 @@
  *
  * Run from the backend folder:
  *   npm run issue-tool:compare -- <ourTransactionId> <erpTransactionId>
+ *   npm run issue-tool:compare -- IS17490_26_27 IS17252_26_27 --ignore-deletion
  *   node scripts/issue-tool-compare.js 70001 69990 --site KOL [--ignore-deletion]
  *
  * Expect differences in the job, item, batch and quantity columns when the two
@@ -37,20 +38,22 @@ function arg(name, fallback) {
 }
 
 const positional = process.argv.slice(2).filter((a, i, all) => !a.startsWith('--') && !all[i - 1]?.startsWith('--site'));
-const [ours, theirs] = positional.map(Number);
 const SITE = arg('site', 'KOL').toUpperCase();
+let ours;
+let theirs;
 
-if (!Number.isInteger(ours) || !Number.isInteger(theirs)) {
-	console.error('Usage: node scripts/issue-tool-compare.js <ourTransactionId> <erpTransactionId> [--site KOL] [--ignore-deletion]');
+if (positional.length !== 2) {
+	console.error('Usage: node scripts/issue-tool-compare.js <ours> <erp> [--site KOL] [--ignore-deletion]');
+	console.error('       each a TransactionID (66807) or a voucher number (IS17252_26_27)');
 	process.exit(2);
 }
 
 async function loadVoucher(pool, transactionId) {
-	const header = (await pool.request().input('id', sql.Int, transactionId)
+	const header = (await pool.request().input('id', sql.BigInt, transactionId)
 		.query('SELECT * FROM dbo.ItemTransactionMain WHERE TransactionID = @id')).recordset[0];
 	if (!header) throw new Error(`No ItemTransactionMain row with TransactionID ${transactionId}.`);
 	if (Number(header.VoucherID) !== -19) throw new Error(`TransactionID ${transactionId} is VoucherID ${header.VoucherID}, not an issue (-19).`);
-	const lines = (await pool.request().input('id', sql.Int, transactionId)
+	const lines = (await pool.request().input('id', sql.BigInt, transactionId)
 		.query('SELECT * FROM dbo.ItemTransactionDetail WHERE TransactionID = @id ORDER BY TransID')).recordset;
 	return { header, lines };
 }
@@ -66,8 +69,21 @@ async function loadFloorReceipt(pool, issueTransactionId) {
 	return { header, lines };
 }
 
+/** A TransactionID as given, or the -19 voucher with that number (the live one if the ERP duplicated it). */
+async function resolveVoucher(pool, value) {
+	if (/^\d+$/.test(value)) return Number(value);
+	const rows = (await pool.request().input('no', sql.NVarChar(50), value)
+		.query(`SELECT TransactionID, ISNULL(IsDeletedTransaction, 0) AS IsDeleted FROM dbo.ItemTransactionMain
+		        WHERE VoucherNo = @no AND VoucherID = -19 ORDER BY ISNULL(IsDeletedTransaction, 0), TransactionID DESC`)).recordset;
+	if (!rows.length) throw new Error(`No issue voucher ${value}.`);
+	if (rows.length > 1) console.log(`Note: ${rows.length} vouchers are numbered ${value}; using TransactionID ${rows[0].TransactionID}${rows[0].IsDeleted ? ' (deleted)' : ''}.`);
+	return Number(rows[0].TransactionID);
+}
+
 async function main() {
 	const pool = await getPool(SITE);
+	ours = await resolveVoucher(pool, positional[0]);
+	theirs = await resolveVoucher(pool, positional[1]);
 	const [a, b] = await Promise.all([loadVoucher(pool, ours), loadVoucher(pool, theirs)]);
 	const ignore = process.argv.includes('--ignore-deletion') ? DELETION_COLUMNS : [];
 	const result = compareVouchers(a, b, { ignore });
