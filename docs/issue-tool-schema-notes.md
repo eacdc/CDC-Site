@@ -107,7 +107,23 @@ If `ModifiedBy` / `ModifiedDate` equal the closing user and time, or other lines
 | RFS numbering is MAX + 1 per CompanyID + FYear, deleted included | Same pattern as every other ERP sequence; three RFS numbers seen, not proven. |
 | RFS line MachineID / ProcessID copy the issue line's | True for both captured issues; IS17339 (direct) has machine 15 on its RFS line, so the ERP's direct screen may pass a chosen machine there. This tool has no machine choice (out of scope), so it writes 0 like the ITD line. |
 | Closing a picklist line sets only `IsCompleted`, `CompletedBy`, `CompletedDate` | No ERP close captured yet; query above. |
+| Direct issue: the chosen process and machine go on the issue line (ProcessID, MachineID) and its floor-receipt line; the issue line's DepartmentID stays 0 | The ERP's IS17339 (direct) has machine 15 on its RFS line; its issue line was not captured. IS17254 (no process chosen) has 0 on both. Check with the query below. |
+| "Other" (no job): job and content 0 on header, lines and floor receipt | IS17302_26_27 (direct, no job) matched the defaults; its floor receipt was not captured. |
+| Slip Date is not saved | ITM.DeliveryNoteDate was NULL on every captured ERP voucher although the ERP screen shows a slip date. |
 | A substitute counts against the requirement of its item group + stock unit | A business rule, not a schema fact. Confirm it is what you want. |
+
+## Direct issue with a process and machine
+
+To confirm what the ERP writes when a process and machine are chosen on a direct issue, issue one in the ERP with both chosen, then:
+
+```sql
+SELECT M.VoucherNo, D.TransID, D.ItemID, D.IssueQuantity, D.ProcessID, D.MachineID, D.DepartmentID, M.DepartmentID AS HeaderDepartmentID
+FROM dbo.ItemTransactionDetail D
+JOIN dbo.ItemTransactionMain M ON M.TransactionID = D.TransactionID
+WHERE M.VoucherNo = 'IS17339_26_27';   -- or the new voucher
+```
+
+If the line's DepartmentID is the header's rather than 0 when a process is chosen, the procedure should do the same.
 
 ## Decisions taken without discovery (review these)
 

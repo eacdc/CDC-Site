@@ -20,17 +20,23 @@ export const LIVE_ISSUE = `
 	  AND ISNULL(D.IsDeletedTransaction, 0) = 0
 	  AND ISNULL(D.IsCancelled, 0) = 0`;
 
-/** Item columns, from `IM` and `IGM`. */
+/**
+ * Item columns, from `IM`, `IGM` and `ISG` (ItemSubGroupMaster, joined on
+ * ItemSubGroupID). Free stock is worked out as physical − allocated, as the
+ * ERP's issue screen shows it.
+ */
 export const ITEM_COLUMNS = `
-	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
+	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName, ISG.ItemSubGroupName,
 	IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer AS Manufacturer,
-	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock`;
+	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock,
+	IM.IncomingStock, IM.UnapprovedStock`;
 
 /** The same columns for a GROUP BY. */
 export const ITEM_GROUP_BY = `
-	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
+	IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName, ISG.ItemSubGroupName,
 	IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer,
-	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock`;
+	IM.CertificationType, IM.StockUnit, IM.PhysicalStock, IM.AllocatedStock,
+	IM.IncomingStock, IM.UnapprovedStock`;
 
 export function num(value) {
 	if (value === null || value === undefined || value === '') return null;
@@ -65,6 +71,7 @@ export function mapItem(row) {
 		itemName: str(row.ItemName),
 		itemGroupId: row.ItemGroupID,
 		itemGroupName: str(row.ItemGroupName),
+		itemSubGroupName: str(row.ItemSubGroupName),
 		quality: str(row.Quality),
 		gsm: num(row.GSM),
 		size: sizeOf(row),
@@ -75,6 +82,9 @@ export function mapItem(row) {
 		stockUnit: str(row.StockUnit),
 		physicalStock: qty(row.PhysicalStock),
 		allocatedStock: qty(row.AllocatedStock),
+		freeStock: qty(qty(row.PhysicalStock) - qty(row.AllocatedStock)),
+		incomingStock: qty(row.IncomingStock),
+		unapprovedStock: qty(row.UnapprovedStock),
 	};
 }
 

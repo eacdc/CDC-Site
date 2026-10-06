@@ -68,6 +68,7 @@ export const itemsQuery = z
 	});
 
 export const itemIdParam = z.object({ itemId: id });
+export const processesQuery = z.object({ jobContentId: id.optional() });
 export const issueIdParam = z.object({ id });
 
 export const issuesQuery = z.object({
@@ -81,6 +82,9 @@ const line = z.object({
 	warehouseId: z.number().int().min(0),
 	batchNo: z.string().max(200).nullable().optional(),
 	quantity: z.number().finite().positive('Quantity must be greater than zero.').max(1e9),
+	/** Direct issue: the process and machine chosen for the line (the ERP's Process Name / Machine). */
+	processId: bodyId.nullable().optional(),
+	machineId: bodyId.nullable().optional(),
 });
 
 export const postIssueBody = z
@@ -90,6 +94,8 @@ export const postIssueBody = z
 		voucherDate: z.iso.date(),
 		picklistDetailId: bodyId.optional(),
 		jobContentId: bodyId.optional(),
+		/** Direct issue to no job: the ERP's "Other" option instead of "Job Consumables". */
+		noJob: z.boolean().optional().default(false),
 		departmentId: bodyId.optional(),
 		slipNo: z.string().trim().max(100).nullable().optional(),
 		floorWarehouseId: bodyId,
@@ -103,8 +109,11 @@ export const postIssueBody = z
 			ctx.addIssue({ code: 'custom', path: ['picklistDetailId'], message: 'Required for an allocated issue.' });
 		}
 		if (body.mode === 'DIRECT') {
-			if (!body.jobContentId) {
-				ctx.addIssue({ code: 'custom', path: ['jobContentId'], message: 'Required for a direct issue.' });
+			if (!body.jobContentId && !body.noJob) {
+				ctx.addIssue({ code: 'custom', path: ['jobContentId'], message: 'Required for a direct issue to a job.' });
+			}
+			if (body.jobContentId && body.noJob) {
+				ctx.addIssue({ code: 'custom', path: ['noJob'], message: 'An issue to "Other" has no job content.' });
 			}
 			if (!body.departmentId) {
 				ctx.addIssue({ code: 'custom', path: ['departmentId'], message: 'Required for a direct issue.' });

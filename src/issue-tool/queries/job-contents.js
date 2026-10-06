@@ -124,17 +124,33 @@ export async function contentRequirements({ site, companyId, contentIds }) {
 	const list = inList('c', contentIds);
 	const [planned, issued] = await Promise.all([
 		query(site, `
+			SELECT G.*, FP.ProcessID AS PlannedProcessID, FP.ProcessName AS PlannedProcessName
+			FROM (
 			SELECT JM.JobBookingJobCardContentsID,
 			       SUM(ISNULL(JM.RequiredQuantityInStockUnit, 0)) AS RequiredQuantity,
+			       MIN(JM.SequenceNo) AS FirstSequenceNo,
 			       ${ITEM_COLUMNS}
 			FROM dbo.JobBookingJobCardProcessMaterialRequirement JM
 			JOIN dbo.ItemMaster IM ON IM.ItemID = JM.ItemID AND IM.CompanyID = JM.CompanyID
 			LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
+			LEFT JOIN dbo.ItemSubGroupMaster ISG ON ISG.ItemSubGroupID = IM.ItemSubGroupID AND ISG.CompanyID = IM.CompanyID
 			WHERE JM.CompanyID = @companyId
 			  AND ISNULL(JM.IsDeletedTransaction, 0) = 0
 			  AND JM.JobBookingJobCardContentsID IN (${list.sql})
 			GROUP BY JM.JobBookingJobCardContentsID, ${ITEM_GROUP_BY}
-			ORDER BY JM.JobBookingJobCardContentsID, MIN(JM.SequenceNo), IM.ItemCode
+			) G
+			OUTER APPLY (
+				-- The process the item is planned for (the first one when several).
+				SELECT TOP (1) JM2.ProcessID, PM.ProcessName
+				FROM dbo.JobBookingJobCardProcessMaterialRequirement JM2
+				LEFT JOIN dbo.ProcessMaster PM ON PM.ProcessID = JM2.ProcessID AND PM.CompanyID = JM2.CompanyID
+				WHERE JM2.JobBookingJobCardContentsID = G.JobBookingJobCardContentsID
+				  AND JM2.ItemID = G.ItemID
+				  AND JM2.CompanyID = @companyId
+				  AND ISNULL(JM2.IsDeletedTransaction, 0) = 0
+				ORDER BY JM2.SequenceNo
+			) FP
+			ORDER BY G.JobBookingJobCardContentsID, G.FirstSequenceNo, G.ItemCode
 		`, { companyId: [sql.Int, companyId], ...list.params }),
 		query(site, `
 			SELECT D.JobBookingJobCardContentsID, D.ItemID, IM.ItemGroupID, IM.StockUnit,
@@ -178,6 +194,8 @@ export function buildRequirements(planned, issued) {
 		const itemIssued = issuedByItem.get(`${row.JobBookingJobCardContentsID}|${row.ItemID}`) ?? 0;
 		e.plannedItems.push({
 			...mapItem(row),
+			processId: row.PlannedProcessID || null,
+			processName: str(row.PlannedProcessName),
 			required,
 			issued: itemIssued,
 			pending: qty(required - itemIssued),

@@ -36,6 +36,8 @@ export async function postIssue({ site, companyId, erpUserId, body }) {
 		warehouseId: l.warehouseId,
 		batchNo: l.batchNo ?? null,
 		quantity: l.quantity,
+		processId: body.mode === 'DIRECT' ? (l.processId ?? null) : null,
+		machineId: body.mode === 'DIRECT' ? (l.machineId ?? null) : null,
 	}));
 
 	const result = await execute(site, POST_PROC, {
@@ -44,7 +46,7 @@ export async function postIssue({ site, companyId, erpUserId, body }) {
 		VoucherDate: [sql.Date, body.voucherDate],
 		Mode: [sql.VarChar(10), body.mode],
 		PicklistDetailID: [sql.BigInt, body.mode === 'ALLOCATED' ? body.picklistDetailId : null],
-		JobContentID: [sql.BigInt, body.mode === 'DIRECT' ? body.jobContentId : null],
+		JobContentID: [sql.BigInt, body.mode === 'DIRECT' && !body.noJob ? body.jobContentId : null],
 		DepartmentID: [sql.BigInt, body.mode === 'DIRECT' ? body.departmentId : null],
 		SlipNo: [sql.NVarChar(100), body.mode === 'DIRECT' ? (body.slipNo || null) : null],
 		FloorWarehouseID: [sql.BigInt, body.floorWarehouseId],

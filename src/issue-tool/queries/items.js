@@ -2,7 +2,7 @@
  * Item search and batch stock (brief 6.4).
  */
 
-import { query, sql, likePattern } from '../db.js';
+import { query, sql, likePattern, inList } from '../db.js';
 import { ITEM_COLUMNS, mapItem, qty, str, unitKey } from './shared.js';
 import { contentRequirements } from './job-contents.js';
 import { toIsoDate } from '../dates.js';
@@ -47,6 +47,7 @@ export async function searchItems({ site, companyId, search, jobContentId }) {
 			SELECT TOP (${MAX_ITEMS}) ${ITEM_COLUMNS}
 			FROM dbo.ItemMaster IM
 			LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
+			LEFT JOIN dbo.ItemSubGroupMaster ISG ON ISG.ItemSubGroupID = IM.ItemSubGroupID AND ISG.CompanyID = IM.CompanyID
 			WHERE IM.CompanyID = @companyId
 			  AND ISNULL(IM.IsDeletedTransaction, 0) = 0
 			  AND ${conditions.join(' AND ')}
@@ -55,7 +56,78 @@ export async function searchItems({ site, companyId, search, jobContentId }) {
 		found = rows.map(mapItem);
 	}
 
-	return { rows: mergeItems(requirement, found) };
+	const rows = mergeItems(requirement, found);
+	const extras = await itemExtras({ site, companyId, itemIds: rows.map((r) => r.itemId) });
+	return { rows: rows.map((r) => ({ ...r, ...(extras.get(r.itemId) ?? defaultExtras(r)) })) };
+}
+
+/**
+ * ItemMaster columns the ERP's issue screen shows whose names discovery has
+ * not confirmed: Supplier Reference and Unit Decimal Place. The first name of
+ * each list that exists in this database is used; none found means
+ * supplierReference null and decimal places from the unit (Kg 3, else 0, as
+ * the ERP screen shows them).
+ */
+const OPTIONAL_COLUMNS = {
+	supplierReference: ['SupplierReference', 'SupplierRef', 'SupplierReferenceNo', 'SupplierItemCode', 'ItemSupplierReference'],
+	unitDecimalPlace: ['UnitDecimalPlace', 'UnitDecimalPlaces', 'DecimalPlace', 'DecimalPlaces', 'StockUnitDecimalPlace'],
+};
+const optionalColumnsBySite = new Map();
+
+async function optionalColumns(site) {
+	if (!optionalColumnsBySite.has(site)) {
+		const all = Object.values(OPTIONAL_COLUMNS).flat();
+		const promise = query(site, `
+			SELECT name FROM sys.columns
+			WHERE object_id = OBJECT_ID('dbo.ItemMaster') AND name IN (${all.map((_, i) => `@c${i}`).join(', ')})
+		`, Object.fromEntries(all.map((c, i) => [`c${i}`, [sql.NVarChar(128), c]])))
+			.then((rows) => {
+				const present = new Set(rows.map((r) => String(r.name).toLowerCase()));
+				const pick = (names) => names.find((n) => present.has(n.toLowerCase())) ?? null;
+				return { supplierReference: pick(OPTIONAL_COLUMNS.supplierReference), unitDecimalPlace: pick(OPTIONAL_COLUMNS.unitDecimalPlace) };
+			})
+			.catch((err) => {
+				optionalColumnsBySite.delete(site);
+				throw err;
+			});
+		optionalColumnsBySite.set(site, promise);
+	}
+	return optionalColumnsBySite.get(site);
+}
+
+export function defaultExtras(item) {
+	const unit = String(item.stockUnit ?? '').trim().toUpperCase();
+	return { supplierReference: null, unitDecimalPlace: unit === 'KG' || unit === 'KGS' ? 3 : 0 };
+}
+
+async function itemExtras({ site, companyId, itemIds }) {
+	const out = new Map();
+	if (!itemIds.length) return out;
+	let cols;
+	try {
+		cols = await optionalColumns(site);
+	} catch (err) {
+		console.warn('[issue-tool] optional item columns unavailable:', err.message);
+		return out;
+	}
+	if (!cols.supplierReference && !cols.unitDecimalPlace) return out;
+	const list = inList('i', [...new Set(itemIds)]);
+	// Column names come from sys.columns and the fixed lists above, never from the client.
+	const rows = await query(site, `
+		SELECT IM.ItemID, IM.StockUnit,
+		       ${cols.supplierReference ? `IM.[${cols.supplierReference}]` : 'NULL'} AS SupplierReference,
+		       ${cols.unitDecimalPlace ? `IM.[${cols.unitDecimalPlace}]` : 'NULL'} AS UnitDecimalPlace
+		FROM dbo.ItemMaster IM
+		WHERE IM.CompanyID = @companyId AND IM.ItemID IN (${list.sql})
+	`, { companyId: [sql.Int, companyId], ...list.params });
+	for (const r of rows) {
+		const fallback = defaultExtras({ stockUnit: r.StockUnit });
+		out.set(r.ItemID, {
+			supplierReference: str(r.SupplierReference),
+			unitDecimalPlace: r.UnitDecimalPlace === null || r.UnitDecimalPlace === undefined ? fallback.unitDecimalPlace : Number(r.UnitDecimalPlace),
+		});
+	}
+	return out;
 }
 
 /** Pure: planned items first, then search hits not already listed. */
@@ -94,6 +166,7 @@ export async function itemBatches({ site, companyId, itemId }) {
 			SELECT ${ITEM_COLUMNS}
 			FROM dbo.ItemMaster IM
 			LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
+			LEFT JOIN dbo.ItemSubGroupMaster ISG ON ISG.ItemSubGroupID = IM.ItemSubGroupID AND ISG.CompanyID = IM.CompanyID
 			WHERE IM.ItemID = @itemId AND IM.CompanyID = @companyId
 		`, { itemId: [sql.BigInt, itemId], companyId: [sql.Int, companyId] }),
 		query(site, `

@@ -24,14 +24,15 @@ export const REFERENCED_COLUMNS = {
 	],
 	ItemMaster: [
 		'ItemID', 'CompanyID', 'ItemCode', 'ItemName', 'ItemGroupID', 'Quality', 'GSM', 'SizeW', 'SizeL',
-		'Manufecturer', 'CertificationType', 'ItemSubGroupID', 'StockUnit', 'PhysicalStock', 'AllocatedStock', 'IsDeletedTransaction',
+		'Manufecturer', 'CertificationType', 'ItemSubGroupID', 'IncomingStock', 'UnapprovedStock', 'StockUnit', 'PhysicalStock', 'AllocatedStock', 'IsDeletedTransaction',
 	],
 	ItemGroupMaster: ['ItemGroupID', 'CompanyID', 'ItemGroupName'],
 	ItemSubGroupMaster: ['ItemSubGroupID', 'CompanyID', 'ItemSubGroupName'],
-	MachineMaster: ['MachineId', 'CompanyID', 'MachineName'],
+	MachineMaster: ['MachineId', 'CompanyID', 'MachineName', 'DepartmentID', 'IsBlocked', 'IsDeletedTransaction'],
+	JobBookingJobCardProcess: ['JobBookingJobCardContentsID', 'ProcessID', 'MachineID', 'SequenceNo', 'CompanyID', 'IsDeletedTransaction'],
 	WarehouseMaster: ['WarehouseID', 'CompanyID', 'WarehouseName', 'BinName', 'IsFloorWarehouse', 'IsDeleted', 'IsDeletedTransaction'],
 	DepartmentMaster: ['DepartmentID', 'DepartmentName', 'CompanyID'],
-	ProcessMaster: ['ProcessID', 'CompanyID', 'DepartmentID'],
+	ProcessMaster: ['ProcessID', 'CompanyID', 'DepartmentID', 'ProcessName', 'IsBlocked', 'IsDeletedTransaction'],
 	JobBookingJobCard: [
 		'JobBookingID', 'CompanyID', 'JobBookingNo', 'JobName', 'ClientName', 'OrderBookingID', 'CategoryID', 'LedgerID',
 		'SalesEmployeeID', 'JobBookingDate', 'OrderQuantity', 'IsClose', 'IsCancel', 'IsDeletedTransaction',

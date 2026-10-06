@@ -15,6 +15,8 @@
  *   GET  /lookups/departments
  *   GET  /lookups/clients              clients with job cards (job search filter)
  *   GET  /lookups/sales-persons        sales executives (job search filter)
+ *   GET  /lookups/processes            a job content's processes (?jobContentId=), or all processes
+ *   GET  /lookups/machines             machines with their department
  *   POST /issues                       post an issue (dry run unless writes are on)
  *   GET  /issues                       recent issues with lines
  *   POST /issues/:id/delete            soft-delete an issue
@@ -29,12 +31,12 @@ import { ApiError, errorHandler } from './errors.js';
 import { writesEnabled, RECENT_ISSUES_DEFAULT_DAYS, RECENT_ISSUES_MAX_DAYS } from './config.js';
 import { todayInKolkata, addDays, daysBetween } from './dates.js';
 import {
-	parse, loginBody, picklistsQuery, picklistDetailIdParam, jobContentsQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
+	parse, loginBody, picklistsQuery, picklistDetailIdParam, jobContentsQuery, processesQuery, itemsQuery, itemIdParam, issueIdParam, issuesQuery, postIssueBody,
 } from './schemas.js';
 import { listPicklistLines } from './queries/picklists.js';
 import { searchJobContents } from './queries/job-contents.js';
 import { searchItems, itemBatches } from './queries/items.js';
-import { floorWarehouses, departments, clients, salesPersons } from './queries/lookups.js';
+import { floorWarehouses, departments, clients, salesPersons, processes, machines } from './queries/lookups.js';
 import { recentIssues } from './queries/issues.js';
 import { postIssue, deleteIssue, retryStockRefresh } from './services/issues.js';
 import { closePicklistLine } from './services/picklists.js';
@@ -102,6 +104,15 @@ router.get('/lookups/clients', async (req, res) => {
 
 router.get('/lookups/sales-persons', async (req, res) => {
 	res.json(await salesPersons(ctx(req)));
+});
+
+router.get('/lookups/processes', async (req, res) => {
+	const { jobContentId } = parse(processesQuery, req.query);
+	res.json(await processes({ ...ctx(req), jobContentId }));
+});
+
+router.get('/lookups/machines', async (req, res) => {
+	res.json(await machines(ctx(req)));
 });
 
 router.post('/issues', requireErpUser, async (req, res) => {

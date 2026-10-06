@@ -80,3 +80,59 @@ export async function salesPersons({ site }) {
 	`);
 	return { salesPersons: rows.map((r) => ({ ledgerId: r.LedgerID, ledgerName: str(r.LedgerName) })) };
 }
+
+/**
+ * Processes for the direct tab's Process Name list. With a job content: its
+ * planned processes in order, each with the machine planned for it. Without
+ * one ("Other"): every live process.
+ */
+export async function processes({ site, companyId, jobContentId }) {
+	if (jobContentId) {
+		const rows = await query(site, `
+			SELECT JP.ProcessID, PM.ProcessName, PM.DepartmentID, ISNULL(JP.MachineID, 0) AS MachineID, MIN(JP.SequenceNo) AS SequenceNo
+			FROM dbo.JobBookingJobCardProcess JP
+			JOIN dbo.ProcessMaster PM ON PM.ProcessID = JP.ProcessID AND PM.CompanyID = JP.CompanyID
+			WHERE JP.JobBookingJobCardContentsID = @jobContentId
+			  AND JP.CompanyID = @companyId
+			  AND ISNULL(JP.IsDeletedTransaction, 0) = 0
+			GROUP BY JP.ProcessID, PM.ProcessName, PM.DepartmentID, ISNULL(JP.MachineID, 0)
+			ORDER BY MIN(JP.SequenceNo), PM.ProcessName
+		`, { companyId: [sql.Int, companyId], jobContentId: [sql.BigInt, jobContentId] });
+		// One entry per process; the first planned machine is its default.
+		const seen = new Set();
+		return {
+			processes: rows.filter((r) => !seen.has(r.ProcessID) && seen.add(r.ProcessID)).map(mapProcess),
+		};
+	}
+	const rows = await query(site, `
+		SELECT ProcessID, ProcessName, DepartmentID, 0 AS MachineID
+		FROM dbo.ProcessMaster
+		WHERE CompanyID = @companyId
+		  AND ISNULL(IsDeletedTransaction, 0) = 0
+		  AND ISNULL(IsBlocked, 0) = 0
+		ORDER BY ProcessName
+	`, { companyId: [sql.Int, companyId] });
+	return { processes: rows.map(mapProcess) };
+}
+
+function mapProcess(r) {
+	return {
+		processId: r.ProcessID,
+		processName: str(r.ProcessName),
+		departmentId: r.DepartmentID || null,
+		plannedMachineId: r.MachineID || null,
+	};
+}
+
+/** Machines for the direct tab's Machine list, with their department so the list can follow it. */
+export async function machines({ site, companyId }) {
+	const rows = await query(site, `
+		SELECT MachineId, MachineName, DepartmentID
+		FROM dbo.MachineMaster
+		WHERE CompanyID = @companyId
+		  AND ISNULL(IsDeletedTransaction, 0) = 0
+		  AND ISNULL(IsBlocked, 0) = 0
+		ORDER BY MachineName
+	`, { companyId: [sql.Int, companyId] });
+	return { machines: rows.map((r) => ({ machineId: r.MachineId, machineName: str(r.MachineName), departmentId: r.DepartmentID || null })) };
+}

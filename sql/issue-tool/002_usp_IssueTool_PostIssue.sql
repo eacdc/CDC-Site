@@ -63,12 +63,12 @@ CREATE OR ALTER PROCEDURE dbo.usp_IssueTool_PostIssue
     @VoucherDate         DATE,
     @Mode                VARCHAR(10),            -- ALLOCATED | DIRECT
     @PicklistDetailID    BIGINT         = NULL,  -- ALLOCATED: ItemTransactionDetail.TransactionDetailID of the -17 line
-    @JobContentID        BIGINT         = NULL,  -- DIRECT: JobBookingJobCardContentsID
+    @JobContentID        BIGINT         = NULL,  -- DIRECT: JobBookingJobCardContentsID; NULL = "Other" (no job), as the ERP's Other option
     @DepartmentID        BIGINT         = NULL,  -- DIRECT: chosen department
     @SlipNo              NVARCHAR(100)  = NULL,  -- DIRECT: Slip No.; voucher number when blank
     @FloorWarehouseID    BIGINT,
     @Remark              NVARCHAR(500)  = NULL,
-    @LinesJson           NVARCHAR(MAX),          -- [{itemId, parentTransactionId, warehouseId, batchNo, quantity}]
+    @LinesJson           NVARCHAR(MAX),          -- [{itemId, parentTransactionId, warehouseId, batchNo, quantity, processId?, machineId?}]
     @RequestID           UNIQUEIDENTIFIER,
     @PayloadJson         NVARCHAR(MAX),
     @AcknowledgeWarnings BIT            = 0,
@@ -139,6 +139,8 @@ BEGIN
         WarehouseID         BIGINT         NULL,
         BatchNo             NVARCHAR(200)  NULL,   -- normalised: NULLIF(batchNo, '')
         Quantity            DECIMAL(18,4)  NULL,
+        ProcessID           BIGINT         NOT NULL DEFAULT 0,   -- DIRECT: the process chosen for the line, 0 when none
+        MachineID           BIGINT         NOT NULL DEFAULT 0,   -- DIRECT: the machine chosen for the line, 0 when none
         -- resolved from the database
         ItemGroupID         BIGINT         NULL,
         StockUnit           NVARCHAR(50)   NULL,
@@ -149,20 +151,24 @@ BEGIN
         BatchNoStored       NVARCHAR(200)  NULL    -- BatchNo exactly as on the receipt row
     );
 
-    INSERT INTO @Lines (LineNum, ItemID, ParentTransactionID, WarehouseID, BatchNo, Quantity)
+    INSERT INTO @Lines (LineNum, ItemID, ParentTransactionID, WarehouseID, BatchNo, Quantity, ProcessID, MachineID)
     SELECT CAST(j.[key] AS INT) + 1,
            v.itemId,
            ISNULL(v.parentTransactionId, 0),
            ISNULL(v.warehouseId, 0),
            NULLIF(v.batchNo, N''),
-           v.quantity
+           v.quantity,
+           ISNULL(v.processId, 0),
+           ISNULL(v.machineId, 0)
     FROM OPENJSON(@LinesJson) AS j
     CROSS APPLY OPENJSON(j.[value]) WITH (
         itemId              BIGINT         '$.itemId',
         parentTransactionId BIGINT         '$.parentTransactionId',
         warehouseId         BIGINT         '$.warehouseId',
         batchNo             NVARCHAR(200)  '$.batchNo',
-        quantity            DECIMAL(18,4)  '$.quantity'
+        quantity            DECIMAL(18,4)  '$.quantity',
+        processId           BIGINT         '$.processId',
+        machineId           BIGINT         '$.machineId'
     ) AS v;
 
     IF NOT EXISTS (SELECT 1 FROM @Lines)
@@ -282,20 +288,36 @@ BEGIN
     END
     ELSE
     BEGIN
-        IF @JobContentID IS NULL
-            THROW 51012, N'MISSING_FIELD: jobContentId is required for a direct issue.', 1;
         IF @DepartmentID IS NULL
             THROW 51012, N'MISSING_FIELD: departmentId is required for a direct issue.', 1;
 
-        SELECT @ContentsID   = JC.JobBookingJobCardContentsID,
-               @JobBookingID = JC.JobBookingID
-        FROM dbo.JobBookingJobCardContents JC
-        WHERE JC.JobBookingJobCardContentsID = @JobContentID
-          AND JC.CompanyID = @CompanyID
-          AND ISNULL(JC.IsDeletedTransaction, 0) = 0;
+        IF @JobContentID IS NULL
+        BEGIN
+            /* "Other" (the ERP's Other option): no job. Job and content are 0
+               on the header and the lines, as on the ERP's IS17302_26_27. */
+            SET @ContentsID = 0;
+            SET @JobBookingID = 0;
+        END
+        ELSE
+        BEGIN
+            SELECT @ContentsID   = JC.JobBookingJobCardContentsID,
+                   @JobBookingID = JC.JobBookingID
+            FROM dbo.JobBookingJobCardContents JC
+            WHERE JC.JobBookingJobCardContentsID = @JobContentID
+              AND JC.CompanyID = @CompanyID
+              AND ISNULL(JC.IsDeletedTransaction, 0) = 0;
 
-        IF @ContentsID IS NULL
-            THROW 51009, N'UNKNOWN_JOB_CONTENT: The job content does not exist or has been deleted.', 1;
+            IF @ContentsID IS NULL
+                THROW 51009, N'UNKNOWN_JOB_CONTENT: The job content does not exist or has been deleted.', 1;
+        END
+
+        -- Process and machine chosen on the lines must exist.
+        IF EXISTS (SELECT 1 FROM @Lines L WHERE L.ProcessID <> 0
+                   AND NOT EXISTS (SELECT 1 FROM dbo.ProcessMaster PM WHERE PM.ProcessID = L.ProcessID AND PM.CompanyID = @CompanyID))
+            THROW 51013, N'UNKNOWN_PROCESS: A line refers to a process that does not exist.', 1;
+        IF EXISTS (SELECT 1 FROM @Lines L WHERE L.MachineID <> 0
+                   AND NOT EXISTS (SELECT 1 FROM dbo.MachineMaster MM WHERE MM.MachineId = L.MachineID AND MM.CompanyID = @CompanyID))
+            THROW 51014, N'UNKNOWN_MACHINE: A line refers to a machine that does not exist.', 1;
 
         -- DepartmentMaster.DepartmentID is the ID the ERP stores (100 = PRINTING);
         -- its own key column is ID, which is not used.
@@ -334,7 +356,7 @@ BEGIN
                           N' is more than the picklist''s pending ', FORMAT(@PickPending, '0.###'), N' ', L.StockUnit, N'.')
             FROM @Lines L ORDER BY L.LineNum;
     END
-    ELSE
+    ELSE IF @ContentsID <> 0
     BEGIN
         /* ASSUMPTION: a substitute counts against the job's requirement for the
            same item group and stock unit (a substitute is the same spec from a
@@ -533,9 +555,9 @@ BEGIN
                 L.ParentTransactionID, L.BatchID, L.BatchNoStored, L.WarehouseID, @FloorWarehouseID,
                 @JobBookingID, @ContentsID,
                 CASE WHEN @Mode = 'ALLOCATED' THEN @PickTransactionID ELSE 0 END,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID     ELSE 0 END,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickDepartmentID  ELSE 0 END,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID     ELSE 0 END,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID     ELSE L.MachineID END,   -- direct: the line's chosen machine, 0 when none
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickDepartmentID  ELSE 0 END,             -- direct: 0, as on the ERP's IS17254
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID     ELSE L.ProcessID END,   -- direct: the line's chosen process, 0 when none
                 0,
                 @CompanyID, @FYear, @UserID, @UserID, @UserID, @Now, @Now,
                 0, 0
@@ -619,8 +641,8 @@ BEGIN
                 @RfsID, L.LineNum, L.ParentTransactionID, @NewID,
                 @HdrDepartmentID,                           -- the header's department, also on a direct issue
                 L.ItemID, L.ItemGroupID, @JobBookingID, @ContentsID,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID ELSE 0 END,
-                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID ELSE 0 END,
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickMachineID ELSE L.MachineID END,   -- the issue line's machine
+                CASE WHEN @Mode = 'ALLOCATED' THEN @PickProcessID ELSE L.ProcessID END,   -- the issue line's process
                 0, 0, 0, L.Quantity, 0,
                 L.StockUnit, L.BatchNoStored, L.BatchID, 0, L.WarehouseID, @FloorWarehouseID,
                 0, 0, NULL, 0, NULL,

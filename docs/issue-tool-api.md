@@ -74,6 +74,7 @@ Some codes add fields (`details`, `warnings`).
 | 400 | `ITEM_NOT_ON_PICKLIST` | An allocated issue tried to issue an item other than the picklist line's. Use a direct issue for a substitute. |
 | 400 | `UNKNOWN_JOB_CONTENT` | Job content missing or deleted. |
 | 400 | `UNKNOWN_DEPARTMENT` | Department does not exist. |
+| 400 | `UNKNOWN_PROCESS` / `UNKNOWN_MACHINE` | A direct issue line names a process or machine that does not exist. |
 | 400 | `NOT_AN_ISSUE` | Delete: the voucher is not an issue (`-19`). |
 | 400 | `MISSING_FIELD` / `INVALID_MODE` | Defensive checks inside the procedure; the validator normally catches these first. |
 | 401 | `NOT_SIGNED_IN` / `SESSION_EXPIRED` | See section 1. |
@@ -289,6 +290,8 @@ With `jobContentId`, that content's planned items come first (`planned: true`, w
 
 Without `jobContentId`, rows have `planned: false` and no `pendingForJob`.
 
+Item rows (here and everywhere an `item` appears) also carry `itemSubGroupName`, `freeStock` (physical − allocated), `incomingStock` and `unapprovedStock`. Rows of this endpoint add `supplierReference` and `unitDecimalPlace`, read from ItemMaster columns found at run time (Supplier Reference / Unit Decimal Place under the names listed in `queries/items.js`); when the database has no such column, `supplierReference` is `null` and `unitDecimalPlace` is 3 for Kg, else 0. Planned rows add `processId` / `processName`: the process the item is planned for.
+
 ### 4.5 `GET /items/:itemId/batches`
 
 Batches with stock above zero, oldest GRN first. The batch total equals `ItemMaster.PhysicalStock` when stock is consistent; both are returned.
@@ -335,6 +338,15 @@ Each warehouse + bin pair is one `warehouseId`; choose a warehouse, then a bin.
 
 ```json
 { "departments": [ { "departmentId": 100, "departmentName": "PRINTING" } ] }
+```
+
+### 4.7b `GET /lookups/processes?jobContentId=` and `GET /lookups/machines`
+
+The direct tab's Process Name and Machine lists. With `jobContentId`: that content's processes in job order, each with the machine planned for it; without: every live process.
+
+```json
+{ "processes": [ { "processId": 10337, "processName": "Printing Front Side", "departmentId": 100, "plannedMachineId": 14 } ] }
+{ "machines": [ { "machineId": 14, "machineName": "CD102 - 6L", "departmentId": 100 } ] }
 ```
 
 ### 4.7a `GET /lookups/clients` and `GET /lookups/sales-persons`
@@ -428,7 +440,8 @@ Request:
 | `requestId` | UUID string | yes | Generated when the form opens. **Reuse it for every retry of the same form**, including the resend after acknowledging warnings. The server makes one voucher per `requestId`. |
 | `voucherDate` | `YYYY-MM-DD` | yes | Not later than today (IST). |
 | `picklistDetailId` | integer | ALLOCATED | From `GET /picklists`. |
-| `jobContentId` | integer | DIRECT | From `GET /job-contents`. |
+| `jobContentId` | integer | DIRECT (to a job) | From `GET /job-contents`. |
+| `noJob` | boolean | no | DIRECT only: `true` issues to no job (the ERP's **Other** instead of **Job Consumables**). Then `jobContentId` must be absent; job and content are written as 0, as on the ERP's IS17302_26_27, and no over-issue check runs. |
 | `departmentId` | integer | DIRECT | |
 | `slipNo` | string ≤ 100 | no | DIRECT only. Left empty, the server stores the voucher number in it. Ignored for ALLOCATED. |
 | `floorWarehouseId` | integer | yes | The floor warehouse + bin, from `GET /lookups/floor-warehouses`. Same on every line. |
@@ -439,6 +452,7 @@ Request:
 | `lines[].warehouseId` | integer ≥ 0 | yes | From `batchKey`. |
 | `lines[].batchNo` | string \| null | yes | From `batchKey`. |
 | `lines[].quantity` | number > 0 | yes | In the item's stock unit. A JSON number, not a string. |
+| `lines[].processId`, `lines[].machineId` | integer \| null | no | DIRECT only: the Process Name and Machine chosen when the line was added (`GET /lookups/processes`, `/lookups/machines`). Written to the issue line's and floor-receipt line's ProcessID / MachineID (0 when absent). Ignored on an allocated issue, which takes the picklist line's. |
 | `dryRun` | boolean | no | Default `false`. |
 | `acknowledgeWarnings` | boolean | no | Default `false`. Send `true` only after the user ticked the acknowledgement. |
 

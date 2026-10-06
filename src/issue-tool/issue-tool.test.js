@@ -88,6 +88,22 @@ test('a direct issue needs a job content and a department', () => {
 	assert.ok(parse(postIssueBody, { ...direct, jobContentId: 23524, departmentId: 100 }));
 });
 
+test('a direct issue to "Other" has no job; lines may carry a process and machine', () => {
+	const direct = { ...allocated, mode: 'DIRECT', picklistDetailId: undefined, departmentId: 103 };
+	const other = parse(postIssueBody, { ...direct, noJob: true });
+	assert.equal(other.noJob, true);
+	assert.equal(other.jobContentId, undefined);
+	assert.throws(() => parse(postIssueBody, { ...direct, noJob: true, jobContentId: 23524 }), /no job content/);
+	assert.throws(() => parse(postIssueBody, { ...direct, noJob: true, departmentId: undefined }), /departmentId/);
+
+	const withProcess = parse(postIssueBody, {
+		...direct, jobContentId: 23524, lines: [{ ...allocated.lines[0], processId: 10337, machineId: 15 }],
+	});
+	assert.equal(withProcess.lines[0].processId, 10337);
+	assert.equal(withProcess.lines[0].machineId, 15);
+	assert.throws(() => parse(postIssueBody, { ...direct, jobContentId: 23524, lines: [{ ...allocated.lines[0], machineId: -1 }] }), ApiError);
+});
+
 test('query strings coerce and default', () => {
 	assert.deepEqual(parse(picklistsQuery, { page: '2', showFullyIssued: 'true' }),
 		{ search: '', page: 2, pageSize: 50, showFullyIssued: true, showClosed: false });

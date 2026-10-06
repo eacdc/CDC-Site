@@ -56,6 +56,7 @@ export async function listPicklistLines({ site, companyId, search, page, pageSiz
 		FROM Lines L
 		JOIN dbo.ItemMaster IM ON IM.ItemID = L.ItemID AND IM.CompanyID = @companyId
 		LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
+		LEFT JOIN dbo.ItemSubGroupMaster ISG ON ISG.ItemSubGroupID = IM.ItemSubGroupID AND ISG.CompanyID = IM.CompanyID
 		LEFT JOIN dbo.JobBookingJobCardContents JC
 		       ON JC.JobBookingJobCardContentsID = L.JobBookingJobCardContentsID AND JC.CompanyID = @companyId
 		LEFT JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = L.JobBookingID AND JB.CompanyID = @companyId
