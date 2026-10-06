@@ -42,7 +42,7 @@ export function corsOrigins() {
 }
 
 /** Recent-issues window when the client gives no dates, and the widest allowed. */
-export const RECENT_ISSUES_DEFAULT_DAYS = 3;
+export const RECENT_ISSUES_DEFAULT_DAYS = 7;
 export const RECENT_ISSUES_MAX_DAYS = 62;
 
 export const POST_PROC = 'dbo.usp_IssueTool_PostIssue';

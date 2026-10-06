@@ -10,14 +10,18 @@ import { query, sql, inList } from '../db.js';
 import { mapItem, qty, str } from './shared.js';
 import { toIsoDate, toLocalDateTime } from '../dates.js';
 
+/** Most issue vouchers one History request returns; `truncated` says when there were more. */
+export const MAX_HISTORY_ISSUES = 3000;
+
 export async function recentIssues({ site, companyId, from, to }) {
 	const headers = await query(site, `
-		SELECT TOP (500)
+		SELECT TOP (${MAX_HISTORY_ISSUES + 1})
 		       M.TransactionID, M.VoucherNo, M.VoucherDate, M.DeliveryNoteNo, M.TotalQuantity,
 		       M.Narration,                       -- ASSUMPTION (brief 7): remark is stored in Narration
 		       M.DepartmentID, DM.DepartmentName,
 		       M.JobBookingJobCardContentsID, JC.JobCardContentNo, JC.PlanContName,
 		       JB.JobBookingNo, JB.JobName,
+		       ISNULL(NULLIF(JB.ClientName, ''), LM.LedgerName) AS ClientName,
 		       M.CreatedBy, UM.UserName AS CreatedByName, M.CreatedDate,
 		       -- Same rule as usp_IssueTool_DeleteIssue: the issue's own floor
 		       -- receipt (RFS, VoucherID -53) does not count; anything that
@@ -44,6 +48,8 @@ export async function recentIssues({ site, companyId, from, to }) {
 		LEFT JOIN dbo.JobBookingJobCardContents JC
 		       ON JC.JobBookingJobCardContentsID = M.JobBookingJobCardContentsID AND JC.CompanyID = M.CompanyID
 		LEFT JOIN dbo.JobBookingJobCard JB ON JB.JobBookingID = JC.JobBookingID AND JB.CompanyID = JC.CompanyID
+		LEFT JOIN dbo.JobOrderBooking JOB ON JOB.OrderBookingID = JB.OrderBookingID
+		LEFT JOIN dbo.LedgerMaster LM ON LM.LedgerID = JOB.LedgerID
 		LEFT JOIN dbo.DepartmentMaster DM ON DM.DepartmentID = M.DepartmentID AND DM.CompanyID = M.CompanyID
 		LEFT JOIN dbo.UserMaster UM ON UM.UserID = M.CreatedBy
 		WHERE M.VoucherID = -19
@@ -58,20 +64,50 @@ export async function recentIssues({ site, companyId, from, to }) {
 		to: [sql.Date, to],
 	});
 
-	if (!headers.length) return { from, to, rows: [] };
+	if (!headers.length) return { from, to, rows: [], truncated: false };
+	const truncated = headers.length > MAX_HISTORY_ISSUES;
+	if (truncated) headers.length = MAX_HISTORY_ISSUES;
 
-	const list = inList('t', headers.map((h) => h.TransactionID));
-	const lines = await query(site, `
+	// The IN list goes in batches: SQL Server takes at most 2,100 parameters.
+	const lines = [];
+	for (let i = 0; i < headers.length; i += 1000) {
+		lines.push(...await issueLines(site, headers.slice(i, i + 1000).map((h) => h.TransactionID)));
+	}
+
+	return { from, to, rows: assembleIssues(headers, lines), truncated };
+}
+
+/**
+ * Lines of the given vouchers, with the issue register's columns: item group
+ * and sub group, machine, and the line's own job content and client (a line
+ * can belong to a different content than its header).
+ */
+async function issueLines(site, transactionIds) {
+	const list = inList('t', transactionIds);
+	return query(site, `
 		SELECT D.TransactionID, D.TransactionDetailID, D.TransID, D.IssueQuantity, D.BatchNo,
 		       D.PicklistTransactionID, PL.VoucherNo AS PicklistNo,
 		       D.WarehouseID, W.WarehouseName, W.BinName,
 		       D.FloorWarehouseID, FW.WarehouseName AS FloorWarehouseName, FW.BinName AS FloorBinName,
 		       IM.ItemID, IM.ItemCode, IM.ItemName, IM.ItemGroupID, IGM.ItemGroupName,
-		       IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer AS Manufacturer,
-		       D.StockUnit, IM.PhysicalStock
+		       IM.Quality, IM.GSM, IM.SizeW, IM.SizeL, IM.Manufecturer AS Manufacturer, IM.CertificationType,
+		       D.StockUnit, IM.PhysicalStock, IM.AllocatedStock,
+		       SG.ItemSubGroupName,
+		       D.MachineID, MM.MachineName,
+		       D.JobBookingJobCardContentsID AS LineContentID, LJC.JobCardContentNo AS LineContentNo,
+		       LJC.PlanContName AS LineContentName, LJB.JobName AS LineJobName,
+		       ISNULL(NULLIF(LJB.ClientName, ''), LLM.LedgerName) AS LineClientName
 		FROM dbo.ItemTransactionDetail D
 		JOIN dbo.ItemMaster IM ON IM.ItemID = D.ItemID AND IM.CompanyID = D.CompanyID
 		LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
+		LEFT JOIN dbo.ItemSubGroupMaster SG ON SG.ItemSubGroupID = IM.ItemSubGroupID AND SG.CompanyID = IM.CompanyID
+		LEFT JOIN dbo.MachineMaster MM ON MM.MachineId = D.MachineID AND MM.CompanyID = D.CompanyID AND ISNULL(D.MachineID, 0) <> 0
+		LEFT JOIN dbo.JobBookingJobCardContents LJC
+		       ON LJC.JobBookingJobCardContentsID = D.JobBookingJobCardContentsID AND LJC.CompanyID = D.CompanyID
+		      AND ISNULL(D.JobBookingJobCardContentsID, 0) <> 0
+		LEFT JOIN dbo.JobBookingJobCard LJB ON LJB.JobBookingID = LJC.JobBookingID AND LJB.CompanyID = LJC.CompanyID
+		LEFT JOIN dbo.JobOrderBooking LJOB ON LJOB.OrderBookingID = LJB.OrderBookingID
+		LEFT JOIN dbo.LedgerMaster LLM ON LLM.LedgerID = LJOB.LedgerID
 		LEFT JOIN dbo.ItemTransactionMain PL ON PL.TransactionID = D.PicklistTransactionID AND ISNULL(D.PicklistTransactionID, 0) <> 0
 		LEFT JOIN dbo.WarehouseMaster W ON W.WarehouseID = D.WarehouseID AND W.CompanyID = D.CompanyID
 		LEFT JOIN dbo.WarehouseMaster FW ON FW.WarehouseID = D.FloorWarehouseID AND FW.CompanyID = D.CompanyID
@@ -80,8 +116,6 @@ export async function recentIssues({ site, companyId, from, to }) {
 		  AND ISNULL(D.IsCancelled, 0) = 0
 		ORDER BY D.TransactionID, D.TransID
 	`, list.params);
-
-	return { from, to, rows: assembleIssues(headers, lines) };
 }
 
 /** Pure: headers plus their lines, in the shape docs/issue-tool-api.md gives. */
@@ -103,6 +137,14 @@ export function assembleIssues(headers, lines) {
 			floorBinName: str(line.FloorBinName),
 			picklistTransactionId: line.PicklistTransactionID || null,
 			picklistNo: str(line.PicklistNo),
+			itemSubGroupName: str(line.ItemSubGroupName),
+			machineId: line.MachineID || null,
+			machineName: str(line.MachineName),
+			jobContentId: line.LineContentID || null,
+			jobContentNo: str(line.LineContentNo),
+			jobName: str(line.LineJobName),
+			contentName: str(line.LineContentName),
+			clientName: str(line.LineClientName),
 		});
 	}
 
@@ -118,6 +160,7 @@ export function assembleIssues(headers, lines) {
 			jobContentNo: str(h.JobCardContentNo),
 			jobName: str(h.JobName),
 			contentName: str(h.PlanContName),
+			clientName: str(h.ClientName),
 			departmentId: h.DepartmentID ?? null,
 			departmentName: str(h.DepartmentName),
 			slipNo: str(h.DeliveryNoteNo),

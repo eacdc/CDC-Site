@@ -244,7 +244,11 @@ test('history marks mode from the lines and blocks delete when consumed', () => 
 		],
 		[
 			{ TransactionID: 1, TransID: 1, PicklistTransactionID: 64534, IssueQuantity: 1500, ItemID: 9409, StockUnit: 'Sheet' },
-			{ TransactionID: 2, TransID: 1, PicklistTransactionID: 0, IssueQuantity: 152, ItemID: 9681, StockUnit: 'Kg' },
+			{
+				TransactionID: 2, TransID: 1, PicklistTransactionID: 0, IssueQuantity: 152, ItemID: 9681, StockUnit: 'Kg',
+				ItemSubGroupName: 'Reel', MachineID: 15, MachineName: 'CD102 - 6L', LineContentID: 23524, LineContentNo: 'J06482_26_27[1_1]',
+				LineJobName: 'BETA TEA', LineContentName: 'Outer', LineClientName: 'BETA TEA CO', GSM: 120, SizeW: 1000, SizeL: 0,
+			},
 		],
 	);
 	assert.equal(rows[0].mode, 'ALLOCATED');
@@ -254,6 +258,12 @@ test('history marks mode from the lines and blocks delete when consumed', () => 
 	assert.equal(rows[1].mode, 'DIRECT');
 	assert.equal(rows[1].canDelete, false);
 	assert.equal(rows[1].lines[0].picklistTransactionId, null);
+	assert.equal(rows[1].lines[0].itemSubGroupName, 'Reel');
+	assert.equal(rows[1].lines[0].machineName, 'CD102 - 6L');
+	assert.equal(rows[1].lines[0].jobContentNo, 'J06482_26_27[1_1]');
+	assert.equal(rows[1].lines[0].clientName, 'BETA TEA CO');
+	assert.equal(rows[1].lines[0].item.sizeW, 1000);
+	assert.equal(rows[0].lines[0].machineName, null);
 });
 
 // ── helpers ─────────────────────────────────────────────────────────────────

@@ -148,7 +148,7 @@ Open picklist lines (against-picklist tab), newest picklist first. Server-side s
 |---|---|---|
 | `search` | `""` | Matches picklist no., job card no., content no., job name, content name, client, item code, item name, division. |
 | `page` | `1` | 1-based. |
-| `pageSize` | `50` | 1–500. |
+| `pageSize` | `50` | 1–5000. The frontend asks for up to 5000 at once and filters, totals and pages them in the browser. |
 | `showFullyIssued` | `false` | `true` / `false`. When false only lines with `pending > 0`. |
 | `showClosed` | `false` | `true` lists closed lines (`IsCompleted = 1`, the ERP's "Closed Allocation Picklist") instead of open ones, whatever their pending. |
 
@@ -324,7 +324,7 @@ Each warehouse + bin pair is one `warehouseId`; choose a warehouse, then a bin.
 
 ### 4.8 `GET /issues?from=&to=`
 
-Recent live issue vouchers (`-19`) with lines, whether created by this tool or by the ERP. Defaults: `to` = today (IST), `from` = `to` − 3 days. At most 62 days; at most 500 vouchers, newest first.
+Recent live issue vouchers (`-19`) with lines, whether created by this tool or by the ERP. Defaults: `to` = today (IST), `from` = `to` − 7 days. At most 62 days; at most 3000 vouchers, newest first (`truncated: true` when there were more).
 
 ```json
 {
@@ -340,6 +340,7 @@ Recent live issue vouchers (`-19`) with lines, whether created by this tool or b
       "jobContentNo": "J06601_26_27[1_1]",
       "jobName": "ACME BISCUIT CARTON 200G",
       "contentName": "Carton",
+      "clientName": "ACME FOODS PVT LTD",
       "departmentId": 100,
       "departmentName": "PRINTING",
       "slipNo": null,
@@ -364,15 +365,24 @@ Recent live issue vouchers (`-19`) with lines, whether created by this tool or b
           "floorWarehouseName": "Floor-Panchla",
           "floorBinName": "Paper",
           "picklistTransactionId": 64534,
-          "picklistNo": "IPIC03454_26_27"
+          "picklistNo": "IPIC03454_26_27",
+          "itemSubGroupName": null,
+          "machineId": 14,
+          "machineName": "CD102 - 6L",
+          "jobContentId": 24188,
+          "jobContentNo": "J06601_26_27[1_1]",
+          "jobName": "ACME BISCUIT CARTON 200G",
+          "contentName": "Carton",
+          "clientName": "ACME FOODS PVT LTD"
         }
       ]
     }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
-`mode` is `ALLOCATED` when any line carries a picklist. `canDelete` is `false` once material from the issue has been consumed or returned (`deleteBlockedReason` says why). Every issue has a floor receipt (RFS) in the consumption tables; that alone does not block.
+`mode` is `ALLOCATED` when any line carries a picklist. Each line also carries its own job content, job, client and machine, as the ERP's issue register shows them (a line's content can differ from its header's). `canDelete` is `false` once material from the issue has been consumed or returned (`deleteBlockedReason` says why). Every issue has a floor receipt (RFS) in the consumption tables; that alone does not block.
 
 ---
 

@@ -24,9 +24,11 @@ export const REFERENCED_COLUMNS = {
 	],
 	ItemMaster: [
 		'ItemID', 'CompanyID', 'ItemCode', 'ItemName', 'ItemGroupID', 'Quality', 'GSM', 'SizeW', 'SizeL',
-		'Manufecturer', 'CertificationType', 'StockUnit', 'PhysicalStock', 'AllocatedStock', 'IsDeletedTransaction',
+		'Manufecturer', 'CertificationType', 'ItemSubGroupID', 'StockUnit', 'PhysicalStock', 'AllocatedStock', 'IsDeletedTransaction',
 	],
 	ItemGroupMaster: ['ItemGroupID', 'CompanyID', 'ItemGroupName'],
+	ItemSubGroupMaster: ['ItemSubGroupID', 'CompanyID', 'ItemSubGroupName'],
+	MachineMaster: ['MachineId', 'CompanyID', 'MachineName'],
 	WarehouseMaster: ['WarehouseID', 'CompanyID', 'WarehouseName', 'BinName', 'IsFloorWarehouse', 'IsDeleted', 'IsDeletedTransaction'],
 	DepartmentMaster: ['DepartmentID', 'DepartmentName', 'CompanyID'],
 	ProcessMaster: ['ProcessID', 'CompanyID', 'DepartmentID'],
