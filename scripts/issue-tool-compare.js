@@ -69,21 +69,38 @@ async function loadFloorReceipt(pool, issueTransactionId) {
 	return { header, lines };
 }
 
-/** A TransactionID as given, or the -19 voucher with that number (the live one if the ERP duplicated it). */
-async function resolveVoucher(pool, value) {
+/**
+ * A TransactionID as given, or the -19 voucher with that number. The ERP
+ * sometimes saves two vouchers with one number; then the first argument takes
+ * the one this tool saved (IssueTool_PostLog) and the second an ERP one, live
+ * before deleted.
+ */
+async function resolveVoucher(pool, value, want) {
 	if (/^\d+$/.test(value)) return Number(value);
 	const rows = (await pool.request().input('no', sql.NVarChar(50), value)
-		.query(`SELECT TransactionID, ISNULL(IsDeletedTransaction, 0) AS IsDeleted FROM dbo.ItemTransactionMain
-		        WHERE VoucherNo = @no AND VoucherID = -19 ORDER BY ISNULL(IsDeletedTransaction, 0), TransactionID DESC`)).recordset;
+		.query(`SELECT M.TransactionID, ISNULL(M.IsDeletedTransaction, 0) AS IsDeleted, M.CreatedDate,
+		               CASE WHEN EXISTS (SELECT 1 FROM dbo.IssueTool_PostLog L WHERE L.TransactionID = M.TransactionID AND L.IsDryRun = 0)
+		                    THEN 1 ELSE 0 END AS ByTool
+		        FROM dbo.ItemTransactionMain M
+		        WHERE M.VoucherNo = @no AND M.VoucherID = -19
+		        ORDER BY ISNULL(M.IsDeletedTransaction, 0), M.TransactionID`)).recordset;
 	if (!rows.length) throw new Error(`No issue voucher ${value}.`);
-	if (rows.length > 1) console.log(`Note: ${rows.length} vouchers are numbered ${value}; using TransactionID ${rows[0].TransactionID}${rows[0].IsDeleted ? ' (deleted)' : ''}.`);
-	return Number(rows[0].TransactionID);
+	const pick = rows.find((r) => (want === 'tool' ? r.ByTool === 1 : r.ByTool === 0)) ?? rows[0];
+	if (rows.length > 1) {
+		console.log(`Note: ${rows.length} vouchers are numbered ${value}:`);
+		for (const r of rows) {
+			console.log(`  TransactionID ${r.TransactionID}, ${r.ByTool ? 'this tool' : 'ERP'}, created ${new Date(r.CreatedDate).toISOString().slice(0, 19)}${r.IsDeleted ? ', deleted' : ''}`);
+		}
+		console.log(`  using ${pick.TransactionID}.`);
+	}
+	if (want === 'tool' && pick.ByTool !== 1) console.log(`Warning: ${value} (TransactionID ${pick.TransactionID}) was not saved by this tool.`);
+	return Number(pick.TransactionID);
 }
 
 async function main() {
 	const pool = await getPool(SITE);
-	ours = await resolveVoucher(pool, positional[0]);
-	theirs = await resolveVoucher(pool, positional[1]);
+	ours = await resolveVoucher(pool, positional[0], 'tool');
+	theirs = await resolveVoucher(pool, positional[1], 'erp');
 	const [a, b] = await Promise.all([loadVoucher(pool, ours), loadVoucher(pool, theirs)]);
 	const ignore = process.argv.includes('--ignore-deletion') ? DELETION_COLUMNS : [];
 	const result = compareVouchers(a, b, { ignore });
