@@ -8,7 +8,9 @@ import { contentRequirements } from './job-contents.js';
 import { toIsoDate } from '../dates.js';
 import { ApiError } from '../errors.js';
 
-const MAX_ITEMS = 50;
+const MAX_ITEMS = 200;
+/** Most items the in-stock list returns. */
+const MAX_IN_STOCK = 5000;
 const MAX_TOKENS = 5;
 
 /**
@@ -17,8 +19,11 @@ const MAX_TOKENS = 5;
  * come first (marked planned: true), each with the job's pending figures, and
  * every result carries pendingForJob: the pending requirement of its item
  * group + stock unit on that content, which is what a substitute draws from.
+ *
+ * inStock lists every item with physical stock (the words, if any, still
+ * narrow it), as the ERP's "All" does, so the client can filter it freely.
  */
-export async function searchItems({ site, companyId, search, jobContentId }) {
+export async function searchItems({ site, companyId, search, jobContentId, inStock = false }) {
 	const tokens = search.split(/\s+/).filter(Boolean).slice(0, MAX_TOKENS);
 
 	let requirement = null;
@@ -28,7 +33,9 @@ export async function searchItems({ site, companyId, search, jobContentId }) {
 	}
 
 	let found = [];
-	if (tokens.length) {
+	let truncated = false;
+	if (tokens.length || inStock) {
+		const limit = inStock ? MAX_IN_STOCK : MAX_ITEMS;
 		const params = { companyId: [sql.Int, companyId] };
 		const conditions = tokens.map((token, i) => {
 			params[`t${i}`] = [sql.NVarChar(210), likePattern(token)];
@@ -43,8 +50,9 @@ export async function searchItems({ site, companyId, search, jobContentId }) {
 				OR CONVERT(NVARCHAR(50), IM.SizeL) LIKE @t${i} ESCAPE '\\'
 			)`;
 		});
+		if (inStock) conditions.push('ISNULL(IM.PhysicalStock, 0) > 0');
 		const rows = await query(site, `
-			SELECT TOP (${MAX_ITEMS}) ${ITEM_COLUMNS}
+			SELECT TOP (${limit + 1}) ${ITEM_COLUMNS}
 			FROM dbo.ItemMaster IM
 			LEFT JOIN dbo.ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = IM.CompanyID
 			LEFT JOIN dbo.ItemSubGroupMaster ISG ON ISG.ItemSubGroupID = IM.ItemSubGroupID AND ISG.CompanyID = IM.CompanyID
@@ -53,12 +61,13 @@ export async function searchItems({ site, companyId, search, jobContentId }) {
 			  AND ${conditions.join(' AND ')}
 			ORDER BY CASE WHEN ISNULL(IM.PhysicalStock, 0) > 0 THEN 0 ELSE 1 END, IM.ItemCode
 		`, params);
-		found = rows.map(mapItem);
+		truncated = rows.length > limit;
+		found = rows.slice(0, limit).map(mapItem);
 	}
 
 	const rows = mergeItems(requirement, found);
 	const extras = await itemExtras({ site, companyId, itemIds: rows.map((r) => r.itemId) });
-	return { rows: rows.map((r) => ({ ...r, ...(extras.get(r.itemId) ?? defaultExtras(r)) })) };
+	return { rows: rows.map((r) => ({ ...r, ...(extras.get(r.itemId) ?? defaultExtras(r)) })), truncated };
 }
 
 /**
@@ -111,7 +120,17 @@ async function itemExtras({ site, companyId, itemIds }) {
 		return out;
 	}
 	if (!cols.supplierReference && !cols.unitDecimalPlace) return out;
-	const list = inList('i', [...new Set(itemIds)]);
+	const ids = [...new Set(itemIds)];
+	// SQL Server takes at most 2,100 parameters: look the items up 1,000 at a time.
+	for (let i = 0; i < ids.length; i += 1000) {
+		for (const [id, extra] of await itemExtrasBatch(site, companyId, cols, ids.slice(i, i + 1000))) out.set(id, extra);
+	}
+	return out;
+}
+
+async function itemExtrasBatch(site, companyId, cols, ids) {
+	const out = new Map();
+	const list = inList('i', ids);
 	// Column names come from sys.columns and the fixed lists above, never from the client.
 	const rows = await query(site, `
 		SELECT IM.ItemID, IM.StockUnit,

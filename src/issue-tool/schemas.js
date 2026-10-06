@@ -61,9 +61,11 @@ export const itemsQuery = z
 	.object({
 		search,
 		jobContentId: id.optional(),
+		/** Every item with physical stock (up to 5000), as the ERP's "All": the client filters them. */
+		inStock: flag,
 	})
-	.refine((q) => q.search.length >= 2 || q.jobContentId, {
-		message: 'Type at least 2 characters, or pass jobContentId.',
+	.refine((q) => q.search.length >= 2 || q.jobContentId || q.inStock, {
+		message: 'Type at least 2 characters, or pass jobContentId or inStock.',
 		path: ['search'],
 	});
 

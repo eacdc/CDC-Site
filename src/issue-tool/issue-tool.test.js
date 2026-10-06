@@ -112,7 +112,8 @@ test('query strings coerce and default', () => {
 	assert.equal(parse(picklistDetailIdParam, { picklistDetailId: '64535' }).picklistDetailId, 64535);
 	assert.throws(() => parse(picklistDetailIdParam, { picklistDetailId: 'x' }), ApiError);
 	assert.throws(() => parse(itemsQuery, { search: 'a' }), ApiError);
-	assert.deepEqual(parse(itemsQuery, { jobContentId: '23524' }), { search: '', jobContentId: 23524 });
+	assert.deepEqual(parse(itemsQuery, { jobContentId: '23524' }), { search: '', jobContentId: 23524, inStock: false });
+	assert.equal(parse(itemsQuery, { inStock: 'true' }).inStock, true);
 });
 
 test('job search takes the Job Card Generator filters and needs at least one', () => {

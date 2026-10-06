@@ -265,7 +265,9 @@ At least one of `search`, `clientName`, `salesPersonId`, `fromDate`, `toDate` is
 - `plannedItems[].issued` counts only that exact item; `requirementGroups[].issued` also counts substitutes of the same group and unit. Over-issue warnings use the group figure.
 - `suggestedDepartmentId` may be `null`; the user can always choose another department.
 
-### 4.4 `GET /items?search=&jobContentId=`
+### 4.4 `GET /items?search=&jobContentId=&inStock=`
+
+`inStock=true` lists every item with physical stock (up to 5000, `truncated: true` beyond), narrowed by `search` if given, with the content's planned items first: the direct tab's "All". A plain search returns up to 200 items.
 
 Item search. Needs `search` of at least 2 characters, or `jobContentId`, or both. Every word in `search` must match one of: code, name, group, quality, manufacturer, GSM, width, length. Up to 50 hits.
 
