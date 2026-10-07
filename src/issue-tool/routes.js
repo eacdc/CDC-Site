@@ -38,6 +38,8 @@ import { searchJobContents } from './queries/job-contents.js';
 import { searchItems, itemBatches } from './queries/items.js';
 import { floorWarehouses, departments, clients, salesPersons, processes, machines } from './queries/lookups.js';
 import { recentIssues } from './queries/issues.js';
+import { issueSlipData } from './queries/slip.js';
+import { generateIssueSlipPdf } from './slip-pdf.js';
 import { postIssue, deleteIssue, retryStockRefresh } from './services/issues.js';
 import { closePicklistLine } from './services/picklists.js';
 
@@ -129,6 +131,16 @@ router.get('/issues', async (req, res) => {
 		throw new ApiError(400, 'VALIDATION_FAILED', `Pick a range of at most ${RECENT_ISSUES_MAX_DAYS} days.`);
 	}
 	res.json(await recentIssues({ ...ctx(req), from, to }));
+});
+
+router.get('/issues/:id/slip', async (req, res) => {
+	const { id } = parse(issueIdParam, req.params);
+	const slip = await issueSlipData({ ...ctx(req), transactionId: id });
+	const pdf = await generateIssueSlipPdf(slip);
+	const name = (slip.voucherNo || `issue-${id}`).replace(/[^A-Za-z0-9_.-]/g, '_');
+	res.setHeader('Content-Type', 'application/pdf');
+	res.setHeader('Content-Disposition', `attachment; filename="${name}.pdf"`);
+	res.send(Buffer.from(pdf));
 });
 
 router.post('/issues/:id/delete', requireErpUser, async (req, res) => {

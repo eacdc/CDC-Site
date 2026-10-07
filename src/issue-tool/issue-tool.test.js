@@ -16,6 +16,7 @@ import { pickUser, verifyToken } from './auth.js';
 import jwt from 'jsonwebtoken';
 import { loginBody } from './schemas.js';
 import { compareVouchers, checkExpectations, normalise } from './compare.js';
+import { generateIssueSlipPdf, _test as slipPdf } from './slip-pdf.js';
 
 // ── dates ───────────────────────────────────────────────────────────────────
 
@@ -410,4 +411,30 @@ test('a dry run also returns the floor receipt the ERP writes with every issue',
 		[], [],
 	], { dryRunReason: 'WRITES_DISABLED' });
 	assert.deepEqual(out.wouldWrite.floorReceipt, { header: rfsHeader, lines: rfsLines });
+});
+
+// ── issue slip PDF ──────────────────────────────────────────────────────────
+
+const slipLine = (n) => ({ itemCode: `R${n}`, itemName: 'FBB 300 GSM', unit: 'Sheet', quantity: 1479, batchNo: 'GRN/2026/00123-B/LONGBATCHNUMBER', warehouse: 'MAIN STORE', grnNo: 'GRN01234_26_27', bin: 'A-12' });
+const slip = (lines, extra = {}) => ({ voucherNo: 'IS17252_26_27', voucherDate: '2026-10-03', deleted: false, departmentName: 'PRINTING', jobCardNo: 'J06943_26_27[1_1]', jobName: 'KELLOGGS CHOCOS', clientName: 'KELLOGG', narration: 'urgent', lines, ...extra });
+
+test('issue slip: two copies on one page when short, a page per copy when long', async () => {
+	const { PDFDocument } = await import('pdf-lib');
+	const short = await PDFDocument.load(await generateIssueSlipPdf(slip([slipLine(1), slipLine(2)])));
+	assert.equal(short.getPageCount(), 1);
+	const long = await PDFDocument.load(await generateIssueSlipPdf(slip(Array.from({ length: 45 }, (_, i) => slipLine(i)), { deleted: true })));
+	assert.ok(long.getPageCount() >= 4 && long.getPageCount() % 2 === 0);
+	// Text outside WinAnsi must not throw.
+	await generateIssueSlipPdf(slip([{ ...slipLine(1), itemName: 'कागज ✓' }], { narration: null, jobName: null }));
+});
+
+test('issue slip: totals per unit, long words broken to fit, non-WinAnsi made safe', async () => {
+	assert.equal(slipPdf.totalText([{ unit: 'Sheet', quantity: 1000 }, { unit: 'sheet', quantity: 479 }]), '1,479');
+	assert.equal(slipPdf.totalText([{ unit: 'Sheet', quantity: 10 }, { unit: 'Kg', quantity: 2.5 }]), '10 Sheet + 2.5 Kg');
+	assert.equal(slipPdf.safe('a✓b'), 'a?b');
+	const { PDFDocument, StandardFonts } = await import('pdf-lib');
+	const font = await (await PDFDocument.create()).embedFont(StandardFonts.Helvetica);
+	const lines = slipPdf.wrap('GRN/2026/00123-B1/LONGBATCHNUMBER', font, 8, 50);
+	assert.ok(lines.length > 1 && lines.every((l) => font.widthOfTextAtSize(l, 8) <= 50));
+	assert.equal(lines.join(''), 'GRN/2026/00123-B1/LONGBATCHNUMBER');
 });
