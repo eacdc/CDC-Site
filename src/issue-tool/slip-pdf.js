@@ -3,7 +3,7 @@
  * Issue Slip", job card / department / client on the left, issue no. /
  * date / job name on the right, the lines (Item Code, ItemName, Unit,
  * Quantity, Batch No, Warehouse, GRN No., Bin), Total, Narration, and
- * Checked By / Received By / Issued By.
+ * Checked By / Received By / Issued By (with the issuing user's name).
  *
  * Two copies on one A4 page with a cut line between them, as the ERP prints
  * it. A slip too long for half a page gets a page per copy (continuing over
@@ -221,7 +221,12 @@ function drawBottom(page, ctx, y) {
 	page.drawText(rec, { x: MARGIN + (CONTENT_W - fonts.bold.widthOfTextAtSize(rec, 8.5)) / 2, y: cy, size: 8.5, font: fonts.bold });
 	const iss = 'Issued By';
 	page.drawText(iss, { x: MARGIN + CONTENT_W - PAD - 4 - fonts.bold.widthOfTextAtSize(iss, 8.5), y: cy, size: 8.5, font: fonts.bold });
-	return cy - 10;
+	const issuer = safe(slip.issuedBy ?? '');
+	if (issuer) {
+		const nameW = fonts.regular.widthOfTextAtSize(issuer, 8.5);
+		page.drawText(issuer, { x: MARGIN + CONTENT_W - PAD - 4 - nameW, y: cy - 11, size: 8.5, font: fonts.regular });
+	}
+	return cy - 21;
 }
 
 function boxOutline(page, top, bottom) {
@@ -235,7 +240,7 @@ function copyHeight(ctx, rows) {
 	const jobExtra = (wrap(slip.jobName ?? '', fonts.regular, 8.5, rightValueW).length - 1) * 10.5;
 	const narrLines = Math.max(1, wrap(slip.narration ?? '', fonts.regular, 8.5, CONTENT_W - 80).length);
 	const tableH = HEAD_H + rows.reduce((s, r) => s + rowHeight(r), 0);
-	return 74 + 74 + jobExtra + 12 + tableH + 22 + 13 + narrLines * 10.5 + 14 + 18;
+	return 74 + 74 + jobExtra + 12 + tableH + 22 + 13 + narrLines * 10.5 + 14 + 29;
 }
 
 /** One copy between topY and bottomY on a page that is known to fit it. */
@@ -253,7 +258,7 @@ function drawCopyPaged(pdfDoc, ctx, rows) {
 	const topY = PAGE_H - MARGIN;
 	let boxTop = topY - 74;
 	let y = drawTableHeader(page, ctx.fonts, drawTop(page, ctx, topY));
-	const footerNeed = 90;
+	const footerNeed = 100;
 	for (const r of rows) {
 		if (y - rowHeight(r) < MARGIN + 10) {
 			boxOutline(page, boxTop, y - 6);

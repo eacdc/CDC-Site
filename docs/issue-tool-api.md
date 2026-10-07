@@ -426,7 +426,7 @@ Recent live issue vouchers (`-19`) with lines, whether created by this tool or b
 
 ### 4.9 `GET /issues/:id/slip`
 
-The Item Issue Slip for one issue voucher (`transactionId`), as a PDF download (`Content-Type: application/pdf`, `Content-Disposition: attachment; filename="IS17252_26_27.pdf"`), in the ERP's format: company header and logo, Job Card No / Department Name / Client Name, Issue No / Issue Date / Job Name, the lines (Item Code, ItemName, Unit, Quantity, Batch No, Warehouse, GRN No., Bin), Total, Narration, and Checked By / Received By / Issued By.
+The Item Issue Slip for one issue voucher (`transactionId`), as a PDF download (`Content-Type: application/pdf`, `Content-Disposition: attachment; filename="IS17252_26_27.pdf"`), in the ERP's format: company header and logo, Job Card No / Department Name / Client Name, Issue No / Issue Date / Job Name, the lines (Item Code, ItemName, Unit, Quantity, Batch No, Warehouse, GRN No., Bin), Total, Narration, and Checked By / Received By / Issued By (the name of the user who made the issue under Issued By).
 
 - Two copies on one A4 page with a cut line between them. A slip too long for half a page gets a page per copy, the table continuing over more pages if needed.
 - Job, job name and client come from the header's job content, or from the first line's for a direct issue (the ERP keeps the job on the lines there). Blank for an "Other" issue.

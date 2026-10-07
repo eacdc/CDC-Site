@@ -416,7 +416,7 @@ test('a dry run also returns the floor receipt the ERP writes with every issue',
 // ── issue slip PDF ──────────────────────────────────────────────────────────
 
 const slipLine = (n) => ({ itemCode: `R${n}`, itemName: 'FBB 300 GSM', unit: 'Sheet', quantity: 1479, batchNo: 'GRN/2026/00123-B/LONGBATCHNUMBER', warehouse: 'MAIN STORE', grnNo: 'GRN01234_26_27', bin: 'A-12' });
-const slip = (lines, extra = {}) => ({ voucherNo: 'IS17252_26_27', voucherDate: '2026-10-03', deleted: false, departmentName: 'PRINTING', jobCardNo: 'J06943_26_27[1_1]', jobName: 'KELLOGGS CHOCOS', clientName: 'KELLOGG', narration: 'urgent', lines, ...extra });
+const slip = (lines, extra = {}) => ({ voucherNo: 'IS17252_26_27', voucherDate: '2026-10-03', deleted: false, departmentName: 'PRINTING', jobCardNo: 'J06943_26_27[1_1]', jobName: 'KELLOGGS CHOCOS', clientName: 'KELLOGG', narration: 'urgent', issuedBy: 'STORE1', lines, ...extra });
 
 test('issue slip: two copies on one page when short, a page per copy when long', async () => {
 	const { PDFDocument } = await import('pdf-lib');

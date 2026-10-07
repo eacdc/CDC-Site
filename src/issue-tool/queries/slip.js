@@ -13,11 +13,12 @@ export async function issueSlipData({ site, companyId, transactionId }) {
 		query(site, `
 			SELECT M.TransactionID, M.VoucherID, M.VoucherNo, M.VoucherDate, M.Narration,
 			       ISNULL(M.IsDeletedTransaction, 0) AS IsDeleted,
-			       DM.DepartmentName,
+			       DM.DepartmentName, UM.UserName AS IssuedBy,
 			       COALESCE(JC.JobCardContentNo, LJ.JobCardContentNo) AS JobCardContentNo,
 			       COALESCE(JB.JobName, LJ.JobName) AS JobName,
 			       COALESCE(NULLIF(JB.ClientName, ''), LM.LedgerName, LJ.ClientName) AS ClientName
 			FROM dbo.ItemTransactionMain M
+			LEFT JOIN dbo.UserMaster UM ON UM.UserID = M.CreatedBy
 			LEFT JOIN dbo.DepartmentMaster DM ON DM.DepartmentID = M.DepartmentID AND DM.CompanyID = M.CompanyID
 			LEFT JOIN dbo.JobBookingJobCardContents JC
 			       ON JC.JobBookingJobCardContentsID = M.JobBookingJobCardContentsID AND JC.CompanyID = M.CompanyID
@@ -65,6 +66,7 @@ export async function issueSlipData({ site, companyId, transactionId }) {
 		jobName: str(h.JobName),
 		clientName: str(h.ClientName),
 		narration: str(h.Narration),
+		issuedBy: str(h.IssuedBy),
 		lines: lines.map((l) => ({
 			itemCode: str(l.ItemCode),
 			itemName: str(l.ItemName),
