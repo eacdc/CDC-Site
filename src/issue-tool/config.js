@@ -7,7 +7,8 @@
  *   ISSUE_TOOL_COMPANY_ID       CompanyID the tool reads and writes. 2 for Kolkata.
  *   ISSUE_TOOL_COMPANY_ID_KOL   Optional per-site override (also _AHM). Both plant
  *                               databases run CompanyID 2 today.
- *   ISSUE_TOOL_ALLOW_WRITES     "true" to commit posts and deletes. Anything else
+ *   ISSUE_TOOL_ALLOW_WRITES     "true" (any case, quotes and spaces ignored) to commit
+ *                               posts, deletes and closes. Anything else
  *                               runs every post and delete as a dry run.
  *   ISSUE_TOOL_CORS_ORIGIN      The frontend's origin(s), comma-separated. Only
  *                               needed once CORS_ORIGINS restricts the server.
@@ -31,7 +32,7 @@ export function companyIdFor(site) {
 }
 
 export function writesEnabled() {
-	return process.env.ISSUE_TOOL_ALLOW_WRITES === 'true';
+	return (process.env.ISSUE_TOOL_ALLOW_WRITES ?? '').trim().replace(/^["']|["']$/g, '').toLowerCase() === 'true';
 }
 
 export function corsOrigins() {
