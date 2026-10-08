@@ -45,6 +45,12 @@ import { closePicklistLine } from './services/picklists.js';
 
 const router = Router();
 
+// Stock changes every minute: no browser, proxy or CDN may keep a copy of an answer.
+router.use((req, res, next) => {
+	res.set('Cache-Control', 'no-store');
+	next();
+});
+
 // Sign-in: username + database, as in the production entry tool. Everything
 // after this needs the token it returns.
 router.post('/auth/login', async (req, res) => {
