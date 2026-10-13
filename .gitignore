@@ -23,3 +23,6 @@ r2-key-mapping.csv
 # Apply-step plans and generated revert scripts
 r2-apply-*.csv
 r2-revert-*.sql
+
+# Before/after ERP snapshots from scripts/grn-snapshot.js (live data)
+grn-snapshots/

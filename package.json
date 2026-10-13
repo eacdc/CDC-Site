@@ -11,6 +11,7 @@
     "issue-tool:discover": "node scripts/issue-tool-discover.js",
     "issue-tool:acceptance": "node scripts/issue-tool-acceptance.js",
     "issue-tool:compare": "node scripts/issue-tool-compare.js",
+    "grn:snapshot": "node scripts/grn-snapshot.js",
     "test:fg-qc": "node --test src/routes-fg-qc.test.js",
     "test:pending-dashboard": "node --test src/routes-pending-dashboard.test.js",
     "test:sql-guard": "node --test src/sql-guard.test.js",
