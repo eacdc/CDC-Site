@@ -114,7 +114,7 @@ do with the backend service; it only publishes `sign-assets/public/`.
 | `sign-icons/*.png` | Sources: `facebook`, `instagram`, `youtube`, `linkedin`, `certifications` |
 | `sign-assets/public/sign/vN/` | Built images, committed — exactly what the site serves |
 | `sign-assets/published.json` | SHA-256 of every published file |
-| `scripts/sign-assets-build.js` | Icons → 48×48 (<2 KB), strip → 1200 px wide, all PNG |
+| `scripts/sign-assets-build.js` | Icons → 48×48 (<2 KB), strip → 660 px wide, all PNG |
 | `scripts/sign-assets-verify.js` | Fetch every URL like a mail proxy: 200, `image/png`, exact bytes |
 
 ```bash
@@ -130,10 +130,11 @@ re-pointed. The build refuses to change a recorded file, and `npm test` fails
 if a committed one changes. The EcoVadis medal on the strip is dated
 **Jan 2026**; when it is renewed, rebuild with the next `--version`.
 
-Current: **`sign/v2/certifications.png`** (two-row strip). Do not use
-`sign/v1/` — it was replaced once after Gmail had already cached it, so Gmail
-may show the old single-row strip for that URL. A test signature in Gmail
-counts as "published".
+Current: **`sign/v3/certifications.png`** — two-row strip, 660×251, shown at
+its pixel size (Gmail's signature editor inserts images at pixel size). Do not
+use `sign/v1/` (replaced after Gmail had cached it, may show the old one-row
+strip) or `sign/v2/` (the two-row strip at 1200 px, which shows far too big).
+A test signature in Gmail counts as "published".
 
 Render settings (dashboard, not a Blueprint):
 
