@@ -94,12 +94,17 @@ async function buildBanner(src) {
     .extend({ top: 6, bottom: 6, left: 6, right: 6, background: '#ffffff' })
     .png()
     .toBuffer();
-  const buf = await sharp(padded)
-    .resize({ width: BANNER_PX })
-    .png({ palette: true, colours: 256, compressionLevel: 9, effort: 10, dither: 0.5 })
-    .toBuffer();
-  if (buf.length > BANNER_MAX_BYTES) throw new Error(`${buf.length} bytes, over ${BANNER_MAX_BYTES}`);
-  return buf;
+  // Flat logo colours survive a smaller palette well; step down until the
+  // budget is met (256 colours ran to 125 KB on the two-row strip, 128 to 39 KB).
+  let buf;
+  for (const colours of [256, 128, 64]) {
+    buf = await sharp(padded)
+      .resize({ width: BANNER_PX })
+      .png({ palette: true, colours, compressionLevel: 9, effort: 10, dither: 0.5 })
+      .toBuffer();
+    if (buf.length <= BANNER_MAX_BYTES) return buf;
+  }
+  throw new Error(`${buf.length} bytes, over ${BANNER_MAX_BYTES} even at 64 colours`);
 }
 
 function arg(name) {
