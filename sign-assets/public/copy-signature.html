@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Copy signature strip</title>
+<meta name="robots" content="noindex">
+<style>
+  body { margin: 0; padding: 24px 16px; background: #f4f4f5; color: #18181b;
+         font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: #3f3f46; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; padding: 20px; margin: 16px 0; }
+  button { font: inherit; font-weight: 600; padding: 10px 18px; border: 0; border-radius: 6px;
+           background: #1d4ed8; color: #fff; cursor: pointer; }
+  button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+  #status { margin-left: 12px; font-weight: 600; color: #15803d; }
+  ol { padding-left: 20px; margin: 0; }
+  code { background: #f4f4f5; padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Certification strip for Gmail</h1>
+  <p>The image is stored at 4× resolution (920 px) and sized to show at 230 × 88, so it stays sharp when zoomed or on high-resolution screens.</p>
+
+  <div class="card">
+    <!-- This is what gets copied. Width/height keep it at 230 px in the email. -->
+    <div id="strip"><img src="sign/v5/certifications-920.png" width="230" height="88"
+      alt="Certified: BSCI, Disney, Sedex, ISO 9001:2015, ISO 14001, EcoVadis Bronze"
+      style="display:block;border:0;width:230px;height:88px"></div>
+  </div>
+
+  <button id="copy" type="button">Copy for Gmail</button><span id="status" role="status"></span>
+
+  <div class="card">
+    <ol>
+      <li>Click <strong>Copy for Gmail</strong> above.</li>
+      <li>In Gmail: <strong>Settings → See all settings → General → Signature</strong>.</li>
+      <li>Delete the old logo image, click where it should go, and paste (<code>Ctrl+V</code> / <code>⌘V</code>).</li>
+      <li>Do <strong>not</strong> click the image and choose a size — that would undo the 230 px sizing.</li>
+      <li>Scroll down and click <strong>Save Changes</strong>.</li>
+    </ol>
+  </div>
+  <p>If the button does nothing, select the image above with the mouse, copy it (<code>Ctrl+C</code>), and paste as in step 3.</p>
+</main>
+<script>
+  const strip = document.getElementById('strip');
+  const status = document.getElementById('status');
+
+  document.getElementById('copy').addEventListener('click', async () => {
+    // Absolute URL, so the pasted image points at this site, not a relative path.
+    const img = strip.querySelector('img');
+    const html = strip.innerHTML.replace(img.getAttribute('src'), img.src);
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }) }),
+      ]);
+      status.textContent = 'Copied. Now paste it into the Gmail signature.';
+    } catch {
+      // Older browsers: copy the rendered selection instead.
+      const range = document.createRange();
+      range.selectNode(strip);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      const ok = document.execCommand('copy');
+      sel.removeAllRanges();
+      status.textContent = ok ? 'Copied. Now paste it into the Gmail signature.' : 'Copy failed. Select the image and press Ctrl+C.';
+    }
+  });
+</script>
+</body>
+</html>

@@ -131,16 +131,17 @@ re-pointed. The build refuses to change a recorded file, and `npm test` fails
 if a committed one changes. The EcoVadis medal on the strip is dated
 **Jan 2026**; when it is renewed, rebuild with the next `--version`.
 
-Current: **`sign/v3/certifications.png`** — two-row strip, 660×251, shown at
-its pixel size (Gmail's signature editor inserts images at pixel size). Do not
-use `sign/v1/` (replaced after Gmail had cached it, may show the old one-row
-strip) or `sign/v2/` (the two-row strip at 1200 px, which shows far too big).
-A test signature in Gmail counts as "published".
+Current: **`sign/v5/certifications-920.png`**, shown at **230×88**. It is
+stored at 4× (920×350) so the small text stays sharp when zoomed and on
+high-DPI screens; the size comes from `width`/`height` on the `<img>`.
+Gmail's "insert image by URL" always shows an image at its pixel size, so
+for a hand-made signature open **`/copy-signature.html`** on the static site,
+click *Copy for Gmail*, and paste into the signature editor. Phase 2 sets the
+same `<img>` through the API.
 
-Trial sizes in `sign/v4/` (built with `--widths`, shown at pixel size):
-`certifications-125.png` (125×47), `-230` (230×87), `-280` (280×106),
-`-330` (330×125), `-440` (440×167). Once one is chosen, it becomes the size
-the Phase 2 signature template uses.
+Older folders stay published for mail already sent, but are not for new
+signatures: `v1` (replaced after Gmail cached it), `v2` and `v3` (too large),
+`v4` (trial sizes at 1× — blurry when zoomed).
 
 Render settings (dashboard, not a Blueprint):
 
