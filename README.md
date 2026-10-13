@@ -106,8 +106,15 @@ Two deliberate differences from the brief:
 
 Social icons and the certification strip used in staff e-mail signatures,
 served from a **public** R2 bucket (`cdc-public`) at
-`https://assets.cdcprinters.com/sign/<version>/<name>.png`. This is a separate
-bucket: `cdc-media` stays private (MIGRATION.md §2.4).
+`$R2_PUBLIC_BASE_URL/sign/<version>/<name>.png`. This is a separate bucket:
+`cdc-media` stays private (MIGRATION.md §2.4).
+
+`cdcprinters.com` is not on Cloudflare DNS, so the bucket is served from its
+**Public Development URL** (`https://pub-<id>.r2.dev`, enabled under the
+bucket's Settings). Cloudflare rate-limits r2.dev and does not put it behind
+its cache; signature traffic is far below that limit, and Gmail's proxy
+fetches each image once. If the domain later moves to Cloudflare, connect a
+custom domain, publish as the next version, and re-push the signatures.
 
 | Where | What |
 |---|---|

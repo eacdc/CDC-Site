@@ -52,7 +52,7 @@ if (!/^v\d+$/.test(version)) {
   process.exit(1);
 }
 if (!baseUrl) {
-  console.error('R2_PUBLIC_BASE_URL is not set, e.g. https://assets.cdcprinters.com');
+  console.error('R2_PUBLIC_BASE_URL is not set, e.g. https://pub-<id>.r2.dev');
   process.exit(1);
 }
 
