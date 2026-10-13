@@ -52,5 +52,11 @@
     "bytes": 81660,
     "width": 920,
     "height": 350
+  },
+  "sign/v6/certifications-920.png": {
+    "sha256": "98bc5cc9c594f8da6ce6e4aecec8fe7fd6697a2526fb95d52d6ebb3d5d86c26a",
+    "bytes": 30310,
+    "width": 920,
+    "height": 503
   }
 }
