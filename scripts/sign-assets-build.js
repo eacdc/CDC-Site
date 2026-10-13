@@ -1,9 +1,11 @@
 /**
- * Build the Gmail-signature images from the source PNGs in sign-icons/.
+ * Build the Gmail-signature images from the source PNGs in sign-icons/ into
+ * the Render static site (sign-assets/public/), served at
+ * https://assets.cdcprinters.com/sign/<version>/<name>.png
  *
- *   node scripts/sign-assets-build.js
+ *   node scripts/sign-assets-build.js                 # builds into sign/v1/
+ *   node scripts/sign-assets-build.js --version v2    # after changing an image
  *
- * Output goes to sign-icons/dist/ and is what sign-assets-upload.js publishes.
  * Every asset is PNG — Gmail and Outlook do not render SVG or WebP reliably.
  * Each is built at 2x its display size so it stays sharp on retina screens.
  *
@@ -14,18 +16,28 @@
  *       EcoVadis). 1200 px wide, displayed at 600. Near-white background is
  *       flattened to pure white so no grey box shows against the email body.
  *
+ * NEVER OVERWRITE. Gmail's image proxy caches hard, so once a URL is in a
+ * signature its bytes must not change. Every file written is recorded in
+ * sign-assets/published.json with its SHA-256, and a rebuild that would
+ * change a recorded file is refused — publish under the next --version
+ * instead. `npm test` checks the same thing against what is committed.
+ * --force overrides this; use it only before the URLs are in any signature.
+ *
  * Sources that are absent are skipped, so the strip can ship before the
  * social icons arrive.
  */
 
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = path.join(__dirname, '..', 'sign-icons');
-const OUT_DIR = path.join(SRC_DIR, 'dist');
+const ROOT = path.join(__dirname, '..');
+const SRC_DIR = path.join(ROOT, 'sign-icons');
+export const PUBLIC_DIR = path.join(ROOT, 'sign-assets', 'public');
+export const MANIFEST = path.join(ROOT, 'sign-assets', 'published.json');
 
 export const ASSETS = [
   { name: 'facebook', kind: 'icon' },
@@ -35,13 +47,19 @@ export const ASSETS = [
   { name: 'certifications', kind: 'banner' },
 ];
 
-const ICON_PX = 48;
-const ICON_MAX_BYTES = 2048;
+export const ICON_PX = 48;
+export const ICON_MAX_BYTES = 2048;
 const BANNER_PX = 1200;
 const BANNER_MAX_BYTES = 80 * 1024;
 
 // Anything at least this light on every channel becomes pure white.
 const WHITE_THRESHOLD = 246;
+
+export const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+
+export function readManifest() {
+  return fs.existsSync(MANIFEST) ? JSON.parse(fs.readFileSync(MANIFEST, 'utf8')) : {};
+}
 
 async function buildIcon(src) {
   // Try progressively smaller palettes until the 2 KB budget is met.
@@ -76,39 +94,76 @@ async function buildBanner(src) {
     .extend({ top: 6, bottom: 6, left: 6, right: 6, background: '#ffffff' })
     .png()
     .toBuffer();
-  return sharp(padded)
+  const buf = await sharp(padded)
     .resize({ width: BANNER_PX })
     .png({ palette: true, colours: 256, compressionLevel: 9, effort: 10, dither: 0.5 })
     .toBuffer();
+  if (buf.length > BANNER_MAX_BYTES) throw new Error(`${buf.length} bytes, over ${BANNER_MAX_BYTES}`);
+  return buf;
+}
+
+function arg(name) {
+  const i = process.argv.indexOf(name);
+  return i === -1 ? undefined : process.argv[i + 1];
 }
 
 async function main() {
-  fs.mkdirSync(OUT_DIR, { recursive: true });
+  const version = arg('--version') || 'v1';
+  const force = process.argv.includes('--force');
+  if (!/^v\d+$/.test(version)) throw new Error(`--version must look like v1, v2, ... (got "${version}")`);
+
+  const manifest = readManifest();
+  const outDir = path.join(PUBLIC_DIR, 'sign', version);
+  fs.mkdirSync(outDir, { recursive: true });
   let built = 0;
+  let refused = 0;
 
   for (const asset of ASSETS) {
     const src = path.join(SRC_DIR, `${asset.name}.png`);
+    const rel = `sign/${version}/${asset.name}.png`;
     if (!fs.existsSync(src)) {
-      console.log(`skip   ${asset.name}.png (no source in sign-icons/)`);
+      console.log(`skip     ${asset.name}.png (no source in sign-icons/)`);
       continue;
     }
-    const buf = asset.kind === 'icon' ? await buildIcon(src) : await buildBanner(src);
-    if (asset.kind === 'banner' && buf.length > BANNER_MAX_BYTES) {
-      throw new Error(`${asset.name}.png is ${buf.length} bytes, over ${BANNER_MAX_BYTES}`);
+
+    let buf;
+    try {
+      buf = asset.kind === 'icon' ? await buildIcon(src) : await buildBanner(src);
+    } catch (err) {
+      throw new Error(`${asset.name}.png: ${err.message}`);
     }
+    const hash = sha256(buf);
+    const prior = manifest[rel];
+
+    if (prior && prior.sha256 === hash) {
+      console.log(`same     ${rel}`);
+      continue;
+    }
+    if (prior && !force) {
+      const next = `v${Number(version.slice(1)) + 1}`;
+      console.error(`REFUSED  ${rel} is already published with different bytes. Use --version ${next}.`);
+      refused++;
+      continue;
+    }
+
     const meta = await sharp(buf).metadata();
-    fs.writeFileSync(path.join(OUT_DIR, `${asset.name}.png`), buf);
-    console.log(`built  ${asset.name}.png  ${meta.width}x${meta.height}  ${buf.length} bytes`);
+    fs.writeFileSync(path.join(PUBLIC_DIR, rel), buf);
+    manifest[rel] = { sha256: hash, bytes: buf.length, width: meta.width, height: meta.height };
+    console.log(`${prior ? 'REPLACED' : 'built   '} ${rel}  ${meta.width}x${meta.height}  ${buf.length} bytes`);
     built++;
   }
 
-  if (built === 0) {
-    console.error('Nothing built. Put the source PNGs in sign-icons/ first.');
-    process.exit(1);
-  }
+  const sorted = Object.fromEntries(Object.entries(manifest).sort(([a], [b]) => a.localeCompare(b)));
+  fs.writeFileSync(MANIFEST, JSON.stringify(sorted, null, 2) + '\n');
+
+  if (refused) process.exit(1);
+  if (built === 0) console.log('Nothing new to build.');
 }
 
-main().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+// Run only when executed directly, so the test can import the constants.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
+}

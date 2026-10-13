@@ -102,40 +102,41 @@ Two deliberate differences from the brief:
 
 ---
 
-## Gmail signature images (`sign-icons/`)
+## Gmail signature images (`sign-assets/`)
 
 Social icons and the certification strip used in staff e-mail signatures,
-served from a **public** R2 bucket (`cdc-public`) at
-`$R2_PUBLIC_BASE_URL/sign/<version>/<name>.png`. This is a separate bucket:
-`cdc-media` stays private (MIGRATION.md §2.4).
-
-`cdcprinters.com` is not on Cloudflare DNS, so the bucket is served from its
-**Public Development URL** (`https://pub-<id>.r2.dev`, enabled under the
-bucket's Settings). Cloudflare rate-limits r2.dev and does not put it behind
-its cache; signature traffic is far below that limit, and Gmail's proxy
-fetches each image once. If the domain later moves to Cloudflare, connect a
-custom domain, publish as the next version, and re-push the signatures.
+served by a separate **Render Static Site** (`cdc-assets`) at
+`https://assets.cdcprinters.com/sign/<version>/<name>.png`. It has nothing to
+do with the backend service; it only publishes `sign-assets/public/`.
 
 | Where | What |
 |---|---|
-| `sign-icons/*.png` | Sources. `facebook`, `instagram`, `youtube`, `linkedin`, `certifications` |
-| `sign-icons/dist/` | Built output, committed — these exact bytes are what is published |
+| `sign-icons/*.png` | Sources: `facebook`, `instagram`, `youtube`, `linkedin`, `certifications` |
+| `sign-assets/public/sign/vN/` | Built images, committed — exactly what the site serves |
+| `sign-assets/published.json` | SHA-256 of every published file |
 | `scripts/sign-assets-build.js` | Icons → 48×48 (<2 KB), strip → 1200 px wide, all PNG |
-| `scripts/sign-assets-upload.js` | Upload to `sign/<version>/`, then verify each public URL |
+| `scripts/sign-assets-verify.js` | Fetch every URL like a mail proxy: 200, `image/png`, exact bytes |
 
 ```bash
-npm run sign-assets:build
-npm run sign-assets:upload                 # publishes sign/v1/
-npm run sign-assets:verify                 # re-check the public URLs only
-node scripts/sign-assets-upload.js --version v2   # after changing any image
+npm run sign-assets:build                         # build new images into sign/v1/
+node scripts/sign-assets-build.js --version v2    # after changing an image
+npm run sign-assets:verify                        # check the live URLs
+node scripts/sign-assets-verify.js --base-url https://cdc-assets.onrender.com
 ```
 
 **Never overwrite a published image.** Gmail's image proxy caches for a long
-time, so a changed image must go to a new version folder and the signatures be
-re-pointed. The upload script enforces this: identical bytes are skipped,
-different bytes at an existing key are refused. The EcoVadis medal on the strip
-is dated **Jan 2026**; when it is renewed, rebuild and publish as `v2`.
+time, so a changed image goes to a new version folder and the signatures are
+re-pointed. The build refuses to change a recorded file, and `npm test` fails
+if a committed one changes. The EcoVadis medal on the strip is dated
+**Jan 2026**; when it is renewed, rebuild with `--version v2`.
 
-Env vars (local `.env` only, see `.env.example`): `R2_ACCOUNT_ID`,
-`R2_PUBLIC_BUCKET`, `R2_PUBLIC_BASE_URL`, `R2_PUBLIC_RW_ACCESS_KEY_ID`,
-`R2_PUBLIC_RW_SECRET_ACCESS_KEY`.
+Render settings (dashboard, not a Blueprint):
+
+| Setting | Value |
+|---|---|
+| Type | Static Site, branch `main` |
+| Root Directory | `sign-assets` (also limits auto-deploys to changes in that folder) |
+| Build Command | `echo ok` |
+| Publish Directory | `public` |
+| Headers | `/sign/*` → `Cache-Control: public, max-age=31536000, immutable` |
+| Custom Domain | `assets.cdcprinters.com` (CNAME `assets` → `cdc-assets.onrender.com` at the DNS host) |
