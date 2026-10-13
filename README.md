@@ -120,6 +120,7 @@ do with the backend service; it only publishes `sign-assets/public/`.
 ```bash
 npm run sign-assets:build                         # build new images into sign/v1/
 node scripts/sign-assets-build.js --version v2    # after changing an image
+node scripts/sign-assets-build.js --version v4 --widths 230,280   # several strip sizes
 npm run sign-assets:verify                        # check the live URLs
 node scripts/sign-assets-verify.js --base-url https://cdc-assets.onrender.com
 ```
@@ -135,6 +136,11 @@ its pixel size (Gmail's signature editor inserts images at pixel size). Do not
 use `sign/v1/` (replaced after Gmail had cached it, may show the old one-row
 strip) or `sign/v2/` (the two-row strip at 1200 px, which shows far too big).
 A test signature in Gmail counts as "published".
+
+Trial sizes in `sign/v4/` (built with `--widths`, shown at pixel size):
+`certifications-125.png` (125×47), `-230` (230×87), `-280` (280×106),
+`-330` (330×125), `-440` (440×167). Once one is chosen, it becomes the size
+the Phase 2 signature template uses.
 
 Render settings (dashboard, not a Blueprint):
 

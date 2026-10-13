@@ -16,5 +16,35 @@
     "bytes": 47780,
     "width": 660,
     "height": 251
+  },
+  "sign/v4/certifications-125.png": {
+    "sha256": "4da042cfa5e39c94b663c4e254041b1c4b282bd8fe802e6bef1cef30f0f69d89",
+    "bytes": 4254,
+    "width": 125,
+    "height": 47
+  },
+  "sign/v4/certifications-230.png": {
+    "sha256": "6e0f060a9e1e56947e2071326f18f80e84245912442a37699d50e3163e8ee3ae",
+    "bytes": 9626,
+    "width": 230,
+    "height": 87
+  },
+  "sign/v4/certifications-280.png": {
+    "sha256": "8097818eebf8c42d464ac0c9da6b5d4f7e9e7dd81b647ef61035b45a69c9902f",
+    "bytes": 12726,
+    "width": 280,
+    "height": 106
+  },
+  "sign/v4/certifications-330.png": {
+    "sha256": "98dbe48afe6c4ce2ebe99a231554082fa25db67955a762cbe373e28f38153ab0",
+    "bytes": 16018,
+    "width": 330,
+    "height": 125
+  },
+  "sign/v4/certifications-440.png": {
+    "sha256": "d0a6c4c972038eeec4e77c33c5099692d3fb88681f0be18f3afb7d959db1be39",
+    "bytes": 25686,
+    "width": 440,
+    "height": 167
   }
 }

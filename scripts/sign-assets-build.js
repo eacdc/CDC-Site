@@ -5,6 +5,8 @@
  *
  *   node scripts/sign-assets-build.js                 # builds into sign/v1/
  *   node scripts/sign-assets-build.js --version v2    # after changing an image
+ *   node scripts/sign-assets-build.js --version v4 --widths 230,280
+ *       # strip at several sizes, as certifications-230.png etc., to try in Gmail
  *
  * Every asset is PNG — Gmail and Outlook do not render SVG or WebP reliably.
  * Icons are built at 2x their display size so they stay sharp on retina
@@ -79,7 +81,7 @@ async function buildIcon(src) {
   throw new Error(`cannot get under ${ICON_MAX_BYTES} bytes even at 16 colours`);
 }
 
-async function buildBanner(src) {
+async function buildBanner(src, width) {
   const { data, info } = await sharp(src)
     .flatten({ background: '#ffffff' })
     .removeAlpha()
@@ -94,7 +96,7 @@ async function buildBanner(src) {
 
   // Trim the empty margin, keep a little breathing room, then scale to 2x.
   // Separate passes: within one pipeline sharp resizes before it extends,
-  // which would leave the result wider than BANNER_PX.
+  // which would leave the result wider than the target width.
   const trimmed = await sharp(data, { raw: info }).trim({ background: '#ffffff', threshold: 0 }).png().toBuffer();
   const padded = await sharp(trimmed)
     .extend({ top: 6, bottom: 6, left: 6, right: 6, background: '#ffffff' })
@@ -105,7 +107,7 @@ async function buildBanner(src) {
   let buf;
   for (const colours of [256, 128, 64]) {
     buf = await sharp(padded)
-      .resize({ width: BANNER_PX })
+      .resize({ width })
       .png({ palette: true, colours, compressionLevel: 9, effort: 10, dither: 0.5 })
       .toBuffer();
     if (buf.length <= BANNER_MAX_BYTES) return buf;
@@ -129,39 +131,57 @@ async function main() {
   let built = 0;
   let refused = 0;
 
+  // --widths 230,280 builds the strip once per width as certifications-<w>.png;
+  // without it the strip is built once at BANNER_PX as certifications.png.
+  const widthsArg = arg('--widths');
+  const widths = widthsArg ? widthsArg.split(',').map((w) => Number(w.trim())) : null;
+  if (widths && !widths.every((w) => Number.isInteger(w) && w >= 50 && w <= 2000)) {
+    throw new Error(`--widths must be whole pixel widths between 50 and 2000 (got "${widthsArg}")`);
+  }
+
   for (const asset of ASSETS) {
     const src = path.join(SRC_DIR, `${asset.name}.png`);
-    const rel = `sign/${version}/${asset.name}.png`;
     if (!fs.existsSync(src)) {
       console.log(`skip     ${asset.name}.png (no source in sign-icons/)`);
       continue;
     }
 
-    let buf;
-    try {
-      buf = asset.kind === 'icon' ? await buildIcon(src) : await buildBanner(src);
-    } catch (err) {
-      throw new Error(`${asset.name}.png: ${err.message}`);
-    }
-    const hash = sha256(buf);
-    const prior = manifest[rel];
+    const outputs =
+      asset.kind === 'icon'
+        ? [{ file: `${asset.name}.png`, build: () => buildIcon(src) }]
+        : (widths || [null]).map((w) => ({
+            file: w ? `${asset.name}-${w}.png` : `${asset.name}.png`,
+            build: () => buildBanner(src, w || BANNER_PX),
+          }));
 
-    if (prior && prior.sha256 === hash) {
-      console.log(`same     ${rel}`);
-      continue;
-    }
-    if (prior && !force) {
-      const next = `v${Number(version.slice(1)) + 1}`;
-      console.error(`REFUSED  ${rel} is already published with different bytes. Use --version ${next}.`);
-      refused++;
-      continue;
-    }
+    for (const { file, build } of outputs) {
+      const rel = `sign/${version}/${file}`;
+      let buf;
+      try {
+        buf = await build();
+      } catch (err) {
+        throw new Error(`${file}: ${err.message}`);
+      }
+      const hash = sha256(buf);
+      const prior = manifest[rel];
 
-    const meta = await sharp(buf).metadata();
-    fs.writeFileSync(path.join(PUBLIC_DIR, rel), buf);
-    manifest[rel] = { sha256: hash, bytes: buf.length, width: meta.width, height: meta.height };
-    console.log(`${prior ? 'REPLACED' : 'built   '} ${rel}  ${meta.width}x${meta.height}  ${buf.length} bytes`);
-    built++;
+      if (prior && prior.sha256 === hash) {
+        console.log(`same     ${rel}`);
+        continue;
+      }
+      if (prior && !force) {
+        const next = `v${Number(version.slice(1)) + 1}`;
+        console.error(`REFUSED  ${rel} is already published with different bytes. Use --version ${next}.`);
+        refused++;
+        continue;
+      }
+
+      const meta = await sharp(buf).metadata();
+      fs.writeFileSync(path.join(PUBLIC_DIR, rel), buf);
+      manifest[rel] = { sha256: hash, bytes: buf.length, width: meta.width, height: meta.height };
+      console.log(`${prior ? 'REPLACED' : 'built   '} ${rel}  ${meta.width}x${meta.height}  ${buf.length} bytes`);
+      built++;
+    }
   }
 
   const sorted = Object.fromEntries(Object.entries(manifest).sort(([a], [b]) => a.localeCompare(b)));
