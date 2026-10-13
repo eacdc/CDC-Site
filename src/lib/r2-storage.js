@@ -166,3 +166,60 @@ export async function uploadBuffer({ folder = 'uploads', buffer, contentType }) 
   );
   return { key, bytes: buffer.length };
 }
+
+// ------------------------------------------------------------------ public bucket
+//
+// A SEPARATE bucket for assets that must be reachable by anyone forever —
+// e-mail signature icons and the certification strip. Nothing private ever
+// goes here; cdc-media stays private (MIGRATION.md §2.4).
+//
+//   R2_PUBLIC_BUCKET         e.g. cdc-public
+//   R2_PUBLIC_RW_ACCESS_KEY_ID / R2_PUBLIC_RW_SECRET_ACCESS_KEY
+//                            a token scoped to that bucket only; falls back
+//                            to R2_RW_* if that token also covers it.
+
+const PUBLIC_BUCKET = process.env.R2_PUBLIC_BUCKET;
+const pub = process.env.R2_PUBLIC_RW_ACCESS_KEY_ID
+  ? makeClient(process.env.R2_PUBLIC_RW_ACCESS_KEY_ID, process.env.R2_PUBLIC_RW_SECRET_ACCESS_KEY)
+  : rw;
+
+/**
+ * Metadata of an object in the public bucket, or null if it does not exist.
+ * ETag is the MD5 of the body for a single-part upload, quotes stripped.
+ */
+export async function headPublicObject(key) {
+  try {
+    const head = await pub.send(new HeadObjectCommand({ Bucket: PUBLIC_BUCKET, Key: key }));
+    return {
+      bytes: head.ContentLength,
+      contentType: head.ContentType,
+      cacheControl: head.CacheControl,
+      etag: String(head.ETag || '').replace(/"/g, ''),
+    };
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NotFound') return null;
+    throw err;
+  }
+}
+
+/**
+ * Write a fixed key in the public bucket. Unlike uploadBuffer the caller
+ * chooses the key, because public assets need stable URLs — so the write is
+ * create-only (If-None-Match: *): an existing object is never overwritten.
+ * A changed asset goes to a new versioned key instead.
+ */
+export async function putPublicObject({ key, buffer, contentType }) {
+  if (!PUBLIC_BUCKET) throw new Error('R2_PUBLIC_BUCKET is not set');
+  if (!ALLOWED_TYPES[contentType]) throw new Error(`Rejected content type: ${contentType}`);
+  await pub.send(
+    new PutObjectCommand({
+      Bucket: PUBLIC_BUCKET,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+      IfNoneMatch: '*',
+    })
+  );
+  return { key, bytes: buffer.length };
+}

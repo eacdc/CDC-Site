@@ -99,3 +99,36 @@ Two deliberate differences from the brief:
 4. **Frontend walk-through in dry run**, using the test checklist in the frontend repo.
 5. **First real post** (ask before doing it). Set `ISSUE_TOOL_ALLOW_WRITES=true`, post one small issue, then compare it with an ERP-made issue of the same kind: `npm run issue-tool:compare -- <ourTransactionId> <erpTransactionId>`. Check the ItemMaster stock moved as the ERP's would (test A: PhysicalStock down, FloorStock up, by the quantity), and the picklist line is still `IsCompleted = 0`.
 6. **Delete tested.** Delete that issue from History; header and lines are `IsDeletedTransaction = 1` with `DeletedBy` / `DeletedDate` set, `ModifiedBy` / `ModifiedDate` untouched, and stock is back.
+
+---
+
+## Gmail signature images (`sign-icons/`)
+
+Social icons and the certification strip used in staff e-mail signatures,
+served from a **public** R2 bucket (`cdc-public`) at
+`https://assets.cdcprinters.com/sign/<version>/<name>.png`. This is a separate
+bucket: `cdc-media` stays private (MIGRATION.md §2.4).
+
+| Where | What |
+|---|---|
+| `sign-icons/*.png` | Sources. `facebook`, `instagram`, `youtube`, `linkedin`, `certifications` |
+| `sign-icons/dist/` | Built output, committed — these exact bytes are what is published |
+| `scripts/sign-assets-build.js` | Icons → 48×48 (<2 KB), strip → 1200 px wide, all PNG |
+| `scripts/sign-assets-upload.js` | Upload to `sign/<version>/`, then verify each public URL |
+
+```bash
+npm run sign-assets:build
+npm run sign-assets:upload                 # publishes sign/v1/
+npm run sign-assets:verify                 # re-check the public URLs only
+node scripts/sign-assets-upload.js --version v2   # after changing any image
+```
+
+**Never overwrite a published image.** Gmail's image proxy caches for a long
+time, so a changed image must go to a new version folder and the signatures be
+re-pointed. The upload script enforces this: identical bytes are skipped,
+different bytes at an existing key are refused. The EcoVadis medal on the strip
+is dated **Jan 2026**; when it is renewed, rebuild and publish as `v2`.
+
+Env vars (local `.env` only, see `.env.example`): `R2_ACCOUNT_ID`,
+`R2_PUBLIC_BUCKET`, `R2_PUBLIC_BASE_URL`, `R2_PUBLIC_RW_ACCESS_KEY_ID`,
+`R2_PUBLIC_RW_SECRET_ACCESS_KEY`.
