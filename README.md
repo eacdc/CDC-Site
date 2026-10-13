@@ -99,3 +99,57 @@ Two deliberate differences from the brief:
 4. **Frontend walk-through in dry run**, using the test checklist in the frontend repo.
 5. **First real post** (ask before doing it). Set `ISSUE_TOOL_ALLOW_WRITES=true`, post one small issue, then compare it with an ERP-made issue of the same kind: `npm run issue-tool:compare -- <ourTransactionId> <erpTransactionId>`. Check the ItemMaster stock moved as the ERP's would (test A: PhysicalStock down, FloorStock up, by the quantity), and the picklist line is still `IsCompleted = 0`.
 6. **Delete tested.** Delete that issue from History; header and lines are `IsDeletedTransaction = 1` with `DeletedBy` / `DeletedDate` set, `ModifiedBy` / `ModifiedDate` untouched, and stock is back.
+
+---
+
+## Gmail signature images (`sign-assets/`)
+
+Social icons and the certification strip used in staff e-mail signatures,
+served by a separate **Render Static Site** (`cdc-assets`) at
+`https://assets.cdcprinters.com/sign/<version>/<name>.png`. It has nothing to
+do with the backend service; it only publishes `sign-assets/public/`.
+
+| Where | What |
+|---|---|
+| `sign-icons/*.png` | Sources: `facebook`, `instagram`, `youtube`, `linkedin`, `certifications` |
+| `sign-assets/public/sign/vN/` | Built images, committed — exactly what the site serves |
+| `sign-assets/published.json` | SHA-256 of every published file |
+| `scripts/sign-assets-build.js` | Icons → 48×48 (<2 KB), strip → 660 px wide, all PNG |
+| `scripts/sign-assets-verify.js` | Fetch every URL like a mail proxy: 200, `image/png`, exact bytes |
+
+```bash
+npm run sign-assets:build                         # build new images into sign/v1/
+node scripts/sign-assets-build.js --version v2    # after changing an image
+node scripts/sign-assets-build.js --version v4 --widths 230,280   # several strip sizes
+npm run sign-assets:verify                        # check the live URLs
+node scripts/sign-assets-verify.js --base-url https://cdc-assets.onrender.com
+```
+
+**Never overwrite a published image.** Gmail's image proxy caches for a long
+time, so a changed image goes to a new version folder and the signatures are
+re-pointed. The build refuses to change a recorded file, and `npm test` fails
+if a committed one changes. The EcoVadis medal on the strip is dated
+**Jan 2026**; when it is renewed, rebuild with the next `--version`.
+
+Current: **`sign/v5/certifications-920.png`**, shown at **230×88**. It is
+stored at 4× (920×350) so the small text stays sharp when zoomed and on
+high-DPI screens; the size comes from `width`/`height` on the `<img>`.
+Gmail's "insert image by URL" always shows an image at its pixel size, so
+for a hand-made signature open **`/copy-signature.html`** on the static site,
+click *Copy for Gmail*, and paste into the signature editor. Phase 2 sets the
+same `<img>` through the API.
+
+Older folders stay published for mail already sent, but are not for new
+signatures: `v1` (replaced after Gmail cached it), `v2` and `v3` (too large),
+`v4` (trial sizes at 1× — blurry when zoomed).
+
+Render settings (dashboard, not a Blueprint):
+
+| Setting | Value |
+|---|---|
+| Type | Static Site, branch `main` |
+| Root Directory | `sign-assets` (also limits auto-deploys to changes in that folder) |
+| Build Command | `echo ok` |
+| Publish Directory | `public` |
+| Headers | `/sign/*` → `Cache-Control: public, max-age=31536000, immutable` |
+| Custom Domain | `assets.cdcprinters.com` (CNAME `assets` → `cdc-assets.onrender.com` at the DNS host) |
