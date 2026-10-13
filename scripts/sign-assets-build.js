@@ -21,7 +21,9 @@
  * sign-assets/published.json with its SHA-256, and a rebuild that would
  * change a recorded file is refused — publish under the next --version
  * instead. `npm test` checks the same thing against what is committed.
- * --force overrides this; use it only before the URLs are in any signature.
+ * --force overrides this; use it only for a URL nobody has ever opened —
+ * pasting it into a Gmail signature even once to test counts, because
+ * Gmail's proxy has then cached it (that is how sign/v1/ went stale).
  *
  * Sources that are absent are skipped, so the strip can ship before the
  * social icons arrive.
