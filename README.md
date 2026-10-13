@@ -131,17 +131,18 @@ re-pointed. The build refuses to change a recorded file, and `npm test` fails
 if a committed one changes. The EcoVadis medal on the strip is dated
 **Jan 2026**; when it is renewed, rebuild with the next `--version`.
 
-Current: **`sign/v5/certifications-920.png`**, shown at **230×88**. It is
-stored at 4× (920×350) so the small text stays sharp when zoomed and on
-high-DPI screens; the size comes from `width`/`height` on the `<img>`.
-Gmail's "insert image by URL" always shows an image at its pixel size, so
-for a hand-made signature open **`/copy-signature.html`** on the static site,
-click *Copy for Gmail*, and paste into the signature editor. Phase 2 sets the
-same `<img>` through the API.
+Current: **`sign/v6/certifications-920.png`** (BSCI, Sedex, ISO 9001:2015,
+ISO 14001, EcoVadis — no Disney), shown at **230×126**. It is stored at 4×
+(920×503) so the small text stays sharp when zoomed and on high-DPI screens;
+the size comes from `width`/`height` on the `<img>`. Gmail's "insert image by
+URL" always shows an image at its pixel size, so open **`/copy-signature.html`**
+on the static site, click *Copy for Gmail*, and paste into the Admin console
+footer (Gmail → Compliance → Append footer) or a Gmail signature. The page
+also shows the plain image URL. Plain-text emails cannot carry the image.
 
 Older folders stay published for mail already sent, but are not for new
-signatures: `v1` (replaced after Gmail cached it), `v2` and `v3` (too large),
-`v4` (trial sizes at 1× — blurry when zoomed).
+footers or signatures: `v1` (replaced after Gmail cached it), `v2`/`v3` (too
+large), `v4` (trial sizes at 1×, blurry when zoomed), `v5` (includes Disney).
 
 Render settings (dashboard, not a Blueprint):
 

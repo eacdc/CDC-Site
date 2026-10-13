@@ -15,7 +15,7 @@
   button { font: inherit; font-weight: 600; padding: 10px 18px; border: 0; border-radius: 6px;
            background: #1d4ed8; color: #fff; cursor: pointer; }
   button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
-  #status { margin-left: 12px; font-weight: 600; color: #15803d; }
+  #status, #url-status { margin-left: 12px; font-weight: 600; color: #15803d; }
   ol { padding-left: 20px; margin: 0; }
   code { background: #f4f4f5; padding: 1px 4px; border-radius: 4px; font-size: 13px; }
 </style>
@@ -23,24 +23,33 @@
 <body>
 <main>
   <h1>Certification strip for Gmail</h1>
-  <p>The image is stored at 4× resolution (920 px) and sized to show at 230 × 88, so it stays sharp when zoomed or on high-resolution screens.</p>
+  <p>The image is stored at 4× resolution (920 px) and sized to show at 230 × 126, so it stays sharp when zoomed or on high-resolution screens.</p>
 
   <div class="card">
     <!-- This is what gets copied. Width/height keep it at 230 px in the email. -->
-    <div id="strip"><img src="sign/v5/certifications-920.png" width="230" height="88"
-      alt="Certified: BSCI, Disney, Sedex, ISO 9001:2015, ISO 14001, EcoVadis Bronze"
-      style="display:block;border:0;width:230px;height:88px"></div>
+    <div id="strip"><img src="sign/v6/certifications-920.png" width="230" height="126"
+      alt="Certified: BSCI, Sedex, ISO 9001:2015, ISO 14001, EcoVadis Bronze"
+      style="display:block;border:0;width:230px;height:126px"></div>
   </div>
 
   <button id="copy" type="button">Copy for Gmail</button><span id="status" role="status"></span>
 
   <div class="card">
+    <p><strong>Image URL</strong> — only if a tool asks for a link. Pasting this URL into Gmail's
+      "insert image" shows the image at its full 920 px, so prefer <em>Copy for Gmail</em>.</p>
+    <input id="url" type="text" readonly aria-label="Image URL"
+      style="width:100%;box-sizing:border-box;font:13px/1.4 ui-monospace,Consolas,monospace;padding:8px;border:1px solid #d4d4d8;border-radius:6px">
+    <p style="margin:8px 0 0"><button id="copy-url" type="button">Copy URL</button><span id="url-status" role="status"></span></p>
+  </div>
+
+  <div class="card">
     <ol>
       <li>Click <strong>Copy for Gmail</strong> above.</li>
-      <li>In Gmail: <strong>Settings → See all settings → General → Signature</strong>.</li>
+      <li>Company footer: <strong>Admin console → Apps → Google Workspace → Gmail → Compliance → Append footer</strong> (edit the rule).<br>
+          Personal signature: <strong>Gmail → Settings → See all settings → General → Signature</strong>.</li>
       <li>Delete the old logo image, click where it should go, and paste (<code>Ctrl+V</code> / <code>⌘V</code>).</li>
       <li>Do <strong>not</strong> click the image and choose a size — that would undo the 230 px sizing.</li>
-      <li>Scroll down and click <strong>Save Changes</strong>.</li>
+      <li>Save. Send emails with Gmail's <strong>Plain text mode</strong> off — plain-text emails cannot show images.</li>
     </ol>
   </div>
   <p>If the button does nothing, select the image above with the mouse, copy it (<code>Ctrl+C</code>), and paste as in step 3.</p>
@@ -48,6 +57,19 @@
 <script>
   const strip = document.getElementById('strip');
   const status = document.getElementById('status');
+  const urlBox = document.getElementById('url');
+  urlBox.value = strip.querySelector('img').src;
+
+  document.getElementById('copy-url').addEventListener('click', async () => {
+    const out = document.getElementById('url-status');
+    try {
+      await navigator.clipboard.writeText(urlBox.value);
+    } catch {
+      urlBox.select();
+      document.execCommand('copy');
+    }
+    out.textContent = ' Copied.';
+  });
 
   document.getElementById('copy').addEventListener('click', async () => {
     // Absolute URL, so the pasted image points at this site, not a relative path.
