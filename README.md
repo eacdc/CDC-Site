@@ -128,7 +128,12 @@ node scripts/sign-assets-verify.js --base-url https://cdc-assets.onrender.com
 time, so a changed image goes to a new version folder and the signatures are
 re-pointed. The build refuses to change a recorded file, and `npm test` fails
 if a committed one changes. The EcoVadis medal on the strip is dated
-**Jan 2026**; when it is renewed, rebuild with `--version v2`.
+**Jan 2026**; when it is renewed, rebuild with the next `--version`.
+
+Current: **`sign/v2/certifications.png`** (two-row strip). Do not use
+`sign/v1/` — it was replaced once after Gmail had already cached it, so Gmail
+may show the old single-row strip for that URL. A test signature in Gmail
+counts as "published".
 
 Render settings (dashboard, not a Blueprint):
 
