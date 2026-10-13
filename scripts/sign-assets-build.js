@@ -7,13 +7,17 @@
  *   node scripts/sign-assets-build.js --version v2    # after changing an image
  *
  * Every asset is PNG — Gmail and Outlook do not render SVG or WebP reliably.
- * Each is built at 2x its display size so it stays sharp on retina screens.
+ * Icons are built at 2x their display size so they stay sharp on retina
+ * screens; the strip is built at the size it should appear (see below).
  *
  *   facebook / instagram / youtube / linkedin
  *       48x48, displayed at 24x24, must come out under 2 KB.
  *   certifications
  *       the certification strip (BSCI, Disney, Sedex, ISO 9001, ISO 14001,
- *       EcoVadis). 1200 px wide, displayed at 600. Near-white background is
+ *       EcoVadis), two rows of three. 660 px wide and shown at that size:
+ *       Gmail's signature editor inserts an image at its pixel size, and 660
+ *       makes each logo the same size as in the earlier one-row strip
+ *       (1200 px for six logos). Near-white background is
  *       flattened to pure white so no grey box shows against the email body.
  *
  * NEVER OVERWRITE. Gmail's image proxy caches hard, so once a URL is in a
@@ -51,7 +55,7 @@ export const ASSETS = [
 
 export const ICON_PX = 48;
 export const ICON_MAX_BYTES = 2048;
-const BANNER_PX = 1200;
+const BANNER_PX = 660;
 const BANNER_MAX_BYTES = 80 * 1024;
 
 // Anything at least this light on every channel becomes pure white.
