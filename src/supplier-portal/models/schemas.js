@@ -875,6 +875,15 @@ export const userSchema = new Schema({
   employeeLedgerId: Number,
   warehouseId: Number,
   erpUserId: Number,
+  /**
+   * How this account signs in. 'LOCAL' is email + password. 'ERP' is a
+   * passwordless sign-in against the ERP's own UserMaster, provisioned on
+   * first use and keyed by `<username>@erp.<site>` - a synthetic key, not a
+   * mailbox. An ERP account has no usable password and the password login
+   * refuses it, so the two paths cannot be crossed.
+   */
+  authSource: { type: String, enum: ['LOCAL', 'ERP'], default: 'LOCAL' },
+  erpUserName: String,
   isActive: { type: Boolean, default: true },
   lastLoginAt: Date,
 }, { collection: 'sp_users', timestamps: true });

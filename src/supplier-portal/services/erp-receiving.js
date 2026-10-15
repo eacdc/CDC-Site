@@ -21,7 +21,7 @@
 
 import { withTransaction, txQuery, sql, assertSite, hasWriteLogin, db } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX, TOLERANCES, STOCK_REFRESH_PROC } from '../config/constants.js';
-import { allocateVoucherNo, fYearFor } from './erp-voucher.js';
+import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
 import { apportionFreight, invoiceTotals, round } from '../lib/invoice-math.js';
 
 /** Posting is off unless explicitly enabled. */
@@ -55,15 +55,17 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
   }
 
   const voucherDate = new Date();
-  const fYear = fYearFor(voucherDate);
+  // Two forms, deliberately destructured apart: `fYear` is the column value
+  // ('2026-2027'), `suffix` is the voucher-number tail ('_26_27').
+  const { fYear, suffix } = financialYearFor(voucherDate);
   const priced = priceLines({ header, lines });
 
   if (dryRun) {
     return {
       dryRun: true,
       fYear,
-      grn: previewGrn({ header, lines: priced, context, voucherDate, fYear }),
-      pi: previewPi({ header, lines: priced, context, voucherDate, fYear }),
+      grn: previewGrn({ header, lines: priced, context, voucherDate, suffix }),
+      pi: previewPi({ header, lines: priced, context, voucherDate, suffix }),
       closedLines: priced.filter(closesPoLine).map((l) => ({
         transactionDetailId: l.poTransactionDetailId,
         pendingAfter: round((l.poPendingQty || 0) - (l.qty || 0), 3),
@@ -73,9 +75,10 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
   }
 
   return withTransaction(site, async (tx) => {
-    const grn = await writeGrn({ tx, header, lines: priced, context, voucherDate, fYear });
+    const grn = await writeGrn({ tx, header, lines: priced, context, voucherDate, fYear, suffix });
     const pi = await writePurchaseInvoice({
-      tx, header, lines: priced, context, voucherDate, fYear, grnTransactionId: grn.transactionId,
+      tx, header, lines: priced, context, voucherDate, fYear, suffix,
+      grnTransactionId: grn.transactionId,
     });
     const closedLines = await closePoLines({ tx, lines: priced, context });
     return { grn, pi, closedLines, dryRun: false };
@@ -97,9 +100,9 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
  * on the purchase invoice. That makes this write mostly quantities, batch,
  * warehouse and approval flags.
  */
-async function writeGrn({ tx, header, lines, context, voucherDate, fYear }) {
+async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix }) {
   const { maxVoucherNo, voucherNo } = await allocateVoucherNo(tx, {
-    voucherId: VOUCHER.GRN, fYear, table: 'ItemTransactionMain',
+    voucherId: VOUCHER.GRN, fYear, suffix, table: 'ItemTransactionMain',
   });
 
   const inserted = await txQuery(tx, `
@@ -268,9 +271,11 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
  * row per charge ledger. `TotalOverheadAmount` on the header is 0; freight
  * lives in the taxes table, not there.
  */
-async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, fYear, grnTransactionId }) {
+async function writePurchaseInvoice({
+  tx, header, lines, context, voucherDate, fYear, suffix, grnTransactionId,
+}) {
   const { maxVoucherNo, voucherNo } = await allocateVoucherNo(tx, {
-    voucherId: VOUCHER.PURCHASE_INVOICE, fYear, table: 'ItemPurchaseInvoiceMain',
+    voucherId: VOUCHER.PURCHASE_INVOICE, fYear, suffix, table: 'ItemPurchaseInvoiceMain',
   });
 
   const totals = invoiceTotals(lines, {
@@ -584,12 +589,12 @@ function validatePostInput({ header, lines, context }) {
   }
 }
 
-function previewGrn({ header, lines, context, voucherDate, fYear }) {
+function previewGrn({ header, lines, context, voucherDate, suffix }) {
   return {
     table: 'ItemTransactionMain',
     voucherId: VOUCHER.GRN,
     voucherPrefix: VOUCHER_PREFIX[VOUCHER.GRN],
-    voucherNo: `${VOUCHER_PREFIX[VOUCHER.GRN]}<next>_${fYear}`,
+    voucherNo: `${VOUCHER_PREFIX[VOUCHER.GRN]}<next>${suffix}`,
     voucherDate,
     ledgerId: context.supplierLedgerId,
     receivedBy: context.employeeLedgerId,
@@ -610,12 +615,12 @@ function previewGrn({ header, lines, context, voucherDate, fYear }) {
   };
 }
 
-function previewPi({ header, lines, context, voucherDate, fYear }) {
+function previewPi({ header, lines, context, voucherDate, suffix }) {
   const totals = invoiceTotals(lines, { freight: num(header.freight), roundOff: num(header.roundOff) });
   return {
     table: 'ItemPurchaseInvoiceMain',
     voucherId: VOUCHER.PURCHASE_INVOICE,
-    voucherNo: `${VOUCHER_PREFIX[VOUCHER.PURCHASE_INVOICE]}<next>_${fYear}`,
+    voucherNo: `${VOUCHER_PREFIX[VOUCHER.PURCHASE_INVOICE]}<next>${suffix}`,
     voucherDate,
     ledgerId: context.supplierLedgerId,
     purchaseLedgerId: context.purchaseLedgerId,

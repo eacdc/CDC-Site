@@ -50,14 +50,34 @@ export const VOUCHER_PREFIX = {
 };
 
 /**
- * `{Prefix}{MaxVoucherNo padded to 5}_{FYear}` — e.g. `PO02359_26_27`.
- * FYear is already in `26_27` form in the database.
+ * `{Prefix}{MaxVoucherNo padded to 5}{suffix}` — e.g. `PO03408_26_27`.
+ *
+ * The suffix is **not** the `FYear` column. The column stores `2026-2027`;
+ * only the voucher number carries the short `_26_27` form. Verified on both
+ * live databases, October 2026: `PO03408_26_27` has `FYear = '2026-2027'`.
+ *
+ * Conflating the two is not a cosmetic error. A `WHERE FYear = '26_27'`
+ * matches no rows, so `MAX(MaxVoucherNo) + 1` returns 1 and the voucher posts
+ * as `REC00001_26_27` — which already exists. `financialYearFor` returns both
+ * forms, named apart, and the guard below refuses the wrong one.
  */
-export function formatVoucherNo(voucherId, maxVoucherNo, fYear) {
+export function formatVoucherNo(voucherId, maxVoucherNo, suffix) {
   const prefix = VOUCHER_PREFIX[voucherId];
   if (!prefix) throw new Error(`No voucher prefix defined for VoucherID ${voucherId}`);
-  return `${prefix}${String(maxVoucherNo).padStart(5, '0')}_${fYear}`;
+  if (!VOUCHER_SUFFIX_PATTERN.test(String(suffix ?? ''))) {
+    throw new Error(
+      `Voucher number suffix must look like "_26_27", got "${suffix}". ` +
+      'The `2026-2027` form is the FYear column, not the voucher number.',
+    );
+  }
+  return `${prefix}${String(maxVoucherNo).padStart(5, '0')}${suffix}`;
 }
+
+/** `_26_27`. */
+export const VOUCHER_SUFFIX_PATTERN = /^_\d{2}_\d{2}$/;
+
+/** `2026-2027` — the `FYear` column on every voucher table. */
+export const FYEAR_COLUMN_PATTERN = /^\d{4}-\d{4}$/;
 
 /**
  * `ItemGroupMaster` — only nine groups exist. `nameId` is `ItemGroupNameID`,

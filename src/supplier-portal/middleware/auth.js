@@ -18,8 +18,30 @@ import {
   ensureSupplierPortalReady, User, SupplierUser, Session,
 } from '../db/mongo.js';
 import { SITES } from '../config/constants.js';
+import { erpUserByName } from '../services/erp-ledgers.js';
 
 const SESSION_DAYS = Number(process.env.SP_SESSION_DAYS) || 7;
+
+/**
+ * Roles an ERP-authenticated account is given on first sign-in. Receiving
+ * needs STORE; anything wider should be granted deliberately on the account.
+ */
+function erpLoginRoles() {
+  const configured = (process.env.SP_ERP_LOGIN_ROLES || '').split(',')
+    .map((r) => r.trim().toUpperCase()).filter(Boolean);
+  return configured.length ? configured : ['STORE'];
+}
+
+/**
+ * ERP sign-in is on unless explicitly turned off.
+ *
+ * It is passwordless by design, matching the Stock Issue Tool and the ERP's
+ * own production entry tool. `SP_ERP_LOGIN=false` closes it on a server where
+ * that is not wanted; the password path is unaffected either way.
+ */
+export function erpLoginEnabled() {
+  return (process.env.SP_ERP_LOGIN ?? '').trim().toLowerCase() !== 'false';
+}
 
 function bearerToken(req) {
   const header = req.headers.authorization || '';
@@ -36,6 +58,13 @@ export async function loginUser({ email, password, site, employeeLedgerId, wareh
   const invalid = new Error('Email or password is incorrect.');
   invalid.status = 401;
   if (!user) throw invalid;
+  // An ERP account's stored hash is random and matches nothing. Saying so
+  // beats letting it fail as "wrong password" forever.
+  if (user.authSource === 'ERP') {
+    const err = new Error('This account signs in with its ERP user name, not a password.');
+    err.status = 400;
+    throw err;
+  }
   if (!await bcrypt.compare(String(password || ''), user.passwordHash)) throw invalid;
 
   const chosenSite = site || user.defaultSite;
@@ -84,6 +113,137 @@ export async function loginUser({ email, password, site, employeeLedgerId, wareh
     context: {
       site: chosenSite,
       erpUserId: user.erpUserId ?? null,
+      employeeLedgerId: employeeLedgerId ?? user.employeeLedgerId ?? null,
+      warehouseId: warehouseId ?? user.warehouseId ?? null,
+    },
+  };
+}
+
+/**
+ * Sign in with an ERP user name, the way the Stock Issue Tool does.
+ *
+ * No password: the name is looked up in the ERP's own `UserMaster` for that
+ * site, exactly as the production entry tool does it. That is deliberate and
+ * is the house pattern - the ERP is the user list, and the `UserID` every
+ * written row needs (`UserID`, `CreatedBy`, `ModifiedBy`) comes straight from
+ * it rather than from a second list somebody has to keep in step.
+ *
+ * The account is provisioned in `sp_users` on first sign-in so that
+ * `requireAuth`, `requireRole` and the audit log keep working unchanged. It is
+ * keyed per site, which is correct rather than convenient: KOL and AHM are
+ * separate databases and `UserID` 7 in one is a different person from
+ * `UserID` 7 in the other.
+ *
+ * `employeeLedgerId` is NOT derived from `UserMaster.EmployeeId` - that column
+ * is null on every active user - so the caller still states which employee
+ * ledger they are receiving as.
+ */
+export async function loginErpUser({
+  username, site, employeeLedgerId, warehouseId, userAgent, ip,
+}) {
+  await ensureSupplierPortalReady();
+
+  if (!erpLoginEnabled()) {
+    const err = new Error('ERP sign-in is turned off on this server (SP_ERP_LOGIN=false).');
+    err.status = 403;
+    throw err;
+  }
+
+  const chosenSite = String(site || '').toUpperCase();
+  if (!SITES.includes(chosenSite)) {
+    const err = new Error(`Unknown site "${site}". Expected one of ${SITES.join(', ')}.`);
+    err.status = 400;
+    throw err;
+  }
+
+  const name = String(username || '').trim();
+  if (!name) {
+    const err = new Error('Enter your ERP user name.');
+    err.status = 400;
+    throw err;
+  }
+
+  const erpUser = await erpUserByName(chosenSite, name);
+  if (!erpUser) {
+    const err = new Error(`No active ERP user "${name}" in ${chosenSite}.`);
+    err.status = 401;
+    throw err;
+  }
+
+  // A synthetic, stable key - never a mailbox, and it cannot collide with a
+  // real address because no CDC mail domain is `erp.kol` or `erp.ahm`.
+  const key = `${String(erpUser.UserName).trim().toLowerCase().replace(/\s+/g, '.')}@erp.${chosenSite.toLowerCase()}`;
+
+  let user = await User.findOne({ email: key });
+  if (!user) {
+    user = await User.create({
+      email: key,
+      // Unusable by construction: nothing bcrypt-compares equal to a random
+      // hex string, and the password path refuses ERP accounts before it
+      // would ever get here.
+      passwordHash: crypto.randomBytes(32).toString('hex'),
+      displayName: erpUser.UserName,
+      roles: erpLoginRoles(),
+      defaultSite: chosenSite,
+      allowedSites: [chosenSite],
+      erpUserId: erpUser.UserID,
+      erpUserName: erpUser.UserName,
+      authSource: 'ERP',
+    });
+  } else {
+    if (!user.isActive) {
+      const err = new Error('Account is no longer active.');
+      err.status = 403;
+      throw err;
+    }
+    // The ERP is the source of truth; re-reading it on each sign-in means a
+    // renamed or re-numbered user corrects itself without an admin step.
+    user.erpUserId = erpUser.UserID;
+    user.erpUserName = erpUser.UserName;
+    user.displayName = erpUser.UserName;
+    if (!(user.allowedSites || []).includes(chosenSite)) {
+      user.allowedSites = (user.allowedSites || []).concat(chosenSite);
+    }
+  }
+
+  // Remember the receiving context, so the next sign-in starts filled in.
+  if (employeeLedgerId !== undefined && employeeLedgerId !== null) user.employeeLedgerId = employeeLedgerId;
+  if (warehouseId !== undefined && warehouseId !== null) user.warehouseId = warehouseId;
+  user.lastLoginAt = new Date();
+  await user.save();
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000);
+  await Session.create({
+    token,
+    principalType: 'USER',
+    principalId: user._id,
+    context: {
+      site: chosenSite,
+      erpUserId: erpUser.UserID,
+      employeeLedgerId: employeeLedgerId ?? user.employeeLedgerId ?? null,
+      warehouseId: warehouseId ?? user.warehouseId ?? null,
+    },
+    expiresAt,
+    userAgent,
+    ip,
+  });
+
+  return {
+    token,
+    expiresAt,
+    user: {
+      id: user._id,
+      email: user.email,
+      displayName: user.displayName,
+      roles: user.roles,
+      allowedSites: user.allowedSites,
+      authSource: 'ERP',
+      erpUserName: erpUser.UserName,
+    },
+    context: {
+      site: chosenSite,
+      erpUserId: erpUser.UserID,
       employeeLedgerId: employeeLedgerId ?? user.employeeLedgerId ?? null,
       warehouseId: warehouseId ?? user.warehouseId ?? null,
     },

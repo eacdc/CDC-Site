@@ -1,0 +1,62 @@
+{
+  "sign/v1/certifications.png": {
+    "sha256": "81625f16161e90474e7a2212917cf14d5f9c40bb7ee52d39e0361f011db067c6",
+    "bytes": 38817,
+    "width": 1200,
+    "height": 456
+  },
+  "sign/v2/certifications.png": {
+    "sha256": "81625f16161e90474e7a2212917cf14d5f9c40bb7ee52d39e0361f011db067c6",
+    "bytes": 38817,
+    "width": 1200,
+    "height": 456
+  },
+  "sign/v3/certifications.png": {
+    "sha256": "4ab1939d12454fbe25521d568bb52798e6eef44219ba57db7678fe445b410769",
+    "bytes": 47780,
+    "width": 660,
+    "height": 251
+  },
+  "sign/v4/certifications-125.png": {
+    "sha256": "4da042cfa5e39c94b663c4e254041b1c4b282bd8fe802e6bef1cef30f0f69d89",
+    "bytes": 4254,
+    "width": 125,
+    "height": 47
+  },
+  "sign/v4/certifications-230.png": {
+    "sha256": "6e0f060a9e1e56947e2071326f18f80e84245912442a37699d50e3163e8ee3ae",
+    "bytes": 9626,
+    "width": 230,
+    "height": 87
+  },
+  "sign/v4/certifications-280.png": {
+    "sha256": "8097818eebf8c42d464ac0c9da6b5d4f7e9e7dd81b647ef61035b45a69c9902f",
+    "bytes": 12726,
+    "width": 280,
+    "height": 106
+  },
+  "sign/v4/certifications-330.png": {
+    "sha256": "98dbe48afe6c4ce2ebe99a231554082fa25db67955a762cbe373e28f38153ab0",
+    "bytes": 16018,
+    "width": 330,
+    "height": 125
+  },
+  "sign/v4/certifications-440.png": {
+    "sha256": "d0a6c4c972038eeec4e77c33c5099692d3fb88681f0be18f3afb7d959db1be39",
+    "bytes": 25686,
+    "width": 440,
+    "height": 167
+  },
+  "sign/v5/certifications-920.png": {
+    "sha256": "5d8a59f2e9ce59864c498ea18165ef765a96d41e9bbfdaddc359dc302bb81f8e",
+    "bytes": 81660,
+    "width": 920,
+    "height": 350
+  },
+  "sign/v6/certifications-920.png": {
+    "sha256": "98bc5cc9c594f8da6ce6e4aecec8fe7fd6697a2526fb95d52d6ebb3d5d86c26a",
+    "bytes": 30310,
+    "width": 920,
+    "height": 503
+  }
+}

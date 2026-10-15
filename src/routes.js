@@ -1949,6 +1949,79 @@ router.get('/production/search-by-machine', async (req, res) => {
 	}
 });
 
+// Job diagnostics: every component, form and process of a job card, plus the
+// three conditions GetPendingProcesses_ForMachineAndContent applies, so a
+// process that never shows up on a machine can be explained without opening
+// SSMS. ShowsInApp is that procedure's filter expressed as a flag — when it is
+// 0, the row tells you which of the three conditions failed.
+router.get('/jobs/diagnostics', async (req, res) => {
+	try {
+		const { jobNumber, database } = req.query || {};
+		const selectedDatabase = (database || '').toUpperCase();
+		if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+			return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+		}
+
+		const search = String(jobNumber || '').trim();
+		if (search.length < 3) {
+			return res.status(400).json({ status: false, error: 'Enter at least 3 characters of the job number' });
+		}
+
+		const pool = await getPool(selectedDatabase);
+		const result = await pool.request()
+			.input('Search', sql.NVarChar(120), `%${search}%`)
+			.query(`
+				SELECT
+					c.JobCardContentNo,
+					c.PlanContName                                   AS ComponentName,
+					j.JobBookingNo,
+					j.JobName,
+					jsr.JobCardFormNo,
+					jsr.ProcessID,
+					pm.ProcessName,
+					jsr.SequenceNo,
+					jsr.ScheduleQty,
+					jsr.Status,
+					CAST(ISNULL(jsr.IsOnlineProcess, 0) AS INT)      AS IsOnlineProcess,
+					CAST(ISNULL(jsr.IsDeletedTransaction, 0) AS INT) AS IsDeleted,
+					(
+						SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName)
+						FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
+						JOIN dbo.MachineMaster mm
+						     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
+						    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
+					)                                                AS Machines,
+					ISNULL((
+						SELECT SUM(ISNULL(pe.ProductionQuantity, 0))
+						FROM dbo.ProductionEntry pe
+						WHERE pe.JobBookingJobCardContentsID = jsr.JobBookingJobCardContentsID
+						  AND pe.ProcessID = jsr.ProcessID
+						  AND ISNULL(pe.JobCardFormNo, N'') = ISNULL(jsr.JobCardFormNo, N'')
+					), 0)                                            AS ProducedQty,
+					CASE WHEN jsr.Status IN (N'In Queue', N'Part Complete', N'Running')
+					      AND ISNULL(jsr.IsOnlineProcess, 0) = 0
+					      AND ISNULL(jsr.IsDeletedTransaction, 0) = 0
+					     THEN 1 ELSE 0 END                           AS ShowsInApp
+				FROM dbo.JobBookingJobCardContents c
+				JOIN dbo.JobBookingJobCard j
+				     ON j.JobBookingID = c.JobBookingID
+				JOIN dbo.JobScheduleRelease jsr
+				     ON jsr.JobBookingJobCardContentsID = c.JobBookingJobCardContentsID
+				LEFT JOIN dbo.ProcessMaster pm
+				     ON pm.ProcessID = jsr.ProcessID
+				    AND ISNULL(pm.isdeletedtransaction, 0) = 0
+				WHERE c.JobCardContentNo LIKE @Search
+				ORDER BY c.JobCardContentNo, pm.ProcessName,
+				         LEN(jsr.JobCardFormNo), jsr.JobCardFormNo
+			`);
+
+		return res.json({ status: true, rows: result.recordset || [] });
+	} catch (err) {
+		console.error('Job diagnostics error:', err);
+		return res.status(500).json({ status: false, error: err.message || 'Internal server error' });
+	}
+});
+
 // Client master list (active clients only, from LedgerMaster)
 router.get('/clients/master-list', async (req, res) => {
 	try {
@@ -2088,19 +2161,43 @@ router.post('/processes/start-async', async (req, res) => {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
 
+    // Production_Start_Manu_v2's "machine already has an active status" check
+    // sits before its BEGIN TRAN, so the UPDLOCK it asks for is released as
+    // soon as that SELECT ends. Two starts for the same machine that overlap
+    // therefore both pass the check and both insert, leaving the machine with
+    // two production entries; completing one marks the shared
+    // JobScheduleRelease row Complete, which hides the component from the
+    // search and strands the other with its machine row open forever — the
+    // machine can then never be started again. Refuse the second start here,
+    // where the first is still visibly running.
+    const machineIdNum = Number(MachineID);
+    for (const existing of jobs.values()) {
+      if (existing.type === 'start'
+        && (existing.status === 'pending' || existing.status === 'processing')
+        && existing.database === selectedDatabase
+        && existing.requestData.MachineID === machineIdNum) {
+        console.log(`[JOB] Rejected start for machine ${machineIdNum}: job ${existing.id} is still ${existing.status}`);
+        return res.status(409).json({
+          status: false,
+          error: 'A start is already running for this machine. Please wait for it to finish before starting another job.'
+        });
+      }
+    }
+
     const jobId = generateJobId();
-    
+
     // Store job in memory
     jobs.set(jobId, {
       id: jobId,
       type: 'start',
       status: 'pending',
+      database: selectedDatabase,
       requestData: {
         UserID: Number(UserID),
         EmployeeID: Number(EmployeeID),
         ProcessID: Number(ProcessID),
         JobBookingJobCardContentsID: Number(JobBookingJobCardContentsID),
-        MachineID: Number(MachineID),
+        MachineID: machineIdNum,
         JobCardFormNo: String(JobCardFormNo)
       },
       createdAt: new Date()
@@ -3379,6 +3476,122 @@ router.get('/grn/delivery-note-dispatch-pdf', async (req, res) => {
     } catch (err) {
         console.error('GRN delivery note dispatch PDF error:', err);
         return res.status(500).json({ status: false, error: 'Failed to generate dispatch PDF' });
+    }
+});
+
+function escapeExcelXml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function excelSsCell(value) {
+    if (value == null || value === '') {
+        return '<Cell><Data ss:Type="String"></Data></Cell>';
+    }
+    const text = String(value).trim();
+    if (/^-?\d+(\.\d+)?$/.test(text)) {
+        return `<Cell><Data ss:Type="Number">${text}</Data></Cell>`;
+    }
+    return `<Cell><Data ss:Type="String">${escapeExcelXml(text)}</Data></Cell>`;
+}
+
+function excelSsRow(values) {
+    return `<Row>${values.map((v) => excelSsCell(v)).join('')}</Row>`;
+}
+
+function buildDispatchExcelXml(header, lines, username) {
+    const infoRows = [
+        excelSsRow(['Challan No', header.challanNo || '']),
+        excelSsRow(['Date', header.challanDate || '']),
+        excelSsRow(['PO No', header.poNo || '']),
+        excelSsRow(['Client', header.clientName || '']),
+        excelSsRow(['Client Address', header.clientAddress || '']),
+        excelSsRow(['Delivered To', header.deliveredToName || '']),
+        excelSsRow(['Delivered To Address', header.deliveredToAddress || '']),
+        excelSsRow(['Container No', header.containerNo || '']),
+        excelSsRow(['Seal No', header.sealNo || '']),
+        excelSsRow(['Transporter', header.transporterName || '']),
+        excelSsRow(['Vehicle No', header.vehicleNo || '']),
+        excelSsRow(['Remark', header.remark || '']),
+        excelSsRow(['Created By', username || '']),
+        excelSsRow(['']),
+        excelSsRow([
+            'PWO No',
+            'Product Name',
+            'HSN Code',
+            'No of Boxes',
+            'Total Quantity',
+            'Gross Weight (Kg)',
+            'Batch No.',
+            'Barcode Range'
+        ])
+    ].join('');
+
+    const lineRows = (lines || []).map((line) => excelSsRow([
+        line.pwoNo,
+        line.productName,
+        line.hsnCode,
+        line.noOfBoxes,
+        line.totalQuantity,
+        line.grossWeightKg,
+        line.batchNo,
+        line.barcodeRange
+    ])).join('');
+
+    return [
+        '<?xml version="1.0"?>',
+        '<?mso-application progid="Excel.Sheet"?>',
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"',
+        ' xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">',
+        '<Worksheet ss:Name="Dispatch Details">',
+        `<Table>${infoRows}${lineRows}</Table>`,
+        '</Worksheet>',
+        '</Workbook>'
+    ].join('');
+}
+
+router.get('/grn/delivery-note-dispatch-excel', async (req, res) => {
+    try {
+        const { database, voucherNo, username } = req.query || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const voucherNoText = String(voucherNo || '').trim();
+        if (!voucherNoText) {
+            return res.status(400).json({ status: false, error: 'Invalid or missing voucherNo' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('VoucherNo', sql.NVarChar(255), voucherNoText)
+            .execute('dbo.GetDeliveryNoteDetailsByBarcode_Manu');
+
+        const headerRow = (result.recordsets?.[0] || result.recordset || [])[0];
+        const header = normalizeDispatchHeader(headerRow);
+        if (!header) {
+            return res.status(404).json({ status: false, error: 'Delivery note not found' });
+        }
+
+        const statusLower = String(header.status || '').toLowerCase();
+        if (statusLower && statusLower !== 'success') {
+            return res.status(400).json({ status: false, error: header.status || 'Failed to load delivery note details' });
+        }
+
+        const lineRows = result.recordsets?.[1] || [];
+        const lines = lineRows.map(normalizeDispatchLine).filter(Boolean);
+        const xml = buildDispatchExcelXml(header, lines, String(username || '').trim());
+        const safeName = voucherNoText.replace(/[^\w.-]+/g, '_');
+        res.setHeader('Content-Type', 'application/vnd.ms-excel');
+        res.setHeader('Content-Disposition', `attachment; filename="Dispatch_${safeName}.xls"`);
+        return res.send(xml);
+    } catch (err) {
+        console.error('GRN delivery note dispatch Excel error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to generate dispatch Excel' });
     }
 });
 
@@ -7014,6 +7227,90 @@ async function getLiveBilledQtyByOp(jobNumbers, excludeBillNumber) {
   return billed;
 }
 
+// What a job's operations already hold, per opId:
+//   { opId: { wdBilled, wdUnsaved, liveBilled, recorded } }
+//
+// Contractor_WD is the running record of work done, and pending is derived from
+// it. But a billed row can go missing from Contractor_WD while the bill that
+// charged for the work is still live — an old reversal bug, a delete that could
+// not match the row, a contractor id that no longer resolves. Pending then reads
+// as if the work had never been done, the entry screen offers the whole
+// operation again, and it gets billed a second time. That is how a job billed
+// and paid in January came back months later as a full set of fresh rows.
+//
+// Non-deleted bills are the source of truth for what has been charged, so the
+// billed side is whichever is larger: the Contractor_WD billed rows, or the
+// quantity the live bills carry. Work saved and not yet submitted has no bill
+// behind it, so it is always added on top.
+//
+// extraBilledByOpId folds in a bill the caller is about to write, and
+// excludeBillNumber leaves out one it is about to delete or replace.
+async function recordedWorkByOpId(jobOpsMaster, options = {}) {
+  const { excludeBillNumber, session, extraBilledByOpId } = options;
+  const out = {};
+  if (!jobOpsMaster) return out;
+
+  const jobNumber = String(jobOpsMaster.jobId || '').trim();
+  const ops = jobOpsMaster.ops || [];
+  const blank = () => ({ wdBilled: 0, wdUnsaved: 0, liveBilled: 0, recorded: 0 });
+  ops.forEach(op => { out[String(op.opId)] = blank(); });
+
+  const wdQuery = ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } });
+  if (session) wdQuery.session(session);
+  const wdDocs = await wdQuery.lean();
+  (wdDocs || []).forEach(doc => {
+    (doc.opsDone || []).forEach(od => {
+      if (od.opsId == null) return;
+      const k = String(od.opsId);
+      if (!out[k]) out[k] = blank();
+      const qty = Number(od.opsDoneQty || 0);
+      if (isOpsDoneUnsaved(od)) out[k].wdUnsaved += qty;
+      else out[k].wdBilled += qty;
+    });
+  });
+
+  // Bill lines are keyed by job, operation name and rate, so the job's own
+  // operations have to be named before they can be matched.
+  const opObjectIds = ops.map(op => {
+    try { return new mongoose.Types.ObjectId(op.opId); } catch { return null; }
+  }).filter(Boolean);
+  const opQuery = Operation.find({ _id: { $in: opObjectIds } });
+  if (session) opQuery.session(session);
+  const opDocs = await opQuery.lean();
+  const nameByOpId = {};
+  opDocs.forEach(o => { nameByOpId[o._id.toString()] = String(o.opsName || '').trim(); });
+
+  const billedByKey = await getLiveBilledQtyByOp([jobNumber], excludeBillNumber);
+  ops.forEach(op => {
+    const k = String(op.opId);
+    const name = nameByOpId[k];
+    if (!name) return;
+    const rate = parseFloat(Number(op.valuePerBook || 0).toFixed(2));
+    out[k].liveBilled = Number(billedByKey[[jobNumber, name, rate].join('|')] || 0);
+  });
+
+  if (extraBilledByOpId) {
+    Object.keys(extraBilledByOpId).forEach(k => {
+      if (!out[k]) out[k] = blank();
+      out[k].liveBilled += Number(extraBilledByOpId[k] || 0);
+    });
+  }
+
+  Object.keys(out).forEach(k => {
+    const e = out[k];
+    e.recorded = e.wdUnsaved + Math.max(e.wdBilled, e.liveBilled);
+  });
+  return out;
+}
+
+// Flat { opId: recorded } view of the above, for callers that only need the sum.
+async function recordedQtyByOpId(jobOpsMaster, options = {}) {
+  const detail = await recordedWorkByOpId(jobOpsMaster, options);
+  const flat = {};
+  Object.keys(detail).forEach(k => { flat[k] = detail[k].recorded; });
+  return flat;
+}
+
 // Flip the Contractor_WD opsDone entries covered by a bill to savedInBill:'Yes'.
 // Shared by POST /bills and POST /work/mark-billed: creating a bill and marking
 // its work as billed used to be two separate round trips, so a failure of the
@@ -9488,30 +9785,34 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       return res.status(404).json({ error: 'Job not found in JobOpsMaster' });
     }
 
-    // Work already recorded per operation, across every contractor. The save
-    // cap is measured against this, so returning it lets the entry screen show
-    // the same limit instead of accepting a number the server will reject.
-    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
-    const recordedByOp = {};
-    (wdDocsForJob || []).forEach(doc => {
-      (doc.opsDone || []).forEach(od => {
-        if (od.opsId == null) return;
-        const k = String(od.opsId);
-        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
-      });
-    });
+    // Work already recorded per operation, across every contractor, counting a
+    // live bill where Contractor_WD has lost its billed row. The save cap is
+    // measured against this, so returning it lets the entry screen show the same
+    // limit instead of accepting a number the server will reject.
+    const recordedByOp = await recordedQtyByOpId(jobOpsMaster);
 
     const allowance = packagingAllowanceFor(jobOpsMaster);
 
-    // pendingOpsQty reaching 0 means the job's own quantity is covered, which
-    // is the end of the road for an ordinary job. A Packaging job may
-    // legitimately run past it by the allowance — spoilage and re-packing are
-    // real work — and the save cap already accepts that quantity, so an
-    // operation still holding allowance has to stay on the screen or there is
-    // no way to enter it. Its pending reads 0, and allowanceRoom carries what
-    // is left so the entry screen can say why the row is there.
+    // Pending is derived from the work recorded, so it is derived here too
+    // rather than trusted from the document. A stored value that has drifted
+    // above the truth is exactly what offers work that was already billed, and
+    // the save cap would refuse it anyway.
+    const effectivePending = {};
+    (jobOpsMaster.ops || []).forEach(op => {
+      const total = Number(op.totalOpsQty || 0);
+      const recorded = recordedByOp[String(op.opId)] || 0;
+      effectivePending[String(op.opId)] = Math.max(0, Math.min(total, total - recorded));
+    });
+
+    // Pending reaching 0 means the job's own quantity is covered, which is the
+    // end of the road for an ordinary job. A Packaging job may legitimately run
+    // past it by the allowance — spoilage and re-packing are real work — and the
+    // save cap already accepts that quantity, so an operation still holding
+    // allowance has to stay on the screen or there is no way to enter it. Its
+    // pending reads 0, and allowanceRoom carries what is left so the entry
+    // screen can say why the row is there.
     const pendingOps = (jobOpsMaster.ops || []).filter(op => {
-      if (Number(op.pendingOpsQty || 0) > 0) return true;
+      if (effectivePending[String(op.opId)] > 0) return true;
       if (allowance <= 0) return false;
       const recorded = recordedByOp[String(op.opId)] || 0;
       return Number(op.totalOpsQty || 0) + allowance - recorded > QTY_TOL;
@@ -9559,18 +9860,21 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
       const operationData = opsMap[op.opId] || {};
       const rate = operationData.ratePerUnit || 0;
       const recordedOpsQty = recordedByOp[String(op.opId)] || 0;
+      const pending = effectivePending[String(op.opId)] || 0;
 
       return {
         opId: op.opId,
         opsName: operationData.opsName || 'Unknown',
         totalOpsQty: op.totalOpsQty,
-        pendingOpsQty: op.pendingOpsQty,
+        pendingOpsQty: pending,
+        // What the document holds, so a drift is visible rather than silent.
+        storedPendingOpsQty: Number(op.pendingOpsQty || 0),
         recordedOpsQty,
         // What the allowance still holds once the job's own quantity is spent.
         // 0 on every non-Packaging job, and on a Packaging operation that has
         // used the allowance up.
         allowanceRoom: allowance > 0
-          ? Math.max(0, Number(op.totalOpsQty || 0) + allowance - recordedOpsQty - Math.max(0, Number(op.pendingOpsQty || 0)))
+          ? Math.max(0, Number(op.totalOpsQty || 0) + allowance - recordedOpsQty - pending)
           : 0,
         qtyPerBook: op.qtyPerBook,
         rate: rate,
@@ -9795,16 +10099,12 @@ router.post('/work/unsave', async (req, res) => {
               // adding back handed the overshoot out as fresh pending — an
               // operation with 100000 left, saved at 106000, came back as
               // 106000. The Contractor_WD row was already removed above, so this
-              // read is the state after the reversal.
-              const wdDocsAfterUnsave = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
+              // read is the state after the reversal. A live bill still counts:
+              // removing a row that duplicates billed work must not hand the
+              // billed quantity back as pending.
+              const recordedAfterUnsaveByOp = await recordedQtyByOpId(jobOpsMaster);
               const unsaveOpKey = String(jobOp.opId);
-              let recordedAfterUnsave = 0;
-              (wdDocsAfterUnsave || []).forEach(doc => {
-                (doc.opsDone || []).forEach(od => {
-                  if (od.opsId == null || String(od.opsId) !== unsaveOpKey) return;
-                  recordedAfterUnsave += Number(od.opsDoneQty || 0);
-                });
-              });
+              const recordedAfterUnsave = Number(recordedAfterUnsaveByOp[unsaveOpKey] || 0);
               const totalOpsQtyForUnsave = Number(jobOp.totalOpsQty || 0);
               jobOp.pendingOpsQty = Math.min(totalOpsQtyForUnsave, Math.max(0, totalOpsQtyForUnsave - recordedAfterUnsave));
               jobOp.lastUpdatedDate = new Date();
@@ -9881,15 +10181,9 @@ router.post('/work/save/jobopsmaster', async (req, res) => {
     const allowance = packagingAllowanceFor(jobOpsMaster);
     const rejected = [];
 
-    const wdDocsForJob = await ContractorWD.find({ jobId: jobNumber, isAdhoc: { $ne: true } }).lean();
-    const recordedByOp = {};
-    (wdDocsForJob || []).forEach(doc => {
-      (doc.opsDone || []).forEach(od => {
-        if (od.opsId == null) return;
-        const k = String(od.opsId);
-        recordedByOp[k] = (recordedByOp[k] || 0) + Number(od.opsDoneQty || 0);
-      });
-    });
+    // Counts a live bill where Contractor_WD has lost its billed row, so work
+    // that has already been charged for cannot be entered again.
+    const recordedByOp = await recordedQtyByOpId(jobOpsMaster);
     // Several operations can arrive in one request, so count what this request
     // has already claimed for an operation as well.
     const claimedByOp = {};
@@ -11086,19 +11380,10 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       // its total the overshoot is no longer visible there — moving pending by
       // the delta then carries that gap forward. Deriving it from the recorded
       // work instead keeps the figure right, the same way the delete reversal
-      // now does.
-      const wdDocsForEdit = await ContractorWD.find({
-        jobId: jobNumber,
-        isAdhoc: { $ne: true }
-      }).session(session).lean();
-      const recordedByOpForEdit = {};
-      (wdDocsForEdit || []).forEach(doc => {
-        (doc.opsDone || []).forEach(od => {
-          if (od.opsId == null) return;
-          const k = String(od.opsId);
-          recordedByOpForEdit[k] = (recordedByOpForEdit[k] || 0) + Number(od.opsDoneQty || 0);
-        });
-      });
+      // now does. Live bills count too, this one included: it has not been saved
+      // yet, so the stored quantities are still the ones the deltas are measured
+      // from.
+      const recordedByOpForEdit = await recordedQtyByOpId(jobOpsMaster, { session });
       // Several changes can land on one operation, so the deltas accumulate.
       const appliedDeltaByOp = {};
       // The operations this edit touches, so pending can be set for them once
@@ -11241,17 +11526,23 @@ router.put('/bills/:billNumber/edit-qty', async (req, res) => {
       // less than the bill claimed, Contractor_WD keeps the quantity while a
       // delta-based pending would hand it back as work to do. The save cap
       // measures against Contractor_WD, so that pending was unusable anyway.
-      const wdDocsAfterEdit = await ContractorWD.find({
-        jobId: jobNumber,
-        isAdhoc: { $ne: true }
-      }).session(session).lean();
-      const recordedAfterByOpForEdit = {};
-      (wdDocsAfterEdit || []).forEach(doc => {
-        (doc.opsDone || []).forEach(od => {
-          if (od.opsId == null) return;
-          const k = String(od.opsId);
-          recordedAfterByOpForEdit[k] = (recordedAfterByOpForEdit[k] || 0) + Number(od.opsDoneQty || 0);
+      //
+      // This bill has not been written yet, so its stored quantities are stale:
+      // it is left out of the live-bill side and its new quantities are folded
+      // in from the copy this request has already edited.
+      const newQtyByOpIdForEdit = {};
+      (bill.jobs || []).forEach(j => {
+        if (String(j.jobNumber || '').trim() !== jobNumber) return;
+        (j.ops || []).forEach(op => {
+          const k = String(op.opId || '').trim();
+          if (!k) return;
+          newQtyByOpIdForEdit[k] = (newQtyByOpIdForEdit[k] || 0) + Number(op.qtyCompleted || 0);
         });
+      });
+      const recordedAfterByOpForEdit = await recordedQtyByOpId(jobOpsMaster, {
+        session,
+        excludeBillNumber: bill.billNumber,
+        extraBilledByOpId: newQtyByOpIdForEdit
       });
 
       for (const [opKey, jobOp] of touchedJobOps.entries()) {
@@ -11779,19 +12070,12 @@ router.delete('/bills/:billNumber', async (req, res) => {
 
       if (jobOpsMaster) {
         // The work still recorded against this job now that the reversal is
-        // saved, across every contractor. Same query the pending endpoint and
-        // the save cap use, so the three cannot disagree.
-        const wdDocsAfterDelete = await ContractorWD.find({
-          jobId: job.jobNumber,
-          isAdhoc: { $ne: true }
-        }).session(session).lean();
-        const recordedAfterByOp = {};
-        (wdDocsAfterDelete || []).forEach(doc => {
-          (doc.opsDone || []).forEach(od => {
-            if (od.opsId == null) return;
-            const opKey = String(od.opsId);
-            recordedAfterByOp[opKey] = (recordedAfterByOp[opKey] || 0) + Number(od.opsDoneQty || 0);
-          });
+        // saved, across every contractor, and still counting the other live
+        // bills — this one is on its way out, so it is left off. Same figure the
+        // pending endpoint and the save cap use, so the three cannot disagree.
+        const recordedAfterByOp = await recordedQtyByOpId(jobOpsMaster, {
+          session,
+          excludeBillNumber: bill.billNumber
         });
 
         // Pending is recomputed rather than having the quantity added back:
