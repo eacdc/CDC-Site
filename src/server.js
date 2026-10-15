@@ -152,6 +152,12 @@ app.use('/fg-qc', express.static(fgQcDir));
 const pendingDashboardDir = join(__dirname, '..', '..', 'Pending Dashboard');
 app.use('/pending-dashboard', express.static(pendingDashboardDir));
 
+// GRN Creator - supplier invoice to a GRN + purchase invoice. Static only; it
+// drives the supplier portal's own /receiving endpoints and holds no logic of
+// its own, so the checks and the write gate stay server-side.
+const grnCreatorDir = join(__dirname, '..', '..', 'GRN Creator');
+app.use('/grn-creator', express.static(grnCreatorDir));
+
 // CDC Bills Digitization Platform
 app.use('/api/cdc-bills/auth', cdcBillsAuthRoutes);
 app.use('/api/purchase-bills', purchaseBillsRoutes);
