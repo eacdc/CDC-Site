@@ -1,3 +1,5 @@
+import { SEVERITIES } from '../llm/types.js';
+
 /**
  * Pure first-alert decisions — no I/O, so the timing rules are directly
  * testable.
@@ -10,13 +12,47 @@
  */
 
 /**
+ * Severity as an order, so a floor can be compared against it. The array in
+ * llm/types.js is already low -> medium -> high; reading the rank from it means
+ * adding a severity there cannot leave this behind.
+ */
+const rankOf = (severity) => SEVERITIES.indexOf(severity);
+
+/**
+ * Is this concern severe enough to disturb somebody?
+ *
+ * Management asked to hear about major breakdowns and not normal issues. A
+ * concern below the floor is still raised, still on the dashboard, still
+ * searchable - it simply never reaches a phone.
+ *
+ * An unrecognised severity passes. The safe direction: a concern we cannot
+ * grade should not be the one that goes unreported, and the eval now checks
+ * severities precisely because this decision rests on them.
+ */
+export function severeEnoughToAlert(severity, floor) {
+  const rank = rankOf(severity);
+  const bar = rankOf(floor);
+  if (rank < 0 || bar < 0) return true;
+  return rank >= bar;
+}
+
+/** The severity floor for this group's alerts, falling back to internal. */
+export function alertFloorFor(group, alertMinSeverity) {
+  return alertMinSeverity[group?.kind] ?? alertMinSeverity.internal;
+}
+
+/**
  * Is this concern due for its first DM?
  *
  * The clock runs from `firstMsgTs` - the triggering message - not `createdAt`,
  * which is whenever the poll happened to notice, up to a cycle later. "15
  * minutes after the message" has to mean the message.
  */
-export function dueForFirstAlert(concern, now, afterMin) {
+export function dueForFirstAlert(concern, now, afterMin, floor = null) {
+  // Below the bar management set: raised and visible, but never a DM. Checked
+  // first because it is the cheapest test and the most common reason to stop.
+  if (floor && !severeEnoughToAlert(concern.severity, floor)) return false;
+
   // Someone already has it. Acknowledged or resolved inside the window is
   // exactly the outcome the wait exists to produce.
   if (concern.status !== 'open') return false;

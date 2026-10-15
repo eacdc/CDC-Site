@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dueForFirstAlert, alertDelayFor } from './router/alert-rules.js';
+import {
+  dueForFirstAlert,
+  alertDelayFor,
+  alertFloorFor,
+  severeEnoughToAlert,
+} from './router/alert-rules.js';
 
 const NOW = new Date('2026-09-21T10:00:00Z');
 const minsAgo = (n) => new Date(NOW.getTime() - n * 60_000);
@@ -94,4 +99,54 @@ test('the same concern is due in a client group and not in an internal one', () 
   const c = waiting({ firstMsgTs: minsAgo(20) });
   assert.equal(dueForFirstAlert(c, NOW, alertDelayFor({ kind: 'client' }, windows)), true);
   assert.equal(dueForFirstAlert(c, NOW, alertDelayFor({ kind: 'internal' }, windows)), false);
+});
+
+// --- the severity floor ----------------------------------------------------
+//
+// Management reviewed six real alerts and wanted two of them. Both were high,
+// and nothing high was unwanted - so the floor alone would have produced their
+// verdicts. Below it a concern is still raised and still on the dashboard; it
+// just never reaches a phone.
+
+const FLOORS = { internal: 'high', client: 'high' };
+
+test('a high concern passes the floor', () => {
+  assert.equal(severeEnoughToAlert('high', 'high'), true);
+});
+
+test('medium and low do not', () => {
+  assert.equal(severeEnoughToAlert('medium', 'high'), false);
+  assert.equal(severeEnoughToAlert('low', 'high'), false);
+});
+
+test('a lower floor lets more through', () => {
+  assert.equal(severeEnoughToAlert('medium', 'medium'), true);
+  assert.equal(severeEnoughToAlert('low', 'medium'), false);
+  assert.equal(severeEnoughToAlert('low', 'low'), true);
+});
+
+test('an ungradable severity is alerted rather than swallowed', () => {
+  // The safe direction. A concern we cannot grade must not be the one that
+  // goes unreported - and the eval checks severities precisely because this
+  // decision now rests on them.
+  assert.equal(severeEnoughToAlert(undefined, 'high'), true);
+  assert.equal(severeEnoughToAlert('nonsense', 'high'), true);
+  assert.equal(severeEnoughToAlert('high', 'nonsense'), true);
+});
+
+test('the floor stops a due medium concern from being DMed', () => {
+  const c = waiting({ severity: 'medium' });
+  assert.equal(dueForFirstAlert(c, NOW, 30), true, 'baseline: it was otherwise due');
+  assert.equal(dueForFirstAlert(c, NOW, 30, 'high'), false);
+});
+
+test('a high concern is unaffected by the floor', () => {
+  assert.equal(dueForFirstAlert(waiting({ severity: 'high' }), NOW, 30, 'high'), true);
+});
+
+test('each kind of group carries its own floor', () => {
+  assert.equal(alertFloorFor({ kind: 'client' }, FLOORS), 'high');
+  assert.equal(alertFloorFor({ kind: 'internal' }, FLOORS), 'high');
+  assert.equal(alertFloorFor({}, { internal: 'medium', client: 'high' }), 'medium');
+  assert.equal(alertFloorFor(undefined, { internal: 'medium', client: 'high' }), 'medium');
 });

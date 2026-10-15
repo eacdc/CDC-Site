@@ -288,6 +288,26 @@ possible failure. Admin shows a banner for any monitored group in that state,
 and `npm run whatsapp:reroute` fills in the owner on concerns raised before the
 configuration was fixed, which would otherwise carry `ownerId: null` for ever.
 
+### Only major problems reach a phone
+
+A concern below the severity floor is raised, stored and shown on the
+dashboard, and never DMed:
+
+| group kind | floor | env |
+|---|---|---|
+| `internal` | `high` | `ALERT_MIN_SEVERITY_INTERNAL` |
+| `client` | `high` | `ALERT_MIN_SEVERITY_CLIENT` |
+
+Management reviewed six real alerts and wanted two of them. Both were `high`,
+and nothing `high` was unwanted - the floor alone reproduces their verdicts.
+Escalation only ever follows a first alert, so it is gated by the same rule
+without any extra code.
+
+An unrecognised severity is alerted rather than swallowed: a concern we cannot
+grade must not be the one that goes unreported. Because this decision rests
+entirely on the severity labels, `npm run whatsapp:eval` now **checks
+severities and fails on a mismatch** rather than noting it.
+
 ### Nothing is DMed straight away
 
 Raising a concern and alerting about it are separate steps, on separate cycles.

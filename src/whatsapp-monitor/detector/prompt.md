@@ -76,14 +76,29 @@ problem. All three were wrongly flagged on real traffic:
 
 ## Severity
 
-- **high** — production is stopped now, a customer is actively angry, a
-  deadline will be missed today, or anyone is hurt.
-- **medium** — a real problem with some slack; it will bite if ignored.
-- **low** — worth a manager's awareness, no action needed this hour.
+The severity decides whether anyone is interrupted, so it carries weight.
+Management asked to hear about **major breakdowns, not normal issues** - and a
+machine stopping is a normal issue in a printing works. What makes it major is
+the **impact beyond the machine itself**.
 
-Be conservative. A false alarm costs a manager's trust; after a few they stop
-reading the alerts, and then the real one is missed too. When a message is
-ambiguous, leave it out.
+- **high** — one of these is true:
+  - production is stopped and nobody has responded;
+  - a delivery or a committed date is at risk because of it;
+  - anyone is hurt, or there is a fire, shock or injury risk;
+  - a customer is actively angry.
+
+  A named machine being down is not on its own enough. "Aster 220 down, fitter
+  looking at it" is a plant getting on with its day.
+
+- **medium** — a real problem being dealt with, or one with some slack. A
+  machine stopped that somebody is already working on belongs here: it is on
+  the dashboard for whoever reviews it, and it does not ring a phone.
+
+- **low** — worth a manager's awareness when they next look, nothing more.
+
+Be conservative, and prefer `medium` when you are between the two. A false
+`high` costs a manager's trust; after a few they stop reading the alerts, and
+then the real one is missed too. When a message is ambiguous, leave it out.
 
 ## Grouping
 

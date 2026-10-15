@@ -46,7 +46,16 @@ for (const testCase of cases) {
   }
 
   const got = result.concerns.length > 0;
-  const ok = got === expectConcern;
+  const severity = result.concerns[0]?.severity;
+
+  // Severity is CHECKED, not noted. Alerting has a floor now, so a concern
+  // graded medium never reaches a phone: finding the right problem at the
+  // wrong severity is a silent failure in production, and has to be a loud one
+  // here.
+  const wantSeverity = testCase.expect.severity ?? null;
+  const severityWrong = got && expectConcern && wantSeverity && severity !== wantSeverity;
+
+  const ok = got === expectConcern && !severityWrong;
 
   // A wrongly-categorised real concern is worth knowing about but is not a
   // failure: the alert still reaches a human, which is the job.
@@ -56,14 +65,23 @@ for (const testCase of cases) {
       ? `  (category ${category}, expected ${testCase.expect.category})`
       : '';
 
+  const gotDesc = got ? `${result.concerns.length}${severity ? ` (${severity})` : ''}` : 'nothing';
+  const wantDesc = expectConcern ? `a concern${wantSeverity ? ` at ${wantSeverity}` : ''}` : 'nothing';
+
   console.log(
     `${ok ? 'PASS' : 'FAIL'}  ${testCase.name}\n` +
-      `      expected ${expectConcern ? 'a concern' : 'nothing'}, got ${got ? `${result.concerns.length}` : 'nothing'}` +
+      `      expected ${wantDesc}, got ${gotDesc}` +
       `${categoryNote}`,
   );
+  if (severityWrong) {
+    console.log(
+      `      SEVERITY: wanted ${wantSeverity}, got ${severity}` +
+        `${wantSeverity === 'high' ? ' - this one would never reach a phone' : ' - this one would ring a phone it should not'}`,
+    );
+  }
 
   if (!ok) {
-    failures.push({ name: testCase.name, why: testCase.expect.why });
+    failures.push({ name: testCase.name, why: testCase.expect.why, severity: severityWrong });
     // The summary is the clearest statement of what the model thought it saw.
     for (const c of result.concerns) console.log(`      -> "${c.summary}"`);
     if (testCase.expect.why) console.log(`      it should not: ${testCase.expect.why}`);
@@ -75,10 +93,12 @@ for (const testCase of cases) {
 
 const missed = failures.filter((f) => cases.find((c) => c.name === f.name)?.expect.concern);
 const falsePositives = failures.length - missed.length;
+const sevWrong = failures.filter((f) => f.severity).length;
 
 console.log(`${cases.length - failures.length}/${cases.length} correct`);
 if (falsePositives) console.log(`${falsePositives} false positive(s) - noise that would reach a phone`);
 if (missed.length) console.log(`${missed.length} MISSED - a real problem nobody would hear about`);
+if (sevWrong) console.log(`${sevWrong} graded at the wrong severity - the alert floor acts on this`);
 
 // A miss is the worse failure, so it is what decides the exit code for CI.
 process.exit(failures.length === 0 ? 0 : 1);
