@@ -17,9 +17,12 @@ import { postDocumentSet, erpWritesEnabled } from '../services/erp-receiving.js'
 import { openPoLines, findPostedInvoice, receiptsForInvoice } from '../services/erp-po.js';
 import { getItems, hsnForItems } from '../services/erp-items.js';
 import { groupForLedger, ledgerIdsForSite } from '../services/supplier-groups.js';
-import { chargeLedgers, warehouses, supplierLedgers } from '../services/erp-ledgers.js';
+import { chargeLedgers, warehouses, supplierLedgers, employeeLedgers } from '../services/erp-ledgers.js';
 import { identifyInvoiceSupplier } from '../services/supplier-identify.js';
 import { grnLinesWithIssues } from '../services/grn-issues.js';
+import { listGrns, loadGrn } from '../services/grn-register.js';
+import { editGrn, deleteGrn, canEditGrns } from '../services/erp-grn-edit.js';
+import { query } from '../db/mssql.js';
 import { hasBlockingFailure, warningsNeedingReason } from '../config/validations.js';
 import { createUploadUrl, viewUrl, deleteObjects } from '../../lib/r2-storage.js';
 import {
@@ -693,6 +696,151 @@ router.get('/document-sets/:id/po-lines', async (req, res, next) => {
         closed: isClosed(po),
       }));
     return res.json({ includeClosed, lines });
+  } catch (err) { return next(err); }
+});
+
+// -- the GRN register: posted GRNs, and editing or deleting them -------------
+
+const DAY = 86400000;
+
+/** Which GRNs GRN Creator posted, by TransactionID -> the document set. */
+async function madeHere(site, transactionIds) {
+  if (!transactionIds.length) return new Map();
+  const sets = await DocumentSet.find({ site, 'posted.grnTransactionId': { $in: transactionIds } })
+    .select('_id posted.grnTransactionId').lean();
+  return new Map(sets.map((x) => [Number(x.posted.grnTransactionId), String(x._id)]));
+}
+
+function sendError(res, err) {
+  return res.status(err.status || 500).json({ error: err.message, ...(err.plan ? { plan: err.plan } : {}) });
+}
+
+/**
+ * Every live GRN of a date range - made in the ERP or here - with whether it
+ * has been issued from and whether its purchase invoice exists.
+ * ?from=YYYY-MM-DD&to=YYYY-MM-DD (default: the last 7 days), ?supplierLedgerId, ?q.
+ * At most 500, newest first; `truncated` says when there were more.
+ */
+router.get('/grns', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+    const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 7 * DAY);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return res.status(400).json({ error: 'Give dates as YYYY-MM-DD.' });
+    if (to - from > 366 * DAY) return res.status(400).json({ error: 'Choose a range of a year or less.' });
+    const supplier = Number(req.query.supplierLedgerId) || null;
+    const ledgerIds = supplier ? await supplierLedgersFor(req.sp.site, supplier) : null;
+    const LIMIT = 500;
+    const grns = await listGrns(req.sp.site, { from, to, ledgerIds, search: req.query.q ? String(req.query.q) : null, limit: LIMIT });
+    const made = await madeHere(req.sp.site, grns.map((g) => g.transactionId));
+    return res.json({
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      canEdit: canEditGrns(req.sp.user),
+      writesEnabled: erpWritesEnabled(),
+      truncated: grns.length >= LIMIT,
+      grns: grns.map((g) => ({
+        ...g,
+        madeIn: made.has(g.transactionId) ? 'GRN Creator' : 'ERP',
+        documentSetId: made.get(g.transactionId) ?? null,
+      })),
+    });
+  } catch (err) { return next(err); }
+});
+
+/** One posted GRN, with what may and may not be changed on each line. */
+router.get('/grns/:transactionId', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const grn = await loadGrn((t, p) => query(req.sp.site, t, p), Number(req.params.transactionId));
+    if (!grn) return res.status(404).json({ error: 'No such GRN - it may have been deleted.' });
+    const made = await madeHere(req.sp.site, [grn.transactionId]);
+    return res.json({
+      ...grn,
+      madeIn: made.has(grn.transactionId) ? 'GRN Creator' : 'ERP',
+      canEdit: canEditGrns(req.sp.user),
+      writesEnabled: erpWritesEnabled(),
+    });
+  } catch (err) { return next(err); }
+});
+
+/** Guard for both writes: a named editor, and ids that belong to this site. */
+async function checkEditRequest(req, res, edit = {}) {
+  if (!canEditGrns(req.sp.user)) {
+    res.status(403).json({ error: 'Only the people named in SP_GRN_EDITORS may edit or delete posted GRNs.' });
+    return false;
+  }
+  const site = req.sp.site;
+  const whs = (edit.lines || []).map((l) => l.warehouseId).filter((v) => v !== undefined && v !== null);
+  if (whs.length) {
+    const known = new Set((await warehouses(site)).map((w) => Number(w.WarehouseID)));
+    const bad = whs.find((w) => !known.has(Number(w)));
+    if (bad !== undefined) { res.status(400).json({ error: `Warehouse ${bad} is not a ${site} warehouse.` }); return false; }
+  }
+  if (edit.header?.receivedBy !== undefined && edit.header.receivedBy !== null) {
+    const people = new Set((await employeeLedgers(site)).map((e) => Number(e.LedgerID)));
+    if (!people.has(Number(edit.header.receivedBy))) {
+      res.status(400).json({ error: "Received by must be one of the site's employees." });
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Edit a posted GRN: header fields, and each line's quantity, warehouse, or
+ * removal. ?dryRun=true (or writes off) says what would change and writes
+ * nothing. Body: {header, lines, expectedModifiedDate}.
+ */
+router.post('/grns/:transactionId/edit', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const body = req.body || {};
+    const edit = { header: body.header || {}, lines: Array.isArray(body.lines) ? body.lines : [] };
+    if (!(await checkEditRequest(req, res, edit))) return undefined;
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    let result;
+    try {
+      result = await editGrn(req.sp.site, {
+        transactionId: Number(req.params.transactionId), edit, dryRun,
+        userId: req.sp.context?.erpUserId, expectedModifiedDate: body.expectedModifiedDate,
+      });
+    } catch (err) { if (err.status) return sendError(res, err); throw err; }
+    if (!dryRun) {
+      await AuditLog.create({
+        action: 'GRN_EDITED', entity: 'erpGrn', entityId: String(req.params.transactionId),
+        site: req.sp.site, actor: req.sp.actor, after: { voucherNo: result.voucherNo, plan: result.plan },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
+  } catch (err) { return next(err); }
+});
+
+/** Delete a posted GRN. ?dryRun=true says whether it could be. Body: {expectedModifiedDate}. */
+router.post('/grns/:transactionId/delete', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    if (!(await checkEditRequest(req, res))) return undefined;
+    const body = req.body || {};
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    const tid = Number(req.params.transactionId);
+    let result;
+    try {
+      result = await deleteGrn(req.sp.site, {
+        transactionId: tid, dryRun, userId: req.sp.context?.erpUserId, expectedModifiedDate: body.expectedModifiedDate,
+      });
+    } catch (err) { if (err.status) return sendError(res, err); throw err; }
+    if (!dryRun) {
+      await DocumentSet.updateOne(
+        { site: req.sp.site, 'posted.grnTransactionId': tid },
+        { $set: { 'posted.deletedAt': new Date(), 'posted.deletedBy': req.sp.actor } },
+      );
+      await AuditLog.create({
+        action: 'GRN_DELETED', entity: 'erpGrn', entityId: String(tid),
+        site: req.sp.site, actor: req.sp.actor, after: { voucherNo: result.voucherNo, lines: result.lines },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
   } catch (err) { return next(err); }
 });
 

@@ -891,6 +891,9 @@ export const documentSetSchema = new Schema({
     postedBy: String,
     stockRefreshOk: Boolean,
     stockRefreshError: String,
+    // Deleted from GRN Creator's register; the ERP keeps the rows, flagged.
+    deletedAt: Date,
+    deletedBy: String,
   },
 
   createdBy: String,
