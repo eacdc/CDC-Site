@@ -142,7 +142,11 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
     voucherNo,
     voucherDate: { type: sql.DateTime, value: voucherDate },
     ledgerId: { type: sql.Int, value: context.supplierLedgerId },
-    warehouseId: { type: sql.Int, value: context.warehouseId },
+    // 0, as the ERP's own screen writes it: DestinationWarehouseID was 0 on all
+    // 2,043 GRNs of the 90 days to 22 Oct 2026. The warehouse belongs to each
+    // line (ItemTransactionDetail.WarehouseID) - every one of their 4,267
+    // lines carried one.
+    warehouseId: { type: sql.Int, value: 0 },
     totalQuantity: { type: sql.Float, value: sumBy(lines, 'qty') },
     deliveryNoteNo: header.invoiceNo ?? null,
     deliveryNoteDate: { type: sql.DateTime, value: toDate(header.invoiceDate) },
@@ -245,11 +249,13 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
   if (!detailId) throw new Error(`GRN detail insert for item ${line.itemId} returned no TransactionDetailID.`);
 
   /**
-   * `BatchID` is the row's own `TransactionDetailID` and `BatchNo` embeds it,
-   * so both can only be set after the insert. This is the ERP's convention,
-   * not a workaround.
+   * `BatchNo` is `{GRN TransactionID}_{PO VoucherNo}_{ItemID}_{TransID}.00` -
+   * e.g. 68220_PO03232_26_27_7296_1.00. The last part is the line's TransID
+   * (1, 2, 3...), NOT its TransactionDetailID: true of all 4,267 GRN lines in
+   * the 90 days to 22 Oct 2026. `BatchID` is still the row's own
+   * TransactionDetailID, which is why this runs after the insert.
    */
-  const batchNo = `${transactionId}_${poVoucherNo}_${line.itemId}_${detailId}.00`;
+  const batchNo = `${transactionId}_${poVoucherNo}_${line.itemId}_${index + 1}.00`;
   await txQuery(tx, `
     UPDATE ItemTransactionDetail
     SET BatchID = @detailId, BatchNo = @batchNo
@@ -577,12 +583,21 @@ function validatePostInput({ header, lines, context }) {
   if (!Number.isFinite(context?.supplierLedgerId)) {
     throw new Error('context.supplierLedgerId (LedgerMaster, Sundry Creditors) is required.');
   }
-  if (!Number.isFinite(context?.warehouseId)) throw new Error('context.warehouseId is required.');
+  // The warehouse is per line now, as in the ERP. A line may fall back to the
+  // set's default, but it must end up with one.
+  for (const line of lines) {
+    if (!Number.isFinite(Number(line.warehouseId ?? context?.warehouseId))) {
+      throw new Error(`Line for item ${line.itemId} has no warehouse.`);
+    }
+  }
   if (!Number.isFinite(context?.purchaseLedgerId)) {
     throw new Error('context.purchaseLedgerId is required for the purchase invoice.');
   }
   for (const line of lines) {
     if (!Number.isFinite(line.itemId)) throw new Error('Every line needs an itemId.');
+    // A line picked by hand starts at 0, as on the ERP's own screen. Posting it
+    // would write a GRN line that received nothing.
+    if (!(Number(line.qty) > 0)) throw new Error(`Line for item ${line.itemId} has no quantity.`);
     if (!Number.isFinite(line.poTransactionId)) {
       throw new Error(`Line for item ${line.itemId} has no matched PO TransactionID.`);
     }
@@ -598,7 +613,7 @@ function previewGrn({ header, lines, context, voucherDate, suffix }) {
     voucherDate,
     ledgerId: context.supplierLedgerId,
     receivedBy: context.employeeLedgerId,
-    destinationWarehouseId: context.warehouseId,
+    destinationWarehouseId: 0,
     deliveryNoteNo: header.invoiceNo,
     allAmountColumns: 0,
     lines: lines.map((l, i) => ({
@@ -610,7 +625,8 @@ function previewGrn({ header, lines, context, voucherDate, suffix }) {
       purchaseRate: 0,
       landedRate: l.landedRate ?? l.rate,
       purchaseTransactionId: l.poTransactionId,
-      batchNo: `<grnId>_${l.poVoucherNo}_${l.itemId}_<detailId>.00`,
+      batchNo: `<grnId>_${l.poVoucherNo}_${l.itemId}_${i + 1}.00`,
+      warehouseId: l.warehouseId ?? context.warehouseId ?? null,
     })),
   };
 }

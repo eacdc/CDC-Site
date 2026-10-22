@@ -75,6 +75,23 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
 
   // ── Line arithmetic ──────────────────────────────────────────────────────
 
+  /**
+   * What each PO line receives across the WHOLE invoice. Two invoice lines on
+   * one PO line must fit its pending together: 90 + 50 against 90 pending
+   * passes a line-by-line check twice and still over-receives by half.
+   */
+  const usage = new Map();
+  for (const l of lines) {
+    const key = l.matchedPoTransactionDetailId;
+    const q = num(l.qty);
+    // A closed line is not being received against, so it uses no pending.
+    if (!key || q === null || l.matchedPoClosed) continue;
+    const u = usage.get(key) || { qty: 0, lineNos: [] };
+    u.qty += q;
+    u.lineNos.push(l.lineNo);
+    usage.set(key, u);
+  }
+
   for (const line of lines) {
     const qty = num(line.qty);
     const rate = num(line.rate);
@@ -93,25 +110,39 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
       }));
     }
 
-    // INV002 — every line must land on an open PO.
-    results.push(check('INV002', Boolean(line.matchedPoTransactionId), {
+    // INV002 — every line must land on an OPEN PO line. A match to a closed
+    // one (the include-closed view) shows where the goods belonged; nothing
+    // more can be received against it, so it fails here and blocks the post.
+    const onOpenPo = Boolean(line.matchedPoTransactionId) && !line.matchedPoClosed;
+    results.push(check('INV002', onOpenPo, {
       lineNo: line.lineNo,
-      message: line.matchedPoTransactionId
-        ? undefined
-        : `Line ${line.lineNo} ("${line.description || 'no description'}") has no matching open PO for this supplier`,
+      message: onOpenPo ? undefined
+        : (line.matchedPoTransactionId
+          ? `Line ${line.lineNo} matches ${line.poVoucherNo || 'a PO'}, but that PO line is closed — nothing more can be received against it`
+          : `Line ${line.lineNo} ("${line.description || 'no description'}") has no matching open PO for this supplier`),
     }));
 
     // INV003 — over-receipt beyond 10%. A hard block with no override: this is
     // the check that would have caught the 3000-for-1500 sheets error.
-    if (qty !== null && num(line.poPendingQty) !== null) {
+    // Not for a closed line: INV002 has already said why it cannot be posted,
+    // and "over pending" on a line nothing is received against is just noise.
+    if (qty !== null && num(line.poPendingQty) !== null && !line.matchedPoClosed) {
       const pending = num(line.poPendingQty);
       const limit = pending * (1 + TOLERANCES.receiptOverPct);
-      results.push(check('INV003', qty <= limit, {
+      const shared = usage.get(line.matchedPoTransactionDetailId);
+      const together = Boolean(shared && shared.lineNos.length > 1);
+      const total = together ? round(shared.qty, 3) : qty;
+      const over = pending > 0
+        ? `${round(((total - pending) / pending) * 100, 1)}% over the 10% tolerance`
+        : 'and nothing is pending';
+      results.push(check('INV003', total <= limit, {
         lineNo: line.lineNo,
-        message: qty > limit
-          ? `Line ${line.lineNo}: receiving ${qty} against ${pending} pending — ${round(((qty - pending) / pending) * 100, 1)}% over the 10% tolerance`
+        message: total > limit
+          ? (together
+            ? `Lines ${listLineNos(shared.lineNos)} together receive ${total} against ${pending} pending on ${line.poVoucherNo || 'the same PO line'} — ${over}`
+            : `Line ${line.lineNo}: receiving ${qty} against ${pending} pending — ${over}`)
           : undefined,
-        actualValue: qty,
+        actualValue: total,
         expectedValue: round(limit, 3),
       }));
     }
@@ -285,6 +316,12 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
   }));
 
   return results;
+}
+
+/** [4, 5] -> "4 and 5"; [1, 2, 3] -> "1, 2 and 3". */
+function listLineNos(nos) {
+  const list = nos.map(String);
+  return list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join('');
 }
 
 /** A GST e-way bill number is 12 digits. */

@@ -278,6 +278,7 @@ Return JSON only, matching this shape:
   "buyerGstin": string|null, "shipToGstin": string|null, "shipToAddress": string|null,
   "eWayBillNo": string|null, "vehicleNo": string|null,
   "poNumbers": string[]|null,
+  "gateEntryNo": string|null, "gateEntryDate": string|null,
   "taxType": "CGST_SGST"|"IGST"|null,
   "subTotal": string|null, "freight": string|null, "taxable": string|null,
   "cgst": string|null, "sgst": string|null, "igst": string|null,
@@ -285,7 +286,8 @@ Return JSON only, matching this shape:
   "lines": [{"lineNo":number,"description":string|null,"hsn":string|null,
              "gsm":string|null,"size":string|null,"unitWt":string|null,
              "bundles":string|null,"totalUnits":string|null,"qty":string|null,
-             "uom":string|null,"rate":string|null,"amount":string|null}]
+             "uom":string|null,"rate":string|null,"amount":string|null,
+             "poRef":string|null}]
 }
 
 RULES:
@@ -306,7 +308,25 @@ RULES:
 5. PAPER LINES often show sheets, bundles, size and unit weight as well as kg.
    Capture all of them — the sheets-to-kg reconciliation depends on it.
 
-6. If a field is not on the invoice, use null. Never infer a value.`;
+6. If a field is not on the invoice, use null. Never infer a value.
+
+7. PO NUMBERS. Suppliers write CDC's purchase-order number against a line,
+   often on the line below the description: "PO NO = 3232 - 5/10 = 818 PCS",
+   "3081 26-09-2026", "P.O. 3342". Put ONLY the PO number in that line's
+   "poRef" - "3232", not the date, not the quantity, not the delivery-note
+   number. A handwritten number counts. Also list every PO number from the
+   header's "Buyer's Order No." / "P.O. No." field in "poNumbers", including
+   any written in by hand.
+
+8. SIZES ARE DIGIT-FOR-DIGIT. Copy a box or sheet size exactly as printed,
+   in the order printed: 550X305X206 is a different box from 505X305X260.
+   Look twice at each digit of a size; it identifies the item.
+
+9. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a box, usually near
+   the top, and fills it in by hand: "Date 11/10/26  Sl. No. 25605". That is
+   the gate entry - put the serial number in "gateEntryNo" and that date in
+   "gateEntryDate". The invoice date is the PRINTED date next to the invoice
+   number ("Dated: 9-Oct-26"); never take it from the stamp.`;
 
 export const ADJUDICATION_PROMPT = `You are helping a purchase coordinator at CDC Printers match a line from a
 supplier's quotation to an item in CDC's own item master.

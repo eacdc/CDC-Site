@@ -61,8 +61,10 @@ export async function openPoLines(site, {
              ITD.ChallanWeight, ITD.PurchaseRate, ITD.PurchaseTolerance,
              ITD.ExpectedDeliveryDate, ITD.WarehouseID, ITD.ProductHSNID,
              ITD.ItemDescription, ITD.ClientID, ITD.IsCompleted,
+             ITD.RefJobCardContentNo,
              ITM.VoucherNo AS PoVoucherNo, ITM.VoucherDate AS PoDate,
-             ITM.LedgerID, ITM.SalesEmployeeID, ITM.FYear
+             ITM.LedgerID, ITM.SalesEmployeeID, ITM.FYear,
+             ITM.PurchaseReferenceRemark
       FROM ItemTransactionDetail ITD
       JOIN ItemTransactionMain ITM
         ON ITM.TransactionID = ITD.TransactionID AND ITM.CompanyID = ITD.CompanyID
@@ -97,17 +99,60 @@ export async function openPoLines(site, {
            LM.LedgerName AS SupplierName,
            IM.ItemName, IM.ItemCode, IM.WtPerPacking, IM.UnitPerPacking,
            IM.ItemGroupID AS MasterItemGroupID,
+           SG.ItemSubGroupDisplayName AS SubGroupName,
+           CL.LedgerName AS ClientName,
            ISNULL(R.ReceivedPurchaseQty,0) AS ReceivedQty,
+           ISNULL(R.ReceivedStockQty,0)    AS ReceivedStockQty,
            ISNULL(R.RejectedQty,0)         AS RejectedQty,
            R.LastReceiptDate,
-           Po.PurchaseOrderQuantity - ISNULL(R.ReceivedPurchaseQty,0) AS PendingQty
+           Po.PurchaseOrderQuantity - ISNULL(R.ReceivedPurchaseQty,0) AS PendingQty,
+           -- On a PO line ChallanWeight is the ordered qty in StockUnit; on a
+           -- GRN line ReceiptQuantity is the received qty in StockUnit.
+           ISNULL(Po.ChallanWeight,0) - ISNULL(R.ReceivedStockQty,0) AS PendingStockQty
     FROM Po
     LEFT JOIN Received R
       ON R.PoTransactionID = Po.TransactionID AND R.ItemID = Po.ItemID
     LEFT JOIN LedgerMaster LM ON LM.LedgerID = Po.LedgerID AND LM.CompanyID = @companyId
     LEFT JOIN ItemMaster IM ON IM.ItemID = Po.ItemID AND IM.CompanyID = @companyId
+    LEFT JOIN ItemSubGroupMaster SG ON SG.ItemSubGroupID = IM.ItemSubGroupID AND SG.CompanyID = @companyId
+    LEFT JOIN LedgerMaster CL ON CL.LedgerID = Po.ClientID AND CL.CompanyID = @companyId
     ORDER BY Po.PoDate DESC, Po.PoVoucherNo, Po.TransactionDetailID
   `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, grn: VOUCHER.GRN }, { long: true });
+}
+
+/**
+ * The GRN lines already booked against one supplier invoice, by PO line.
+ *
+ * For the closed-PO view. An invoice that has been received names the exact
+ * PO lines it went to, which settles what no score can: two closed lines for
+ * the same box at the same rate otherwise look identical. Keyed the way the
+ * ERP links receipts to POs - PurchaseTransactionID (the PO header) plus
+ * ItemID - because a GRN line carries no PO line id of its own.
+ *
+ * @returns {Promise<Array<{GrnVoucherNo, GrnDate, PurchaseTransactionID, ItemID, ReceivedQty}>>}
+ */
+export async function receiptsForInvoice(site, { invoiceNo, ledgerIds = [] }) {
+  assertSite(site);
+  if (!invoiceNo) return [];
+  const ledgerFilter = ledgerIds?.length
+    ? `AND ITM.LedgerID IN (${ledgerIds.map(Number).filter(Number.isFinite).join(',')})`
+    : '';
+
+  return query(site, `
+    SELECT ITM.VoucherNo AS GrnVoucherNo, ITM.VoucherDate AS GrnDate,
+           ITD.PurchaseTransactionID, ITD.ItemID,
+           SUM(ISNULL(ITD.ChallanWeight,0)) AS ReceivedQty
+    FROM ItemTransactionMain ITM
+    JOIN ItemTransactionDetail ITD
+      ON ITD.TransactionID = ITM.TransactionID AND ITD.CompanyID = ITM.CompanyID
+    WHERE ITM.CompanyID = @companyId
+      AND ITM.VoucherID = @grn
+      AND ITM.DeliveryNoteNo = @invoiceNo
+      ${ledgerFilter}
+      ${ITM_FILTER}
+      ${ITD_FILTER}
+    GROUP BY ITM.VoucherNo, ITM.VoucherDate, ITD.PurchaseTransactionID, ITD.ItemID
+  `, { companyId: COMPANY_ID, grn: VOUCHER.GRN, invoiceNo: String(invoiceNo) });
 }
 
 /** One PO by TransactionID, header plus lines. */
