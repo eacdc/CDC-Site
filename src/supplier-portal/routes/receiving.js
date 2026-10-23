@@ -13,16 +13,17 @@ import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, DocumentSet, AuditLog } from '../db/mongo.js';
 import { getProvider } from '../services/extraction/provider.js';
 import { runInvoiceChecks } from '../services/invoice-checks.js';
-import { postDocumentSet, erpWritesEnabled } from '../services/erp-receiving.js';
+import { postDocumentSet, erpWritesEnabled, postPurchaseInvoiceForGrn } from '../services/erp-receiving.js';
 import { openPoLines, findPostedInvoice, receiptsForInvoice } from '../services/erp-po.js';
 import { getItems, hsnForItems } from '../services/erp-items.js';
 import { groupForLedger, ledgerIdsForSite } from '../services/supplier-groups.js';
-import { chargeLedgers, warehouses, supplierLedgers, employeeLedgers } from '../services/erp-ledgers.js';
+import { chargeLedgers, warehouses, supplierLedgers, employeeLedgers, purchaseLedgers } from '../services/erp-ledgers.js';
 import { identifyInvoiceSupplier } from '../services/supplier-identify.js';
 import { grnLinesWithIssues } from '../services/grn-issues.js';
 import { listGrns, loadGrn } from '../services/grn-register.js';
 import { editGrn, deleteGrn, canEditGrns } from '../services/erp-grn-edit.js';
 import { query } from '../db/mssql.js';
+import { COMPANY_ID } from '../config/constants.js';
 import { hasBlockingFailure, warningsNeedingReason } from '../config/validations.js';
 import { createUploadUrl, viewUrl, deleteObjects } from '../../lib/r2-storage.js';
 import {
@@ -51,6 +52,9 @@ const UNMATCHED = {
   itemGroupId: null,
   itemCode: null,
   itemName: null,
+  poDate: null,
+  poFYear: null,
+  itemGroupName: null,
   purchaseUnit: null,
   stockUnit: null,
   productHsnId: null,
@@ -285,6 +289,9 @@ function fieldsForPo(line, po, { items, hsn, closed, taxSplit }) {
     // The ERP's item, as its GRN screen names it - not the invoice's wording.
     itemCode: po.ItemCode ?? null,
     itemName: po.ItemName ?? null,
+    poDate: po.PoDate ?? null,
+    poFYear: po.FYear ?? null,
+    itemGroupName: po.ItemGroupName ?? null,
     matchedPoRate: po.PurchaseRate,
     poPendingQty: po.PendingQty,
     poQty: po.PurchaseOrderQuantity,
@@ -764,6 +771,168 @@ router.get('/grns/:transactionId', async (req, res, next) => {
   } catch (err) { return next(err); }
 });
 
+/**
+ * Freight rows of Additional charges, each on a freight ledger of this site.
+ * TaxPercentage as the ERP writes it: 18 on Inward Freight, 0 on the rest.
+ */
+function resolveFreightRows(ledgers, rows) {
+  const freight = new Map(ledgers.filter((l) => l.kind === 'FREIGHT').map((l) => [Number(l.LedgerID), l]));
+  const out = [];
+  for (const r of rows || []) {
+    if (!(Number(r.amount) > 0)) continue;
+    const ledger = freight.get(Number(r.ledgerId));
+    if (!ledger) return { error: `Ledger ${r.ledgerId} is not a freight ledger.` };
+    out.push({
+      ledgerId: Number(ledger.LedgerID), amount: Math.round(Number(r.amount) * 100) / 100,
+      name: ledger.LedgerName, taxPercentage: /INWARD\s+FREIGHT/i.test(ledger.LedgerName || '') ? 18 : 0,
+    });
+  }
+  return { rows: out };
+}
+
+/**
+ * Everything a purchase invoice for one posted GRN starts from: its lines at
+ * their PO rates, with GST from the item's HSN and the supplier's state.
+ */
+async function grnInvoiceDraft(site, transactionId) {
+  const grn = await loadGrn((t, p) => query(site, t, p), transactionId);
+  if (!grn) return { status: 404, error: 'No such GRN - it may have been deleted.' };
+  if (grn.purchaseInvoices.length) {
+    return { status: 409, error: `${grn.voucherNo} already has purchase invoice ${grn.purchaseInvoices.map((p) => p.voucherNo).join(', ')}.` };
+  }
+  const header = await query(site, `
+    SELECT DISTINCT ITD.PurchaseTransactionID FROM ItemTransactionDetail ITD
+    WHERE ITD.TransactionID = @tid AND ITD.CompanyID = @companyId AND ISNULL(ITD.IsDeletedTransaction,0) = 0
+  `, { tid: Number(transactionId), companyId: COMPANY_ID });
+  const poTransactionIds = header.map((r) => Number(r.PurchaseTransactionID)).filter((n) => n > 0);
+  const [poRows, hsn, split, defaults] = await Promise.all([
+    poTransactionIds.length ? openPoLines(site, { transactionIds: poTransactionIds, includeCompleted: true }) : [],
+    hsnForItems(site, grn.lines.map((l) => l.itemId)),
+    taxSplitFor({ site, extractedHeader: {}, context: { supplierLedgerId: grn.supplierLedgerId } }),
+    supplierLedgersFor(site, grn.supplierLedgerId).then((ledgerIds) => receivingDefaults(site, { ledgerIds })),
+  ]);
+  const poByDetail = new Map(poRows.map((p) => [Number(p.TransactionDetailID), p]));
+  const hsnByItem = new Map([...hsn].map(([k, v]) => [Number(k), v]));
+  const lines = grn.lines.map((l) => {
+    const po = poByDetail.get(Number(l.poTransactionDetailId)) || {};
+    const h = hsnByItem.get(Number(l.itemId));
+    return {
+      transactionDetailId: l.transactionDetailId,
+      lineNo: l.lineNo,
+      itemId: l.itemId,
+      itemCode: l.itemCode,
+      itemName: l.itemName,
+      itemGroupId: po.ItemGroupID ?? po.MasterItemGroupID ?? null,
+      itemGroupName: po.ItemGroupName ?? null,
+      poTransactionId: po.TransactionID ? Number(po.TransactionID) : null,
+      poVoucherNo: l.poVoucherNo,
+      poDate: po.PoDate ?? null,
+      poFYear: po.FYear ?? null,
+      poQty: po.PurchaseOrderQuantity ?? null,
+      qty: l.qty,
+      stockQty: l.stockQty,
+      purchaseUnit: l.purchaseUnit,
+      stockUnit: l.stockUnit,
+      matchedPoRate: num(po.PurchaseRate),
+      rate: num(po.PurchaseRate) === null ? null : Math.round(num(po.PurchaseRate) * 100) / 100,
+      widthMm: po.ItemWidth ?? null,
+      expectedHsn: h?.HSNCode ?? null,
+      productHsnId: po.ProductHSNID ?? null,
+      wtPerPacking: l.wtPerPacking,
+      ...gstFor(h, split),
+    };
+  });
+  return { grn, lines, taxSplit: split, defaults };
+}
+
+/** The purchase invoice a GRN without one would get. Read-only. */
+router.get('/grns/:transactionId/purchase-invoice', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const draft = await grnInvoiceDraft(req.sp.site, Number(req.params.transactionId));
+    if (draft.error) return res.status(draft.status).json({ error: draft.error });
+    const { grn } = draft;
+    return res.json({
+      transactionId: grn.transactionId,
+      voucherNo: grn.voucherNo,
+      voucherDate: grn.voucherDate,
+      supplierLedgerId: grn.supplierLedgerId,
+      supplierName: grn.supplierName,
+      deliveryNoteNo: grn.header.deliveryNoteNo,
+      deliveryNoteDate: grn.header.deliveryNoteDate,
+      taxSplit: draft.taxSplit,
+      lines: draft.lines,
+      defaults: draft.defaults,
+      writesEnabled: erpWritesEnabled(),
+    });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Make that purchase invoice. ?dryRun=true says what would be written.
+ * Body: {purchaseLedgerId, billNo, billDate, remark, roundOff,
+ *        freightCharges: [{ledgerId, amount}], rates: {transactionDetailId: rate}}.
+ * The lines are the GRN's own, read again here - never the page's copy.
+ */
+router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const site = req.sp.site;
+    const body = req.body || {};
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    const draft = await grnInvoiceDraft(site, Number(req.params.transactionId));
+    if (draft.error) return res.status(draft.status).json({ error: draft.error });
+
+    const purchaseLedgerId = Number(body.purchaseLedgerId);
+    if (!(await purchaseLedgers(site)).some((l) => Number(l.LedgerID) === purchaseLedgerId)) {
+      return res.status(400).json({ error: 'Choose a purchase ledger of this site.' });
+    }
+    const ledgers = await chargeLedgers(site);
+    const freight = resolveFreightRows(ledgers, body.freightCharges);
+    if (freight.error) return res.status(400).json({ error: freight.error });
+
+    const rates = body.rates || {};
+    const lines = draft.lines.map((l) => {
+      const rate = rates[l.transactionDetailId] !== undefined ? num(rates[l.transactionDetailId]) : l.rate;
+      return { ...l, rate, amount: rate === null ? null : Math.round(Number(l.qty) * rate * 100) / 100 };
+    });
+    const header = {
+      invoiceNo: draft.grn.header.deliveryNoteNo,
+      invoiceDate: draft.grn.header.deliveryNoteDate,
+      billNo: (body.billNo || '').trim() || draft.grn.header.deliveryNoteNo,
+      billDate: body.billDate || draft.grn.header.deliveryNoteDate,
+      remark: body.remark ?? '',
+      freight: freight.rows.reduce((s, f) => s + f.amount, 0),
+      roundOff: num(body.roundOff) || 0,
+    };
+    const context = {
+      supplierLedgerId: draft.grn.supplierLedgerId,
+      purchaseLedgerId,
+      freightLedgerId: freight.rows[0]?.ledgerId ?? null,
+      freightCharges: freight.rows,
+      userId: Number(req.sp.context?.erpUserId),
+      branchId: 1,
+      chargeLedgers: Object.fromEntries(['CGST', 'SGST', 'IGST', 'ROUND_OFF'].map((kind) => [
+        kind, ledgers.find((l) => l.kind === kind)?.LedgerID ?? null,
+      ])),
+    };
+
+    let result;
+    try {
+      result = await postPurchaseInvoiceForGrn({ site, grnTransactionId: draft.grn.transactionId, header, lines, context, dryRun });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
+    if (!dryRun) {
+      await AuditLog.create({
+        action: 'PI_POSTED_FOR_GRN', entity: 'erpGrn', entityId: String(draft.grn.transactionId),
+        site, actor: req.sp.actor, after: { grnVoucherNo: draft.grn.voucherNo, piVoucherNo: result.pi.voucherNo },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
+  } catch (err) { return next(err); }
+});
+
 /** Guard for both writes: a named editor, and ids that belong to this site. */
 async function checkEditRequest(req, res, edit = {}) {
   if (!canEditGrns(req.sp.user)) {
@@ -1022,6 +1191,9 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       branchId: bodyContext.branchId ?? set.context?.branchId ?? 1,
       chargeLedgers: chargeLedgerIds,
     };
+    const rows = resolveFreightRows(ledgers, context.freightCharges);
+    if (rows.error) return res.status(400).json({ error: rows.error });
+    context.freightCharges = rows.rows;
 
     const lines = set.extractedLines
       .filter((l) => l.matchedPoTransactionId)
@@ -1043,6 +1215,7 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
         wtPerPacking: l.wtPerPacking,
         warehouseId: l.warehouseId ?? null,
         itemDescription: l.description,
+        itemName: l.itemName ?? null,
         gstPercentage: l.gstPercentage ?? null,
         cgstPercentage: l.cgstPercentage ?? null,
         sgstPercentage: l.sgstPercentage ?? null,

@@ -100,6 +100,8 @@ export async function openPoLines(site, {
            IM.ItemName, IM.ItemCode, IM.WtPerPacking, IM.UnitPerPacking,
            IM.ItemGroupID AS MasterItemGroupID,
            SG.ItemSubGroupDisplayName AS SubGroupName,
+           IGM.ItemGroupName,
+           IM.SizeW AS ItemWidth,
            CL.LedgerName AS ClientName,
            ISNULL(R.ReceivedPurchaseQty,0) AS ReceivedQty,
            ISNULL(R.ReceivedStockQty,0)    AS ReceivedStockQty,
@@ -115,6 +117,7 @@ export async function openPoLines(site, {
     LEFT JOIN LedgerMaster LM ON LM.LedgerID = Po.LedgerID AND LM.CompanyID = @companyId
     LEFT JOIN ItemMaster IM ON IM.ItemID = Po.ItemID AND IM.CompanyID = @companyId
     LEFT JOIN ItemSubGroupMaster SG ON SG.ItemSubGroupID = IM.ItemSubGroupID AND SG.CompanyID = @companyId
+    LEFT JOIN ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = @companyId
     LEFT JOIN LedgerMaster CL ON CL.LedgerID = Po.ClientID AND CL.CompanyID = @companyId
     ORDER BY Po.PoDate DESC, Po.PoVoucherNo, Po.TransactionDetailID
   `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, grn: VOUCHER.GRN }, { long: true });

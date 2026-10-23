@@ -782,6 +782,14 @@ export const documentSetSchema = new Schema({
     eWayBillDate: Date,
     /** Every PO number in the invoice header's "Buyer's Order No." field. */
     poNumbers: { type: [String], default: undefined },
+    /**
+     * The purchase invoice's own: Bill No. / Bill Date (the supplier's invoice
+     * number and date - InvoiceNo / InvoiceDate; they default to the D.N.) and
+     * the Remark (Narration).
+     */
+    billNo: String,
+    billDate: Date,
+    remark: String,
   },
 
   extractedLines: [{
@@ -827,6 +835,10 @@ export const documentSetSchema = new Schema({
     purchaseUnit: String,
     itemCode: String,
     itemName: String,
+    // Shown on the purchase invoice grid, as the ERP's screen shows them.
+    poDate: Date,
+    poFYear: String,
+    itemGroupName: String,
     // Receipt Qty (S.U.) - sheets for paper bought by the kilo; else the qty.
     stockQty: Number,
     productHsnId: Number,
@@ -871,6 +883,8 @@ export const documentSetSchema = new Schema({
     supplierLedgerId: Number,
     purchaseLedgerId: Number,
     freightLedgerId: Number,
+    /** Additional charges: one row per freight ledger, each with its amount. */
+    freightCharges: { type: [{ _id: false, ledgerId: Number, amount: Number }], default: undefined },
   },
 
   checks: { type: [checkSchema], default: [] },
