@@ -140,6 +140,8 @@ export interface TwentyNineRoundResult {
   /** 0 none, 1 doubled, 2 redoubled. */
   doubled: 0 | 1 | 2;
   pair?: { seat: number; team: 0 | 1 };
+  /** The team that took all 28 card points, which makes the hand worth 2. */
+  allPointsTeam?: 0 | 1;
   made: boolean;
   /** Game points to the bidding team: + if made, - if not. */
   delta: number;

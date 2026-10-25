@@ -35,7 +35,9 @@ function refResult(r: TwentyNineRoundResult): { target: number; made: boolean; d
   let target = r.bid;
   if (r.pair) target = r.pair.team === bt ? Math.max(16, r.bid - 4) : Math.min(28, r.bid + 4);
   const made = r.single ? r.tricksWon[bt] === 8 : r.pointsTaken[bt] >= target;
-  const value = (r.single ? 3 : 1) * (r.trumpMode === 'seventh' ? 2 : 1) * [1, 2, 4][r.doubled]!;
+  // 1 for a normal or 7th-card hand; 2 for single hand or when a team took all 28 points.
+  const swept = r.pointsTaken[0] === 28 || r.pointsTaken[1] === 28;
+  const value = (r.single || swept ? 2 : 1) * [1, 2, 4][r.doubled]!;
   return { target, made, delta: made ? value : -value };
 }
 

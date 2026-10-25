@@ -67,10 +67,8 @@ describe('setup', () => {
     expect(s.turnSeat).toBe((s.dealerSeat + 1) % 4);
   });
 
-  it('hand values: normal 1, 7th card 2, single 3, single with 7th card 6', () => {
-    expect([handValue('normal', false), handValue('seventh', false), handValue('normal', true), handValue('seventh', true)]).toEqual([
-      1, 2, 3, 6,
-    ]);
+  it('hand values: 1 normally (7th card too); 2 for single hand or all 28 points, not stacking', () => {
+    expect([handValue(false, false), handValue(true, false), handValue(false, true), handValue(true, true)]).toEqual([1, 2, 2, 2]);
   });
 });
 
@@ -458,19 +456,22 @@ describe('single hand', () => {
       s = play(s, 3, s.hands[3]![0]!.id);
     }
     expect(s.phase).toBe('roundOver');
-    expect(s.roundResult).toMatchObject({ single: true, made: true, delta: 3, tricksWon: [8, 0] });
-    expect(s.gamePoints).toEqual([3, 0]);
+    expect(s.roundResult).toMatchObject({ single: true, made: true, delta: 2, tricksWon: [8, 0] });
+    expect(s.gamePoints).toEqual([2, 0]);
   });
 
-  it('losing a single trick ends the hand at once; with a 7th card it costs 6', () => {
-    let s = single({ trumpMode: 'seventh', dealerSeat: 0, turnSeat: 1 });
-    s = play(s, 1, 'JH'); // the dealer's right leads
-    s = play(s, 3, 'JC');
-    s = play(s, 0, '8S'); // no hearts, no reveal: an ordinary spade
-    expect(s.roundResult).toMatchObject({ single: true, made: false, delta: -6 });
-    // -6 in one hand: that team has lost the whole game.
-    expect(s.phase).toBe('over');
-    expect(s.winnerTeam).toBe(1);
+  it('losing a single trick ends the hand at once and costs 2 (a 7th card adds nothing); doubled, 4', () => {
+    const lose = (o: Partial<TwentyNineState>) => {
+      let s = single({ dealerSeat: 0, turnSeat: 1, ...o });
+      s = play(s, 1, 'JH'); // the dealer's right leads
+      s = play(s, 3, 'JC');
+      s = play(s, 0, '8S'); // no hearts, no reveal: an ordinary spade
+      return s;
+    };
+    const s = lose({ trumpMode: 'seventh' });
+    expect(s.roundResult).toMatchObject({ single: true, made: false, delta: -2 });
+    expect(s.phase).toBe('roundOver');
+    expect(lose({ doubled: 1 }).roundResult?.delta).toBe(-4);
   });
 
   it("if the dealer's right is the sitting-out partner, the next player leads", () => {
@@ -493,7 +494,7 @@ describe('scoring', () => {
     return s;
   }
 
-  it('target met: +1, with the summary and history recorded, then the next deal', () => {
+  it('all 28 points: +2, with the summary and history recorded, then the next deal', () => {
     const s = sweep({ highestBid: { seat: 0, amount: 18 } });
     expect(s.phase).toBe('roundOver');
     expect(s.roundResult).toMatchObject({
@@ -502,8 +503,9 @@ describe('scoring', () => {
       bid: 18,
       target: 18,
       pointsTaken: [28, 0],
+      allPointsTeam: 0,
       made: true,
-      delta: 1,
+      delta: 2,
       trumpMode: 'normal',
       doubled: 0,
     });
@@ -511,16 +513,42 @@ describe('scoring', () => {
     expect(E.publicState(s).trumpSuit).toBe('S');
     expect(E.nextTimer(s)).toEqual({ at: 1000 + ROUND_BREAK_MS, action: { type: 't9:nextRound' } });
     const n = ok(E.apply(s, null, { type: 't9:nextRound' }, ctx(1000 + ROUND_BREAK_MS)));
-    expect(n).toMatchObject({ phase: 'bidding', round: 2, dealerSeat: 0, gamePoints: [1, 0] });
+    expect(n).toMatchObject({ phase: 'bidding', round: 2, dealerSeat: 0, gamePoints: [2, 0] });
     expect(n.history).toHaveLength(1);
     expect(n.single).toBe(false);
     expect(n.doubled).toBe(0);
   });
 
-  it('7th card, double and redouble multiply the game points', () => {
-    expect(sweep({ trumpMode: 'seventh' }).roundResult?.delta).toBe(2);
-    expect(sweep({ doubled: 1 }).roundResult?.delta).toBe(2);
+  /** The last trick of a hand: team 0 bid 20, has 18 going in, and its jack takes 3 more (21, made). */
+  const made = (o: Partial<TwentyNineState> = {}) => {
+    let s = playing([[c('J', 'S')], [c('7', 'S')], [c('8', 'S')], [c('Q', 'S')]], 'D', {
+      highestBid: { seat: 0, amount: 20 },
+      tricksWon: [4, 3],
+      pointsTaken: [18, 7],
+      ...o,
+    });
+    for (const seat of [0, 1, 2, 3]) s = play(s, seat, s.hands[seat]![0]!.id);
+    return s.roundResult!;
+  };
+
+  it('a normal hand and a 7th-card hand are both worth 1', () => {
+    expect(made()).toMatchObject({ pointsTaken: [21, 7], made: true, delta: 1 });
+    expect(made({ trumpMode: 'seventh' }).delta).toBe(1);
+  });
+
+  it('double and redouble multiply: 1 becomes 2 and 4; all 28 points becomes 4 and 8', () => {
+    expect(made({ doubled: 1 }).delta).toBe(2);
+    expect(made({ doubled: 2 }).delta).toBe(4);
+    expect(sweep({ doubled: 1 }).roundResult?.delta).toBe(4);
     expect(sweep({ doubled: 2, trumpMode: 'seventh' }).roundResult?.delta).toBe(8);
+  });
+
+  it('if the opponents take all 28 points, the bidding team loses 2', () => {
+    // Seat 1 (team 1) holds every spade (trump, revealed) and leads; team 0 bid.
+    let s = playing([suitOf('H'), suitOf('S'), suitOf('D'), suitOf('C')], 'S', { turnSeat: 1, trumpRevealed: true });
+    for (let t = 0; t < 8; t++) for (let k = 0; k < 4; k++) s = play(s, s.turnSeat, s.hands[s.turnSeat]![0]!.id);
+    expect(s.roundResult).toMatchObject({ pointsTaken: [0, 28], allPointsTeam: 1, made: false, delta: -2 });
+    expect(s.gamePoints).toEqual([-2, 0]);
   });
 
   it('target missed: the bidding team loses the same', () => {
@@ -543,8 +571,8 @@ describe('scoring', () => {
     expect(E.nextTimer(win)).toBeNull();
     let lose = playing([[c('7', 'S')], [c('J', 'S')], [c('8', 'S')], [c('Q', 'S')]], 'D', {
       gamePoints: [-5, 0],
-      tricksWon: [0, 7],
-      pointsTaken: [0, 25],
+      tricksWon: [1, 6],
+      pointsTaken: [2, 20], // not a 28-point sweep, so the hand is worth 1
     });
     for (const seat of [0, 1, 2, 3]) lose = play(lose, seat, lose.hands[seat]![0]!.id);
     expect(lose.gamePoints).toEqual([-6, 0]);
@@ -576,7 +604,9 @@ describe('a full random hand', () => {
     expect(['roundOver', 'over']).toContain(s.phase);
     expect(s.tricksWon[0] + s.tricksWon[1]).toBe(8);
     expect(s.pointsTaken[0] + s.pointsTaken[1]).toBe(28);
-    expect(Math.abs(s.roundResult!.delta)).toBe(4); // 7th card (2) doubled
+    // A 7th-card hand is worth 1 (2 if a team took all 28 points), doubled.
+    const swept = s.pointsTaken[0] === 28 || s.pointsTaken[1] === 28;
+    expect(Math.abs(s.roundResult!.delta)).toBe(swept ? 4 : 2);
     expect(s.hands.every((h) => h.length === 0)).toBe(true);
   });
 });

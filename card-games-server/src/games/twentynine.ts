@@ -34,9 +34,12 @@ export const cardStrength = (c: Card): number => STRENGTH.length - STRENGTH.inde
 export const teamOf = (seat: number): 0 | 1 => (seat % 2) as 0 | 1;
 const next = (seat: number): number => (seat + 1) % 4;
 
-/** Game points a hand is worth before doubling: normal 1, 7th card 2, single 3, single with 7th card 6. */
-export function handValue(trumpMode: TrumpMode, single: boolean): number {
-  return (single ? 3 : 1) * (trumpMode === 'seventh' ? 2 : 1);
+/**
+ * Game points a hand is worth before doubling: 1 (a 7th-card hand too), or 2
+ * for single hand or when either team took all 28 card points. They don't stack.
+ */
+export function handValue(single: boolean, allPoints: boolean): number {
+  return single || allPoints ? 2 : 1;
 }
 
 interface PlayedCard extends TrickCard {
@@ -320,7 +323,9 @@ function endRound(s: TwentyNineState, ctx: EngineContext): TwentyNineState {
   const team = biddingTeam(s);
   const goal = target(s)!;
   const made = s.single ? s.tricksWon[team] === 8 : s.pointsTaken[team] >= goal;
-  const value = handValue(s.trumpMode!, s.single) * (s.doubled === 2 ? 4 : s.doubled === 1 ? 2 : 1);
+  // A team that took every card point (28) makes the hand worth 2, whichever side it was.
+  const allPointsTeam = s.pointsTaken[0] === 28 ? 0 : s.pointsTaken[1] === 28 ? 1 : undefined;
+  const value = handValue(s.single, allPointsTeam !== undefined) * (s.doubled === 2 ? 4 : s.doubled === 1 ? 2 : 1);
   const delta = made ? value : -value;
   const gamePoints: [number, number] = [...s.gamePoints];
   gamePoints[team] += delta;
@@ -336,6 +341,7 @@ function endRound(s: TwentyNineState, ctx: EngineContext): TwentyNineState {
     single: s.single,
     doubled: s.doubled,
     ...(s.pair && { pair: s.pair }),
+    ...(allPointsTeam !== undefined && { allPointsTeam }),
     made,
     delta,
   };
