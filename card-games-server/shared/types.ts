@@ -107,7 +107,7 @@ export type BluffAction = { type: 'bluff:play'; cardIds: string[] } | { type: 'b
  */
 export type TwentyNinePhase = 'bidding' | 'trumpSelect' | 'doubling' | 'redoubling' | 'playing' | 'roundOver' | 'over';
 
-/** How trump was set: a card the bidder chose ("normal"), or the 7th card, unknown even to the bidder. */
+/** How trump was set: a suit the bidder chose ("normal"), or the suit of their 7th card, unknown even to them. */
 export type TrumpMode = 'normal' | 'seventh';
 
 export interface TrickCard {
@@ -159,8 +159,8 @@ export interface TwentyNinePublicState {
   /** The bidder is playing single hand; their partner sits out. */
   single: boolean;
   sittingOutSeat?: number;
-  /** The trump card is lying face down in front of the bidder. */
-  trumpCardDown: boolean;
+  /** Trump has been chosen but not yet revealed. */
+  trumpHidden: boolean;
   trumpRevealed: boolean;
   /** Only present once revealed. */
   trumpSuit?: Suit;
@@ -195,9 +195,9 @@ export interface TwentyNinePublicState {
 export type TwentyNineAction =
   | { type: 't9:bid'; amount: number; single?: boolean }
   | { type: 't9:bid'; pass: true }
-  /** Normal trump: place this card from your four face down. */
-  | { type: 't9:setTrump'; cardId: string }
-  /** 7th-card trump: the first card of the bidder's second four goes face down, unseen. */
+  /** Normal trump: name a suit you hold among your first four cards. The cards stay in your hand. */
+  | { type: 't9:setTrump'; suit: Suit }
+  /** 7th card: trump is the suit of your 7th card, which stays in your hand unmarked; nobody knows it until asked. */
   | { type: 't9:seventhCard' }
   /** In the doubling phase: double or not. In the redoubling phase: redouble or not. */
   | { type: 't9:double'; double: boolean }
@@ -216,8 +216,6 @@ export interface HandPayload {
   cards: Card[];
   /** 29 only: the hidden trump suit, sent to the bidder alone, and only when they chose it (not on a 7th card). */
   secretTrump?: Suit;
-  /** 29 only: the bidder's own face-down trump card, so they can see what they put down. */
-  trumpCard?: Card;
 }
 
 export interface GameErrorPayload {

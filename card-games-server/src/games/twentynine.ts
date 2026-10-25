@@ -1,4 +1,5 @@
 import {
+  SUITS,
   type Card,
   type Rank,
   type Suit,
@@ -65,8 +66,7 @@ export interface TwentyNineState {
   singleBid: boolean;
   single: boolean;
   trumpMode?: TrumpMode;
-  /** The face-down trump card, out of the bidder's hand until revealed. Never sent to clients before that. */
-  trumpCard?: Card;
+  /** Set once trump is chosen; never sent to clients before the reveal (except the bidder who chose it). */
   trumpSuit?: Suit;
   trumpRevealed: boolean;
   revealedBySeat?: number;
@@ -218,48 +218,49 @@ function bid(s: TwentyNineState, seat: number, action: Record<string, unknown>):
 
 // ---------- Trump ----------
 
-/** Deal the last 4 cards each, from the dealer's right. With a 7th card, the bidder's first one goes face down. */
-function dealRest(s: TwentyNineState, hands: Card[][], seventh: boolean): { hands: Card[][]; trumpCard?: Card } {
+/**
+ * Deal the last 4 cards each, from the dealer's right. Every card goes into a
+ * hand: trump is only a suit, and the card that set it stays with the bidder.
+ * Returns the bidder's 7th card (the first of their second four).
+ */
+function dealRest(s: TwentyNineState, ctx: EngineContext): { hands: Card[][]; seventh: Card } {
   const first = next(s.dealerSeat);
   const rest = deal(s.stock, 4, 4).hands;
-  let trumpCard: Card | undefined;
+  const hands = s.hands.map((h) => h.slice());
+  let seventh: Card | undefined;
   rest.forEach((h, k) => {
     const seat = (first + k) % 4;
-    if (seventh && seat === bidderSeat(s)) {
-      trumpCard = h[0];
-      hands[seat]!.push(...h.slice(1));
+    if (seat === bidderSeat(s)) {
+      seventh = h[0];
+      // Mixed up, so nobody (the bidder included) can tell which of the four was the 7th card.
+      hands[seat]!.push(...shuffle(h, ctx.rng));
     } else {
       hands[seat]!.push(...h);
     }
   });
-  return { hands, trumpCard };
+  return { hands, seventh: seventh! };
 }
 
-function toDoubling(s: TwentyNineState, hands: Card[][], trumpCard: Card, trumpMode: TrumpMode): EngineResult<TwentyNineState> {
-  return {
-    ok: true,
-    state: { ...s, hands, stock: [], trumpCard, trumpSuit: trumpCard.suit, trumpMode, phase: 'doubling', doubleAnswered: [] },
-  };
+function toDoubling(s: TwentyNineState, hands: Card[][], trumpSuit: Suit, trumpMode: TrumpMode): EngineResult<TwentyNineState> {
+  return { ok: true, state: { ...s, hands, stock: [], trumpSuit, trumpMode, phase: 'doubling', doubleAnswered: [] } };
 }
 
-function setTrump(s: TwentyNineState, seat: number, action: Record<string, unknown>): EngineResult<TwentyNineState> {
+/** Normal trump: the bidder names a suit they hold among their four cards. The cards stay in hand. */
+function setTrump(s: TwentyNineState, seat: number, action: Record<string, unknown>, ctx: EngineContext): EngineResult<TwentyNineState> {
   if (s.phase !== 'trumpSelect') return fail('WRONG_PHASE', 'It is not time to set trump.');
   if (bidderSeat(s) !== seat) return fail('NOT_BIDDER', 'Only the bidder sets trump.');
-  const card = s.hands[seat]!.find((c) => c.id === action.cardId);
-  if (!card) return fail('NOT_YOUR_CARD', 'Pick one of your four cards to place face down.');
-  const hands = s.hands.map((h, k) => (k === seat ? h.filter((c) => c.id !== card.id) : h.slice()));
-  return toDoubling(s, dealRest(s, hands, false).hands, card, 'normal');
+  const suit = action.suit as Suit;
+  if (!SUITS.includes(suit)) return fail('BAD_ACTION', 'Pick a suit.');
+  if (!s.hands[seat]!.some((c) => c.suit === suit)) return fail('NO_SUCH_SUIT', 'Trump must be a suit you hold among your four cards.');
+  return toDoubling(s, dealRest(s, ctx).hands, suit, 'normal');
 }
 
-function seventhCard(s: TwentyNineState, seat: number): EngineResult<TwentyNineState> {
+/** 7th card: trump is the suit of the bidder's 7th card, which stays in their hand unmarked. */
+function seventhCard(s: TwentyNineState, seat: number, ctx: EngineContext): EngineResult<TwentyNineState> {
   if (s.phase !== 'trumpSelect') return fail('WRONG_PHASE', 'It is not time to set trump.');
   if (bidderSeat(s) !== seat) return fail('NOT_BIDDER', 'Only the bidder sets trump.');
-  const { hands, trumpCard } = dealRest(
-    s,
-    s.hands.map((h) => h.slice()),
-    true,
-  );
-  return toDoubling(s, hands, trumpCard!, 'seventh');
+  const { hands, seventh } = dealRest(s, ctx);
+  return toDoubling(s, hands, seventh.suit, 'seventh');
 }
 
 // ---------- Double / redouble ----------
@@ -333,7 +334,7 @@ function endRound(s: TwentyNineState, ctx: EngineContext): TwentyNineState {
   else if (gamePoints[team] <= -WIN_GAME_POINTS) winnerTeam = team === 0 ? 1 : 0;
 
   // Whatever happened, everyone sees the trump at the end of the hand.
-  const shown = { trumpRevealed: true, trumpCard: undefined, mustTrumpSeat: undefined };
+  const shown = { trumpRevealed: true, mustTrumpSeat: undefined };
   if (winnerTeam !== undefined) return { ...s, ...shown, gamePoints, roundResult, history, winnerTeam, phase: 'over' };
   return { ...s, ...shown, gamePoints, roundResult, history, phase: 'roundOver', nextRoundAt: ctx.now + ROUND_BREAK_MS };
 }
@@ -361,7 +362,7 @@ function playCard(s: TwentyNineState, seat: number, action: Record<string, unkno
   const pointsTaken: [number, number] = [...s.pointsTaken];
   tricksWon[team] += 1;
   pointsTaken[team] += points;
-  let done: TwentyNineState = {
+  const done: TwentyNineState = {
     ...s,
     hands,
     currentTrick: [],
@@ -374,25 +375,18 @@ function playCard(s: TwentyNineState, seat: number, action: Record<string, unkno
   const played = tricksWon[0] + tricksWon[1];
   // Single hand is lost the moment the bidder loses a trick: no need to play on.
   if (played === 8 || (s.single && team !== biddingTeam(s))) return { ok: true, state: endRound(done, ctx) };
-  if (played === 7 && done.trumpCard) {
-    // Nobody asked for trump: the face-down card is the bidder's last card, played as an ordinary card.
-    const b = bidderSeat(done);
-    done = { ...done, hands: done.hands.map((h, k) => (k === b ? [...h, done.trumpCard!] : h)), trumpCard: undefined };
-  }
   return { ok: true, state: done };
 }
 
 function revealTrump(s: TwentyNineState, seat: number): EngineResult<TwentyNineState> {
   if (s.phase !== 'playing') return fail('WRONG_PHASE', 'It is not time to play.');
   if (s.turnSeat !== seat) return fail('NOT_YOUR_TURN', 'It is not your turn.');
-  if (s.trumpRevealed || !s.trumpCard) return fail('ALREADY_REVEALED', 'Trump is already revealed.');
+  if (s.trumpRevealed) return fail('ALREADY_REVEALED', 'Trump is already revealed.');
   const lead = s.currentTrick[0]?.card.suit;
   if (!lead) return fail('CANNOT_REVEAL', 'You can only ask for trump when you cannot follow the lead suit.');
   if (s.hands[seat]!.some((c) => c.suit === lead)) return fail('CANNOT_REVEAL', 'You can still follow suit.');
-  // The face-down card is turned up and goes back into the bidder's hand.
-  const b = bidderSeat(s);
-  const hands = s.hands.map((h, k) => (k === b ? [...h, s.trumpCard!] : h));
-  return { ok: true, state: { ...s, hands, trumpCard: undefined, trumpRevealed: true, revealedBySeat: seat, mustTrumpSeat: seat } };
+  // The trump suit is announced to everyone.
+  return { ok: true, state: { ...s, trumpRevealed: true, revealedBySeat: seat, mustTrumpSeat: seat } };
 }
 
 function declarePair(s: TwentyNineState, seat: number): EngineResult<TwentyNineState> {
@@ -432,9 +426,9 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
       case 't9:bid':
         return bid(s, seat, action);
       case 't9:setTrump':
-        return setTrump(s, seat, action);
+        return setTrump(s, seat, action, ctx);
       case 't9:seventhCard':
-        return seventhCard(s, seat);
+        return seventhCard(s, seat, ctx);
       case 't9:double':
         return double(s, seat, action);
       case 't9:play':
@@ -461,7 +455,7 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
       trumpMode: s.trumpMode,
       single: s.single,
       sittingOutSeat: sittingOut(s),
-      trumpCardDown: s.trumpCard !== undefined,
+      trumpHidden: s.trumpSuit !== undefined && !s.trumpRevealed,
       trumpRevealed: s.trumpRevealed,
       trumpSuit: s.trumpRevealed ? s.trumpSuit : undefined,
       revealedBySeat: s.revealedBySeat,
@@ -488,10 +482,8 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
     const seat = s.seats.indexOf(playerId);
     if (seat < 0) return { cards: [] };
     const cards = s.hands[seat]!;
-    // Only a bidder who chose trump knows it; on a 7th card nobody does until it is turned up.
-    if (s.highestBid?.seat === seat && s.trumpMode === 'normal' && s.trumpCard) {
-      return { cards, secretTrump: s.trumpSuit, trumpCard: s.trumpCard };
-    }
+    // Only a bidder who chose trump knows it; on a 7th card nobody does until it is asked for.
+    if (s.highestBid?.seat === seat && s.trumpMode === 'normal' && !s.trumpRevealed) return { cards, secretTrump: s.trumpSuit };
     return { cards };
   },
 

@@ -32,8 +32,8 @@ function fresh(): TwentyNineState {
   return { ...E.init(P, {}, ctx()), dealerSeat: 3, turnSeat: 0, auction: { early: 0, queue: [1, 2, 3] } };
 }
 
-/** Seat 0 has bid and placed `trumpCard` face down; play is about to start with seat 0 to lead. */
-function playing(hands: Card[][], trumpCard: Card, o: Partial<TwentyNineState> = {}): TwentyNineState {
+/** Seat 0 has bid and chosen `trump` (still hidden); play is about to start with seat 0 to lead. */
+function playing(hands: Card[][], trump: Suit, o: Partial<TwentyNineState> = {}): TwentyNineState {
   const bid = o.highestBid?.amount ?? 16;
   return {
     ...fresh(),
@@ -44,8 +44,7 @@ function playing(hands: Card[][], trumpCard: Card, o: Partial<TwentyNineState> =
     passed: [false, true, true, true],
     highestBid: { seat: 0, amount: bid },
     trumpMode: 'normal',
-    trumpCard,
-    trumpSuit: trumpCard.suit,
+    trumpSuit: trump,
     turnSeat: 0,
     ...o,
   };
@@ -177,49 +176,57 @@ describe('bidding: duels with the hold rule', () => {
 });
 
 describe('choosing trump', () => {
-  it('normal: the bidder places one of their four face down; it leaves their hand', () => {
+  it('normal: the bidder names a suit they hold; every card stays in hand', () => {
     const s = wonBid();
-    const card = s.hands[0]![2]!;
-    expect(code(E.apply(s, 's1', { type: 't9:setTrump', cardId: card.id }, ctx()))).toBe('NOT_BIDDER');
-    expect(code(E.apply(s, 's0', { type: 't9:setTrump', cardId: s.hands[1]![0]!.id }, ctx()))).toBe('NOT_YOUR_CARD');
-    const n = act(s, 0, { type: 't9:setTrump', cardId: card.id });
+    const suit = s.hands[0]![2]!.suit;
+    const missing = (['S', 'H', 'D', 'C'] as Suit[]).find((x) => !s.hands[0]!.some((c) => c.suit === x));
+    expect(code(E.apply(s, 's1', { type: 't9:setTrump', suit }, ctx()))).toBe('NOT_BIDDER');
+    if (missing) expect(code(E.apply(s, 's0', { type: 't9:setTrump', suit: missing }, ctx()))).toBe('NO_SUCH_SUIT');
+    const n = act(s, 0, { type: 't9:setTrump', suit });
     expect(n.phase).toBe('doubling');
-    expect(n.hands.map((h) => h.length)).toEqual([7, 8, 8, 8]);
-    expect(n.hands[0]!.some((x) => x.id === card.id)).toBe(false);
-    expect(n.trumpCard).toEqual(card);
+    expect(n.hands.map((h) => h.length)).toEqual([8, 8, 8, 8]);
+    expect(n.trumpSuit).toBe(suit);
     expect(n.trumpMode).toBe('normal');
   });
 
-  it('normal: only the bidder learns the suit and sees their face-down card', () => {
+  it('normal: only the bidder learns the suit', () => {
     const s = wonBid();
-    const card = s.hands[0]![0]!;
-    const n = act(s, 0, { type: 't9:setTrump', cardId: card.id });
+    const suit = s.hands[0]![0]!.suit;
+    const n = act(s, 0, { type: 't9:setTrump', suit });
     const pub = E.publicState(n);
     expect(pub.trumpSuit).toBeUndefined();
-    expect(pub.trumpCardDown).toBe(true);
-    expect(JSON.stringify(pub)).not.toContain(card.id);
-    expect(E.hand(n, 's0')).toMatchObject({ secretTrump: card.suit, trumpCard: card });
-    for (const p of ['s1', 's2', 's3']) {
-      expect(E.hand(n, p).secretTrump).toBeUndefined();
-      expect(E.hand(n, p).trumpCard).toBeUndefined();
-    }
+    expect(pub.trumpHidden).toBe(true);
+    expect(E.hand(n, 's0').secretTrump).toBe(suit);
+    for (const p of ['s1', 's2', 's3']) expect(E.hand(n, p).secretTrump).toBeUndefined();
   });
 
-  it("7th card: the first card of the bidder's second four goes face down, unknown even to the bidder", () => {
-    const n = act(wonBid(), 0, { type: 't9:seventhCard' });
+  it("7th card: trump is the suit of the bidder's 7th card, which stays in hand unmarked and unknown", () => {
+    const before = wonBid();
+    const n = act(before, 0, { type: 't9:seventhCard' });
     expect(n.trumpMode).toBe('seventh');
-    expect(n.hands.map((h) => h.length)).toEqual([7, 8, 8, 8]);
-    expect(n.trumpCard).toBeDefined();
-    const all = [...n.hands.flat(), n.trumpCard!];
-    expect(new Set(all.map((x) => x.id)).size).toBe(32);
+    expect(n.hands.map((h) => h.length)).toEqual([8, 8, 8, 8]);
+    expect(new Set(n.hands.flat().map((x) => x.id)).size).toBe(32);
+    // The 7th card is the first of the bidder's second four, dealt from the stock in order.
+    const bidderBatch = 0; // seat 0 is the dealer's right, so it is dealt first
+    expect(n.trumpSuit).toBe(before.stock[bidderBatch * 4]!.suit);
     expect(E.hand(n, 's0').secretTrump).toBeUndefined();
-    expect(E.hand(n, 's0').trumpCard).toBeUndefined();
     expect(E.publicState(n).trumpSuit).toBeUndefined();
+  });
+
+  it("7th card: the bidder's new cards arrive in a mixed order, so the 7th can't be picked out", () => {
+    const orders = new Set<string>();
+    for (let seed = 1; seed <= 30; seed++) {
+      const base = { ...wonBid(), stock: wonBid().stock };
+      const n = ok(E.apply(base, 's0', { type: 't9:seventhCard' }, ctx(1000, seed)));
+      const seventh = base.stock[0]!.id;
+      orders.add(String(n.hands[0]!.slice(4).findIndex((c) => c.id === seventh)));
+    }
+    expect(orders.size).toBeGreaterThan(1);
   });
 });
 
 describe('double and redouble', () => {
-  const ready = () => act(wonBid(), 0, { type: 't9:setTrump', cardId: wonBid().hands[0]![0]!.id });
+  const ready = () => act(wonBid(), 0, { type: 't9:setTrump', suit: wonBid().hands[0]![0]!.suit });
 
   it("only the opponents may double; if both decline, play starts at the dealer's right", () => {
     let s = ready();
@@ -261,19 +268,18 @@ describe('play', () => {
     [c('K', 'S'), c('Q', 'C')],
   ];
 
-  it('must follow the lead suit if able; the face-down card cannot be played', () => {
-    let s = playing(hands(), c('10', 'D'));
-    expect(code(E.apply(s, 's0', { type: 't9:play', cardId: '10D' }, ctx()))).toBe('NOT_YOUR_CARD');
+  it('must follow the lead suit if able; a hidden trump played without asking is an ordinary card', () => {
+    let s = playing(hands(), 'D');
     s = play(s, 0, 'JS');
     expect(code(E.apply(s, 's1', { type: 't9:play', cardId: '7D' }, ctx()))).toBe('MUST_FOLLOW_SUIT');
     s = play(s, 1, '9S');
-    s = play(s, 2, 'AD'); // a hidden trump played without asking: an ordinary card
+    s = play(s, 2, 'AD'); // a trump, but trump is still hidden: an ordinary card
     s = play(s, 3, 'KS');
     expect(s.lastTrick).toMatchObject({ winnerSeat: 0, points: 3 + 2 + 1 });
   });
 
-  it('asking for trump turns the card up, returns it to the bidder, and the asker must trump', () => {
-    let s = playing(hands(), c('10', 'D'));
+  it('asking for trump announces the suit, and the asker must trump that trick', () => {
+    let s = playing(hands(), 'D');
     s = play(s, 0, '7S');
     expect(code(E.apply(s, 's1', { type: 't9:revealTrump' }, ctx()))).toBe('CANNOT_REVEAL'); // holds 9S
     s = play(s, 1, '9S');
@@ -283,9 +289,9 @@ describe('play', () => {
       trumpSuit: 'D',
       revealedBySeat: 2,
       mustTrumpSeat: 2,
-      trumpCardDown: false,
+      trumpHidden: false,
     });
-    expect(s.hands[0]!.map((x) => x.id)).toContain('10D');
+    expect(s.hands.map((h) => h.length)).toEqual([2, 1, 3, 2]); // nobody's hand changes
     expect(code(E.apply(s, 's2', { type: 't9:play', cardId: '8H' }, ctx()))).toBe('MUST_TRUMP');
     s = play(s, 2, 'KD');
     s = play(s, 3, 'KS');
@@ -301,7 +307,7 @@ describe('play', () => {
         [c('A', 'S'), c('8', 'D')],
         [c('K', 'S'), c('Q', 'C')],
       ],
-      c('7', 'H'),
+      'H',
       { turnSeat: 1 },
     );
     s = play(s, 1, 'JS');
@@ -310,24 +316,17 @@ describe('play', () => {
     s = act(s, 0, { type: 't9:revealTrump' });
     expect(s.trumpSuit).toBe('H');
     expect(code(E.apply(s, 's0', { type: 't9:play', cardId: '8C' }, ctx()))).toBe('MUST_TRUMP');
-    s = play(s, 0, '7H');
+    s = play(s, 0, '9H');
     expect(s.lastTrick?.winnerSeat).toBe(0);
   });
 
-  it('if nobody asks, the face-down card becomes the bidder’s last card, played as an ordinary card', () => {
-    // Seat 0 holds seven spades and put the 7 of hearts (trump) down. Nobody ever asks.
+  it('if nobody asks for trump, the whole hand is played with no trumps', () => {
+    // Trump is hearts; seat 3's hearts never count as trumps because nobody asks.
     const hearts = suitOf('H', ['J', '9', 'A', '10', 'K', 'Q', '8']);
-    let s = playing([suitOf('S', ['J', '9', 'A', '10', 'K', 'Q', '8']), suitOf('D'), suitOf('C'), [c('7', 'S'), ...hearts]], c('7', 'H'));
-    for (let t = 0; t < 7; t++) for (const seat of [0, 1, 2, 3]) s = play(s, seat, s.hands[seat]![0]!.id);
-    expect(s.trumpCard).toBeUndefined();
-    expect(s.trumpRevealed).toBe(false);
-    expect(s.hands[0]!.map((x) => x.id)).toEqual(['7H']);
-    // Seat 0 won the last trick and leads the 7 of hearts; the 8 of hearts beats it as a plain card.
-    s = play(s, 0, '7H');
-    s = play(s, 1, s.hands[1]![0]!.id);
-    s = play(s, 2, s.hands[2]![0]!.id);
-    s = play(s, 3, '8H');
-    expect(s.lastTrick?.winnerSeat).toBe(3);
+    let s = playing([suitOf('S'), suitOf('D'), suitOf('C'), [c('7', 'H'), ...hearts]], 'H');
+    for (let t = 0; t < 8; t++) for (const seat of [0, 1, 2, 3]) s = play(s, seat, s.hands[seat]![0]!.id);
+    expect(s.tricksWon).toEqual([8, 0]);
+    expect(s.pointsTaken).toEqual([s.pointsTaken[0], 0]);
     expect(s.phase).toBe('roundOver');
   });
 
@@ -351,13 +350,13 @@ describe('pair (King + Queen of trump)', () => {
         [c('8', 'S'), c('8', 'C')],
         [c('9', 'S'), c('9', 'C')],
       ],
-      c('7', 'H'),
-      { trumpRevealed: true, trumpCard: undefined, highestBid: { seat: bidder, amount } },
+      'H',
+      { trumpRevealed: true, highestBid: { seat: bidder, amount } },
     );
   const afterTrick = (s: TwentyNineState) => play(play(play(play(s, 0, 'JS'), 1, '7S'), 2, '8S'), 3, '9S');
 
   it('cannot be declared before trump is revealed, or before your side wins a trick', () => {
-    const hidden = { ...setup(), trumpRevealed: false, trumpCard: c('7', 'H') };
+    const hidden = { ...setup(), trumpRevealed: false };
     expect(code(E.apply(afterTrick(hidden), 's0', { type: 't9:pair' }, ctx()))).toBe('NO_PAIR');
     expect(code(E.apply(setup(), 's0', { type: 't9:pair' }, ctx()))).toBe('NO_PAIR');
   });
@@ -384,8 +383,8 @@ describe('pair (King + Queen of trump)', () => {
         [c('8', 'S'), c('K', 'H'), c('Q', 'H')],
         [c('9', 'S'), c('9', 'C')],
       ],
-      c('7', 'H'),
-      { trumpRevealed: true, trumpCard: undefined },
+      'H',
+      { trumpRevealed: true },
     );
     s = afterTrick(s);
     expect(act(s, 2, { type: 't9:pair' }).pair?.seat).toBe(2);
@@ -394,18 +393,17 @@ describe('pair (King + Queen of trump)', () => {
   });
 
   it('needs both cards in hand', () => {
-    const s = playing([[c('J', 'S'), c('K', 'H')], [c('7', 'S')], [c('8', 'S')], [c('9', 'S')]], c('7', 'H'), {
+    const s = playing([[c('J', 'S'), c('K', 'H')], [c('7', 'S')], [c('8', 'S')], [c('9', 'S')]], 'H', {
       trumpRevealed: true,
-      trumpCard: undefined,
     });
     expect(code(E.apply(afterTrick(s), 's0', { type: 't9:pair' }, ctx()))).toBe('NO_PAIR');
   });
 });
 
 describe('single hand', () => {
-  /** Seat 0 bid 28 single: holds all spades but the 7 (face down). Seat 2 sits out. */
+  /** Seat 0 bid 28 single and holds all eight spades (trump). Seat 2 sits out. */
   const single = (o: Partial<TwentyNineState> = {}) =>
-    playing([suitOf('S', ['J', '9', 'A', '10', 'K', 'Q', '8']), suitOf('H'), suitOf('D'), suitOf('C')], c('7', 'S'), {
+    playing([suitOf('S'), suitOf('H'), suitOf('D'), suitOf('C')], 'S', {
       single: true,
       highestBid: { seat: 0, amount: 28 },
       ...o,
@@ -450,7 +448,7 @@ describe('single hand', () => {
     s = act(s, 1, { type: 't9:bid', pass: true });
     // Dealer 3, so seat 0 (the bidder) leads anyway; move the deal so the partner (seat 2) would lead.
     s = { ...s, dealerSeat: 1 };
-    s = act(s, 0, { type: 't9:setTrump', cardId: s.hands[0]![0]!.id });
+    s = act(s, 0, { type: 't9:setTrump', suit: s.hands[0]![0]!.suit });
     s = act(act(s, 1, { type: 't9:double', double: false }), 3, { type: 't9:double', double: false });
     expect(s.phase).toBe('playing');
     expect(s.turnSeat).toBe(3);
@@ -458,9 +456,9 @@ describe('single hand', () => {
 });
 
 describe('scoring', () => {
-  /** Seat 0 holds all spades but the 7 (face down) and wins every trick: 28 points. */
+  /** Seat 0 holds all eight spades (trump) and wins every trick: 28 points. */
   function sweep(o: Partial<TwentyNineState> = {}): TwentyNineState {
-    let s = playing([suitOf('S', ['J', '9', 'A', '10', 'K', 'Q', '8']), suitOf('H'), suitOf('D'), suitOf('C')], c('7', 'S'), o);
+    let s = playing([suitOf('S'), suitOf('H'), suitOf('D'), suitOf('C')], 'S', o);
     for (let t = 0; t < 8; t++) for (let k = 0; k < 4; k++) s = play(s, s.turnSeat, s.hands[s.turnSeat]![0]!.id);
     return s;
   }
@@ -497,9 +495,8 @@ describe('scoring', () => {
 
   it('target missed: the bidding team loses the same', () => {
     // The last trick of a hand: team 0 bid 20 and has 10 points going in.
-    let s = playing([[c('7', 'S')], [c('8', 'S')], [c('J', 'S')], [c('Q', 'S')]], c('7', 'D'), {
+    let s = playing([[c('7', 'S')], [c('8', 'S')], [c('J', 'S')], [c('Q', 'S')]], 'D', {
       highestBid: { seat: 0, amount: 20 },
-      trumpCard: undefined,
       doubled: 1,
       tricksWon: [4, 3],
       pointsTaken: [10, 15],
@@ -514,8 +511,7 @@ describe('scoring', () => {
     expect(win.phase).toBe('over');
     expect(win.winnerTeam).toBe(0);
     expect(E.nextTimer(win)).toBeNull();
-    let lose = playing([[c('7', 'S')], [c('J', 'S')], [c('8', 'S')], [c('Q', 'S')]], c('7', 'D'), {
-      trumpCard: undefined,
+    let lose = playing([[c('7', 'S')], [c('J', 'S')], [c('8', 'S')], [c('Q', 'S')]], 'D', {
       gamePoints: [-5, 0],
       tricksWon: [0, 7],
       pointsTaken: [0, 25],
@@ -541,8 +537,7 @@ describe('a full random hand', () => {
       const seat = s.turnSeat;
       const hand = s.hands[seat]!;
       const lead = s.currentTrick[0]?.card.suit;
-      if (lead && !hand.some((x) => x.suit === lead) && !s.trumpRevealed && s.trumpCard)
-        s = ok(E.apply(s, P[seat]!, { type: 't9:revealTrump' }, at));
+      if (lead && !hand.some((x) => x.suit === lead) && !s.trumpRevealed) s = ok(E.apply(s, P[seat]!, { type: 't9:revealTrump' }, at));
       const h = s.hands[seat]!;
       let legal = lead && h.some((x) => x.suit === lead) ? h.filter((x) => x.suit === lead) : h;
       if (s.mustTrumpSeat === seat && legal.some((x) => x.suit === s.trumpSuit)) legal = legal.filter((x) => x.suit === s.trumpSuit);
