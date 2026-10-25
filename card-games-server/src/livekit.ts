@@ -45,7 +45,11 @@ export function livekitRouter(rooms: RoomManager): Router {
       return;
     }
     try {
-      const body: LivekitTokenResponse = { token: await mintToken(code, player.id, player.name), url: config.livekit.url, identity: player.id };
+      const body: LivekitTokenResponse = {
+        token: await mintToken(code, player.id, player.name),
+        url: config.livekit.url,
+        identity: player.id,
+      };
       res.json(body);
     } catch (e) {
       console.error('livekit token failed', e);

@@ -194,12 +194,7 @@ describe('round scoring and game end', () => {
   /** Play out 8 tricks where seat 0 leads and wins every trick with spades. */
   function sweep(trump: Suit, bid: number): TwentyNineState {
     const ranks: Rank[] = ['J', '9', 'A', '10', 'K', 'Q', '8', '7'];
-    const hands = [
-      ranks.map((r) => c(r, 'S')),
-      ranks.map((r) => c(r, 'H')),
-      ranks.map((r) => c(r, 'D')),
-      ranks.map((r) => c(r, 'C')),
-    ];
+    const hands = [ranks.map((r) => c(r, 'S')), ranks.map((r) => c(r, 'H')), ranks.map((r) => c(r, 'D')), ranks.map((r) => c(r, 'C'))];
     let s = playing(hands, trump, bid);
     for (let i = 0; i < 8; i++) {
       for (let k = 0; k < 4; k++) {
@@ -242,14 +237,24 @@ describe('round scoring and game end', () => {
 
   it('first team to +6 wins; a team at -6 loses', () => {
     const near = playing([[c('J', 'S')], [c('7', 'S')], [c('8', 'S')], [c('Q', 'S')]], 'S', 16);
-    let s = { ...near, gamePoints: [5, 0] as [number, number], tricksWon: [7, 0] as [number, number], pointsTaken: [25, 0] as [number, number] };
+    let s = {
+      ...near,
+      gamePoints: [5, 0] as [number, number],
+      tricksWon: [7, 0] as [number, number],
+      pointsTaken: [25, 0] as [number, number],
+    };
     for (const p of P) s = ok(E.apply(s, p, { type: 't9:play', cardId: s.hands[P.indexOf(p)]![0]!.id }, ctx()));
     expect(s.phase).toBe('over');
     expect(s.winnerTeam).toBe(0);
     expect(E.isOver(s)).toBe(true);
     expect(E.nextTimer(s)).toBeNull();
 
-    let l = { ...near, gamePoints: [-5, 0] as [number, number], tricksWon: [0, 7] as [number, number], pointsTaken: [0, 25] as [number, number] };
+    let l = {
+      ...near,
+      gamePoints: [-5, 0] as [number, number],
+      tricksWon: [0, 7] as [number, number],
+      pointsTaken: [0, 25] as [number, number],
+    };
     l = { ...l, hands: [[c('7', 'S')], [c('J', 'S')], [c('8', 'S')], [c('Q', 'S')]] };
     for (const p of P) l = ok(E.apply(l, p, { type: 't9:play', cardId: l.hands[P.indexOf(p)]![0]!.id }, ctx()));
     expect(l.gamePoints).toEqual([-6, 0]);

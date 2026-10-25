@@ -196,7 +196,12 @@ describe('disconnect and reconnect', () => {
     const away = ids.find((id) => id !== st.turnPlayerId)!;
     const awayIdx = ids.indexOf(away);
     rooms.disconnect(away, `sock${awayIdx}`);
-    expect(rooms.action(ids.find((id) => id !== st.turnPlayerId && id !== away)!, { type: 'bluff:call' })).toMatchObject({
+    expect(
+      rooms.action(
+        ids.find((id) => id !== st.turnPlayerId && id !== away)!,
+        { type: 'bluff:call' },
+      ),
+    ).toMatchObject({
       ok: false,
       error: { code: 'GAME_PAUSED' },
     });

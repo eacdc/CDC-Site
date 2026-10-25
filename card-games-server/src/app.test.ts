@@ -61,7 +61,8 @@ describe('socket flow', () => {
     const host = await ack<JoinAck>((cb) => socks[0]!.emit('room:create', { game: 'bluff', name: 'Host' }, cb));
     if (!host.ok) throw new Error('create failed');
     const joined: JoinAck[] = [host];
-    for (let i = 1; i < 4; i++) joined.push(await ack<JoinAck>((cb) => socks[i]!.emit('room:join', { code: host.code, name: `P${i}` }, cb)));
+    for (let i = 1; i < 4; i++)
+      joined.push(await ack<JoinAck>((cb) => socks[i]!.emit('room:join', { code: host.code, name: `P${i}` }, cb)));
     expect(joined.every((j) => j.ok)).toBe(true);
 
     // Everyone, including the last to join, has the full room.

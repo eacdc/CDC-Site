@@ -157,8 +157,7 @@ export type GameAction = BluffAction | TwentyNineAction;
 // ---------- Socket events ----------
 
 export type GameStatePayload =
-  | { game: 'bluff'; state: BluffPublicState; serverNow: number }
-  | { game: '29'; state: TwentyNinePublicState; serverNow: number };
+  { game: 'bluff'; state: BluffPublicState; serverNow: number } | { game: '29'; state: TwentyNinePublicState; serverNow: number };
 
 export interface HandPayload {
   cards: Card[];
@@ -177,9 +176,7 @@ export type GameOverResult =
   | { game: GameId; reason: 'ended'; endedBy: string };
 
 /** Acknowledgement for room:create and room:join. */
-export type JoinAck =
-  | { ok: true; code: string; playerId: string; sessionId: string }
-  | { ok: false; error: GameErrorPayload };
+export type JoinAck = { ok: true; code: string; playerId: string; sessionId: string } | { ok: false; error: GameErrorPayload };
 
 /** Acknowledgement for every other room:* request. */
 export type Ack = { ok: true } | { ok: false; error: GameErrorPayload };

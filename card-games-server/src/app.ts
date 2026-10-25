@@ -90,11 +90,14 @@ export function createApp(): { http: HttpServer; io: IO; rooms: RoomManager } {
       else if (!r.ok) socket.emit('game:error', r.error);
     };
 
-    socket.on('room:leave', handle((id) => {
-      const r = rooms.leave(id);
-      socket.data.playerId = undefined;
-      return r;
-    }));
+    socket.on(
+      'room:leave',
+      handle((id) => {
+        const r = rooms.leave(id);
+        socket.data.playerId = undefined;
+        return r;
+      }),
+    );
     socket.on('room:setGame', (p, ack) => handle((id) => rooms.setGame(id, p?.game))(p, ack));
     socket.on('room:setOptions', (p, ack) => handle((id) => rooms.setOptions(id, p?.options))(p, ack));
     socket.on('room:kick', (p, ack) => handle((id) => rooms.kick(id, p?.playerId))(p, ack));

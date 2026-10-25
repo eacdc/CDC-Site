@@ -289,7 +289,10 @@ export class RoomManager {
     if (room.players.some((x) => !x.connected)) return err('PLAYER_DISCONNECTED', 'Wait for everyone to reconnect.');
     if (options !== undefined) room.options = sanitizeOptions(room.game, options);
 
-    const seated = room.players.slice().sort((a, b) => a.seat - b.seat).map((x) => x.id);
+    const seated = room.players
+      .slice()
+      .sort((a, b) => a.seat - b.seat)
+      .map((x) => x.id);
     room.engineState = ENGINES[room.game].init(seated, room.options, this.ctx());
     room.status = 'playing';
     room.result = undefined;
@@ -342,7 +345,8 @@ export class RoomManager {
     const room = this.byPlayer.get(playerId);
     if (!room) return err('NOT_IN_ROOM', 'You are not in a room.');
     if (room.hostId !== playerId) return err('NOT_HOST', 'Only the host can do that.');
-    if (status && room.status !== status) return err('WRONG_STATUS', `That can only be done while the room is ${status === 'over' ? 'finished' : `in the ${status}`}.`);
+    if (status && room.status !== status)
+      return err('WRONG_STATUS', `That can only be done while the room is ${status === 'over' ? 'finished' : `in the ${status}`}.`);
     return { ok: true, room };
   }
 
@@ -375,7 +379,9 @@ export class RoomManager {
     if (engine.isOver(state)) {
       const pub = engine.publicState(state);
       const result: GameOverResult =
-        room.game === 'bluff' ? { game: 'bluff', reason: 'won', winnerId: pub.winnerId } : { game: '29', reason: 'won', winnerTeam: pub.winnerTeam, gamePoints: pub.gamePoints };
+        room.game === 'bluff'
+          ? { game: 'bluff', reason: 'won', winnerId: pub.winnerId }
+          : { game: '29', reason: 'won', winnerTeam: pub.winnerTeam, gamePoints: pub.gamePoints };
       this.finish(room, result);
     } else {
       this.scheduleTimer(room);
@@ -460,7 +466,13 @@ export class RoomManager {
     const players: PublicPlayer[] = room.players
       .slice()
       .sort((a, b) => a.seat - b.seat)
-      .map((p) => ({ id: p.id, name: p.name, seat: p.seat, connected: p.connected, ...(p.holdUntil !== undefined && { holdUntil: p.holdUntil }) }));
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        seat: p.seat,
+        connected: p.connected,
+        ...(p.holdUntil !== undefined && { holdUntil: p.holdUntil }),
+      }));
     return {
       code: room.code,
       hostId: room.hostId,
@@ -538,7 +550,9 @@ export function sanitizeOptions(game: GameId, raw: unknown): GameOptions {
   const o = raw as Record<string, unknown>;
   const out: Record<string, number> = {};
   if (o.decks === 1 || o.decks === 2) out.decks = o.decks;
-  if (typeof o.maxCardsPerTurn === 'number' && Number.isInteger(o.maxCardsPerTurn) && o.maxCardsPerTurn > 0) out.maxCardsPerTurn = o.maxCardsPerTurn;
-  if (typeof o.callWindowSec === 'number' && Number.isFinite(o.callWindowSec)) out.callWindowSec = Math.min(Math.max(Math.round(o.callWindowSec), 2), 30);
+  if (typeof o.maxCardsPerTurn === 'number' && Number.isInteger(o.maxCardsPerTurn) && o.maxCardsPerTurn > 0)
+    out.maxCardsPerTurn = o.maxCardsPerTurn;
+  if (typeof o.callWindowSec === 'number' && Number.isFinite(o.callWindowSec))
+    out.callWindowSec = Math.min(Math.max(Math.round(o.callWindowSec), 2), 30);
   return out;
 }

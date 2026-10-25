@@ -2,7 +2,10 @@ import 'dotenv/config';
 
 /** CLIENT_ORIGIN may list several origins, comma-separated (e.g. the deployed site and localhost). */
 function origins(raw: string | undefined): string[] {
-  const list = (raw ?? '').split(',').map((o) => o.trim()).filter(Boolean);
+  const list = (raw ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   return list.length > 0 ? list : ['http://localhost:5173'];
 }
 
