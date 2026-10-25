@@ -101,6 +101,7 @@ export function createApp(): { http: HttpServer; io: IO; rooms: RoomManager } {
     socket.on('room:setGame', (p, ack) => handle((id) => rooms.setGame(id, p?.game))(p, ack));
     socket.on('room:setOptions', (p, ack) => handle((id) => rooms.setOptions(id, p?.options))(p, ack));
     socket.on('room:kick', (p, ack) => handle((id) => rooms.kick(id, p?.playerId))(p, ack));
+    socket.on('room:swapSeats', (p, ack) => handle((id) => rooms.swapSeats(id, p?.a, p?.b))(p, ack));
     socket.on('room:start', (p, ack) => handle((id) => rooms.start(id, p?.options))(p, ack));
     socket.on('room:hostDecision', (p, ack) => handle((id) => rooms.hostDecision(id, p?.decision))(p, ack));
     socket.on('room:reset', (p, ack) => handle((id) => rooms.reset(id))(p, ack));

@@ -26,6 +26,8 @@ export interface GameEngine<S, O, P> {
   publicState(state: S): P;
   hand(state: S, playerId: string): HandPayload;
   nextTimer(state: S): ScheduledAction | null;
+  /** Someone new takes over a seat mid-game: everything that was `oldId`'s becomes `newId`'s. */
+  replacePlayer(state: S, oldId: string, newId: string): S;
   /** Push every deadline back by `ms`, used when a paused game resumes. */
   shiftDeadlines(state: S, ms: number): S;
   isOver(state: S): boolean;

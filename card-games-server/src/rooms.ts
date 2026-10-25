@@ -52,12 +52,23 @@ interface Player {
   joinedAt: number;
 }
 
+/** A seat left empty mid-game. Anyone joining by link takes it; the player who dropped can reclaim it with their session. */
+interface Vacancy {
+  seat: number;
+  /** The id the game state still knows the seat by. */
+  playerId: string;
+  name: string;
+  /** Kept only when the seat was lost to a dropped connection, not left on purpose. */
+  sessionId?: string;
+}
+
 interface Room {
   code: string;
   hostId: string;
   game: GameId;
   status: RoomStatus;
   players: Player[];
+  vacancies: Vacancy[];
   options: GameOptions;
   engineState?: unknown;
   timer?: NodeJS.Timeout;
@@ -139,7 +150,16 @@ export class RoomManager {
     if (!name) return err('BAD_NAME', 'Enter a name.');
     const code = this.newCode();
     const player = this.newPlayer(name, 0, socketId);
-    const room: Room = { code, hostId: player.id, game: gameRaw, status: 'lobby', players: [player], options: {}, paused: null };
+    const room: Room = {
+      code,
+      hostId: player.id,
+      game: gameRaw,
+      status: 'lobby',
+      players: [player],
+      vacancies: [],
+      options: {},
+      paused: null,
+    };
     this.rooms.set(code, room);
     this.byPlayer.set(player.id, room);
     this.transport.attach(player.id, code, socketId);
@@ -155,6 +175,16 @@ export class RoomManager {
     const existing = typeof sessionId === 'string' ? room.players.find((p) => p.sessionId === sessionId) : undefined;
     if (existing) return this.reconnect(room, existing, socketId);
 
+    if (room.status === 'playing') {
+      // Mid-game you can only take an empty seat: your own if you dropped out, otherwise the first one open.
+      const own = typeof sessionId === 'string' ? room.vacancies.find((v) => v.sessionId === sessionId) : undefined;
+      const vacancy = own ?? room.vacancies.slice().sort((a, b) => a.seat - b.seat)[0];
+      if (!vacancy) return err('GAME_IN_PROGRESS', 'A game is in progress and every seat is taken.');
+      const seatName = cleanName(nameRaw) ?? (own ? own.name : null);
+      if (!seatName) return err('BAD_NAME', 'Enter a name.');
+      return this.takeSeat(room, vacancy, seatName, own !== undefined, socketId);
+    }
+
     const name = cleanName(nameRaw);
     if (!name) return err('BAD_NAME', 'Enter a name.');
     if (room.status !== 'lobby') return err('GAME_IN_PROGRESS', 'A game is already in progress in this room.');
@@ -169,6 +199,45 @@ export class RoomManager {
     return { ok: true, code: room.code, playerId: player.id, sessionId: player.sessionId };
   }
 
+  /** Seat someone in an empty seat mid-game. They inherit its cards, team and score. */
+  private takeSeat(room: Room, v: Vacancy, name: string, reclaim: boolean, socketId: string): RoomResult<JoinResult> {
+    const player = this.newPlayer(name, v.seat, socketId);
+    if (reclaim) {
+      // The same person coming back: same id, so the game state needs no change.
+      player.id = v.playerId;
+      player.sessionId = v.sessionId!;
+    } else {
+      room.engineState = ENGINES[room.game].replacePlayer(room.engineState, v.playerId, player.id);
+    }
+    room.vacancies = room.vacancies.filter((x) => x !== v);
+    room.players.push(player);
+    room.emptySince = undefined;
+    this.byPlayer.set(player.id, room);
+    this.transport.attach(player.id, room.code, socketId);
+    this.refreshPause(room);
+    this.broadcastRoom(room);
+    this.broadcastGame(room);
+    return { ok: true, code: room.code, playerId: player.id, sessionId: player.sessionId };
+  }
+
+  /**
+   * Empty a seat mid-game: the player goes, the seat waits for someone to take
+   * it, and the game stays paused until every seat is filled.
+   */
+  private vacate(room: Room, p: Player, keepSession: boolean): void {
+    clearTimeout(p.holdTimer);
+    room.players = room.players.filter((x) => x.id !== p.id);
+    this.byPlayer.delete(p.id);
+    if (room.players.length === 0) {
+      this.deleteRoom(room);
+      return;
+    }
+    room.vacancies.push({ seat: p.seat, playerId: p.id, name: p.name, ...(keepSession && { sessionId: p.sessionId }) });
+    if (room.hostId === p.id) this.passHost(room);
+    this.refreshPause(room);
+    this.broadcastRoom(room);
+  }
+
   private reconnect(room: Room, p: Player, socketId: string): RoomResult<JoinResult> {
     // Another tab (or a socket that has not noticed it dropped) loses the seat to this one.
     if (p.socketId && p.socketId !== socketId) this.transport.detach(p.id, room.code, p.socketId, 'replaced');
@@ -178,6 +247,10 @@ export class RoomManager {
     p.holdUntil = undefined;
     clearTimeout(p.holdTimer);
     room.emptySince = undefined;
+    // Now someone is back, seats whose hold ran out while nobody was here open up.
+    if (room.status === 'playing') {
+      for (const x of room.players.filter((y) => !y.connected && (y.holdUntil ?? 0) <= this.now())) this.vacate(room, x, true);
+    }
     this.refreshPause(room);
     this.broadcastRoom(room);
     this.sendSnapshot(room, p);
@@ -192,15 +265,14 @@ export class RoomManager {
     this.startHold(room, p);
   }
 
-  /** Leaving on purpose. In the lobby the seat is freed at once; mid-game it is held like a dropped connection. */
+  /** Leaving on purpose frees the seat at once. Mid-game it stays open for someone else to take. */
   leave(playerId: string): RoomResult {
     const room = this.byPlayer.get(playerId);
     const p = room?.players.find((x) => x.id === playerId);
     if (!room || !p) return err('NOT_IN_ROOM', 'You are not in a room.');
     if (room.status === 'playing') {
       this.transport.detach(p.id, room.code, p.socketId);
-      p.socketId = undefined;
-      this.startHold(room, p);
+      this.vacate(room, p, false);
     } else {
       this.transport.detach(p.id, room.code, p.socketId);
       this.removePlayer(room, p);
@@ -222,10 +294,9 @@ export class RoomManager {
     const p = room.players.find((x) => x.id === playerId);
     if (!p || p.connected || this.rooms.get(room.code) !== room) return;
     if (room.status === 'playing') {
-      // The seat stays (the game needs it); the host now decides whether to keep waiting.
-      if (room.hostId === p.id) this.passHost(room);
-      this.refreshPause(room);
-      this.broadcastRoom(room);
+      // The seat opens for anyone (the player can still reclaim it while it is empty), but only if
+      // someone is still at the table; if everyone dropped, the game waits for whoever comes back.
+      if (room.players.some((x) => x.connected)) this.vacate(room, p, true);
     } else {
       this.removePlayer(room, p);
     }
@@ -239,7 +310,8 @@ export class RoomManager {
       this.deleteRoom(room);
       return;
     }
-    room.players.sort((a, b) => a.joinedAt - b.joinedAt).forEach((x, i) => (x.seat = i));
+    // Close the gap, keeping everyone's order (and the teams the host arranged).
+    room.players.sort((a, b) => a.seat - b.seat).forEach((x, i) => (x.seat = i));
     if (room.hostId === p.id) this.passHost(room);
     this.broadcastRoom(room);
   }
@@ -275,12 +347,25 @@ export class RoomManager {
   kick(playerId: string, targetId: unknown): RoomResult {
     const r = this.hostRoom(playerId);
     if (!r.ok) return r;
-    if (r.room.status === 'playing') return err('WRONG_STATUS', 'You cannot remove players mid-game.');
     const target = r.room.players.find((x) => x.id === targetId);
     if (!target) return err('NO_SUCH_PLAYER', 'That player is not in the room.');
     if (target.id === playerId) return err('BAD_TARGET', 'You cannot remove yourself.');
     this.transport.detach(target.id, r.room.code, target.socketId, 'kicked');
-    this.removePlayer(r.room, target);
+    // Mid-game the seat stays open for someone else.
+    if (r.room.status === 'playing') this.vacate(r.room, target, false);
+    else this.removePlayer(r.room, target);
+    return { ok: true };
+  }
+
+  /** Host, in the lobby: swap two players' seats. In 29 this is how partners are chosen (seats 1+3 and 2+4 are teams). */
+  swapSeats(playerId: string, a: unknown, b: unknown): RoomResult {
+    const r = this.hostRoom(playerId, 'lobby');
+    if (!r.ok) return r;
+    const pa = r.room.players.find((x) => x.id === a);
+    const pb = r.room.players.find((x) => x.id === b);
+    if (!pa || !pb) return err('NO_SUCH_PLAYER', 'That player is not in the room.');
+    [pa.seat, pb.seat] = [pb.seat, pa.seat];
+    this.broadcastRoom(r.room);
     return { ok: true };
   }
 
@@ -310,22 +395,13 @@ export class RoomManager {
     return { ok: true };
   }
 
+  /** While the game is paused for a missing player or an empty seat, the host may end it (waiting is the default). */
   hostDecision(playerId: string, decision: unknown): RoomResult {
     const r = this.hostRoom(playerId, 'playing');
     if (!r.ok) return r;
     const room = r.room;
-    if (!room.paused?.awaitingHostDecision) return err('NOT_WAITING', 'There is nothing to decide right now.');
-    if (decision === 'wait') {
-      // Give everyone still missing another full hold.
-      for (const p of room.players.filter((x) => !x.connected)) {
-        p.holdUntil = this.now() + HOLD_MS;
-        clearTimeout(p.holdTimer);
-        p.holdTimer = setTimeout(() => this.holdExpired(room, p.id), HOLD_MS);
-      }
-      this.refreshPause(room);
-      this.broadcastRoom(room);
-      return { ok: true };
-    }
+    if (!room.paused) return err('NOT_WAITING', 'There is nothing to decide right now.');
+    if (decision === 'wait') return { ok: true };
     if (decision === 'end') {
       this.finish(room, { game: room.game, reason: 'ended', endedBy: playerId });
       return { ok: true };
@@ -342,8 +418,11 @@ export class RoomManager {
     room.engineState = undefined;
     room.result = undefined;
     room.paused = null;
+    room.vacancies = [];
     // Anyone whose hold already ran out during the game gives up their seat now.
     for (const p of room.players.filter((x) => !x.connected && (x.holdUntil ?? 0) <= this.now())) this.removePlayer(room, p);
+    // Close any gaps the empty seats left.
+    room.players.sort((a, b) => a.seat - b.seat).forEach((x, i) => (x.seat = i));
     if (this.rooms.get(room.code) === room) this.broadcastRoom(room);
     return { ok: true };
   }
@@ -363,7 +442,7 @@ export class RoomManager {
     const room = this.byPlayer.get(playerId);
     if (!room) return err('NOT_IN_ROOM', 'You are not in a room.');
     if (room.status !== 'playing') return err('NOT_PLAYING', 'No game is in progress.');
-    if (room.paused) return err('GAME_PAUSED', 'The game is paused until everyone is back.');
+    if (room.paused) return err('GAME_PAUSED', 'The game is paused until every seat is filled.');
     const res = ENGINES[room.game].apply(room.engineState, playerId, action, this.ctx());
     if (!res.ok) return res;
     this.commit(room, res.state);
@@ -414,12 +493,12 @@ export class RoomManager {
     room.timer = setTimeout(() => this.runScheduled(room, t), Math.max(0, t.at - this.now()));
   }
 
-  /** Pause while anyone is missing; on resume, push every game deadline back by the time spent paused. */
+  /** Pause while anyone is missing or a seat is empty; on resume, push every game deadline back by the time spent paused. */
   private refreshPause(room: Room): void {
     if (room.status !== 'playing') return;
     const missing = room.players.filter((x) => !x.connected);
-    if (missing.length > 0) {
-      const awaitingHostDecision = missing.every((x) => (x.holdUntil ?? 0) <= this.now());
+    if (missing.length > 0 || room.vacancies.length > 0) {
+      const awaitingHostDecision = room.vacancies.length > 0;
       if (!room.paused) {
         room.paused = { since: this.now(), awaitingHostDecision };
         clearTimeout(room.timer);
@@ -491,6 +570,7 @@ export class RoomManager {
         waitingFor: room.players.filter((x) => !x.connected).map((x) => x.id),
         awaitingHostDecision: room.paused.awaitingHostDecision,
       },
+      openSeats: room.vacancies.map((v) => ({ seat: v.seat, name: v.name })).sort((a, b) => a.seat - b.seat),
       serverNow: this.now(),
     };
   }

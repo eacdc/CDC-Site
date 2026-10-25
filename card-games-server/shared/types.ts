@@ -57,9 +57,9 @@ export interface PublicPlayer {
 }
 
 export interface PauseInfo {
-  /** Players the game is waiting on. */
+  /** Connected players' ids the game is waiting on (dropped, within their 60-second hold). */
   waitingFor: string[];
-  /** True once every hold has run out; the host may then wait longer or end the game. */
+  /** True while a seat is empty; anyone with the link can take it. The host may end the game at any pause. */
   awaitingHostDecision: boolean;
 }
 
@@ -71,6 +71,8 @@ export interface RoomState {
   players: PublicPlayer[];
   options: GameOptions;
   paused: PauseInfo | null;
+  /** Seats left empty mid-game, and who sat there. Anyone joining by link takes the first one. */
+  openSeats: { seat: number; name: string }[];
   serverNow: number;
 }
 
@@ -161,6 +163,11 @@ export interface TwentyNinePublicState {
   sittingOutSeat?: number;
   /** Trump has been chosen but not yet revealed. */
   trumpHidden: boolean;
+  /**
+   * The spare 2-5 of the trump suit lying face down in front of the bidder.
+   * Its suit appears once trump is asked for, and it stays face up until the hand ends.
+   */
+  trumpMarker?: { rank: Rank; suit?: Suit };
   trumpRevealed: boolean;
   /** Only present once revealed. */
   trumpSuit?: Suit;
@@ -241,6 +248,8 @@ export interface ClientToServerEvents {
   'room:setGame': (p: { game: GameId }, ack?: (r: Ack) => void) => void;
   'room:setOptions': (p: { options: GameOptions }, ack?: (r: Ack) => void) => void;
   'room:kick': (p: { playerId: string }, ack?: (r: Ack) => void) => void;
+  /** Host, in the lobby: swap two players' seats (in 29, this sets the partners). */
+  'room:swapSeats': (p: { a: string; b: string }, ack?: (r: Ack) => void) => void;
   'room:start': (p: { options?: GameOptions }, ack?: (r: Ack) => void) => void;
   /** While paused and every hold has run out: keep waiting, or end the game. */
   'room:hostDecision': (p: { decision: 'wait' | 'end' }, ack?: (r: Ack) => void) => void;

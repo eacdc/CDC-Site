@@ -68,6 +68,8 @@ export interface TwentyNineState {
   trumpMode?: TrumpMode;
   /** Set once trump is chosen; never sent to clients before the reveal (except the bidder who chose it). */
   trumpSuit?: Suit;
+  /** The spare card (2 to 5, not in the 29 deck) laid face down to mark trump; only its rank is public. */
+  markerRank?: Rank;
   trumpRevealed: boolean;
   revealedBySeat?: number;
   mustTrumpSeat?: number;
@@ -241,8 +243,18 @@ function dealRest(s: TwentyNineState, ctx: EngineContext): { hands: Card[][]; se
   return { hands, seventh: seventh! };
 }
 
-function toDoubling(s: TwentyNineState, hands: Card[][], trumpSuit: Suit, trumpMode: TrumpMode): EngineResult<TwentyNineState> {
-  return { ok: true, state: { ...s, hands, stock: [], trumpSuit, trumpMode, phase: 'doubling', doubleAnswered: [] } };
+const MARKER_RANKS: Rank[] = ['2', '3', '4', '5'];
+
+function toDoubling(
+  s: TwentyNineState,
+  hands: Card[][],
+  trumpSuit: Suit,
+  trumpMode: TrumpMode,
+  ctx: EngineContext,
+): EngineResult<TwentyNineState> {
+  // A spare 2-5 of the trump suit goes face down on the table to mark it.
+  const markerRank = MARKER_RANKS[Math.floor(ctx.rng() * MARKER_RANKS.length)]!;
+  return { ok: true, state: { ...s, hands, stock: [], trumpSuit, markerRank, trumpMode, phase: 'doubling', doubleAnswered: [] } };
 }
 
 /** Normal trump: the bidder names a suit they hold among their four cards. The cards stay in hand. */
@@ -252,7 +264,7 @@ function setTrump(s: TwentyNineState, seat: number, action: Record<string, unkno
   const suit = action.suit as Suit;
   if (!SUITS.includes(suit)) return fail('BAD_ACTION', 'Pick a suit.');
   if (!s.hands[seat]!.some((c) => c.suit === suit)) return fail('NO_SUCH_SUIT', 'Trump must be a suit you hold among your four cards.');
-  return toDoubling(s, dealRest(s, ctx).hands, suit, 'normal');
+  return toDoubling(s, dealRest(s, ctx).hands, suit, 'normal', ctx);
 }
 
 /** 7th card: trump is the suit of the bidder's 7th card, which stays in their hand unmarked. */
@@ -260,7 +272,7 @@ function seventhCard(s: TwentyNineState, seat: number, ctx: EngineContext): Engi
   if (s.phase !== 'trumpSelect') return fail('WRONG_PHASE', 'It is not time to set trump.');
   if (bidderSeat(s) !== seat) return fail('NOT_BIDDER', 'Only the bidder sets trump.');
   const { hands, seventh } = dealRest(s, ctx);
-  return toDoubling(s, hands, seventh.suit, 'seventh');
+  return toDoubling(s, hands, seventh.suit, 'seventh', ctx);
 }
 
 // ---------- Double / redouble ----------
@@ -456,6 +468,7 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
       single: s.single,
       sittingOutSeat: sittingOut(s),
       trumpHidden: s.trumpSuit !== undefined && !s.trumpRevealed,
+      trumpMarker: s.markerRank && { rank: s.markerRank, ...(s.trumpRevealed && { suit: s.trumpSuit }) },
       trumpRevealed: s.trumpRevealed,
       trumpSuit: s.trumpRevealed ? s.trumpSuit : undefined,
       revealedBySeat: s.revealedBySeat,
@@ -489,6 +502,11 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
 
   nextTimer(s) {
     return s.phase === 'roundOver' && s.nextRoundAt !== undefined ? { at: s.nextRoundAt, action: { type: 't9:nextRound' } } : null;
+  },
+
+  replacePlayer(s, oldId, newId) {
+    // Everything else is kept by seat, so the newcomer inherits the hand, team and score.
+    return { ...s, seats: s.seats.map((id) => (id === oldId ? newId : id)) };
   },
 
   shiftDeadlines(s, ms) {

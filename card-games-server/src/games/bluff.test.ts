@@ -237,3 +237,18 @@ describe('a full random game', () => {
     expect(s.hands[s.winnerId!]).toHaveLength(0);
   });
 });
+
+describe('someone takes over a seat', () => {
+  it('the newcomer inherits the hand, the turn and the last play', () => {
+    let s = state(basicHands());
+    s = ok(bluffEngine.apply(s, 'p0', { type: 'bluff:play', cardIds: ['AS'] }, ctx(1000)));
+    const r = bluffEngine.replacePlayer(s, 'p0', 'new');
+    expect(r.players[0]).toBe('new');
+    expect(r.hands.new!.map((c) => c.id)).toEqual(['AH', '5S']);
+    expect(r.hands.p0).toBeUndefined();
+    expect(r.lastPlay?.playerId).toBe('new');
+    // The newcomer's play can still be called, and they take the pile if it was a lie.
+    const called = ok(bluffEngine.apply(r, 'p1', { type: 'bluff:call' }, ctx(2000)));
+    expect(called.reveal?.playerId).toBe('new');
+  });
+});

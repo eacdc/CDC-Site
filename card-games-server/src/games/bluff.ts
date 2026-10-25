@@ -191,6 +191,28 @@ export const bluffEngine: GameEngine<BluffState, BluffOptions, BluffPublicState>
     return null;
   },
 
+  replacePlayer(s, oldId, newId) {
+    const swap = (id: string) => (id === oldId ? newId : id);
+    const hands = { ...s.hands };
+    if (oldId in hands) {
+      hands[newId] = hands[oldId]!;
+      delete hands[oldId];
+    }
+    return {
+      ...s,
+      players: s.players.map(swap),
+      hands,
+      lastPlay: s.lastPlay && { ...s.lastPlay, playerId: swap(s.lastPlay.playerId) },
+      reveal: s.reveal && {
+        ...s.reveal,
+        playerId: swap(s.reveal.playerId),
+        callerId: swap(s.reveal.callerId),
+        takerId: swap(s.reveal.takerId),
+      },
+      winnerId: s.winnerId && swap(s.winnerId),
+    };
+  },
+
   shiftDeadlines(s, ms) {
     return {
       ...s,

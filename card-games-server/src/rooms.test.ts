@@ -119,6 +119,19 @@ describe('host controls', () => {
     expect(rec.sent.at(-2)).toMatchObject({ to: 'socket:sock1', event: 'room:kicked', payload: { reason: 'kicked' } });
     expect(rooms.roomOf(ids[1]!)).toBeUndefined();
   });
+
+  it('the host can swap two players in the lobby, which sets the 29 partners', () => {
+    const { ids } = setup('29', 4);
+    expect(rooms.swapSeats(ids[1]!, ids[0]!, ids[1]!)).toMatchObject({ ok: false, error: { code: 'NOT_HOST' } });
+    must(rooms.swapSeats(ids[0]!, ids[1]!, ids[2]!));
+    const seats = Object.fromEntries(rec.last<RoomState>('room:state').players.map((p) => [p.id, p.seat]));
+    expect([seats[ids[0]!], seats[ids[1]!], seats[ids[2]!], seats[ids[3]!]]).toEqual([0, 2, 1, 3]);
+    // The game starts with that seating: P0 and P1 are now partners (seats 0 and 2).
+    must(rooms.start(ids[0]!));
+    const game = rec.last<GameStatePayload>('game:state');
+    if (game.game !== '29') throw new Error('expected 29');
+    expect(game.state.seats).toEqual([ids[0], ids[2], ids[1], ids[3]]);
+  });
 });
 
 describe('game flow through the room', () => {
@@ -216,24 +229,82 @@ describe('disconnect and reconnect', () => {
     expect((rec.last<GameStatePayload>('game:state').state as BluffPublicState).phase).toBe('turn');
   });
 
-  it('after the hold the host decides: wait gives another hold, end finishes the game', () => {
+  it('after the 60-second hold the seat opens; the host can end the game while it waits', () => {
     const { ids } = setup('29', 4);
     must(rooms.start(ids[0]!));
     rooms.disconnect(ids[3]!, 'sock3');
-    expect(rooms.hostDecision(ids[0]!, 'end')).toMatchObject({ ok: false, error: { code: 'NOT_WAITING' } });
+    expect(rec.last<RoomState>('room:state').openSeats).toEqual([]);
     vi.advanceTimersByTime(HOLD_MS);
-    expect(rec.last<RoomState>('room:state').paused).toEqual({ waitingFor: [ids[3]], awaitingHostDecision: true });
-    must(rooms.hostDecision(ids[0]!, 'wait'));
-    expect(rec.last<RoomState>('room:state').paused?.awaitingHostDecision).toBe(false);
-    vi.advanceTimersByTime(HOLD_MS);
+    const st = rec.last<RoomState>('room:state');
+    expect(st.openSeats).toEqual([{ seat: 3, name: 'P3' }]);
+    expect(st.players.map((p) => p.id)).toEqual(ids.slice(0, 3));
+    expect(st.paused).toEqual({ waitingFor: [], awaitingHostDecision: true });
+    expect(rooms.hostDecision(ids[1]!, 'end')).toMatchObject({ ok: false, error: { code: 'NOT_HOST' } });
     must(rooms.hostDecision(ids[0]!, 'end'));
     expect(rec.last('game:over')).toEqual({ game: '29', reason: 'ended', endedBy: ids[0] });
-    expect(rec.last<RoomState>('room:state').status).toBe('over');
-    // Back to the lobby drops the player who never came back.
     must(rooms.reset(ids[0]!));
+    const back = rec.last<RoomState>('room:state');
+    expect(back.status).toBe('lobby');
+    expect(back.openSeats).toEqual([]);
+    expect(back.players.map((p) => p.seat)).toEqual([0, 1, 2]);
+  });
+
+  it('leaving the table mid-game opens the seat at once and pauses the game', () => {
+    const { ids } = setup('29', 4);
+    must(rooms.start(ids[0]!));
+    must(rooms.leave(ids[2]!));
     const st = rec.last<RoomState>('room:state');
-    expect(st.status).toBe('lobby');
-    expect(st.players.map((p) => p.id)).toEqual(ids.slice(0, 3));
+    expect(st.openSeats).toEqual([{ seat: 2, name: 'P2' }]);
+    expect(st.paused?.awaitingHostDecision).toBe(true);
+    expect(rooms.action(ids[0]!, { type: 't9:bid', pass: true })).toMatchObject({ ok: false, error: { code: 'GAME_PAUSED' } });
+  });
+
+  it('a newcomer with the link takes the open seat, with its cards and team, and play resumes', () => {
+    const { ids, code } = setup('29', 4);
+    must(rooms.start(ids[0]!));
+    const hand = rec.last<HandPayload>('game:hand', `player:${ids[2]}`);
+    must(rooms.leave(ids[2]!));
+    const n = must(rooms.join(code, 'Newbie', undefined, 'new'));
+    expect(n.playerId).not.toBe(ids[2]);
+    expect(rec.last<HandPayload>('game:hand', `player:${n.playerId}`)).toEqual(hand);
+    const st = rec.last<RoomState>('room:state');
+    expect(st.players.find((p) => p.id === n.playerId)).toMatchObject({ name: 'Newbie', seat: 2 });
+    expect(st.openSeats).toEqual([]);
+    expect(st.paused).toBeNull();
+    const game = rec.last<GameStatePayload>('game:state');
+    if (game.game !== '29') throw new Error('expected 29');
+    expect(game.state.seats[2]).toBe(n.playerId);
+    // With every seat taken, nobody else can join.
+    expect(rooms.join(code, 'Late', undefined, 'late')).toMatchObject({ ok: false, error: { code: 'GAME_IN_PROGRESS' } });
+  });
+
+  it('a player who dropped can reclaim their own seat with their session while it is still open', () => {
+    const { ids, code, players } = setup('bluff', 4);
+    must(rooms.start(ids[0]!));
+    rooms.disconnect(ids[1]!, 'sock1');
+    vi.advanceTimersByTime(HOLD_MS);
+    expect(rec.last<RoomState>('room:state').openSeats).toEqual([{ seat: 1, name: 'P1' }]);
+    const back = must(rooms.join(code, '', players[1]!.sessionId, 'sock1b'));
+    expect(back.playerId).toBe(ids[1]);
+    expect(rec.last<RoomState>('room:state')).toMatchObject({ openSeats: [], paused: null });
+  });
+
+  it('the host can remove a player mid-game; their seat opens for someone else', () => {
+    const { ids } = setup('bluff', 4);
+    must(rooms.start(ids[0]!));
+    must(rooms.kick(ids[0]!, ids[3]!));
+    expect(rec.last<RoomState>('room:state').openSeats).toEqual([{ seat: 3, name: 'P3' }]);
+  });
+
+  it('if everyone drops, the seats are kept until someone comes back', () => {
+    const { ids, code, players } = setup('29', 4);
+    must(rooms.start(ids[0]!));
+    ids.forEach((id, i) => rooms.disconnect(id, `sock${i}`));
+    vi.advanceTimersByTime(HOLD_MS * 2);
+    expect(rooms.roomCount()).toBe(1);
+    must(rooms.join(code, '', players[0]!.sessionId, 'back'));
+    // The others' holds have run out, so their seats open now that someone is here.
+    expect(rec.last<RoomState>('room:state').openSeats.map((o) => o.seat)).toEqual([1, 2, 3]);
   });
 
   it('the host role passes on when the host’s hold runs out', () => {
