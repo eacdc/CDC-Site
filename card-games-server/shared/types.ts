@@ -101,19 +101,45 @@ export type BluffAction = { type: 'bluff:play'; cardIds: string[] } | { type: 'b
 
 // ---------- 29 ----------
 
-export type TwentyNinePhase = 'bidding' | 'trumpSelect' | 'playing' | 'roundOver' | 'over';
+/**
+ * bidding → trumpSelect → doubling (opponents may double) → redoubling (only
+ * after a double) → playing → roundOver, until a team reaches +6 or -6 (over).
+ */
+export type TwentyNinePhase = 'bidding' | 'trumpSelect' | 'doubling' | 'redoubling' | 'playing' | 'roundOver' | 'over';
+
+/** How trump was set: a card the bidder chose ("normal"), or the 7th card, unknown even to the bidder. */
+export type TrumpMode = 'normal' | 'seventh';
 
 export interface TrickCard {
   seat: number;
   card: Card;
 }
 
+export interface TwentyNineBid {
+  seat: number;
+  amount: number | 'pass';
+  /** A 28 bid declared as single hand. */
+  single?: boolean;
+  /** The dealer's automatic 16 after the other three passed. */
+  forced?: boolean;
+}
+
 export interface TwentyNineRoundResult {
+  round: number;
+  bidderSeat: number;
   biddingTeam: 0 | 1;
   bid: number;
+  /** Card points the bidding team needed, after any pair. Single hand needs every trick instead. */
+  target: number;
   pointsTaken: [number, number];
+  tricksWon: [number, number];
+  trumpMode: TrumpMode;
+  single: boolean;
+  /** 0 none, 1 doubled, 2 redoubled. */
+  doubled: 0 | 1 | 2;
+  pair?: { seat: number; team: 0 | 1 };
   made: boolean;
-  /** +1 or -1 game point to the bidding team. */
+  /** Game points to the bidding team: + if made, - if not. */
   delta: number;
 }
 
@@ -123,34 +149,57 @@ export interface TwentyNinePublicState {
   turnSeat: number;
   /** Player IDs indexed by seat. Seats 0+2 are team 0 (A), 1+3 team 1 (B). */
   seats: string[];
-  bids: { seat: number; amount: number | 'pass' }[];
+  bids: TwentyNineBid[];
   highestBid?: { seat: number; amount: number };
+  trumpMode?: TrumpMode;
+  /** The bidder is playing single hand; their partner sits out. */
+  single: boolean;
+  sittingOutSeat?: number;
+  /** The trump card is lying face down in front of the bidder. */
+  trumpCardDown: boolean;
   trumpRevealed: boolean;
   /** Only present once revealed. */
   trumpSuit?: Suit;
-  /** Seat that asked for the reveal. */
+  /** Seat that asked for (or made) the reveal. */
   revealedBySeat?: number;
+  /** This seat asked for trump and must play a trump in the current trick if they hold one. */
+  mustTrumpSeat?: number;
+  /** 0 none, 1 doubled, 2 redoubled. */
+  doubled: 0 | 1 | 2;
+  /** Seats that have already answered the current double / redouble question. */
+  doubleAnswered: number[];
+  pair?: { seat: number; team: 0 | 1 };
+  /** Card points the bidding team needs this hand, after any pair. */
+  target?: number;
   currentTrick: TrickCard[];
   /** The trick just completed, kept so everyone can see who won it. */
   lastTrick?: { cards: TrickCard[]; winnerSeat: number; points: number };
   tricksWon: [number, number];
-  /** Card points per team this round. */
+  /** Card points per team this hand. */
   pointsTaken: [number, number];
   gamePoints: [number, number];
   handCounts: number[];
   round: number;
   roundResult?: TwentyNineRoundResult;
-  /** Server timestamp (ms) at which the next round is dealt. */
+  /** Every finished hand so far, oldest first. */
+  history: TwentyNineRoundResult[];
+  /** Server timestamp (ms) at which the next hand is dealt. */
   nextRoundAt?: number;
   winnerTeam?: 0 | 1;
 }
 
 export type TwentyNineAction =
-  | { type: 't9:bid'; amount: number }
+  | { type: 't9:bid'; amount: number; single?: boolean }
   | { type: 't9:bid'; pass: true }
-  | { type: 't9:setTrump'; suit: Suit }
+  /** Normal trump: place this card from your four face down. */
+  | { type: 't9:setTrump'; cardId: string }
+  /** 7th-card trump: the first card of the bidder's second four goes face down, unseen. */
+  | { type: 't9:seventhCard' }
+  /** In the doubling phase: double or not. In the redoubling phase: redouble or not. */
+  | { type: 't9:double'; double: boolean }
   | { type: 't9:play'; cardId: string }
-  | { type: 't9:revealTrump' };
+  | { type: 't9:revealTrump' }
+  | { type: 't9:pair' };
 
 export type GameAction = BluffAction | TwentyNineAction;
 
@@ -161,8 +210,10 @@ export type GameStatePayload =
 
 export interface HandPayload {
   cards: Card[];
-  /** 29 only: the hidden trump, sent to the highest bidder alone. */
+  /** 29 only: the hidden trump suit, sent to the bidder alone, and only when they chose it (not on a 7th card). */
   secretTrump?: Suit;
+  /** 29 only: the bidder's own face-down trump card, so they can see what they put down. */
+  trumpCard?: Card;
 }
 
 export interface GameErrorPayload {

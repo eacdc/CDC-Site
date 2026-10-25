@@ -1,4 +1,4 @@
-import type { Card, GameErrorPayload, Suit } from '../../shared/types.js';
+import type { GameErrorPayload, HandPayload } from '../../shared/types.js';
 import type { Rng } from './deck.js';
 
 /** What every engine call may depend on besides state and action. Passing it in keeps engines pure. */
@@ -24,7 +24,7 @@ export interface GameEngine<S, O, P> {
   /** `playerId` is null for system actions (timer expiries). */
   apply(state: S, playerId: string | null, action: unknown, ctx: EngineContext): EngineResult<S>;
   publicState(state: S): P;
-  hand(state: S, playerId: string): { cards: Card[]; secretTrump?: Suit };
+  hand(state: S, playerId: string): HandPayload;
   nextTimer(state: S): ScheduledAction | null;
   /** Push every deadline back by `ms`, used when a paused game resumes. */
   shiftDeadlines(state: S, ms: number): S;
