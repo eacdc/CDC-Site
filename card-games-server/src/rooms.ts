@@ -90,8 +90,15 @@ export function cleanCode(raw: unknown): string | null {
 
 const isGameId = (g: unknown): g is GameId => g === 'bluff' || g === '29';
 
-/** A crypto-backed Rng in [0, 1). */
-export const cryptoRng: Rng = () => randomBytes(6).readUIntBE(0, 6) / 2 ** 48;
+/**
+ * A crypto-backed Rng in [0, 1) with the full 53 bits of precision a double
+ * holds, so a shuffle's picks are uniform to well beyond what any game can notice.
+ */
+export const cryptoRng: Rng = () => {
+  const b = randomBytes(7);
+  // 53 bits: the low 5 bits of the first byte, then 48 more.
+  return ((b[0]! & 0x1f) * 2 ** 48 + b.readUIntBE(1, 6)) / 2 ** 53;
+};
 
 export class RoomManager {
   private rooms = new Map<string, Room>();
