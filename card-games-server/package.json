@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write src shared"
+    "format": "prettier --write src shared",
+    "simulate:29": "vitest run src/simulate29.test.ts --silent=false"
   },
   "dependencies": {
     "cors": "^2.8.6",

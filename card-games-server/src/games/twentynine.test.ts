@@ -29,7 +29,7 @@ const play = (s: TwentyNineState, seat: number, id: string) => act(s, seat, { ty
 
 /** Dealer is seat 3, so seat 0 (dealer's right) bids and leads first. */
 function fresh(): TwentyNineState {
-  return { ...E.init(P, {}, ctx()), dealerSeat: 3, turnSeat: 0 };
+  return { ...E.init(P, {}, ctx()), dealerSeat: 3, turnSeat: 0, auction: { early: 0, queue: [1, 2, 3] } };
 }
 
 /** Seat 0 has bid and placed `trumpCard` face down; play is about to start with seat 0 to lead. */
@@ -75,51 +75,104 @@ describe('setup', () => {
   });
 });
 
-describe('bidding', () => {
-  it("opens at the dealer's right; bids must go higher, 16 to 28", () => {
+describe('bidding: duels with the hold rule', () => {
+  const bid = (s: TwentyNineState, seat: number, amount: number, single = false) => act(s, seat, { type: 't9:bid', amount, single });
+  const pass = (s: TwentyNineState, seat: number) => act(s, seat, { type: 't9:bid', pass: true });
+  const bidErr = (s: TwentyNineState, seat: number, amount: number) => code(E.apply(s, P[seat]!, { type: 't9:bid', amount }, ctx()));
+
+  it("opens at the dealer's right with 16 to 28", () => {
     const s = fresh();
-    expect(code(E.apply(s, 's1', { type: 't9:bid', amount: 16 }, ctx()))).toBe('NOT_YOUR_TURN');
-    expect(code(E.apply(s, 's0', { type: 't9:bid', amount: MIN_BID - 1 }, ctx()))).toBe('BAD_BID');
-    expect(code(E.apply(s, 's0', { type: 't9:bid', amount: 29 }, ctx()))).toBe('BAD_BID');
-    const a = act(s, 0, { type: 't9:bid', amount: 17 });
-    expect(a.turnSeat).toBe(1);
-    expect(code(E.apply(a, 's1', { type: 't9:bid', amount: 17 }, ctx()))).toBe('BAD_BID'); // equal bids not allowed
+    expect(bidErr(s, 1, 16)).toBe('NOT_YOUR_TURN');
+    expect(bidErr(s, 0, MIN_BID - 1)).toBe('BAD_BID');
+    expect(bidErr(s, 0, 29)).toBe('BAD_BID');
+    expect(E.publicState(s).minBid).toBe(16);
   });
 
-  it('a player who passes is out of the auction; the last one left is the bidder', () => {
-    let s = act(fresh(), 0, { type: 't9:bid', amount: 16 });
-    s = act(s, 1, { type: 't9:bid', pass: true });
-    s = act(s, 2, { type: 't9:bid', amount: 18 });
-    s = act(s, 3, { type: 't9:bid', pass: true });
-    s = act(s, 0, { type: 't9:bid', amount: 19 });
+  it('the later bidder must go higher; the earlier one may hold (match) the bid', () => {
+    let s = bid(fresh(), 0, 16); // A opens 16
+    expect(s.turnSeat).toBe(1);
+    expect(bidErr(s, 1, 16)).toBe('BAD_BID'); // B cannot match
+    s = bid(s, 1, 17); // B goes higher
+    expect(s.turnSeat).toBe(0); // back to A
+    expect(E.publicState(s)).toMatchObject({ holderSeat: 0, minBid: 17 });
+    expect(bidErr(s, 0, 16)).toBe('BAD_BID');
+    s = bid(s, 0, 17); // A holds at 17
+    expect(s.highestBid).toEqual({ seat: 0, amount: 17 });
+    expect(s.turnSeat).toBe(1);
+    expect(bidErr(s, 1, 17)).toBe('BAD_BID'); // B must say 18 or more
+    s = bid(s, 1, 19);
+    s = bid(s, 0, 20); // A may also go higher than needed
+    expect(s.turnSeat).toBe(1);
+  });
+
+  it('whoever passes is out, and the next seat challenges the one still in', () => {
+    let s = bid(fresh(), 0, 16);
+    s = bid(s, 1, 17);
+    s = pass(s, 0); // A drops: B now holds, C challenges
     expect(s.turnSeat).toBe(2);
-    s = act(s, 2, { type: 't9:bid', pass: true });
+    expect(bidErr(s, 2, 17)).toBe('BAD_BID');
+    s = bid(s, 2, 18);
+    expect(s.turnSeat).toBe(1); // B (earlier than C) may hold
+    s = bid(s, 1, 18);
+    s = pass(s, 2); // C drops: D challenges B
+    expect(s.turnSeat).toBe(3);
+    s = pass(s, 3);
     expect(s.phase).toBe('trumpSelect');
-    expect(s.highestBid).toEqual({ seat: 0, amount: 19 });
+    expect(s.highestBid).toEqual({ seat: 1, amount: 18 });
+    expect(s.turnSeat).toBe(1);
+  });
+
+  it('if the opener passes, the next seat opens', () => {
+    let s = pass(fresh(), 0);
+    expect(s.turnSeat).toBe(1);
+    s = bid(s, 1, 16);
+    expect(s.turnSeat).toBe(2);
   });
 
   it('if the first three pass, the dealer is forced to bid 16', () => {
     let s = fresh();
-    for (const seat of [0, 1, 2]) s = act(s, seat, { type: 't9:bid', pass: true });
+    for (const seat of [0, 1, 2]) s = pass(s, seat);
     expect(s.phase).toBe('trumpSelect');
     expect(s.highestBid).toEqual({ seat: 3, amount: 16 });
     expect(s.bids.at(-1)).toEqual({ seat: 3, amount: 16, forced: true });
     expect(s.turnSeat).toBe(3);
   });
 
-  it('a bid of 28 ends the auction at once', () => {
-    let s = act(fresh(), 0, { type: 't9:bid', amount: 20 });
-    s = act(s, 1, { type: 't9:bid', amount: 28 });
+  it('28 can be held; once the earlier bidder holds 28 the auction is over', () => {
+    let s = bid(fresh(), 0, 20);
+    s = bid(s, 1, 28);
+    expect(s.phase).toBe('bidding');
+    expect(s.turnSeat).toBe(0);
+    s = bid(s, 0, 28);
     expect(s.phase).toBe('trumpSelect');
-    expect(s.highestBid).toEqual({ seat: 1, amount: 28 });
-    expect(s.single).toBe(false);
+    expect(s.highestBid).toEqual({ seat: 0, amount: 28 });
   });
 
-  it('single hand is declared with the 28 bid, and only with 28', () => {
-    expect(code(E.apply(fresh(), 's0', { type: 't9:bid', amount: 20, single: true }, ctx()))).toBe('BAD_BID');
-    const s = act(fresh(), 0, { type: 't9:bid', amount: 28, single: true });
+  it('a 28 that is not held wins straight away; nobody else can go higher', () => {
+    let s = bid(fresh(), 0, 20);
+    s = bid(s, 1, 28, true);
+    s = pass(s, 0);
+    expect(s.phase).toBe('trumpSelect');
+    expect(s.highestBid).toEqual({ seat: 1, amount: 28 });
     expect(s.single).toBe(true);
-    expect(E.publicState(s).sittingOutSeat).toBe(2);
+    expect(E.publicState(s).sittingOutSeat).toBe(3);
+  });
+
+  it('single hand is declared with a 28 bid, and only with 28', () => {
+    expect(code(E.apply(fresh(), 's0', { type: 't9:bid', amount: 20, single: true }, ctx()))).toBe('BAD_BID');
+    let s = bid(fresh(), 0, 28, true);
+    expect(s.turnSeat).toBe(1); // still challengeable in principle, but nobody can beat 28
+    s = pass(s, 1);
+    expect(s.phase).toBe('trumpSelect');
+    expect(s.single).toBe(true);
+  });
+
+  it('the opener bidding 28 ends it once the challenger passes; a holder matching a single 28 plays normally', () => {
+    let s = bid(fresh(), 0, 16);
+    s = bid(s, 1, 28, true);
+    s = bid(s, 0, 28); // A holds 28 without declaring single
+    expect(s.highestBid).toEqual({ seat: 0, amount: 28 });
+    expect(s.single).toBe(false);
   });
 });
 
@@ -394,6 +447,7 @@ describe('single hand', () => {
 
   it("if the dealer's right is the sitting-out partner, the next player leads", () => {
     let s = act(fresh(), 0, { type: 't9:bid', amount: 28, single: true });
+    s = act(s, 1, { type: 't9:bid', pass: true });
     // Dealer 3, so seat 0 (the bidder) leads anyway; move the deal so the partner (seat 2) would lead.
     s = { ...s, dealerSeat: 1 };
     s = act(s, 0, { type: 't9:setTrump', cardId: s.hands[0]![0]!.id });

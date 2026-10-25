@@ -151,6 +151,10 @@ export interface TwentyNinePublicState {
   seats: string[];
   bids: TwentyNineBid[];
   highestBid?: { seat: number; amount: number };
+  /** While bidding: the earlier bidder of the current duel, who may hold (match) the bid. */
+  holderSeat?: number;
+  /** While bidding: the lowest bid the player on turn may make (holding counts). */
+  minBid?: number;
   trumpMode?: TrumpMode;
   /** The bidder is playing single hand; their partner sits out. */
   single: boolean;

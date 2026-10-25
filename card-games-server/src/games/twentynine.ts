@@ -55,6 +55,14 @@ export interface TwentyNineState {
   bids: TwentyNineBid[];
   passed: boolean[];
   highestBid?: { seat: number; amount: number };
+  /**
+   * The auction is a run of two-player duels in bidding order. `early` bid
+   * first and may hold (match the bid); `late` must always go higher. When one
+   * passes, the next seat in `queue` steps in as the new `late`.
+   */
+  auction: { early: number; late?: number; queue: number[] };
+  /** The current highest bid was a 28 declared as single hand. */
+  singleBid: boolean;
   single: boolean;
   trumpMode?: TrumpMode;
   /** The face-down trump card, out of the bidder's hand until revealed. Never sent to clients before that. */
@@ -117,6 +125,8 @@ function newRound(base: RoundBase, dealerSeat: number, round: number, ctx: Engin
     stock: dealt.rest,
     bids: [],
     passed: [false, false, false, false],
+    auction: { early: first, queue: [1, 2, 3].map((k) => (first + k) % 4) },
+    singleBid: false,
     single: false,
     trumpRevealed: false,
     doubled: 0,
@@ -129,55 +139,81 @@ function newRound(base: RoundBase, dealerSeat: number, round: number, ctx: Engin
 
 // ---------- Bidding ----------
 
+/**
+ * The lowest bid the player on turn may make: 16 to open, the current bid to
+ * hold (the earlier bidder in a duel), or one more (the later bidder).
+ */
+export function minBidFor(s: Pick<TwentyNineState, 'highestBid' | 'auction' | 'turnSeat'>): number {
+  if (!s.highestBid) return MIN_BID;
+  return s.turnSeat === s.auction.early ? s.highestBid.amount : s.highestBid.amount + 1;
+}
+
 function bid(s: TwentyNineState, seat: number, action: Record<string, unknown>): EngineResult<TwentyNineState> {
   if (s.phase !== 'bidding') return fail('WRONG_PHASE', 'Bidding is over.');
   if (s.turnSeat !== seat) return fail('NOT_YOUR_TURN', 'It is not your turn to bid.');
-
+  const { early, late } = s.auction;
+  const queue = s.auction.queue.slice();
   const passed = s.passed.slice();
-  let highestBid = s.highestBid;
-  let entry: TwentyNineBid;
-  let single = false;
-  if (action.pass === true) {
-    passed[seat] = true;
-    entry = { seat, amount: 'pass' };
-  } else {
-    const amount = action.amount;
-    if (typeof amount !== 'number' || !Number.isInteger(amount)) return fail('BAD_ACTION', 'Bid a whole number or pass.');
-    const min = highestBid ? highestBid.amount + 1 : MIN_BID;
-    if (amount < min || amount > MAX_BID) return fail('BAD_BID', `Bid between ${min} and ${MAX_BID}, or pass.`);
-    single = action.single === true;
-    if (single && amount !== MAX_BID) return fail('BAD_BID', 'Single hand is declared with a bid of 28.');
-    highestBid = { seat, amount };
-    entry = single ? { seat, amount, single } : { seat, amount };
-  }
-  const bids = [...s.bids, entry];
-  const passCount = passed.filter(Boolean).length;
-  const toTrump = (hb: { seat: number; amount: number }, extra: Partial<TwentyNineState> = {}): EngineResult<TwentyNineState> => ({
+  const isEarly = seat === early;
+
+  const end = (st: TwentyNineState): EngineResult<TwentyNineState> => ({
     ok: true,
-    state: { ...s, bids, passed, highestBid: hb, single, phase: 'trumpSelect', turnSeat: hb.seat, ...extra },
+    state: { ...st, phase: 'trumpSelect', turnSeat: st.highestBid!.seat, single: st.singleBid },
   });
 
-  // Nobody can go above 28: a 28 bid ends the auction at once.
-  if (highestBid && highestBid.amount === MAX_BID && entry.amount !== 'pass') return toTrump(highestBid);
-  if (passCount === 3 && highestBid) return toTrump(highestBid);
-  if (passCount === 3) {
-    // The first three passed: the dealer is forced to bid 16.
-    const forced: TwentyNineBid = { seat: s.dealerSeat, amount: MIN_BID, forced: true };
-    return {
-      ok: true,
-      state: {
-        ...s,
-        bids: [...bids, forced],
-        passed,
-        highestBid: { seat: s.dealerSeat, amount: MIN_BID },
-        phase: 'trumpSelect',
-        turnSeat: s.dealerSeat,
-      },
-    };
+  if (action.pass === true) {
+    passed[seat] = true;
+    const bids = [...s.bids, { seat, amount: 'pass' as const }];
+    if (!s.highestBid) {
+      // Nobody has bid yet: the next seat opens instead.
+      const opener = queue.shift()!;
+      const base = { ...s, bids, passed, auction: { early: opener, queue }, turnSeat: opener };
+      if (queue.length > 0) return { ok: true, state: base };
+      // The first three passed: the dealer is forced to bid 16.
+      return end({
+        ...base,
+        bids: [...bids, { seat: opener, amount: MIN_BID, forced: true }],
+        highestBid: { seat: opener, amount: MIN_BID },
+        singleBid: false,
+      });
+    }
+    // The early bidder passing hands the lead to the late bidder, whose raise is the current bid.
+    const holder = isEarly ? late! : early;
+    // Against a 28 nobody can go higher, so the auction is over.
+    if (s.highestBid.amount === MAX_BID) return end({ ...s, bids, passed, auction: { early: holder, queue: [] } });
+    const challenger = queue.shift();
+    const st = { ...s, bids, passed, auction: { early: holder, late: challenger, queue } };
+    if (challenger === undefined) return end(st);
+    return { ok: true, state: { ...st, turnSeat: challenger } };
   }
-  let turn = next(seat);
-  while (passed[turn]) turn = next(turn);
-  return { ok: true, state: { ...s, bids, passed, highestBid, turnSeat: turn } };
+
+  const amount = action.amount;
+  if (typeof amount !== 'number' || !Number.isInteger(amount)) return fail('BAD_ACTION', 'Bid a whole number or pass.');
+  const min = minBidFor(s);
+  if (amount < min || amount > MAX_BID) {
+    const why = !s.highestBid
+      ? `Open with ${MIN_BID} to ${MAX_BID}`
+      : isEarly
+        ? `Hold at ${min} or bid higher`
+        : `Bid more than ${s.highestBid.amount}`;
+    return fail('BAD_BID', amount > MAX_BID ? `The highest bid is ${MAX_BID}.` : `${why}, or pass.`);
+  }
+  const single = action.single === true;
+  if (single && amount !== MAX_BID) return fail('BAD_BID', 'Single hand is declared with a bid of 28.');
+  const entry: TwentyNineBid = single ? { seat, amount, single } : { seat, amount };
+  const st: TwentyNineState = { ...s, bids: [...s.bids, entry], passed, highestBid: { seat, amount }, singleBid: single };
+
+  if (!s.highestBid) {
+    // An opening bid: the next seat challenges it.
+    const challenger = queue.shift();
+    const opened = { ...st, auction: { early: seat, late: challenger, queue } };
+    if (challenger === undefined) return end(opened);
+    return { ok: true, state: { ...opened, turnSeat: challenger } };
+  }
+  if (!isEarly) return { ok: true, state: { ...st, turnSeat: early } }; // the early bidder may hold or go higher
+  // The early bidder held or raised. At 28 nobody can go higher, so the auction is over.
+  if (amount === MAX_BID) return end({ ...st, auction: { early, queue: [] } });
+  return { ok: true, state: { ...st, turnSeat: late! } };
 }
 
 // ---------- Trump ----------
@@ -420,6 +456,8 @@ export const twentyNineEngine: GameEngine<TwentyNineState, TwentyNineOptions, Tw
       seats: s.seats,
       bids: s.bids,
       highestBid: s.highestBid,
+      holderSeat: s.phase === 'bidding' && s.highestBid ? s.auction.early : undefined,
+      minBid: s.phase === 'bidding' ? minBidFor(s) : undefined,
       trumpMode: s.trumpMode,
       single: s.single,
       sittingOutSeat: sittingOut(s),

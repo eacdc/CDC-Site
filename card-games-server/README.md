@@ -19,6 +19,7 @@ npm run dev               # http://localhost:3000, restarts on change
 |---|---|
 | `npm run dev` | Run from source with reload (tsx) |
 | `npm test` | Vitest: engines, room manager, and a real Socket.IO round trip |
+| `npm run simulate:29` | Four random bots play 300 games of 29 while an independent referee checks every rule (set `SIM_GAMES` for more) |
 | `npm run typecheck` / `npm run lint` | tsc / ESLint |
 | `npm run build` then `npm start` | Compile to `dist/` and run it (production) |
 
@@ -87,6 +88,6 @@ Server to client: `room:state` (everyone), `game:state` (public state, everyone)
   - Turn order runs up the seats (0, 1, 2, 3, ...). In 29, "the dealer's right" is the dealer's seat + 1.
   - In Bluff, a random player starts, and the deal starts with them, so any extra cards go to the earliest turns.
   - In 29, a trump played before the reveal counts as a plain card of its suit, even in the trick where the reveal happens. When trump is the suit led, it is simply the lead suit.
-  - In 29, the player who asks for the reveal does not have to play a trump.
+  - 29 follows the house rules document: duel bidding where the earlier bidder may hold (match) and the later must go higher, forced 16 for the dealer, trump by a face-down card or the 7th card, double/redouble, pair, single hand, and game points 1/2/3/6 (x2 doubled, x4 redoubled).
   - The hidden trump is shown to everyone when a round ends.
   - The game pauses whenever any seated player is disconnected. After the 60-second hold, the host chooses to wait another 60 seconds or end the game. If the host is the one missing, the role passes to the next connected player.
