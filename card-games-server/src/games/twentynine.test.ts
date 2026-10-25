@@ -400,6 +400,36 @@ describe('pair (King + Queen of trump)', () => {
   });
 });
 
+describe('pair changes the result of a hand', () => {
+  /** The last trick of a hand, with trump (hearts) revealed and a pair already declared (or not). */
+  const lastTrick = (bid: number, before: [number, number], pair?: { seat: number; team: 0 | 1 }) => {
+    let s = playing([[c('J', 'S')], [c('7', 'S')], [c('8', 'S')], [c('Q', 'S')]], 'H', {
+      highestBid: { seat: 0, amount: bid },
+      trumpRevealed: true,
+      tricksWon: [4, 3],
+      pointsTaken: before,
+      ...(pair && { pair }),
+    });
+    for (const seat of [0, 1, 2, 3]) s = play(s, seat, s.hands[seat]![0]!.id); // seat 0's jack wins 3 points
+    return s.roundResult!;
+  };
+
+  it("the bidder's pair turns 17 points on a bid of 20 from a loss into a win", () => {
+    expect(lastTrick(20, [14, 11])).toMatchObject({ target: 20, pointsTaken: [17, 11], made: false, delta: -1 });
+    expect(lastTrick(20, [14, 11], { seat: 2, team: 0 })).toMatchObject({ target: 16, pointsTaken: [17, 11], made: true, delta: 1 });
+  });
+
+  it("the opponents' pair turns 20 points on a bid of 18 from a win into a loss", () => {
+    expect(lastTrick(18, [17, 8])).toMatchObject({ target: 18, made: true, delta: 1 });
+    expect(lastTrick(18, [17, 8], { seat: 1, team: 1 })).toMatchObject({ target: 22, pointsTaken: [20, 8], made: false, delta: -1 });
+  });
+
+  it('the target never goes below 16 or above 28', () => {
+    expect(lastTrick(17, [13, 12], { seat: 0, team: 0 }).target).toBe(16);
+    expect(lastTrick(26, [25, 0], { seat: 3, team: 1 })).toMatchObject({ target: 28, made: true });
+  });
+});
+
 describe('single hand', () => {
   /** Seat 0 bid 28 single and holds all eight spades (trump). Seat 2 sits out. */
   const single = (o: Partial<TwentyNineState> = {}) =>
