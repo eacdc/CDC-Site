@@ -311,22 +311,31 @@ RULES:
 6. If a field is not on the invoice, use null. Never infer a value.
 
 7. PO NUMBERS. Suppliers write CDC's purchase-order number against a line,
-   often on the line below the description: "PO NO = 3232 - 5/10 = 818 PCS",
-   "3081 26-09-2026", "P.O. 3342". Put ONLY the PO number in that line's
-   "poRef" - "3232", not the date, not the quantity, not the delivery-note
-   number. A handwritten number counts. Also list every PO number from the
-   header's "Buyer's Order No." / "P.O. No." field in "poNumbers", including
-   any written in by hand.
+   often on the line below the description, in forms like
+   "PO NO = <po> - <date> = <qty> PCS", "<po> <date>" or "P.O. <po>". Put ONLY
+   the <po> part in that line's "poRef" - not the date, not the quantity, not
+   the delivery-note number. A handwritten number counts. Also list every PO
+   number from the header's "Buyer's Order No." / "P.O. No." field in
+   "poNumbers", including any written in by hand.
 
 8. SIZES ARE DIGIT-FOR-DIGIT. Copy a box or sheet size exactly as printed,
-   in the order printed: 550X305X206 is a different box from 505X305X260.
-   Look twice at each digit of a size; it identifies the item.
+   in the order printed: swapping two digits, or two of the three dimensions,
+   names a different box. Look twice at each digit of a size; it identifies
+   the item.
 
-9. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a box, usually near
-   the top, and fills it in by hand: "Date 11/10/26  Sl. No. 25605". That is
-   the gate entry - put the serial number in "gateEntryNo" and that date in
-   "gateEntryDate". The invoice date is the PRINTED date next to the invoice
-   number ("Dated: 9-Oct-26"); never take it from the stamp.`;
+9. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a rectangular box,
+   usually near the top, with two printed labels - "Date" and "Sl. No." - and
+   fills both in by hand. That is the gate entry: put the handwritten serial
+   number in "gateEntryNo" and the handwritten date in "gateEntryDate". The
+   invoice date is the PRINTED date next to the invoice number; never take it
+   from the stamp. A signature with a date written beside it is not the stamp.
+
+10. NOTHING IN THESE INSTRUCTIONS IS DATA. The forms above show where things
+   sit on a page; they contain no real numbers, and no number from these
+   instructions belongs in your answer. Every value must be read off THIS
+   invoice. If you cannot read a value - a smudged stamp, a GSTIN too small to
+   make out - return null for it. A null is checked by a person; a plausible
+   invented value is not.`;
 
 export const ADJUDICATION_PROMPT = `You are helping a purchase coordinator at CDC Printers match a line from a
 supplier's quotation to an item in CDC's own item master.

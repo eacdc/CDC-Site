@@ -148,9 +148,10 @@ const anthropicProvider = {
 
   async extractInvoice({ pages, hints } = {}) {
     if (!pages?.length) throw new Error('extractInvoice needs at least one page');
-    const extra = hints?.expectedSupplier
-      ? `The supplier is expected to be "${hints.expectedSupplier}". Verify rather than assume.`
-      : null;
+    const extra = [
+      hints?.expectedSupplier ? `The supplier is expected to be "${hints.expectedSupplier}". Verify rather than assume.` : null,
+      ...(hints?.notes || []),
+    ].filter(Boolean).join('\n\n') || null;
     const { data, model } = await callClaude({
       pages, prompt: INVOICE_PROMPT, schema: ExtractedInvoiceSchema, extraInstructions: extra,
     });

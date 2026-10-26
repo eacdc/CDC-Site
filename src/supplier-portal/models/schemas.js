@@ -756,6 +756,8 @@ export const documentSetSchema = new Schema({
     supplierName: String,
     invoiceDate: Date,
     supplierGstin: String,
+    /** As read, when it failed the check character and a ledger's was taken instead. */
+    supplierGstinRead: String,
     buyerGstin: String,
     shipToGstin: String,
     shipToState: String,
@@ -868,10 +870,18 @@ export const documentSetSchema = new Schema({
   /** AI: lines read off an invoice. MANUAL: lines picked from POs by a person. */
   entryMode: { type: String, enum: ['AI', 'MANUAL'], default: 'AI' },
   /** Who the invoice was identified as from, and on what evidence. */
+  /**
+   * What the reader did and found: pages turned upright, the problems the
+   * answer showed on its own face, and whether a second read fixed them.
+   */
+  extractionReview: Schema.Types.Mixed,
+
   supplierIdentification: {
     ledgerId: Number,
     ledgerName: String,
-    matchedBy: { type: String, enum: ['GSTIN', 'NAME', null] },
+    matchedBy: { type: String, enum: ['GSTIN', 'GSTIN_NEAR', 'NAME', null] },
+    /** The ledger's GSTIN, when the one read failed its check character. */
+    correctedGstin: String,
     evidence: String,
     at: Date,
   },

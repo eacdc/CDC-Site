@@ -175,7 +175,9 @@ export async function createCompletion({ model, ...params }) {
 async function callVision({ pages, prompt, extraInstructions }) {
   const content = [{ type: 'text', text: extraInstructions ? `${prompt}\n\n${extraInstructions}` : prompt }];
   for (const page of pages || []) {
-    content.push({ type: 'image_url', image_url: { url: page.url } });
+    // "high" when the page was prepared for it (invoice-pipeline.js); the
+    // model's own choice otherwise.
+    content.push({ type: 'image_url', image_url: page.detail ? { url: page.url, detail: page.detail } : { url: page.url } });
   }
 
   const response = await createCompletion({
@@ -265,13 +267,42 @@ export const openaiProvider = registerProvider({
 
   async extractInvoice({ pages, hints } = {}) {
     if (!pages?.length) throw new Error('extractInvoice needs at least one page');
-    const extra = hints?.expectedSupplier
-      ? `The supplier is expected to be "${hints.expectedSupplier}". Verify rather than assume.`
-      : null;
+    const extra = [
+      hints?.expectedSupplier ? `The supplier is expected to be "${hints.expectedSupplier}". Verify rather than assume.` : null,
+      ...(hints?.notes || []),
+    ].filter(Boolean).join('\n\n') || null;
     const { data, model } = await extractWithSchema({
       pages, prompt: INVOICE_PROMPT, schema: ExtractedInvoiceSchema, extraInstructions: extra,
     });
     return { ...data, _provider: 'openai', _model: model };
+  },
+
+  /**
+   * Which of four copies of a page - one per quarter turn - reads the right
+   * way up. Small images at low detail: a few hundred tokens a page.
+   * Returns the index of the upright copy.
+   */
+  async detectOrientation({ images } = {}) {
+    const labels = ['A', 'B', 'C', 'D'];
+    const content = [{
+      type: 'text',
+      text: 'These are four copies of the same document page, each turned a different way: A, B, C and D, in that '
+        + 'order. Which one has its text the right way up, so that it reads normally from left to right and top to '
+        + 'bottom? Reply with JSON only: {"upright": "A" | "B" | "C" | "D"}.',
+    }];
+    images.forEach((url, i) => {
+      content.push({ type: 'text', text: `Copy ${labels[i]}:` });
+      content.push({ type: 'image_url', image_url: { url, detail: 'low' } });
+    });
+    const response = await createCompletion({
+      model: VISION_MODEL,
+      messages: [{ role: 'user', content }],
+      response_format: { type: 'json_object' },
+    });
+    const answer = JSON.parse(response.choices?.[0]?.message?.content || '{}');
+    const index = labels.indexOf(String(answer.upright || '').trim().toUpperCase());
+    if (index < 0) throw new Error('No orientation in the reply.');
+    return index;
   },
 
   async adjudicate({ line, candidates, mapped } = {}) {

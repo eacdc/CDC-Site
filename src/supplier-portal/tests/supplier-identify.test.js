@@ -72,3 +72,34 @@ test('a GSTIN on no supplier ledger falls back to the name, and says so', () => 
   assert.equal(r.ledgerId, 7711);
   assert.match(r.evidence, /is on no supplier ledger/);
 });
+
+// GSTINs the extractor misread in October 2026, against the ledger GSTINs
+// they were misreadings of.
+const NEAR = [
+  { LedgerID: 7802, LedgerName: 'Purv Flexipack Limited', LedgerType: 'Suppliers', GSTNo: '19AADCP6122G1ZI', ISLedgerActive: true },
+  { LedgerID: 7803, LedgerName: 'GSN Udyog Private Limited', LedgerType: 'Suppliers', GSTNo: '19AAICG2285N1ZZ', ISLedgerActive: true },
+];
+
+test('a GSTIN one character off its check finds the ledger it was misread from', () => {
+  const r = identifySupplierLedger({ ledgers: [...NEAR, ...OTHERS], gstin: '19AADCP6122G1Z0', name: 'Puryv Flexipack Limited' });
+  assert.equal(r.ledgerId, 7802);
+  assert.equal(r.matchedBy, 'GSTIN_NEAR');
+  assert.equal(r.correctedGstin, '19AADCP6122G1ZI');
+  assert.match(r.evidence, /fails the GSTIN check character/);
+});
+
+test('two characters off, the name must agree as well', () => {
+  const ok = identifySupplierLedger({ ledgers: [...NEAR, ...OTHERS], gstin: '19AAICG2283B1ZZ', name: 'GSN Udyog Private Limited' });
+  assert.equal(ok.matchedBy, 'GSTIN_NEAR');
+  assert.equal(ok.ledgerId, 7803);
+  const no = identifySupplierLedger({ ledgers: [...NEAR, ...OTHERS], gstin: '19AAICG2283B1ZZ', name: 'Somebody Else Traders' });
+  assert.equal(no.ledgerId, null);
+  assert.match(no.evidence, /fails the GSTIN check character/);
+});
+
+test('an invented GSTIN near nothing falls back to the name (Flamingo)', () => {
+  const ledgers = [...OTHERS, { LedgerID: 7900, LedgerName: 'Flamingo Printers Pvt Ltd', LedgerType: 'Suppliers', GSTNo: '19AAFCF9888F1ZX', ISLedgerActive: true }];
+  const r = identifySupplierLedger({ ledgers, gstin: '19AAACF1234A1Z5', name: 'FLAMINGO PRINTERS PVT LTD' });
+  assert.equal(r.ledgerId, 7900);
+  assert.equal(r.matchedBy, 'NAME');
+});

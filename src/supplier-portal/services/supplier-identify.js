@@ -23,6 +23,7 @@ import { query, assertSite } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, SUPPLIER_LEDGER_TYPES, CDC_IDENTITY } from '../config/constants.js';
 import { supplierLedgers } from './erp-ledgers.js';
 import { normaliseName } from '../lib/text.js';
+import { cleanGstin, isValidGstin, nearestGstins } from '../lib/gstin.js';
 
 /** A GSTIN as compared: upper case, letters and digits only, 15 long. */
 export function normaliseGstin(value) {
@@ -74,7 +75,7 @@ const NAME_MARGIN = 0.15;
  * @param {string} [input.gstin]     the supplier GSTIN read off the invoice
  * @param {string} [input.name]      the supplier name read off the invoice
  * @param {Map}    [input.lastPoDate] LedgerID -> time of its latest PO, for ties
- * @returns {{ledgerId: number|null, ledgerName?: string, matchedBy?: 'GSTIN'|'NAME', evidence: string}}
+ * @returns {{ledgerId: number|null, ledgerName?: string, matchedBy?: 'GSTIN'|'GSTIN_NEAR'|'NAME', correctedGstin?: string, evidence: string}}
  */
 export function identifySupplierLedger({ ledgers = [], gstin, name, lastPoDate = new Map() }) {
   const suppliers = ledgers.filter(isSupplierType);
@@ -99,6 +100,35 @@ export function identifySupplierLedger({ ledgers = [], gstin, name, lastPoDate =
       };
     }
     notes.push(`GSTIN ${read} is on no supplier ledger`);
+  }
+
+  /**
+   * A GSTIN that fails its own check character was misread. The supplier's
+   * real one is then usually a character or two away on a supplier ledger:
+   * take it when exactly one is that close, and either it is one character
+   * away or the name agrees.
+   */
+  const raw = cleanGstin(gstin);
+  if (raw && raw !== cdc && raw.length >= 13 && !isValidGstin(raw)) {
+    const valid = suppliers.filter((l) => isValidGstin(l.GSTNo));
+    const near = nearestGstins(raw, valid.map((l) => l.GSTNo), 2);
+    if (near.gstins.length === 1) {
+      const target = near.gstins[0];
+      const onIt = valid.filter((l) => cleanGstin(l.GSTNo) === target);
+      const [best] = rank(onIt, { name, lastPoDate });
+      const nameAgrees = !name || nameSimilarity(name, best.LedgerName) >= 0.5;
+      if (near.distance === 1 || nameAgrees) {
+        return {
+          ledgerId: Number(best.LedgerID),
+          ledgerName: best.LedgerName,
+          matchedBy: 'GSTIN_NEAR',
+          correctedGstin: target,
+          evidence: `GSTIN read as ${raw}, which fails the GSTIN check character; `
+            + `${target} on this ledger is ${near.distance} character${near.distance > 1 ? 's' : ''} away`,
+        };
+      }
+    }
+    notes.push(`GSTIN ${raw} fails the GSTIN check character, so it was misread`);
   }
 
   if (name) {

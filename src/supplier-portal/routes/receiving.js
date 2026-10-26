@@ -12,6 +12,9 @@ import { Router } from 'express';
 import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, DocumentSet, AuditLog } from '../db/mongo.js';
 import { getProvider } from '../services/extraction/provider.js';
+import { readInvoice } from '../services/extraction/invoice-pipeline.js';
+// Amounts as suppliers print them: "1,38,550/-", "(-)0.22", "815 Kg".
+import { toNumber as printedNumber } from '../services/extraction/invoice-review.js';
 import { runInvoiceChecks } from '../services/invoice-checks.js';
 import { postDocumentSet, erpWritesEnabled, postPurchaseInvoiceForGrn } from '../services/erp-receiving.js';
 import { openPoLines, findPostedInvoice, receiptsForInvoice } from '../services/erp-po.js';
@@ -167,7 +170,9 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
     if (!pages.length) return res.status(400).json({ error: 'No supplier invoice pages have been captured.' });
 
     const provider = await getProvider();
-    const extracted = await provider.extractInvoice({ pages });
+    // Turned upright, read, checked, and read again once if provably wrong.
+    const extracted = await readInvoice(provider, { pages });
+    set.extractionReview = extracted._review ?? null;
 
     set.extractedHeader = {
       invoiceNo: extracted.invoiceNo,
@@ -181,19 +186,20 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       eWayBillNo: extracted.eWayBillNo,
       vehicleNo: extracted.vehicleNo,
       taxType: extracted.taxType,
-      subTotal: num(extracted.subTotal),
-      freight: num(extracted.freight),
-      taxable: num(extracted.taxable),
-      cgst: num(extracted.cgst),
-      sgst: num(extracted.sgst),
-      igst: num(extracted.igst),
-      roundOff: num(extracted.roundOff),
-      grandTotal: num(extracted.grandTotal),
+      subTotal: printedNumber(extracted.subTotal),
+      freight: printedNumber(extracted.freight),
+      taxable: printedNumber(extracted.taxable),
+      cgst: printedNumber(extracted.cgst),
+      sgst: printedNumber(extracted.sgst),
+      igst: printedNumber(extracted.igst),
+      roundOff: printedNumber(extracted.roundOff),
+      grandTotal: printedNumber(extracted.grandTotal),
       // The "Buyer's Order No." list. The schema has always asked for it; it
       // was being read and then thrown away here.
       poNumbers: (extracted.poNumbers || []).filter(Boolean).map(String),
       // The gate stamp, as the store keys it into Gate Entry No. and Date.
-      gateEntryNo: extracted.gateEntryNo ?? null,
+      // A serial number, digits only: handwritten strokes come back as "25/707".
+      gateEntryNo: extracted.gateEntryNo ? (String(extracted.gateEntryNo).replace(/\D/g, '') || null) : null,
       gateEntryDate: parseDate(extracted.gateEntryDate),
     };
     set.extractedLines = (extracted.lines || []).map((l, i) => ({
@@ -205,10 +211,10 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       unitWt: num(l.unitWt),
       bundles: num(l.bundles),
       totalUnits: num(l.totalUnits),
-      qty: num(l.qty),
+      qty: printedNumber(l.qty),
       uom: l.uom,
-      rate: num(l.rate),
-      amount: num(l.amount),
+      rate: printedNumber(l.rate),
+      amount: printedNumber(l.amount),
       poRef: l.poRef ?? null,
     }));
 
@@ -221,6 +227,12 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       gstin: extracted.supplierGstin, name: extracted.supplierName,
     }).catch((err) => ({ ledgerId: null, evidence: `Could not check the ledgers: ${err.message}` }));
     set.supplierIdentification = { ...identified, at: new Date() };
+    // A GSTIN that failed its check character, matched to a ledger's: keep
+    // what was read beside it, so the page can show both.
+    if (identified.matchedBy === 'GSTIN_NEAR' && identified.correctedGstin) {
+      set.set('extractedHeader.supplierGstinRead', extracted.supplierGstin ?? null);
+      set.set('extractedHeader.supplierGstin', identified.correctedGstin);
+    }
     if (!set.context?.supplierLedgerId && identified.ledgerId) {
       set.set('context.supplierLedgerId', identified.ledgerId);
     }
