@@ -257,6 +257,13 @@ export const ExtractedInvoiceLineSchema = z.object({
   uom: printed(),
   rate: printed(),
   amount: printed(),
+  /**
+   * CDC's PO number as the supplier wrote it against this line ("PO NO =
+   * 3232", "3081 26-09-2026"). Optional rather than nullable: printed()
+   * rejects a missing key, and a model that leaves out a field it found no
+   * value for must not fail the whole document.
+   */
+  poRef: printed().optional(),
 });
 
 export const ExtractedInvoiceSchema = z.object({
@@ -271,6 +278,14 @@ export const ExtractedInvoiceSchema = z.object({
   eWayBillNo: printed(),
   vehicleNo: printed(),
   poNumbers: z.array(printed()).nullable(),
+  /**
+   * CDC's own gate stamp, handwritten at the top: "Date 11/10/26  Sl. No.
+   * 25605". The store keys exactly these into the ERP's Gate Entry No. and
+   * Date (REC04597_26_27 carries 25605 / 11-Oct-2026). Optional, like poRef:
+   * many invoices are scanned before they reach the gate.
+   */
+  gateEntryNo: printed().optional(),
+  gateEntryDate: printed().optional(),
   taxType: z.enum(['CGST_SGST', 'IGST']).nullable(),
   subTotal: printed(),
   freight: printed(),
@@ -281,6 +296,12 @@ export const ExtractedInvoiceSchema = z.object({
   roundOff: printed(),
   grandTotal: printed(),
   lines: z.array(ExtractedInvoiceLineSchema),
+  /**
+   * Fields the model could not read with certainty, as paths: "gateEntryNo",
+   * "lines.3.qty". They become red flags a person must clear before posting.
+   * Optional: a model that is sure of everything may leave it out.
+   */
+  uncertain: z.array(z.string()).nullable().optional(),
 });
 
 export const AdjudicationSchema = z.object({

@@ -7,7 +7,8 @@
 
 import { Router } from 'express';
 import {
-  loginUser, loginSupplierUser, logout, requireAuth, requireSupplierAuth,
+  loginUser, loginErpUser, loginSupplierUser, logout, requireAuth,
+  requireSupplierAuth, erpLoginEnabled,
 } from '../middleware/auth.js';
 
 const router = Router();
@@ -26,6 +27,32 @@ router.post('/login', async (req, res, next) => {
     });
     res.json(result);
   } catch (err) { next(err); }
+});
+
+/**
+ * ERP sign-in: user name + site, no password.
+ *
+ * The same sign-in as the Stock Issue Tool, so a store person uses one name
+ * across both tools and the ERP rows they produce carry the same UserID.
+ */
+router.post('/erp-login', async (req, res, next) => {
+  try {
+    const { username, site, employeeLedgerId, warehouseId } = req.body || {};
+    const result = await loginErpUser({
+      username,
+      site,
+      employeeLedgerId: employeeLedgerId === undefined ? undefined : Number(employeeLedgerId),
+      warehouseId: warehouseId === undefined ? undefined : Number(warehouseId),
+      userAgent: req.get('user-agent'),
+      ip: req.ip,
+    });
+    res.json(result);
+  } catch (err) { next(err); }
+});
+
+/** Which sign-in methods this server offers, so the page renders the right form. */
+router.get('/methods', (req, res) => {
+  res.json({ password: true, erp: erpLoginEnabled() });
 });
 
 router.post('/supplier-login', async (req, res, next) => {

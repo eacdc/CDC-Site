@@ -193,7 +193,11 @@ test('no person on the group changes nothing', () => {
 
 test('a client group is judged by the client prompt', () => {
   assert.match(promptForKind('client'), /customers/);
-  assert.match(promptForKind('client'), /unanswered ask is a concern/);
+  // The bar management set: something gone wrong, not something asked for.
+  // This replaced "an unanswered ask is a concern", which was the rule behind
+  // four alerts they rejected.
+  assert.match(promptForKind('client'), /threatens the work, the date, or the\s+relationship/);
+  assert.match(promptForKind('client'), /A first request/);
 });
 
 test('an internal group is judged by the internal prompt', () => {

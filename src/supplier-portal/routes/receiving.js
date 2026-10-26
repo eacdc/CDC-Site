@@ -12,17 +12,70 @@ import { Router } from 'express';
 import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, DocumentSet, AuditLog } from '../db/mongo.js';
 import { getProvider } from '../services/extraction/provider.js';
+import { readInvoice } from '../services/extraction/invoice-pipeline.js';
+import { buildFieldFlags, resolveEditedFlags, confirmFlag, openFlags } from '../services/extraction/field-flags.js';
+// Amounts as suppliers print them: "1,38,550/-", "(-)0.22", "815 Kg".
+import { toNumber as printedNumber } from '../services/extraction/invoice-review.js';
 import { runInvoiceChecks } from '../services/invoice-checks.js';
-import { postDocumentSet, erpWritesEnabled } from '../services/erp-receiving.js';
-import { openPoLines, findPostedInvoice } from '../services/erp-po.js';
+import { postDocumentSet, erpWritesEnabled, postPurchaseInvoiceForGrn } from '../services/erp-receiving.js';
+import { openPoLines, findPostedInvoice, receiptsForInvoice } from '../services/erp-po.js';
 import { getItems, hsnForItems } from '../services/erp-items.js';
 import { groupForLedger, ledgerIdsForSite } from '../services/supplier-groups.js';
-import { chargeLedgers } from '../services/erp-ledgers.js';
+import { chargeLedgers, warehouses, supplierLedgers, employeeLedgers, purchaseLedgers } from '../services/erp-ledgers.js';
+import { identifyInvoiceSupplier } from '../services/supplier-identify.js';
+import { grnLinesWithIssues } from '../services/grn-issues.js';
+import { listGrns, loadGrn } from '../services/grn-register.js';
+import { editGrn, deleteGrn, canEditGrns } from '../services/erp-grn-edit.js';
+import { query } from '../db/mssql.js';
+import { COMPANY_ID } from '../config/constants.js';
 import { hasBlockingFailure, warningsNeedingReason } from '../config/validations.js';
-import { createUploadUrl, viewUrl } from '../../lib/r2-storage.js';
-import { normaliseName } from '../lib/text.js';
+import { createUploadUrl, viewUrl, deleteObjects } from '../../lib/r2-storage.js';
+import {
+  matchInvoiceLines, assessCandidate, poNumbersFrom, isClosed,
+} from '../services/receiving-match.js';
+import { receivingDefaults } from '../services/receiving-defaults.js';
+import { stockQtyFor, stockQtyFromPurchase, purchaseQtyFromStock } from '../services/receipt-units.js';
 
 const router = Router();
+
+/** The line fields a person may correct: what was read off the invoice. */
+const EDITABLE_LINE_FIELDS = [
+  'lineNo', 'description', 'hsn', 'gsm', 'size', 'unitWt', 'bundles', 'totalUnits',
+  'qty', 'stockQty', 'uom', 'rate', 'amount', 'poRef',
+];
+
+/** Every field the matcher writes about a PO, cleared. See the match route. */
+const UNMATCHED = {
+  matchedPoTransactionId: null,
+  matchedPoTransactionDetailId: null,
+  matchedItemId: null,
+  matchedPoRate: null,
+  poPendingQty: null,
+  poQty: null,
+  poVoucherNo: null,
+  itemGroupId: null,
+  itemCode: null,
+  itemName: null,
+  poDate: null,
+  poFYear: null,
+  itemGroupName: null,
+  purchaseUnit: null,
+  stockUnit: null,
+  productHsnId: null,
+  expectedHsn: null,
+  wtPerPacking: null,
+  unitPerPacking: null,
+  widthMm: null,
+  lengthMm: null,
+  matchedPoClosed: null,
+  gstPercentage: null,
+  cgstPercentage: null,
+  sgstPercentage: null,
+  igstPercentage: null,
+};
+
+/** The state code each plant sits in: CGST + SGST inside it, IGST from outside. */
+const PLANT_STATE = { KOL: '19', AHM: '24' };
 router.use(requireAuth, requireSite);
 
 router.post('/upload-url', async (req, res, next) => {
@@ -65,6 +118,44 @@ router.post('/document-sets', requireRole('STORE', 'BUYER', 'APPROVER'), async (
   } catch (err) { return next(err); }
 });
 
+/**
+ * Start a GRN by hand, as on the ERP's own screen: a supplier and the delivery
+ * note, then PO lines picked one by one. No invoice is read. The same checks,
+ * the same writer and the same write gate apply as for one the AI filled in.
+ */
+router.post('/document-sets/manual', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const supplierLedgerId = Number(req.body?.supplierLedgerId);
+    if (!Number.isFinite(supplierLedgerId) || supplierLedgerId <= 0) {
+      return res.status(400).json({ error: 'Choose the supplier.' });
+    }
+    const known = (await supplierLedgers(req.sp.site)).some((l) => Number(l.LedgerID) === supplierLedgerId);
+    if (!known) return res.status(400).json({ error: `Ledger ${supplierLedgerId} is not a ${req.sp.site} supplier ledger.` });
+
+    const set = await DocumentSet.create({
+      setType: 'GRN_PURCHASE',
+      entryMode: 'MANUAL',
+      site: req.sp.site,
+      slots: { supplierInvoice: [], eWayBill: [], packingList: [] },
+      extractedHeader: {
+        invoiceNo: req.body?.invoiceNo ? String(req.body.invoiceNo).trim() : null,
+        invoiceDate: parseDate(req.body?.invoiceDate),
+      },
+      extractedLines: [],
+      context: {
+        userId: req.sp.context?.erpUserId ?? null,
+        employeeLedgerId: req.sp.context?.employeeLedgerId ?? null,
+        warehouseId: req.sp.context?.warehouseId ?? null,
+        supplierLedgerId,
+      },
+      status: 'EXTRACTED',
+      createdBy: req.sp.actor,
+    });
+    return res.status(201).json(set);
+  } catch (err) { return next(err); }
+});
+
 router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
@@ -80,11 +171,14 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
     if (!pages.length) return res.status(400).json({ error: 'No supplier invoice pages have been captured.' });
 
     const provider = await getProvider();
-    const extracted = await provider.extractInvoice({ pages });
+    // Turned upright, read, checked, and read again once if provably wrong.
+    const extracted = await readInvoice(provider, { pages });
+    set.extractionReview = extracted._review ?? null;
 
     set.extractedHeader = {
       invoiceNo: extracted.invoiceNo,
       invoiceDate: parseDate(extracted.invoiceDate),
+      supplierName: extracted.supplierName ?? null,
       supplierGstin: extracted.supplierGstin,
       buyerGstin: extracted.buyerGstin,
       shipToGstin: extracted.shipToGstin,
@@ -93,14 +187,21 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       eWayBillNo: extracted.eWayBillNo,
       vehicleNo: extracted.vehicleNo,
       taxType: extracted.taxType,
-      subTotal: num(extracted.subTotal),
-      freight: num(extracted.freight),
-      taxable: num(extracted.taxable),
-      cgst: num(extracted.cgst),
-      sgst: num(extracted.sgst),
-      igst: num(extracted.igst),
-      roundOff: num(extracted.roundOff),
-      grandTotal: num(extracted.grandTotal),
+      subTotal: printedNumber(extracted.subTotal),
+      freight: printedNumber(extracted.freight),
+      taxable: printedNumber(extracted.taxable),
+      cgst: printedNumber(extracted.cgst),
+      sgst: printedNumber(extracted.sgst),
+      igst: printedNumber(extracted.igst),
+      roundOff: printedNumber(extracted.roundOff),
+      grandTotal: printedNumber(extracted.grandTotal),
+      // The "Buyer's Order No." list. The schema has always asked for it; it
+      // was being read and then thrown away here.
+      poNumbers: (extracted.poNumbers || []).filter(Boolean).map(String),
+      // The gate stamp, as the store keys it into Gate Entry No. and Date.
+      // A serial number, digits only: handwritten strokes come back as "25/707".
+      gateEntryNo: extracted.gateEntryNo ? (String(extracted.gateEntryNo).replace(/\D/g, '') || null) : null,
+      gateEntryDate: parseDate(extracted.gateEntryDate),
     };
     set.extractedLines = (extracted.lines || []).map((l, i) => ({
       lineNo: l.lineNo ?? i + 1,
@@ -111,11 +212,39 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       unitWt: num(l.unitWt),
       bundles: num(l.bundles),
       totalUnits: num(l.totalUnits),
-      qty: num(l.qty),
+      qty: printedNumber(l.qty),
       uom: l.uom,
-      rate: num(l.rate),
-      amount: num(l.amount),
+      rate: printedNumber(l.rate),
+      amount: printedNumber(l.amount),
+      poRef: l.poRef ?? null,
     }));
+
+    /**
+     * Who it is from: the GSTIN on the invoice first, then the name. A choice
+     * a person already made is never overwritten - but the identification is
+     * kept beside it, so a disagreement shows on the page.
+     */
+    const identified = await identifyInvoiceSupplier(set.site, {
+      gstin: extracted.supplierGstin, name: extracted.supplierName,
+    }).catch((err) => ({ ledgerId: null, evidence: `Could not check the ledgers: ${err.message}` }));
+    set.supplierIdentification = { ...identified, at: new Date() };
+    // A GSTIN that failed its check character, matched to a ledger's: keep
+    // what was read beside it, so the page can show both.
+    if (identified.matchedBy === 'GSTIN_NEAR' && identified.correctedGstin) {
+      set.set('extractedHeader.supplierGstinRead', extracted.supplierGstin ?? null);
+      set.set('extractedHeader.supplierGstin', identified.correctedGstin);
+    }
+    // Red flags: what the model was unsure of, and what the checks proved wrong.
+    set.fieldFlags = buildFieldFlags({
+      uncertain: extracted.uncertain,
+      problems: extracted._review?.problemsAfter,
+      identification: identified,
+      read: extracted,
+      disagreements: extracted._review?.disagreements,
+    });
+    if (!set.context?.supplierLedgerId && identified.ledgerId) {
+      set.set('context.supplierLedgerId', identified.ledgerId);
+    }
     set.status = 'EXTRACTED';
     await set.save();
 
@@ -131,70 +260,824 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
  * cannot be placed on a PO raises INV002 and blocks, because receiving
  * against nothing is how stock and commitments drift apart.
  */
+// ── matching: shared by the matcher and by a person's choice ────────────────
+
+/** Every ledger the supplier trades under on this site. */
+async function supplierLedgersFor(site, ledgerId) {
+  const group = await groupForLedger(site, ledgerId);
+  // Every ledger the supplier trades under, so an invoice from the Haryana
+  // branch still finds a PO raised on the head office.
+  const ids = group ? ledgerIdsForSite(group, site) : [ledgerId];
+  return ids.length ? ids : [ledgerId];
+}
+
+/**
+ * Plain objects first. A Mongoose subdocument keeps its values behind
+ * getters on the prototype, so `{ ...sub }` copies its internals ($__,
+ * _doc, __parentArray) and NONE of its fields. Before this, every line
+ * reached runInvoiceChecks with no lineNo, qty, rate or amount - so the
+ * over-receipt block (INV003), the rate check (INV005) and the line
+ * arithmetic (INV006) silently never ran, and INV007 blocked every
+ * invoice for "lines total Rs 0". The save still looked right, because
+ * Mongoose re-hydrates from `_doc`, which is what hid it.
+ */
+function plainLinesOf(set) {
+  return (set.extractedLines || []).map(
+    (sub) => (typeof sub.toObject === 'function' ? sub.toObject() : sub),
+  );
+}
+
+/**
+ * The fields a line carries once it sits on a PO line. One place, so a match
+ * the matcher made and one a person made are recorded identically.
+ */
+function fieldsForPo(line, po, { items, hsn, closed, taxSplit }) {
+  const item = items.get(po.ItemID);
+  const units = {
+    purchaseUnit: String(po.PurchaseUnit ?? '').trim() || null,
+    stockUnit: po.StockUnit ?? null,
+    wtPerPacking: item?.WtPerPacking ?? null,
+    unitPerPacking: item?.UnitPerPacking ?? null,
+  };
+  return {
+    ...units,
+    // Receipt Qty (S.U.): sheets for paper bought by the kilo, else the qty.
+    stockQty: stockQtyFor({ ...line, ...units }),
+    ...gstFor(hsn.get(po.ItemID), taxSplit),
+    matchedPoTransactionId: po.TransactionID,
+    matchedPoTransactionDetailId: po.TransactionDetailID,
+    matchedItemId: po.ItemID,
+    // The ERP's item, as its GRN screen names it - not the invoice's wording.
+    itemCode: po.ItemCode ?? null,
+    itemName: po.ItemName ?? null,
+    poDate: po.PoDate ?? null,
+    poFYear: po.FYear ?? null,
+    itemGroupName: po.ItemGroupName ?? null,
+    matchedPoRate: po.PurchaseRate,
+    poPendingQty: po.PendingQty,
+    poQty: po.PurchaseOrderQuantity,
+    poVoucherNo: po.PoVoucherNo,
+    matchedPoClosed: Boolean(closed),
+    // Written onto the GRN line; without them it went out with NULLs.
+    itemGroupId: po.ItemGroupID ?? po.MasterItemGroupID ?? null,
+    productHsnId: po.ProductHSNID ?? null,
+    expectedHsn: hsn.get(po.ItemID)?.HSNCode ?? null,
+    widthMm: item?.SizeW ?? null,
+    lengthMm: item?.SizeL ?? null,
+    gsm: line.gsm ?? item?.GSM ?? null,
+  };
+}
+
+/**
+ * The line's GST rates, from the item's HSN code in ProductHSNMaster - where
+ * the ERP's own purchase invoice gets them. For PU/26-27/0710 it wrote GST 5,
+ * CGST 2.5, SGST 2.5, IGST 0 on every line: the HSN rates, split for a
+ * supplier inside the state. Without this the purchase invoice was written
+ * with no tax at all, because nothing ever put a rate on a line.
+ */
+function gstFor(h, taxSplit) {
+  if (!h || !taxSplit) {
+    return { gstPercentage: null, cgstPercentage: null, sgstPercentage: null, igstPercentage: null };
+  }
+  const gst = num(h.GSTTaxPercentage);
+  if (taxSplit === 'IGST') {
+    return { gstPercentage: gst, cgstPercentage: 0, sgstPercentage: 0, igstPercentage: num(h.IGSTTaxPercentage) ?? gst };
+  }
+  return {
+    gstPercentage: gst,
+    cgstPercentage: num(h.CGSTTaxPercentage) ?? (gst === null ? null : gst / 2),
+    sgstPercentage: num(h.SGSTTaxPercentage) ?? (gst === null ? null : gst / 2),
+    igstPercentage: 0,
+  };
+}
+
+/**
+ * CGST + SGST or IGST. What the supplier actually charged wins when the
+ * invoice was read; otherwise it follows from where the supplier is - its
+ * GSTIN's state against the plant's. Unknown stays unknown (null): a wrong
+ * split is worse than an obviously missing one.
+ */
+async function taxSplitFor(set) {
+  if (set.extractedHeader?.taxType) return set.extractedHeader.taxType;
+  let gstin = set.extractedHeader?.supplierGstin;
+  if (!gstin) {
+    const ledger = (await supplierLedgers(set.site))
+      .find((l) => Number(l.LedgerID) === Number(set.context?.supplierLedgerId));
+    gstin = ledger?.GSTNo;
+  }
+  const state = String(gstin || '').trim().slice(0, 2);
+  if (!/^\d{2}$/.test(state)) return null;
+  return state === PLANT_STATE[set.site] ? 'CGST_SGST' : 'IGST';
+}
+
+/**
+ * Everything matching needs for one document set. PO lines are fetched open
+ * AND closed whatever the mode: a line placed by hand may sit on a closed one,
+ * and the matcher applies the open-only filter itself.
+ */
+async function matchingInputs(set, { includeClosed }) {
+  const site = set.site;
+  const ledgerIds = await supplierLedgersFor(site, set.context.supplierLedgerId);
+  const invoiceNo = set.extractedHeader?.invoiceNo;
+  const [poLines, receipts, alreadyPosted] = await Promise.all([
+    openPoLines(site, { ledgerIds, includeCompleted: true }),
+    includeClosed ? receiptsForInvoice(site, { invoiceNo, ledgerIds }) : Promise.resolve([]),
+    findPostedInvoice(site, { invoiceNo, ledgerIds }),
+  ]);
+  const itemIds = [...new Set(poLines.map((l) => l.ItemID))];
+  const [items, hsn, taxSplit] = await Promise.all([
+    getItems(site, itemIds), hsnForItems(site, itemIds), taxSplitFor(set),
+  ]);
+  return { ledgerIds, poLines, receipts, alreadyPosted, items, hsn, taxSplit };
+}
+
+/** Run every check over the lines, store both, and build the reply. */
+async function checkAndSave(set, lines, { alreadyPosted }) {
+  const checks = runInvoiceChecks({
+    header: set.extractedHeader, lines, alreadyPosted, context: set.context,
+  });
+  set.extractedLines = lines;
+  set.poCandidates = [...new Set(lines.map((l) => l.matchedPoTransactionId).filter(Boolean))];
+  set.checks = checks;
+  set.status = hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'MATCHED';
+  await set.save();
+  return {
+    documentSet: set,
+    checks,
+    isBlocked: hasBlockingFailure(checks),
+    warningsNeedingReason: warningsNeedingReason(checks),
+  };
+}
+
+/**
+ * The person, as a reader would name them. An ERP account's key is a synthetic
+ * "manu@erp.kol"; its display name is the ERP user name. The audit log keeps
+ * the key, which is what identifies the account.
+ */
+function personName(req) {
+  return req.sp?.user?.displayName || req.sp?.actor || 'someone';
+}
+
+async function loadOpenSet(req, res) {
+  await ensureSupplierPortalReady();
+  const set = await DocumentSet.findById(req.params.id);
+  if (!set) { res.status(404).json({ error: 'Document set not found.' }); return null; }
+  if (set.status === 'POSTED') { res.status(409).json({ error: 'This document set has already been posted.' }); return null; }
+  if (!set.context?.supplierLedgerId) { res.status(400).json({ error: 'The supplier ledger has not been selected.' }); return null; }
+  return set;
+}
+
 router.post('/document-sets/:id/match', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+
+    // Off unless asked: closed lines are for seeing where an invoice belonged,
+    // and every match to one is blocked from posting by INV002.
+    const includeClosed = req.body?.includeClosed === true || req.query.includeClosed === 'true';
+    const inputs = await matchingInputs(set, { includeClosed });
+    const lines = plainLinesOf(set);
+
+    // A line a person placed keeps its PO line. Its pending is re-read from the
+    // PO book, because it may have moved since the choice was made.
+    const byDetailId = new Map(inputs.poLines.map((po) => [Number(po.TransactionDetailID), po]));
+    const fixed = [];
+    const lost = new Set();
+    lines.forEach((line, index) => {
+      if (!line.matchManual || line.unplacedByHand) return;
+      const po = byDetailId.get(Number(line.matchedPoTransactionDetailId));
+      if (po) fixed.push({ index, po });
+      else lost.add(index);
+    });
+
+    // The whole invoice at once: the printed PO number decides, a rejection
+    // floor refuses word-only matches, and pending is spent as lines are placed.
+    // Lines a person took off every PO line are not offered to the matcher,
+    // so they neither move nor use up a PO line's pending.
+    const offered = lines.map((line, index) => ({ line, index })).filter(({ line }) => !line.unplacedByHand);
+    const offeredAt = new Map(offered.map(({ index }, i) => [index, i]));
+    const placed = matchInvoiceLines({
+      lines: offered.map(({ line }) => line),
+      poLines: inputs.poLines,
+      items: inputs.items,
+      poNumbers: set.extractedHeader?.poNumbers,
+      includeClosed,
+      receipts: inputs.receipts,
+      fixed: fixed.map((f) => ({ ...f, index: offeredAt.get(f.index) })),
+    });
+
+    const matched = lines.map((line, i) => {
+      if (line.unplacedByHand) return { ...line, ...UNMATCHED };
+      const { po, basis, closed, manual } = placed[offeredAt.get(i)];
+      if (manual) {
+        return {
+          ...line, ...UNMATCHED, ...fieldsForPo(line, po, { ...inputs, closed }),
+          matchManual: true, matchBasis: line.matchBasis,
+        };
+      }
+      // Every match field is reset first, so a line that no longer matches
+      // does not keep showing the PO it matched the last time.
+      const note = lost.has(i)
+        ? ' (The PO line chosen by hand is no longer available, so this was matched automatically.)'
+        : '';
+      const base = { ...line, ...UNMATCHED, matchManual: false, matchBasis: `${basis}${note}` };
+      if (!po) return base;
+      return { ...base, ...fieldsForPo(line, po, { ...inputs, closed }) };
+    });
+
+    const reply = await checkAndSave(set, matched, inputs);
+    return res.json({ ...reply, includeClosed });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * A person puts one invoice line on one PO line - or takes it off one.
+ *
+ * For when the matcher gets it wrong or finds nothing. The PO line is looked
+ * up server-side among THIS supplier's lines; the client sends only its id, so
+ * a choice can never carry another supplier's PO or a made-up pending. The
+ * chosen line survives "Match again" until it is cleared.
+ */
+router.post('/document-sets/:id/lines/:lineNo/assign', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+
+    const lineNo = Number(req.params.lineNo);
+    const lines = plainLinesOf(set);
+    const index = lines.findIndex((l) => Number(l.lineNo) === lineNo);
+    if (index === -1) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
+
+    const inputs = await matchingInputs(set, { includeClosed: false });
+    const detailId = req.body?.poTransactionDetailId;
+    let action;
+
+    if (req.body?.unplace === true) {
+      // From the Pending POs grid: this invoice line is on no PO line, and
+      // "Match again" must not put it back.
+      lines[index] = {
+        ...lines[index], ...UNMATCHED, matchManual: true, unplacedByHand: true,
+        matchBasis: `Taken off its PO line by ${personName(req)}.`,
+      };
+      action = 'LINE_UNPLACED_BY_HAND';
+    } else if (detailId === null || detailId === undefined || detailId === '') {
+      lines[index] = {
+        ...lines[index], ...UNMATCHED, matchManual: false, unplacedByHand: false,
+        matchBasis: `Match cleared by ${personName(req)}; it will be matched automatically next time.`,
+      };
+      action = 'LINE_MATCH_CLEARED';
+    } else {
+      const po = inputs.poLines.find((p) => Number(p.TransactionDetailID) === Number(detailId));
+      if (!po) {
+        return res.status(404).json({ error: "That PO line is not one of this supplier's PO lines." });
+      }
+      const closed = isClosed(po);
+      // Say plainly what the person's choice disagrees with, so a reviewer can
+      // see a deliberate override for what it is.
+      const assessed = assessCandidate(lines[index], po, {
+        items: inputs.items, headerPoNumbers: poNumbersFrom(set.extractedHeader?.poNumbers),
+      });
+      lines[index] = {
+        ...lines[index], ...UNMATCHED, ...fieldsForPo(lines[index], po, { ...inputs, closed }),
+        matchManual: true,
+        unplacedByHand: false,
+        matchBasis: `Chosen by ${personName(req)}${assessed.reasons.length ? ` - ${assessed.reasons.join(', ')}` : ''}.`,
+      };
+      action = 'LINE_MATCHED_BY_HAND';
+    }
+
+    const reply = await checkAndSave(set, lines, inputs);
+    await AuditLog.create({
+      action,
+      entity: 'documentSet',
+      entityId: String(set._id),
+      site: set.site,
+      actor: req.sp.actor,
+      after: { lineNo, poTransactionDetailId: detailId ?? null },
+    });
+    return res.json(reply);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Add a line from a PO line - the ERP's "pick a PO line, it becomes a batch
+ * row". The PO line is looked up server-side among THIS supplier's lines.
+ *
+ * The quantity starts at 0, as on the ERP's own screen, so nothing is received
+ * in full by default: a person enters what actually arrived. The rate starts
+ * at the PO rate. A zero-quantity line cannot be posted (the writer refuses it).
+ */
+router.post('/document-sets/:id/lines', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+
+    const detailId = Number(req.body?.poTransactionDetailId);
+    const inputs = await matchingInputs(set, { includeClosed: false });
+    const po = inputs.poLines.find((p) => Number(p.TransactionDetailID) === detailId);
+    if (!po) return res.status(404).json({ error: "That PO line is not one of this supplier's PO lines." });
+
+    const lines = plainLinesOf(set);
+    const lineNo = lines.reduce((m, l) => Math.max(m, Number(l.lineNo) || 0), 0) + 1;
+    const qty = Math.max(0, num(req.body?.qty) ?? 0);
+    const rate = Math.round((num(po.PurchaseRate) ?? 0) * 100) / 100;
+    const base = {
+      lineNo,
+      description: po.ItemName ?? null,
+      qty,
+      rate,
+      amount: Math.round(qty * rate * 100) / 100,
+      uom: String(po.PurchaseUnit || '').trim() || po.StockUnit || null,
+      hsn: inputs.hsn.get(po.ItemID)?.HSNCode ?? null,
+      poRef: null,
+      warehouseId: null,
+    };
+    lines.push({
+      ...base, ...UNMATCHED, ...fieldsForPo(base, po, { ...inputs, closed: isClosed(po) }),
+      matchManual: true,
+      addedByHand: true,
+      matchBasis: `Added by ${personName(req)} from ${po.PoVoucherNo}.`,
+    });
+
+    const reply = await checkAndSave(set, lines, inputs);
+    await AuditLog.create({
+      action: 'LINE_ADDED_BY_HAND', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor, after: { lineNo, poTransactionDetailId: detailId },
+    });
+    return res.status(201).json({ ...reply, lineNo });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Change one line - its quantity, rate, or warehouse - or every line's
+ * warehouse (`lineNo` = all).
+ *
+ * The warehouse belongs to the GRN line, as in the ERP's own screen; the
+ * header carries 0. It is checked against the site's warehouse list, so a
+ * stray id cannot reach the ERP. A changed quantity or rate re-prices the
+ * line and re-runs every check; the PO match stands.
+ */
+router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const body = req.body || {};
+    const all = req.params.lineNo === 'all';
+
+    let warehouseId;
+    if (body.warehouseId !== undefined) {
+      warehouseId = Number(body.warehouseId);
+      if (!Number.isInteger(warehouseId) || warehouseId <= 0) {
+        return res.status(400).json({ error: 'Choose a warehouse.' });
+      }
+      const known = (await warehouses(set.site)).some((w) => Number(w.WarehouseID) === warehouseId);
+      if (!known) return res.status(400).json({ error: `Warehouse ${warehouseId} is not a ${set.site} warehouse.` });
+    }
+
+    const edits = {};
+    if (body.qty !== undefined) edits.qty = num(body.qty);
+    if (body.stockQty !== undefined) edits.stockQty = num(body.stockQty);
+    if (body.rate !== undefined) edits.rate = num(body.rate);
+    if (body.description !== undefined) edits.description = body.description === null ? null : String(body.description);
+    const editing = Object.keys(edits).length > 0;
+    if (editing && all) return res.status(400).json({ error: 'Quantity and rate are changed one line at a time.' });
+    if ((edits.qty !== undefined && (edits.qty === null || edits.qty < 0))
+      || (edits.stockQty !== undefined && (edits.stockQty === null || edits.stockQty < 0))
+      || (edits.rate !== undefined && (edits.rate === null || edits.rate < 0))) {
+      return res.status(400).json({ error: 'Quantity and rate must be numbers, zero or more.' });
+    }
+
+    const lines = plainLinesOf(set);
+    let touched = 0;
+    for (const line of lines) {
+      if (!all && Number(line.lineNo) !== Number(req.params.lineNo)) continue;
+      touched++;
+      if (warehouseId !== undefined) line.warehouseId = warehouseId;
+      if (editing) {
+        Object.assign(line, edits);
+        // Receipt Qty in either unit fills in the other, as on the ERP's screen.
+        if (edits.stockQty !== undefined && edits.qty === undefined) line.qty = purchaseQtyFromStock(edits.stockQty, line);
+        if (edits.qty !== undefined && edits.stockQty === undefined) line.stockQty = stockQtyFromPurchase(edits.qty, line);
+        if (edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined) {
+          const q = num(line.qty);
+          const r = num(line.rate);
+          line.amount = q !== null && r !== null ? Math.round(q * r * 100) / 100 : line.amount;
+        }
+      }
+    }
+    if (!touched) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
+    if (editing) clearEditedFlags(set, set.toObject(), req, lines);
+
+    if (!editing) {
+      set.extractedLines = lines;
+      await set.save();
+      return res.json({ ok: true, warehouseId, lines: touched });
+    }
+    const inputs = await matchingInputs(set, { includeClosed: false });
+    return res.json(await checkAndSave(set, lines, inputs));
+  } catch (err) { return next(err); }
+});
+
+/** Remove a line from a draft. Nothing in the ERP is touched: this is not posted. */
+router.delete('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const lines = plainLinesOf(set);
+    const kept = lines.filter((l) => Number(l.lineNo) !== Number(req.params.lineNo));
+    if (kept.length === lines.length) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
+    // A removed line's red flags go with it.
+    clearEditedFlags(set, set.toObject(), req, kept);
+
+    const inputs = await matchingInputs(set, { includeClosed: false });
+    const reply = await checkAndSave(set, kept, inputs);
+    await AuditLog.create({
+      action: 'LINE_REMOVED', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor, after: { lineNo: Number(req.params.lineNo) },
+    });
+    return res.json(reply);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * The supplier's PO lines, for the Pending POs tab: open only, or with
+ * closed ones too. Read-only; choosing one goes through /assign.
+ */
+router.get('/document-sets/:id/po-lines', async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
     const set = await DocumentSet.findById(req.params.id);
     if (!set) return res.status(404).json({ error: 'Document set not found.' });
+    if (!set.context?.supplierLedgerId) return res.status(400).json({ error: 'The supplier ledger has not been selected.' });
 
-    const site = set.site;
-    const ledgerId = set.context?.supplierLedgerId;
-    if (!ledgerId) return res.status(400).json({ error: 'The supplier ledger has not been selected.' });
-
-    const group = await groupForLedger(site, ledgerId);
-    // Every ledger the supplier trades under, so an invoice from the Haryana
-    // branch still finds a PO raised on the head office.
-    const ledgerIds = group ? ledgerIdsForSite(group, site) : [ledgerId];
-
-    const poLines = await openPoLines(site, { ledgerIds: ledgerIds.length ? ledgerIds : [ledgerId] });
-    const itemIds = [...new Set(poLines.map((l) => l.ItemID))];
-    const [items, hsn, alreadyPosted] = await Promise.all([
-      getItems(site, itemIds),
-      hsnForItems(site, itemIds),
-      findPostedInvoice(site, { invoiceNo: set.extractedHeader?.invoiceNo, ledgerIds }),
-    ]);
-
-    const matched = set.extractedLines.map((line) => {
-      const po = bestPoLineFor(line, poLines, items);
-      if (!po) return { ...line, matchedPoTransactionId: null };
-      const item = items.get(po.ItemID);
-      return {
-        ...line,
-        matchedPoTransactionId: po.TransactionID,
-        matchedPoTransactionDetailId: po.TransactionDetailID,
-        matchedItemId: po.ItemID,
-        matchedPoRate: po.PurchaseRate,
-        poPendingQty: po.PendingQty,
-        poQty: po.PurchaseOrderQuantity,
+    const includeClosed = req.query.includeClosed === 'true';
+    const ledgerIds = await supplierLedgersFor(set.site, set.context.supplierLedgerId);
+    const rows = await openPoLines(set.site, { ledgerIds, includeCompleted: includeClosed });
+    const lines = rows
+      .filter((po) => includeClosed || !isClosed(po))
+      .map((po) => ({
+        transactionDetailId: Number(po.TransactionDetailID),
+        transactionId: Number(po.TransactionID),
         poVoucherNo: po.PoVoucherNo,
-        expectedHsn: hsn.get(po.ItemID)?.HSNCode ?? null,
-        wtPerPacking: item?.WtPerPacking ?? null,
-        unitPerPacking: item?.UnitPerPacking ?? null,
-        widthMm: item?.SizeW ?? null,
-        lengthMm: item?.SizeL ?? null,
-        gsm: line.gsm ?? item?.GSM ?? null,
-      };
-    });
+        poDate: po.PoDate,
+        itemId: Number(po.ItemID),
+        itemCode: po.ItemCode ?? null,
+        itemName: po.ItemName ?? null,
+        subGroup: po.SubGroupName ?? null,
+        // Both units, as the ERP's GRN screen shows them: P.U. is what was
+        // ordered and billed, S.U. is what goes into stock.
+        orderedQty: po.PurchaseOrderQuantity,
+        orderedStockQty: po.ChallanWeight ?? null,
+        receivedQty: po.ReceivedQty,
+        pendingQty: po.PendingQty,
+        pendingStockQty: po.PendingStockQty ?? null,
+        purchaseUnit: po.PurchaseUnit ?? null,
+        stockUnit: po.StockUnit ?? null,
+        rate: po.PurchaseRate,
+        tolerancePct: po.PurchaseTolerance ?? null,
+        poRefRemark: (po.PurchaseReferenceRemark || '').trim() || null,
+        jobCardNo: (po.RefJobCardContentNo || '').trim() || null,
+        refClient: po.ClientName ?? null,
+        closed: isClosed(po),
+      }));
+    return res.json({ includeClosed, lines });
+  } catch (err) { return next(err); }
+});
 
-    const checks = runInvoiceChecks({
-      header: set.extractedHeader,
-      lines: matched,
-      alreadyPosted,
-      context: set.context,
-    });
+// -- the GRN register: posted GRNs, and editing or deleting them -------------
 
-    set.extractedLines = matched;
-    set.poCandidates = [...new Set(matched.map((l) => l.matchedPoTransactionId).filter(Boolean))];
-    set.checks = checks;
-    set.status = hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'MATCHED';
-    await set.save();
+const DAY = 86400000;
 
+/** Which GRNs GRN Creator posted, by TransactionID -> the document set. */
+async function madeHere(site, transactionIds) {
+  if (!transactionIds.length) return new Map();
+  const sets = await DocumentSet.find({ site, 'posted.grnTransactionId': { $in: transactionIds } })
+    .select('_id posted.grnTransactionId').lean();
+  return new Map(sets.map((x) => [Number(x.posted.grnTransactionId), String(x._id)]));
+}
+
+function sendError(res, err) {
+  return res.status(err.status || 500).json({ error: err.message, ...(err.plan ? { plan: err.plan } : {}) });
+}
+
+/**
+ * Every live GRN of a date range - made in the ERP or here - with whether it
+ * has been issued from and whether its purchase invoice exists.
+ * ?from=YYYY-MM-DD&to=YYYY-MM-DD (default: the last 7 days), ?supplierLedgerId, ?q.
+ * At most 500, newest first; `truncated` says when there were more.
+ */
+router.get('/grns', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+    const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 7 * DAY);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return res.status(400).json({ error: 'Give dates as YYYY-MM-DD.' });
+    if (to - from > 366 * DAY) return res.status(400).json({ error: 'Choose a range of a year or less.' });
+    const supplier = Number(req.query.supplierLedgerId) || null;
+    const ledgerIds = supplier ? await supplierLedgersFor(req.sp.site, supplier) : null;
+    const LIMIT = 500;
+    const grns = await listGrns(req.sp.site, { from, to, ledgerIds, search: req.query.q ? String(req.query.q) : null, limit: LIMIT });
+    const made = await madeHere(req.sp.site, grns.map((g) => g.transactionId));
     return res.json({
-      documentSet: set,
-      checks,
-      isBlocked: hasBlockingFailure(checks),
-      warningsNeedingReason: warningsNeedingReason(checks),
+      from: from.toISOString().slice(0, 10),
+      to: to.toISOString().slice(0, 10),
+      canEdit: canEditGrns(req.sp.user),
+      writesEnabled: erpWritesEnabled(),
+      truncated: grns.length >= LIMIT,
+      grns: grns.map((g) => ({
+        ...g,
+        madeIn: made.has(g.transactionId) ? 'GRN Creator' : 'ERP',
+        documentSetId: made.get(g.transactionId) ?? null,
+      })),
     });
+  } catch (err) { return next(err); }
+});
+
+/** One posted GRN, with what may and may not be changed on each line. */
+router.get('/grns/:transactionId', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const grn = await loadGrn((t, p) => query(req.sp.site, t, p), Number(req.params.transactionId));
+    if (!grn) return res.status(404).json({ error: 'No such GRN - it may have been deleted.' });
+    const made = await madeHere(req.sp.site, [grn.transactionId]);
+    return res.json({
+      ...grn,
+      madeIn: made.has(grn.transactionId) ? 'GRN Creator' : 'ERP',
+      canEdit: canEditGrns(req.sp.user),
+      writesEnabled: erpWritesEnabled(),
+    });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Freight rows of Additional charges, each on a freight ledger of this site.
+ * TaxPercentage as the ERP writes it: 18 on Inward Freight, 0 on the rest.
+ */
+function resolveFreightRows(ledgers, rows) {
+  const freight = new Map(ledgers.filter((l) => l.kind === 'FREIGHT').map((l) => [Number(l.LedgerID), l]));
+  const out = [];
+  for (const r of rows || []) {
+    if (!(Number(r.amount) > 0)) continue;
+    const ledger = freight.get(Number(r.ledgerId));
+    if (!ledger) return { error: `Ledger ${r.ledgerId} is not a freight ledger.` };
+    out.push({
+      ledgerId: Number(ledger.LedgerID), amount: Math.round(Number(r.amount) * 100) / 100,
+      name: ledger.LedgerName, taxPercentage: /INWARD\s+FREIGHT/i.test(ledger.LedgerName || '') ? 18 : 0,
+    });
+  }
+  return { rows: out };
+}
+
+/**
+ * Everything a purchase invoice for one posted GRN starts from: its lines at
+ * their PO rates, with GST from the item's HSN and the supplier's state.
+ */
+async function grnInvoiceDraft(site, transactionId) {
+  const grn = await loadGrn((t, p) => query(site, t, p), transactionId);
+  if (!grn) return { status: 404, error: 'No such GRN - it may have been deleted.' };
+  if (grn.purchaseInvoices.length) {
+    return { status: 409, error: `${grn.voucherNo} already has purchase invoice ${grn.purchaseInvoices.map((p) => p.voucherNo).join(', ')}.` };
+  }
+  const header = await query(site, `
+    SELECT DISTINCT ITD.PurchaseTransactionID FROM ItemTransactionDetail ITD
+    WHERE ITD.TransactionID = @tid AND ITD.CompanyID = @companyId AND ISNULL(ITD.IsDeletedTransaction,0) = 0
+  `, { tid: Number(transactionId), companyId: COMPANY_ID });
+  const poTransactionIds = header.map((r) => Number(r.PurchaseTransactionID)).filter((n) => n > 0);
+  const [poRows, hsn, split, defaults] = await Promise.all([
+    poTransactionIds.length ? openPoLines(site, { transactionIds: poTransactionIds, includeCompleted: true }) : [],
+    hsnForItems(site, grn.lines.map((l) => l.itemId)),
+    taxSplitFor({ site, extractedHeader: {}, context: { supplierLedgerId: grn.supplierLedgerId } }),
+    supplierLedgersFor(site, grn.supplierLedgerId).then((ledgerIds) => receivingDefaults(site, { ledgerIds })),
+  ]);
+  const poByDetail = new Map(poRows.map((p) => [Number(p.TransactionDetailID), p]));
+  const hsnByItem = new Map([...hsn].map(([k, v]) => [Number(k), v]));
+  const lines = grn.lines.map((l) => {
+    const po = poByDetail.get(Number(l.poTransactionDetailId)) || {};
+    const h = hsnByItem.get(Number(l.itemId));
+    return {
+      transactionDetailId: l.transactionDetailId,
+      lineNo: l.lineNo,
+      itemId: l.itemId,
+      itemCode: l.itemCode,
+      itemName: l.itemName,
+      itemGroupId: po.ItemGroupID ?? po.MasterItemGroupID ?? null,
+      itemGroupName: po.ItemGroupName ?? null,
+      poTransactionId: po.TransactionID ? Number(po.TransactionID) : null,
+      poVoucherNo: l.poVoucherNo,
+      poDate: po.PoDate ?? null,
+      poFYear: po.FYear ?? null,
+      poQty: po.PurchaseOrderQuantity ?? null,
+      qty: l.qty,
+      stockQty: l.stockQty,
+      purchaseUnit: l.purchaseUnit,
+      stockUnit: l.stockUnit,
+      matchedPoRate: num(po.PurchaseRate),
+      rate: num(po.PurchaseRate) === null ? null : Math.round(num(po.PurchaseRate) * 100) / 100,
+      widthMm: po.ItemWidth ?? null,
+      expectedHsn: h?.HSNCode ?? null,
+      productHsnId: po.ProductHSNID ?? null,
+      wtPerPacking: l.wtPerPacking,
+      ...gstFor(h, split),
+    };
+  });
+  return { grn, lines, taxSplit: split, defaults };
+}
+
+/** The purchase invoice a GRN without one would get. Read-only. */
+router.get('/grns/:transactionId/purchase-invoice', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const draft = await grnInvoiceDraft(req.sp.site, Number(req.params.transactionId));
+    if (draft.error) return res.status(draft.status).json({ error: draft.error });
+    const { grn } = draft;
+    return res.json({
+      transactionId: grn.transactionId,
+      voucherNo: grn.voucherNo,
+      voucherDate: grn.voucherDate,
+      supplierLedgerId: grn.supplierLedgerId,
+      supplierName: grn.supplierName,
+      deliveryNoteNo: grn.header.deliveryNoteNo,
+      deliveryNoteDate: grn.header.deliveryNoteDate,
+      taxSplit: draft.taxSplit,
+      lines: draft.lines,
+      defaults: draft.defaults,
+      writesEnabled: erpWritesEnabled(),
+    });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Make that purchase invoice. ?dryRun=true says what would be written.
+ * Body: {purchaseLedgerId, billNo, billDate, remark, roundOff,
+ *        freightCharges: [{ledgerId, amount}], rates: {transactionDetailId: rate}}.
+ * The lines are the GRN's own, read again here - never the page's copy.
+ */
+router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const site = req.sp.site;
+    const body = req.body || {};
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    const draft = await grnInvoiceDraft(site, Number(req.params.transactionId));
+    if (draft.error) return res.status(draft.status).json({ error: draft.error });
+
+    const purchaseLedgerId = Number(body.purchaseLedgerId);
+    if (!(await purchaseLedgers(site)).some((l) => Number(l.LedgerID) === purchaseLedgerId)) {
+      return res.status(400).json({ error: 'Choose a purchase ledger of this site.' });
+    }
+    const ledgers = await chargeLedgers(site);
+    const freight = resolveFreightRows(ledgers, body.freightCharges);
+    if (freight.error) return res.status(400).json({ error: freight.error });
+
+    const rates = body.rates || {};
+    const lines = draft.lines.map((l) => {
+      const rate = rates[l.transactionDetailId] !== undefined ? num(rates[l.transactionDetailId]) : l.rate;
+      return { ...l, rate, amount: rate === null ? null : Math.round(Number(l.qty) * rate * 100) / 100 };
+    });
+    const header = {
+      invoiceNo: draft.grn.header.deliveryNoteNo,
+      invoiceDate: draft.grn.header.deliveryNoteDate,
+      billNo: (body.billNo || '').trim() || draft.grn.header.deliveryNoteNo,
+      billDate: body.billDate || draft.grn.header.deliveryNoteDate,
+      remark: body.remark ?? '',
+      freight: freight.rows.reduce((s, f) => s + f.amount, 0),
+      roundOff: num(body.roundOff) || 0,
+    };
+    const context = {
+      supplierLedgerId: draft.grn.supplierLedgerId,
+      purchaseLedgerId,
+      freightLedgerId: freight.rows[0]?.ledgerId ?? null,
+      freightCharges: freight.rows,
+      userId: Number(req.sp.context?.erpUserId),
+      branchId: 1,
+      chargeLedgers: Object.fromEntries(['CGST', 'SGST', 'IGST', 'ROUND_OFF'].map((kind) => [
+        kind, ledgers.find((l) => l.kind === kind)?.LedgerID ?? null,
+      ])),
+    };
+
+    let result;
+    try {
+      result = await postPurchaseInvoiceForGrn({ site, grnTransactionId: draft.grn.transactionId, header, lines, context, dryRun });
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
+    if (!dryRun) {
+      await AuditLog.create({
+        action: 'PI_POSTED_FOR_GRN', entity: 'erpGrn', entityId: String(draft.grn.transactionId),
+        site, actor: req.sp.actor, after: { grnVoucherNo: draft.grn.voucherNo, piVoucherNo: result.pi.voucherNo },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
+  } catch (err) { return next(err); }
+});
+
+/** Guard for both writes: a named editor, and ids that belong to this site. */
+async function checkEditRequest(req, res, edit = {}) {
+  if (!canEditGrns(req.sp.user)) {
+    res.status(403).json({ error: 'Only the people named in SP_GRN_EDITORS may edit or delete posted GRNs.' });
+    return false;
+  }
+  const site = req.sp.site;
+  const whs = (edit.lines || []).map((l) => l.warehouseId).filter((v) => v !== undefined && v !== null);
+  if (whs.length) {
+    const known = new Set((await warehouses(site)).map((w) => Number(w.WarehouseID)));
+    const bad = whs.find((w) => !known.has(Number(w)));
+    if (bad !== undefined) { res.status(400).json({ error: `Warehouse ${bad} is not a ${site} warehouse.` }); return false; }
+  }
+  if (edit.header?.receivedBy !== undefined && edit.header.receivedBy !== null) {
+    const people = new Set((await employeeLedgers(site)).map((e) => Number(e.LedgerID)));
+    if (!people.has(Number(edit.header.receivedBy))) {
+      res.status(400).json({ error: "Received by must be one of the site's employees." });
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Edit a posted GRN: header fields, and each line's quantity, warehouse, or
+ * removal. ?dryRun=true (or writes off) says what would change and writes
+ * nothing. Body: {header, lines, expectedModifiedDate}.
+ */
+router.post('/grns/:transactionId/edit', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const body = req.body || {};
+    const edit = { header: body.header || {}, lines: Array.isArray(body.lines) ? body.lines : [] };
+    if (!(await checkEditRequest(req, res, edit))) return undefined;
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    let result;
+    try {
+      result = await editGrn(req.sp.site, {
+        transactionId: Number(req.params.transactionId), edit, dryRun,
+        userId: req.sp.context?.erpUserId, expectedModifiedDate: body.expectedModifiedDate,
+      });
+    } catch (err) { if (err.status) return sendError(res, err); throw err; }
+    if (!dryRun) {
+      await AuditLog.create({
+        action: 'GRN_EDITED', entity: 'erpGrn', entityId: String(req.params.transactionId),
+        site: req.sp.site, actor: req.sp.actor, after: { voucherNo: result.voucherNo, plan: result.plan },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
+  } catch (err) { return next(err); }
+});
+
+/** Delete a posted GRN. ?dryRun=true says whether it could be. Body: {expectedModifiedDate}. */
+router.post('/grns/:transactionId/delete', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    if (!(await checkEditRequest(req, res))) return undefined;
+    const body = req.body || {};
+    const dryRun = req.query.dryRun === 'true' || body.dryRun === true;
+    const tid = Number(req.params.transactionId);
+    let result;
+    try {
+      result = await deleteGrn(req.sp.site, {
+        transactionId: tid, dryRun, userId: req.sp.context?.erpUserId, expectedModifiedDate: body.expectedModifiedDate,
+      });
+    } catch (err) { if (err.status) return sendError(res, err); throw err; }
+    if (!dryRun) {
+      await DocumentSet.updateOne(
+        { site: req.sp.site, 'posted.grnTransactionId': tid },
+        { $set: { 'posted.deletedAt': new Date(), 'posted.deletedBy': req.sp.actor } },
+      );
+      await AuditLog.create({
+        action: 'GRN_DELETED', entity: 'erpGrn', entityId: String(tid),
+        site: req.sp.site, actor: req.sp.actor, after: { voucherNo: result.voucherNo, lines: result.lines },
+      });
+    }
+    return res.json({ ...result, writesEnabled: erpWritesEnabled() });
+  } catch (err) { return next(err); }
+});
+
+/**
+ * A posted GRN's lines, each saying whether it may be deleted: a line stock
+ * has been issued from may not, until its issue lines are deleted. Read-only.
+ * By voucher number (REC04597_26_27) or by TransactionID.
+ */
+router.get('/grn-lines', async (req, res, next) => {
+  try {
+    const voucherNo = req.query.voucherNo ? String(req.query.voucherNo).trim() : null;
+    const grnTransactionId = req.query.transactionId ? Number(req.query.transactionId) : null;
+    if (!voucherNo && !grnTransactionId) return res.status(400).json({ error: 'Give a GRN voucher number or TransactionID.' });
+    const result = await grnLinesWithIssues(req.sp.site, { voucherNo, grnTransactionId });
+    if (!result) return res.status(404).json({ error: `No GRN ${voucherNo || grnTransactionId} in ${req.sp.site}.` });
+    return res.json(result);
+  } catch (err) { return next(err); }
+});
+
+/** Starting values for received-by, warehouse and the two ledgers. */
+router.get('/document-sets/:id/defaults', async (req, res, next) => {
+  try {
+    await ensureSupplierPortalReady();
+    const set = await DocumentSet.findById(req.params.id);
+    if (!set) return res.status(404).json({ error: 'Document set not found.' });
+    if (!set.context?.supplierLedgerId) return res.status(400).json({ error: 'The supplier ledger has not been selected.' });
+    const ledgerIds = await supplierLedgersFor(set.site, set.context.supplierLedgerId);
+    return res.json(await receivingDefaults(set.site, {
+      ledgerIds, erpUserId: req.sp.context?.erpUserId ?? set.context?.userId ?? null,
+    }));
   } catch (err) { return next(err); }
 });
 
@@ -212,8 +1095,59 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
     if (req.body?.extractedHeader) {
       set.extractedHeader = { ...set.extractedHeader, ...req.body.extractedHeader };
     }
-    if (req.body?.extractedLines) set.extractedLines = req.body.extractedLines;
-    if (req.body?.context) set.context = { ...set.context, ...req.body.context };
+    if (req.body?.extractedLines) {
+      /**
+       * Only what was read off the invoice may be corrected here. Match fields
+       * come from the matcher, or from a person through /assign - never from
+       * the client, which could otherwise write a PO match and a pending of its
+       * own choosing and post it. A corrected line also invalidates the match:
+       * the checks that cleared it were about the old values. A line placed by
+       * hand keeps its choice; "Match again" re-reads it from the PO book.
+       */
+      const existing = new Map(plainLinesOf(set).map((l) => [Number(l.lineNo), l]));
+      set.extractedLines = req.body.extractedLines.map((l) => {
+        const was = existing.get(Number(l.lineNo)) || {};
+        const kept = Object.fromEntries(EDITABLE_LINE_FIELDS.map((k) => [k, l[k] ?? null]));
+        return {
+          ...kept,
+          warehouseId: was.warehouseId ?? null,
+          ...(was.addedByHand ? { addedByHand: true } : {}),
+          ...(was.unplacedByHand ? { unplacedByHand: true } : {}),
+          ...(was.matchManual ? {
+            matchManual: true,
+            matchedPoTransactionDetailId: was.matchedPoTransactionDetailId,
+            matchBasis: was.matchBasis,
+          } : {}),
+        };
+      });
+      set.checks = [];
+      set.poCandidates = [];
+      set.status = 'EXTRACTED';
+    }
+    if (req.body?.context) {
+      // CreatedBy is whoever is signed in, never what the client says it is.
+      const { userId, ...rest } = req.body.context;
+
+      const changing = rest.supplierLedgerId !== undefined
+        && Number(rest.supplierLedgerId) !== Number(set.context?.supplierLedgerId);
+      if (changing) {
+        const id = Number(rest.supplierLedgerId);
+        const known = (await supplierLedgers(set.site)).some((l) => Number(l.LedgerID) === id);
+        if (!known) {
+          return res.status(400).json({ error: `Ledger ${rest.supplierLedgerId} is not a ${set.site} supplier ledger.` });
+        }
+        // Every PO match pointed at the old supplier's POs - including lines a
+        // person placed by hand. None of them can stand for a different supplier.
+        set.extractedLines = plainLinesOf(set).map((l) => ({
+          ...l, ...UNMATCHED, matchManual: false, matchBasis: null,
+        }));
+        set.checks = [];
+        set.poCandidates = [];
+        set.status = 'EXTRACTED';
+      }
+      set.context = { ...set.context, ...rest };
+    }
+    clearEditedFlags(set, before, req);
     await set.save();
 
     await AuditLog.create({
@@ -228,6 +1162,39 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
     });
 
     return res.json(set);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Clear the red flags on values that changed. `before` is the set as it was
+ * (toObject()); `lines`, when given, are the lines about to be saved.
+ */
+function clearEditedFlags(set, before, req, lines = null) {
+  if (!(before.fieldFlags || []).length) return;
+  const now = set.toObject();
+  set.fieldFlags = resolveEditedFlags(
+    before.fieldFlags,
+    { header: before.extractedHeader, lines: before.extractedLines },
+    { header: now.extractedHeader, lines: lines ?? now.extractedLines },
+    personName(req),
+  );
+}
+
+/** Mark a red-flagged field checked: "I looked, the value is right." Body: {field}. */
+router.post('/document-sets/:id/flags/confirm', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const field = String(req.body?.field || '');
+    const { flags, found } = confirmFlag(set.toObject().fieldFlags, field, personName(req));
+    if (!found) return res.status(404).json({ error: `No flag on ${field}.` });
+    set.fieldFlags = flags;
+    await set.save();
+    await AuditLog.create({
+      action: 'FIELD_FLAG_CONFIRMED', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor, after: { field },
+    });
+    return res.json({ fieldFlags: set.fieldFlags });
   } catch (err) { return next(err); }
 });
 
@@ -251,6 +1218,27 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
     }
 
     const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
+
+    const flagged = openFlags(set.fieldFlags);
+    if (flagged.length && !dryRun) {
+      return res.status(422).json({
+        error: `${flagged.length} field${flagged.length > 1 ? 's are' : ' is'} still red-flagged: `
+          + `${flagged.map((f) => f.field).join(', ')}. Correct each one, or mark it checked.`,
+        fieldFlags: flagged,
+      });
+    }
+
+    // A closed PO line is in the record only because someone asked to see where
+    // the invoice belonged. INV002 already blocks it; this refusal does not
+    // depend on the checks having been run, or run since the last match.
+    const onClosed = (set.extractedLines || []).filter((l) => l.matchedPoClosed);
+    if (onClosed.length && !dryRun) {
+      const nos = onClosed.map((l) => String(l.lineNo));
+      const which = nos.length > 1
+        ? `Lines ${nos.slice(0, -1).join(', ')} and ${nos[nos.length - 1]} are matched to closed PO lines`
+        : `Line ${nos[0]} is matched to a closed PO line`;
+      return res.status(422).json({ error: `${which}. Match again against open POs before posting.` });
+    }
 
     if (hasBlockingFailure(set.checks)) {
       return res.status(422).json({
@@ -276,12 +1264,18 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       ]),
     );
 
+    const { userId: ignoredUserId, ...bodyContext } = req.body?.context || {};
     const context = {
       ...set.context,
-      ...(req.body?.context || {}),
-      branchId: req.body?.context?.branchId ?? set.context?.branchId ?? 1,
+      ...bodyContext,
+      // CreatedBy on every ERP row is the person posting, from their session.
+      userId: Number(req.sp.context?.erpUserId ?? set.context?.userId),
+      branchId: bodyContext.branchId ?? set.context?.branchId ?? 1,
       chargeLedgers: chargeLedgerIds,
     };
+    const rows = resolveFreightRows(ledgers, context.freightCharges);
+    if (rows.error) return res.status(400).json({ error: rows.error });
+    context.freightCharges = rows.rows;
 
     const lines = set.extractedLines
       .filter((l) => l.matchedPoTransactionId)
@@ -294,14 +1288,17 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
         poQty: l.poQty,
         poPendingQty: l.poPendingQty,
         qty: l.qty,
-        stockQty: l.totalUnits ?? l.qty,
+        stockQty: l.stockQty ?? stockQtyFor(l),
         rate: l.rate,
         amount: l.amount,
         purchaseUnit: l.uom,
         stockUnit: l.stockUnit ?? null,
         productHsnId: l.productHsnId ?? null,
         wtPerPacking: l.wtPerPacking,
+        warehouseId: l.warehouseId ?? null,
         itemDescription: l.description,
+        itemName: l.itemName ?? null,
+        gstPercentage: l.gstPercentage ?? null,
         cgstPercentage: l.cgstPercentage ?? null,
         sgstPercentage: l.sgstPercentage ?? null,
         igstPercentage: l.igstPercentage ?? null,
@@ -356,6 +1353,125 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
   } catch (err) { return next(err); }
 });
 
+/**
+ * TESTING ONLY - clear out unposted document sets.
+ *
+ * Exists so a test run can start clean. It is off unless the server sets
+ * SP_ALLOW_DRAFT_DELETE=true, and off means the routes answer 404 rather than
+ * 403: a production server does not advertise a mass-delete it will refuse.
+ * Do not set the variable on Render.
+ *
+ * Three guards, each independent of the others:
+ *  - a POSTED set is never touched. Posted sets are tied to real GRN and
+ *    purchase-invoice vouchers in the ERP, and the delete re-applies the
+ *    status filter itself, so a set posted between the count and the delete
+ *    survives;
+ *  - only the signed-in site's sets, never the other plant's;
+ *  - only stored files under RECEIVING_PREFIX, so a malformed slot can never
+ *    reach another app's objects in the shared bucket.
+ */
+const RECEIVING_PREFIX = 'supplier-portal/receiving/';
+
+function draftDeleteEnabled() {
+  return (process.env.SP_ALLOW_DRAFT_DELETE ?? '').trim().toLowerCase() === 'true';
+}
+
+function storageKeysOf(set) {
+  const slots = set.slots || {};
+  return ['supplierInvoice', 'eWayBill', 'packingList']
+    .flatMap((name) => slots[name] || [])
+    .map((page) => page?.storageKey)
+    .filter((key) => typeof key === 'string' && key.startsWith(RECEIVING_PREFIX));
+}
+
+router.get('/drafts', async (req, res, next) => {
+  try {
+    if (!draftDeleteEnabled()) return res.status(404).json({ error: 'Not found.' });
+    await ensureSupplierPortalReady();
+    const site = req.sp.site;
+    const [drafts, posted] = await Promise.all([
+      DocumentSet.countDocuments({ site, status: { $ne: 'POSTED' } }),
+      DocumentSet.countDocuments({ site, status: 'POSTED' }),
+    ]);
+    res.json({ enabled: true, site, drafts, posted });
+  } catch (err) { next(err); }
+});
+
+router.delete('/drafts', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    if (!draftDeleteEnabled()) return res.status(404).json({ error: 'Not found.' });
+    await ensureSupplierPortalReady();
+    const site = req.sp.site;
+    const dryRun = req.query.dryRun === 'true';
+
+    const drafts = await DocumentSet.find({ site, status: { $ne: 'POSTED' } })
+      .select('_id slots status extractedHeader.invoiceNo createdAt').lean();
+    const ids = drafts.map((d) => d._id);
+
+    if (dryRun) {
+      return res.json({
+        dryRun: true,
+        site,
+        drafts: drafts.length,
+        files: drafts.reduce((n, d) => n + storageKeysOf(d).length, 0),
+        sets: drafts.map((d) => ({
+          id: String(d._id),
+          status: d.status,
+          invoiceNo: d.extractedHeader?.invoiceNo ?? null,
+          createdAt: d.createdAt,
+        })),
+      });
+    }
+
+    // The status filter is applied again here, not trusted from the find.
+    const result = await DocumentSet.deleteMany({ _id: { $in: ids }, status: { $ne: 'POSTED' } });
+
+    // Delete files only for sets that are really gone. If anything survived -
+    // posted in the meantime - its file stays with it.
+    let gone = drafts;
+    if (result.deletedCount < ids.length) {
+      const survivors = new Set(
+        (await DocumentSet.find({ _id: { $in: ids } }).select('_id').lean()).map((d) => String(d._id)),
+      );
+      gone = drafts.filter((d) => !survivors.has(String(d._id)));
+    }
+
+    const keys = gone.flatMap(storageKeysOf);
+    let files = { deleted: [], errors: [] };
+    if (keys.length) {
+      try {
+        files = await deleteObjects(keys);
+      } catch (err) {
+        // The records are already gone; say so rather than failing the call.
+        files = { deleted: [], errors: keys.map((key) => ({ key, message: err.message })) };
+      }
+    }
+
+    await AuditLog.create({
+      action: 'TEST_DRAFTS_DELETED',
+      entity: 'documentSet',
+      entityId: 'bulk',
+      site,
+      actor: req.sp.actor,
+      reason: 'Testing cleanup (SP_ALLOW_DRAFT_DELETE)',
+      meta: {
+        deletedCount: result.deletedCount,
+        ids: gone.map((d) => String(d._id)),
+        filesDeleted: files.deleted.length,
+        fileErrors: files.errors,
+      },
+    });
+
+    return res.json({
+      site,
+      deleted: result.deletedCount,
+      skippedAsPosted: ids.length - result.deletedCount,
+      filesDeleted: files.deleted.length,
+      fileErrors: files.errors,
+    });
+  } catch (err) { return next(err); }
+});
+
 router.get('/document-sets', async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
@@ -380,40 +1496,6 @@ router.get('/document-sets/:id', async (req, res, next) => {
     return res.json(set);
   } catch (err) { return next(err); }
 });
-
-/**
- * Best open PO line for an invoice line.
- *
- * Matched on the item first — a description that names an item CDC has on an
- * open PO from this supplier is almost always that item. Where several PO
- * lines carry the same item, the one whose rate agrees with the invoice wins,
- * then the oldest.
- */
-function bestPoLineFor(line, poLines, items) {
-  const description = normaliseName(line.description || '');
-  if (!description) return null;
-
-  const scored = poLines
-    .filter((po) => po.PendingQty > 0)
-    .map((po) => {
-      const item = items.get(po.ItemID);
-      const name = normaliseName(`${item?.ItemName || ''} ${po.ItemDescription || ''}`);
-      const tokens = name.split(' ').filter((t) => t.length > 2);
-      const hits = tokens.filter((t) => description.includes(t)).length;
-      const coverage = tokens.length ? hits / tokens.length : 0;
-
-      // Rate agreement is strong corroboration: an invoice priced at the PO
-      // rate is almost certainly for that PO line.
-      const rateAgrees = Number.isFinite(line.rate) && Number.isFinite(po.PurchaseRate)
-        && Math.abs(line.rate - po.PurchaseRate) <= 0.01;
-
-      return { po, score: coverage + (rateAgrees ? 0.5 : 0) };
-    })
-    .filter((s) => s.score >= 0.4)
-    .sort((a, b) => b.score - a.score || new Date(a.po.PoDate) - new Date(b.po.PoDate));
-
-  return scored[0]?.po || null;
-}
 
 function inferShipToState(extracted) {
   const gstin = extracted.shipToGstin || extracted.buyerGstin;

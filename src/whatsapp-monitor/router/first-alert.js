@@ -3,7 +3,12 @@ import { logger } from '../logger.js';
 import { concerns, groups } from '../db.js';
 import { sendAlert } from './alert.js';
 import { recentlyAlerted } from '../detector/concerns.js';
-import { dueForFirstAlert, alertDelayFor } from './alert-rules.js';
+import {
+  dueForFirstAlert,
+  alertDelayFor,
+  alertFloorFor,
+  severeEnoughToAlert,
+} from './alert-rules.js';
 import { LIVE_STATUSES } from '../concerns-live.js';
 
 /**
@@ -40,11 +45,19 @@ export async function runFirstAlerts() {
     for (const concern of waiting) {
       const group = groupById.get(concern.groupId);
       const after = alertDelayFor(group, config.alertAfterMin);
+      const floor = alertFloorFor(group, config.alertMinSeverity);
 
-      if (!dueForFirstAlert(concern, now, after)) {
+      if (!dueForFirstAlert(concern, now, after, floor)) {
         // Worth saying out loud once, because a concern with no owner waits
         // forever in silence and looks identical to one that is simply early.
-        if (!concern.ownerId && !concern.backfilledAt && !concern.alertNobodyLogged) {
+        if (
+          !concern.ownerId &&
+          !concern.backfilledAt &&
+          !concern.alertNobodyLogged &&
+          // Not worth warning that nobody will be alerted about something the
+          // severity floor was never going to send anyway.
+          severeEnoughToAlert(concern.severity, floor)
+        ) {
           logger.error(
             { concernId: String(concern._id), category: concern.category },
             'no routing rule and no DEFAULT_OWNER_PHONE - concern raised but NOBODY will be alerted',

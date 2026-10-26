@@ -12,7 +12,12 @@
     "case is judged by client-prompt.md, which deliberately flags far more - an",
     "unanswered customer question is a concern there and is not one internally.",
     "Both prompts are exercised in one run so tightening one cannot quietly",
-    "loosen the other."
+    "loosen the other.",
+    "",
+    "Severity is CHECKED, not just noted: alerting now has a floor, so a concern",
+    "graded medium never reaches a phone. A prompt that finds the right problems",
+    "at the wrong severity would have passed this fixture before the floor and",
+    "gone silent in production after it."
   ],
   "cases": [
     {
@@ -27,7 +32,8 @@
       ],
       "expect": {
         "concern": true,
-        "category": "machine_breakdown"
+        "category": "machine_breakdown",
+        "severity": "high"
       }
     },
     {
@@ -42,7 +48,8 @@
       ],
       "expect": {
         "concern": true,
-        "category": "machine_breakdown"
+        "category": "machine_breakdown",
+        "severity": "high"
       }
     },
     {
@@ -192,7 +199,7 @@
       }
     },
     {
-      "name": "client chasing a dispatch date",
+      "name": "client chasing a dispatch date (was a pass before management tightened it)",
       "group": "CDC - Customer Orders",
       "kind": "client",
       "messages": [
@@ -203,12 +210,12 @@
         }
       ],
       "expect": {
-        "concern": true,
-        "category": "delivery_delay"
+        "concern": false,
+        "why": "management rejected exactly this pattern: a first ask, or a status chase, is ordinary order traffic rather than something gone wrong"
       }
     },
     {
-      "name": "client asks a plain question nobody has answered",
+      "name": "client asks a plain question nobody has answered (was a pass before management tightened it)",
       "group": "CDC - Customer Orders",
       "kind": "client",
       "messages": [
@@ -219,8 +226,8 @@
         }
       ],
       "expect": {
-        "concern": true,
-        "why": "in a client group an unanswered ask is itself the problem - the opposite of the internal rule"
+        "concern": false,
+        "why": "management rejected exactly this pattern: a first ask, or a status chase, is ordinary order traffic rather than something gone wrong"
       }
     },
     {
@@ -253,6 +260,147 @@
       "expect": {
         "concern": false,
         "why": "CDC's own update is not a customer concern"
+      }
+    },
+    {
+      "name": "ADMIN REJECT: a first request from a customer",
+      "group": "CDC x D&K PR Box",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a1",
+          "senderName": "Customer Contact",
+          "text": "Please deliver 5 pcs of jelly PR to the Kolkata office."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "asking for something is the job, not a problem with it"
+      }
+    },
+    {
+      "name": "ADMIN REJECT: coordination, not a fault",
+      "group": "CDC x D&K PR Box",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a2",
+          "senderName": "Customer Contact",
+          "text": "I am coming to CDC with the items but cannot get a cab, need some help with the arrival."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "somebody sorting out a visit is not a concern"
+      }
+    },
+    {
+      "name": "ADMIN KEEP: a committed dispatch date slips by ten days",
+      "group": "WYNN CORP N CDC",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a3",
+          "senderName": "CDC Coordinator",
+          "text": "Dispatch planned for 16/10/2026 is pushed to 26/10/2026 due to a sudden machine breakdown."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "severity": "high",
+        "category": "delivery_delay"
+      }
+    },
+    {
+      "name": "ADMIN REJECT: a preference about how to send something",
+      "group": "CDC x D&K PR Box",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a4",
+          "senderName": "Customer Contact",
+          "text": "Please inform us prior to sending the jellies and the merch."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "telling CDC how they would like it handled is information, not a fault"
+      }
+    },
+    {
+      "name": "ADMIN KEEP: material unavailable, production stuck",
+      "group": "CDC BHIKHARAM",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a5",
+          "senderName": "Production",
+          "text": "Tray for the 250/500 laddu box forming is not available, production is stuck."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "severity": "high",
+        "category": "material_shortage"
+      }
+    },
+    {
+      "name": "ADMIN REJECT: a status chase, asked once",
+      "group": "CDC x D&K PR Box",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "a6",
+          "senderName": "Customer Contact",
+          "text": "We expect 150 pcs, yesterday's and today's, to be completed by tomorrow. Please confirm the status."
+        }
+      ],
+      "expect": {
+        "concern": false,
+        "why": "wanting to know where something is, asked once, is normal traffic"
+      }
+    },
+    {
+      "name": "the same chase, repeated after silence, IS a concern",
+      "group": "CDC x D&K PR Box",
+      "kind": "client",
+      "messages": [
+        {
+          "msgId": "b1",
+          "senderName": "Customer Contact",
+          "text": "Please confirm the status of the 150 pcs."
+        },
+        {
+          "msgId": "b2",
+          "senderName": "Customer Contact",
+          "text": "Still waiting for a reply on this. Third time I am asking."
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "why": "the line management drew: a first ask is routine, being ignored is not"
+      }
+    },
+    {
+      "name": "a machine down that somebody is already fixing is not high",
+      "group": "CDC Maintenance",
+      "kind": "internal",
+      "messages": [
+        {
+          "msgId": "c1",
+          "senderName": "Operator A",
+          "text": "Aster 220 machine down"
+        },
+        {
+          "msgId": "c2",
+          "senderName": "SK Yadav",
+          "text": "Fitter is looking at it now"
+        }
+      ],
+      "expect": {
+        "concern": true,
+        "severity": "medium",
+        "why": "a plant getting on with its day - on the dashboard, not on a phone"
       }
     }
   ]

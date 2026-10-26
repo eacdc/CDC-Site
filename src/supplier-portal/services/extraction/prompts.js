@@ -278,6 +278,7 @@ Return JSON only, matching this shape:
   "buyerGstin": string|null, "shipToGstin": string|null, "shipToAddress": string|null,
   "eWayBillNo": string|null, "vehicleNo": string|null,
   "poNumbers": string[]|null,
+  "gateEntryNo": string|null, "gateEntryDate": string|null,
   "taxType": "CGST_SGST"|"IGST"|null,
   "subTotal": string|null, "freight": string|null, "taxable": string|null,
   "cgst": string|null, "sgst": string|null, "igst": string|null,
@@ -285,7 +286,9 @@ Return JSON only, matching this shape:
   "lines": [{"lineNo":number,"description":string|null,"hsn":string|null,
              "gsm":string|null,"size":string|null,"unitWt":string|null,
              "bundles":string|null,"totalUnits":string|null,"qty":string|null,
-             "uom":string|null,"rate":string|null,"amount":string|null}]
+             "uom":string|null,"rate":string|null,"amount":string|null,
+             "poRef":string|null}],
+  "uncertain": string[]
 }
 
 RULES:
@@ -306,7 +309,48 @@ RULES:
 5. PAPER LINES often show sheets, bundles, size and unit weight as well as kg.
    Capture all of them — the sheets-to-kg reconciliation depends on it.
 
-6. If a field is not on the invoice, use null. Never infer a value.`;
+6. If a field is not on the invoice, use null. Never infer a value.
+
+7. PO NUMBERS. Suppliers write CDC's purchase-order number against a line,
+   often on the line below the description, in forms like
+   "PO NO = <po> - <date> = <qty> PCS", "<po> <date>" or "P.O. <po>". Put ONLY
+   the <po> part in that line's "poRef" - not the date, not the quantity, not
+   the delivery-note number. A handwritten number counts. Also list every PO
+   number from the header's "Buyer's Order No." / "P.O. No." field in
+   "poNumbers", including any written in by hand.
+
+8. SIZES ARE DIGIT-FOR-DIGIT. Copy a box or sheet size exactly as printed,
+   in the order printed: swapping two digits, or two of the three dimensions,
+   names a different box. Look twice at each digit of a size; it identifies
+   the item.
+
+9. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a rectangular box,
+   usually near the top, with two printed labels - "Date" and "Sl. No." - and
+   fills both in by hand. That is the gate entry: put the handwritten serial
+   number in "gateEntryNo" and the handwritten date in "gateEntryDate". The
+   invoice date is the PRINTED date next to the invoice number; never take it
+   from the stamp. A signature with a date written beside it is not the stamp.
+
+10. NOTHING IN THESE INSTRUCTIONS IS DATA. The forms above show where things
+   sit on a page; they contain no real numbers, and no number from these
+   instructions belongs in your answer. Every value must be read off THIS
+   invoice. If you cannot read a value - a smudged stamp, a GSTIN too small to
+   make out - return null for it. A null is checked by a person; a plausible
+   invented value is not.
+
+11. SAY WHAT YOU ARE UNSURE OF. Add "uncertain": a list of fields a person
+   should check. Name header fields as in the shape above ("gateEntryNo",
+   "eWayBillNo", "supplierGstin") and line fields as "lines.<lineNo>.<field>"
+   ("lines.3.qty"). Give your best reading in the field itself AND list it.
+   These ALWAYS go on the list, however sure you feel:
+     - every value WRITTEN BY HAND - the gate stamp's serial and date are
+       always handwritten, and so is a whole handwritten invoice;
+     - every value partly covered by a stamp, a signature, a fold or a crease;
+     - every value where any character could be read two ways (0/O, 1/I/7,
+       5/S, 8/B, 6/G, 2/Z) or where you filled in a character you cannot see;
+     - every value printed so small or faint that you read it from its shape.
+   A long list is fine. An empty list says you read every value on the page
+   from clear print, with no doubt at all.`;
 
 export const ADJUDICATION_PROMPT = `You are helping a purchase coordinator at CDC Printers match a line from a
 supplier's quotation to an item in CDC's own item master.

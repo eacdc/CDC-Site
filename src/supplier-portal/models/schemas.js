@@ -753,8 +753,11 @@ export const documentSetSchema = new Schema({
 
   extractedHeader: {
     invoiceNo: String,
+    supplierName: String,
     invoiceDate: Date,
     supplierGstin: String,
+    /** As read, when it failed the check character and a ledger's was taken instead. */
+    supplierGstinRead: String,
     buyerGstin: String,
     shipToGstin: String,
     shipToState: String,
@@ -770,6 +773,25 @@ export const documentSetSchema = new Schema({
     igst: Number,
     roundOff: Number,
     grandTotal: Number,
+    /**
+     * Typed in on review rather than read off the invoice, and written onto
+     * the GRN header by erp-receiving.js. They must be declared: Mongoose drops
+     * undeclared paths on save without a word, so before this a gate entry
+     * typed into the page vanished and every GRN went out with none.
+     */
+    gateEntryNo: String,
+    gateEntryDate: Date,
+    eWayBillDate: Date,
+    /** Every PO number in the invoice header's "Buyer's Order No." field. */
+    poNumbers: { type: [String], default: undefined },
+    /**
+     * The purchase invoice's own: Bill No. / Bill Date (the supplier's invoice
+     * number and date - InvoiceNo / InvoiceDate; they default to the D.N.) and
+     * the Remark (Narration).
+     */
+    billNo: String,
+    billDate: Date,
+    remark: String,
   },
 
   extractedLines: [{
@@ -786,16 +808,104 @@ export const documentSetSchema = new Schema({
     uom: String,
     rate: Number,
     amount: Number,
+    /** CDC's PO number as the supplier wrote it against this line. */
+    poRef: String,
     /** Weight CDC computes on rounded metric, vs what the supplier billed. */
     computedKg: Number,
     billedKg: Number,
+    /**
+     * Everything the matcher works out about this line.
+     *
+     * Every one of these must be declared. Mongoose drops undeclared paths on
+     * save without a word, so a field the matcher computes but the schema does
+     * not name is gone by the time the post route reads it back - and the post
+     * route is where it is needed. Four of these were missing, which is why PO
+     * lines would never have closed: `closesPoLine` returns false when
+     * `poTransactionDetailId` is falsy, so closure was a silent no-op, and the
+     * GRN batch number would have been built with the string "undefined" in
+     * it. Add a field to the matcher and you must add it here too.
+     */
     matchedPoTransactionId: Number,
+    matchedPoTransactionDetailId: Number,
     matchedItemId: Number,
     matchedPoRate: Number,
     poPendingQty: Number,
+    poQty: Number,
+    poVoucherNo: String,
+    itemGroupId: Number,
+    stockUnit: String,
+    purchaseUnit: String,
+    itemCode: String,
+    itemName: String,
+    // Shown on the purchase invoice grid, as the ERP's screen shows them.
+    poDate: Date,
+    poFYear: String,
+    itemGroupName: String,
+    // Receipt Qty (S.U.) - sheets for paper bought by the kilo; else the qty.
+    stockQty: Number,
+    productHsnId: Number,
+    expectedHsn: String,
+    wtPerPacking: Number,
+    unitPerPacking: Number,
+    widthMm: Number,
+    lengthMm: Number,
+    /** Why this line went to its PO - or, unmatched, what came closest and why not. */
+    matchBasis: String,
+    /** Matched to a CLOSED PO line, from the include-closed view. Never postable. */
+    matchedPoClosed: Boolean,
+    /** Placed on its PO line by a person, through /assign. Survives re-matching. */
+    matchManual: Boolean,
+    /** Added from a PO line by a person (manual entry), not read off an invoice. */
+    addedByHand: Boolean,
+    /** Taken off every PO line by a person: "Match again" leaves it unplaced. */
+    unplacedByHand: Boolean,
+    /** The GRN line's warehouse - where the ERP keeps it; the header carries 0. */
+    warehouseId: Number,
+    /** Tax rates per line; without these the purchase invoice computes 0 tax. */
+    gstPercentage: Number,
+    cgstPercentage: Number,
+    sgstPercentage: Number,
+    igstPercentage: Number,
   }],
 
   poCandidates: { type: [Number], default: [] },
+  /** AI: lines read off an invoice. MANUAL: lines picked from POs by a person. */
+  entryMode: { type: String, enum: ['AI', 'MANUAL'], default: 'AI' },
+  /** Who the invoice was identified as from, and on what evidence. */
+  /**
+   * What the reader did and found: pages turned upright, the problems the
+   * answer showed on its own face, and whether a second read fixed them.
+   */
+  extractionReview: Schema.Types.Mixed,
+
+  /**
+   * Red flags: fields a person must look at before posting. From the model
+   * (could not read it) or from the checks (provably wrong). Cleared by an
+   * edit or by being marked checked. See extraction/field-flags.js.
+   */
+  fieldFlags: {
+    type: [{
+      _id: false,
+      field: String,
+      source: { type: String, enum: ['MODEL', 'CHECK'] },
+      reason: String,
+      resolved: Boolean,
+      how: { type: String, enum: ['EDITED', 'CONFIRMED', null] },
+      by: String,
+      at: Date,
+    }],
+    default: [],
+  },
+
+  supplierIdentification: {
+    ledgerId: Number,
+    ledgerName: String,
+    matchedBy: { type: String, enum: ['GSTIN', 'GSTIN_NEAR', 'NAME', null] },
+    /** The ledger's GSTIN, when the one read failed its check character. */
+    correctedGstin: String,
+    evidence: String,
+    at: Date,
+  },
   /** Session context captured at post time — three separate ID spaces. */
   context: {
     userId: Number,            // UserMaster
@@ -804,6 +914,8 @@ export const documentSetSchema = new Schema({
     supplierLedgerId: Number,
     purchaseLedgerId: Number,
     freightLedgerId: Number,
+    /** Additional charges: one row per freight ledger, each with its amount. */
+    freightCharges: { type: [{ _id: false, ledgerId: Number, amount: Number }], default: undefined },
   },
 
   checks: { type: [checkSchema], default: [] },
@@ -824,6 +936,9 @@ export const documentSetSchema = new Schema({
     postedBy: String,
     stockRefreshOk: Boolean,
     stockRefreshError: String,
+    // Deleted from GRN Creator's register; the ERP keeps the rows, flagged.
+    deletedAt: Date,
+    deletedBy: String,
   },
 
   createdBy: String,
@@ -875,6 +990,15 @@ export const userSchema = new Schema({
   employeeLedgerId: Number,
   warehouseId: Number,
   erpUserId: Number,
+  /**
+   * How this account signs in. 'LOCAL' is email + password. 'ERP' is a
+   * passwordless sign-in against the ERP's own UserMaster, provisioned on
+   * first use and keyed by `<username>@erp.<site>` - a synthetic key, not a
+   * mailbox. An ERP account has no usable password and the password login
+   * refuses it, so the two paths cannot be crossed.
+   */
+  authSource: { type: String, enum: ['LOCAL', 'ERP'], default: 'LOCAL' },
+  erpUserName: String,
   isActive: { type: Boolean, default: true },
   lastLoginAt: Date,
 }, { collection: 'sp_users', timestamps: true });

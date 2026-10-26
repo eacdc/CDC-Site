@@ -17,6 +17,7 @@ import {
   GetObjectCommand,
   PutObjectCommand,
   HeadObjectCommand,
+  DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
@@ -150,6 +151,32 @@ export async function confirmUpload(key, expectedBytes) {
  * Server-side upload, for when the file already lives on your server —
  * a WhatsApp webhook payload, a scheduled import, a scanner drop folder.
  */
+/**
+ * Delete objects by key, in batches of 1000 (the S3 / R2 limit per request).
+ *
+ * Permanent: R2 has no recycle bin. Callers must decide which keys are safe to
+ * remove; this function deletes exactly what it is given and reports per key,
+ * so a partial failure is visible rather than averaged away.
+ *
+ * @param {string[]} keys
+ * @returns {Promise<{deleted: string[], errors: {key: string, message: string}[]}>}
+ */
+export async function deleteObjects(keys = []) {
+  const unique = [...new Set(keys.filter(Boolean))];
+  const deleted = [];
+  const errors = [];
+  for (let i = 0; i < unique.length; i += 1000) {
+    const batch = unique.slice(i, i + 1000);
+    const out = await rw.send(new DeleteObjectsCommand({
+      Bucket: BUCKET,
+      Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: false },
+    }));
+    for (const d of out.Deleted || []) deleted.push(d.Key);
+    for (const e of out.Errors || []) errors.push({ key: e.Key, message: e.Message || e.Code });
+  }
+  return { deleted, errors };
+}
+
 export async function uploadBuffer({ folder = 'uploads', buffer, contentType }) {
   if (!ALLOWED_TYPES[contentType]) throw new Error(`Rejected content type: ${contentType}`);
   if (buffer.length > MAX_BYTES) throw new Error(`Rejected size: ${buffer.length}`);

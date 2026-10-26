@@ -21,7 +21,7 @@
 
 import { withTransaction, txQuery, sql, assertSite, hasWriteLogin, db } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX, TOLERANCES, STOCK_REFRESH_PROC } from '../config/constants.js';
-import { allocateVoucherNo, fYearFor } from './erp-voucher.js';
+import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
 import { apportionFreight, invoiceTotals, round } from '../lib/invoice-math.js';
 
 /** Posting is off unless explicitly enabled. */
@@ -55,15 +55,17 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
   }
 
   const voucherDate = new Date();
-  const fYear = fYearFor(voucherDate);
+  // Two forms, deliberately destructured apart: `fYear` is the column value
+  // ('2026-2027'), `suffix` is the voucher-number tail ('_26_27').
+  const { fYear, suffix } = financialYearFor(voucherDate);
   const priced = priceLines({ header, lines });
 
   if (dryRun) {
     return {
       dryRun: true,
       fYear,
-      grn: previewGrn({ header, lines: priced, context, voucherDate, fYear }),
-      pi: previewPi({ header, lines: priced, context, voucherDate, fYear }),
+      grn: previewGrn({ header, lines: priced, context, voucherDate, suffix }),
+      pi: previewPi({ header, lines: priced, context, voucherDate, suffix }),
       closedLines: priced.filter(closesPoLine).map((l) => ({
         transactionDetailId: l.poTransactionDetailId,
         pendingAfter: round((l.poPendingQty || 0) - (l.qty || 0), 3),
@@ -73,9 +75,10 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
   }
 
   return withTransaction(site, async (tx) => {
-    const grn = await writeGrn({ tx, header, lines: priced, context, voucherDate, fYear });
+    const grn = await writeGrn({ tx, header, lines: priced, context, voucherDate, fYear, suffix });
     const pi = await writePurchaseInvoice({
-      tx, header, lines: priced, context, voucherDate, fYear, grnTransactionId: grn.transactionId,
+      tx, header, lines: priced, context, voucherDate, fYear, suffix,
+      grnTransactionId: grn.transactionId,
     });
     const closedLines = await closePoLines({ tx, lines: priced, context });
     return { grn, pi, closedLines, dryRun: false };
@@ -84,6 +87,67 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
     // still correct — CDC's reporting computes stock from transactions.
     result.stockRefresh = await refreshStock(site, result.grn.transactionId);
     return result;
+  });
+}
+
+/**
+ * A purchase invoice for a GRN that was posted without one - made in the ERP,
+ * or here. The GRN's lines are the invoice's lines; only the rates, the
+ * charges and the invoice's own fields come from the person.
+ *
+ * Inside the transaction the GRN is locked and checked again for a live
+ * invoice, so two people pressing the button get one invoice, not two.
+ */
+export async function postPurchaseInvoiceForGrn({ site, grnTransactionId, header, lines, context, dryRun = false }) {
+  assertSite(site);
+  if (!header?.invoiceNo && !header?.billNo) throw new Error('A purchase invoice needs the supplier bill no.');
+  if (!lines?.length) throw new Error('The GRN has no lines.');
+  if (!Number.isFinite(context?.supplierLedgerId)) throw new Error('context.supplierLedgerId is required.');
+  if (!Number.isFinite(context?.purchaseLedgerId)) throw new Error('Choose the purchase ledger.');
+  for (const line of lines) {
+    if (!(Number(line.qty) > 0)) throw new Error(`GRN line ${line.lineNo} has no quantity.`);
+    if (!Number.isFinite(Number(line.rate)) || Number(line.rate) < 0) throw new Error(`Line ${line.lineNo} needs a rate.`);
+    if (!Number.isFinite(line.poTransactionId)) throw new Error(`Line ${line.lineNo} has no PO.`);
+  }
+  if (!dryRun && !erpWritesEnabled()) {
+    throw Object.assign(new Error('ERP writes are disabled. Set SP_ENABLE_ERP_WRITES=true once this has been verified. Use the dry run to see what would be written.'), { status: 403 });
+  }
+  if (!dryRun && !Number.isFinite(context?.userId)) throw new Error('No ERP user on this session.');
+
+  const voucherDate = new Date();
+  const { fYear, suffix } = financialYearFor(voucherDate);
+  const priced = priceLines({ header, lines });
+  // Fails here, before anything is written, if the freight rows do not add up.
+  const totals = invoiceTotals(priced, { freight: num(header.freight), roundOff: num(header.roundOff) });
+  freightRows(totals, context);
+
+  if (dryRun) {
+    return { dryRun: true, fYear, pi: previewPi({ header, lines: priced, context, voucherDate, suffix }), totals };
+  }
+
+  return withTransaction(site, async (tx) => {
+    const tid = { type: sql.Int, value: Number(grnTransactionId) };
+    const companyId = { type: sql.Int, value: COMPANY_ID };
+    const [grn] = await txQuery(tx, `
+      SELECT TransactionID, VoucherNo FROM ItemTransactionMain WITH (UPDLOCK, HOLDLOCK)
+      WHERE TransactionID = @tid AND CompanyID = @companyId AND VoucherID = @grnVoucher
+        AND ISNULL(IsDeletedTransaction,0) = 0
+    `, { tid, companyId, grnVoucher: { type: sql.Int, value: VOUCHER.GRN } });
+    if (!grn) throw Object.assign(new Error('That GRN no longer exists - it may have been deleted.'), { status: 404 });
+    const [existing] = await txQuery(tx, `
+      SELECT TOP 1 PM.VoucherNo FROM ItemPurchaseInvoiceDetail PD
+      JOIN ItemPurchaseInvoiceMain PM ON PM.TransactionID = PD.TransactionID AND PM.CompanyID = PD.CompanyID
+      WHERE PD.ParentTransactionID = @tid AND PD.CompanyID = @companyId
+        AND ISNULL(PD.IsDeletedTransaction,0) = 0 AND ISNULL(PM.IsDeletedTransaction,0) = 0
+    `, { tid, companyId });
+    if (existing) throw Object.assign(new Error(`${grn.VoucherNo} already has purchase invoice ${existing.VoucherNo}.`), { status: 409 });
+
+    const pi = await writePurchaseInvoice({ tx, header, lines: priced, context, voucherDate, fYear, suffix, grnTransactionId: Number(grnTransactionId) });
+    await txQuery(tx, `
+      UPDATE ItemTransactionMain SET IsPurchaseInvoiceCreated = 1
+      WHERE TransactionID = @tid AND CompanyID = @companyId
+    `, { tid, companyId });
+    return { dryRun: false, grnVoucherNo: grn.VoucherNo, pi };
   });
 }
 
@@ -97,9 +161,9 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
  * on the purchase invoice. That makes this write mostly quantities, batch,
  * warehouse and approval flags.
  */
-async function writeGrn({ tx, header, lines, context, voucherDate, fYear }) {
+async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix }) {
   const { maxVoucherNo, voucherNo } = await allocateVoucherNo(tx, {
-    voucherId: VOUCHER.GRN, fYear, table: 'ItemTransactionMain',
+    voucherId: VOUCHER.GRN, fYear, suffix, table: 'ItemTransactionMain',
   });
 
   const inserted = await txQuery(tx, `
@@ -139,7 +203,11 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear }) {
     voucherNo,
     voucherDate: { type: sql.DateTime, value: voucherDate },
     ledgerId: { type: sql.Int, value: context.supplierLedgerId },
-    warehouseId: { type: sql.Int, value: context.warehouseId },
+    // 0, as the ERP's own screen writes it: DestinationWarehouseID was 0 on all
+    // 2,043 GRNs of the 90 days to 22 Oct 2026. The warehouse belongs to each
+    // line (ItemTransactionDetail.WarehouseID) - every one of their 4,267
+    // lines carried one.
+    warehouseId: { type: sql.Int, value: 0 },
     totalQuantity: { type: sql.Float, value: sumBy(lines, 'qty') },
     deliveryNoteNo: header.invoiceNo ?? null,
     deliveryNoteDate: { type: sql.DateTime, value: toDate(header.invoiceDate) },
@@ -242,11 +310,13 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
   if (!detailId) throw new Error(`GRN detail insert for item ${line.itemId} returned no TransactionDetailID.`);
 
   /**
-   * `BatchID` is the row's own `TransactionDetailID` and `BatchNo` embeds it,
-   * so both can only be set after the insert. This is the ERP's convention,
-   * not a workaround.
+   * `BatchNo` is `{GRN TransactionID}_{PO VoucherNo}_{ItemID}_{TransID}.00` -
+   * e.g. 68220_PO03232_26_27_7296_1.00. The last part is the line's TransID
+   * (1, 2, 3...), NOT its TransactionDetailID: true of all 4,267 GRN lines in
+   * the 90 days to 22 Oct 2026. `BatchID` is still the row's own
+   * TransactionDetailID, which is why this runs after the insert.
    */
-  const batchNo = `${transactionId}_${poVoucherNo}_${line.itemId}_${detailId}.00`;
+  const batchNo = `${transactionId}_${poVoucherNo}_${line.itemId}_${index + 1}.00`;
   await txQuery(tx, `
     UPDATE ItemTransactionDetail
     SET BatchID = @detailId, BatchNo = @batchNo
@@ -268,9 +338,11 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
  * row per charge ledger. `TotalOverheadAmount` on the header is 0; freight
  * lives in the taxes table, not there.
  */
-async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, fYear, grnTransactionId }) {
+async function writePurchaseInvoice({
+  tx, header, lines, context, voucherDate, fYear, suffix, grnTransactionId,
+}) {
   const { maxVoucherNo, voucherNo } = await allocateVoucherNo(tx, {
-    voucherId: VOUCHER.PURCHASE_INVOICE, fYear, table: 'ItemPurchaseInvoiceMain',
+    voucherId: VOUCHER.PURCHASE_INVOICE, fYear, suffix, table: 'ItemPurchaseInvoiceMain',
   });
 
   const totals = invoiceTotals(lines, {
@@ -284,7 +356,7 @@ async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, f
       TotalQuantity, TotalBasicAmount, TotalDiscountAmount,
       TotalCGSTTaxAmount, TotalSGSTTaxAmount, TotalIGSTTaxAmount,
       TotalTaxAmount, NetAmount, TotalOverheadAmount,
-      DeliveryNoteNo, InvoiceNo, InvoiceDate, RoundOffValue, AmountInWords,
+      DeliveryNoteNo, InvoiceNo, InvoiceDate, Narration, RoundOffValue, AmountInWords,
       CompanyID, BranchID, UserID, FYear,
       CreatedBy, CreatedDate, IsDeletedTransaction
     )
@@ -295,7 +367,7 @@ async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, f
       @totalQuantity, @totalBasic, 0,
       @cgst, @sgst, @igst,
       @totalTax, @netAmount, 0,
-      @deliveryNoteNo, @invoiceNo, @invoiceDate, @roundOff, @amountInWords,
+      @deliveryNoteNo, @invoiceNo, @invoiceDate, @narration, @roundOff, @amountInWords,
       @companyId, @branchId, @userId, @fYear,
       @userId, @now, 0
     )
@@ -315,9 +387,13 @@ async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, f
     igst: { type: sql.Float, value: totals.totalIGSTTaxAmount },
     totalTax: { type: sql.Float, value: totals.totalTaxAmount },
     netAmount: { type: sql.Float, value: totals.netAmount },
+    // D.Note No is the GRN's delivery note. Bill No. / Bill Date are the
+    // supplier's invoice - the same number on 2,699 of 2,699 invoices since
+    // July 2026, but the screen lets them differ, so they are kept apart.
     deliveryNoteNo: header.invoiceNo ?? null,
-    invoiceNo: header.invoiceNo ?? null,
-    invoiceDate: { type: sql.DateTime, value: toDate(header.invoiceDate) },
+    invoiceNo: header.billNo || header.invoiceNo || null,
+    invoiceDate: { type: sql.DateTime, value: toDate(header.billDate || header.invoiceDate) },
+    narration: header.remark ?? '',
     roundOff: { type: sql.Float, value: totals.roundOffValue },
     amountInWords: amountInWords(totals.netAmount),
     companyId: { type: sql.Int, value: COMPANY_ID },
@@ -386,7 +462,8 @@ async function writePurchaseInvoice({ tx, header, lines, context, voucherDate, f
       landedAmount: { type: sql.Float, value: round((line.landedRate ?? line.rate) * line.qty, 2) },
       netAmount: { type: sql.Float, value: line.netAmount },
       wtPerPacking: { type: sql.Float, value: line.wtPerPacking ?? null },
-      narration: line.itemDescription ?? null,
+      // The ERP's own lines carry the item's name here (5,608 of 5,608).
+      narration: line.itemName ?? line.itemDescription ?? null,
       companyId: { type: sql.Int, value: COMPANY_ID },
       branchId: { type: sql.Int, value: context.branchId ?? 1 },
       userId: { type: sql.Int, value: context.userId },
@@ -423,13 +500,8 @@ async function writeTaxRows({ tx, transactionId, totals, context, fYear }) {
   if (totals.totalIGSTTaxAmount > 0 && ledgers.IGST) {
     rows.push({ transId: transId++, ledgerId: ledgers.IGST, taxPercentage: 0, amount: totals.totalIGSTTaxAmount, taxInAmount: 0 });
   }
-  if (totals.freight > 0) {
-    if (!context.freightLedgerId) {
-      throw new Error('Freight is present but no freight ledger was selected (INV018).');
-    }
-    // TaxPercentage 18 on every inward-freight ledger is correct: the 18/12/5
-    // in the ledger name is the GST rate of the material carried.
-    rows.push({ transId: transId++, ledgerId: context.freightLedgerId, taxPercentage: 18, amount: totals.freight, taxInAmount: 1 });
+  for (const f of freightRows(totals, context)) {
+    rows.push({ transId: transId++, ledgerId: f.ledgerId, taxPercentage: f.taxPercentage, amount: f.amount, taxInAmount: 1 });
   }
   if (totals.roundOffValue !== 0 && ledgers.ROUND_OFF) {
     rows.push({ transId: transId++, ledgerId: ledgers.ROUND_OFF, taxPercentage: 0, amount: totals.roundOffValue, taxInAmount: 1 });
@@ -465,6 +537,34 @@ async function writeTaxRows({ tx, transactionId, totals, context, fYear }) {
   }
 
   return rows;
+}
+
+/**
+ * The freight rows of Additional charges. Several, each on its own ledger, or
+ * the one freight figure on the one chosen ledger. TaxPercentage as the ERP
+ * writes it: 18 on the Inward Freight ledgers - the 18/5 in the name is the
+ * GST rate of the material carried - and 0 on "Freight Charge" (6 of 6 rows,
+ * July to October 2026).
+ */
+export function freightRows(totals, context = {}) {
+  const listed = (context.freightCharges || []).filter((f) => Number(f.amount) > 0);
+  if (listed.length) {
+    const sum = round(listed.reduce((s, f) => s + Number(f.amount), 0), 2);
+    if (Math.abs(sum - (totals.freight || 0)) > 0.005) {
+      throw new Error(`The freight rows come to ${sum} but the invoice carries ${totals.freight}.`);
+    }
+    for (const f of listed) {
+      if (!(Number(f.ledgerId) > 0)) throw new Error('A freight row has no ledger (INV018).');
+    }
+    return listed.map((f) => ({ ledgerId: Number(f.ledgerId), amount: round(Number(f.amount), 2), taxPercentage: f.taxPercentage ?? 18, name: f.name ?? null }));
+  }
+  if (totals.freight > 0) {
+    if (!context.freightLedgerId) {
+      throw new Error('Freight is present but no freight ledger was selected (INV018).');
+    }
+    return [{ ledgerId: context.freightLedgerId, amount: totals.freight, taxPercentage: 18, name: null }];
+  }
+  return [];
 }
 
 // ── PO line closure ─────────────────────────────────────────────────────────
@@ -572,28 +672,37 @@ function validatePostInput({ header, lines, context }) {
   if (!Number.isFinite(context?.supplierLedgerId)) {
     throw new Error('context.supplierLedgerId (LedgerMaster, Sundry Creditors) is required.');
   }
-  if (!Number.isFinite(context?.warehouseId)) throw new Error('context.warehouseId is required.');
+  // The warehouse is per line now, as in the ERP. A line may fall back to the
+  // set's default, but it must end up with one.
+  for (const line of lines) {
+    if (!Number.isFinite(Number(line.warehouseId ?? context?.warehouseId))) {
+      throw new Error(`Line for item ${line.itemId} has no warehouse.`);
+    }
+  }
   if (!Number.isFinite(context?.purchaseLedgerId)) {
     throw new Error('context.purchaseLedgerId is required for the purchase invoice.');
   }
   for (const line of lines) {
     if (!Number.isFinite(line.itemId)) throw new Error('Every line needs an itemId.');
+    // A line picked by hand starts at 0, as on the ERP's own screen. Posting it
+    // would write a GRN line that received nothing.
+    if (!(Number(line.qty) > 0)) throw new Error(`Line for item ${line.itemId} has no quantity.`);
     if (!Number.isFinite(line.poTransactionId)) {
       throw new Error(`Line for item ${line.itemId} has no matched PO TransactionID.`);
     }
   }
 }
 
-function previewGrn({ header, lines, context, voucherDate, fYear }) {
+function previewGrn({ header, lines, context, voucherDate, suffix }) {
   return {
     table: 'ItemTransactionMain',
     voucherId: VOUCHER.GRN,
     voucherPrefix: VOUCHER_PREFIX[VOUCHER.GRN],
-    voucherNo: `${VOUCHER_PREFIX[VOUCHER.GRN]}<next>_${fYear}`,
+    voucherNo: `${VOUCHER_PREFIX[VOUCHER.GRN]}<next>${suffix}`,
     voucherDate,
     ledgerId: context.supplierLedgerId,
     receivedBy: context.employeeLedgerId,
-    destinationWarehouseId: context.warehouseId,
+    destinationWarehouseId: 0,
     deliveryNoteNo: header.invoiceNo,
     allAmountColumns: 0,
     lines: lines.map((l, i) => ({
@@ -605,27 +714,31 @@ function previewGrn({ header, lines, context, voucherDate, fYear }) {
       purchaseRate: 0,
       landedRate: l.landedRate ?? l.rate,
       purchaseTransactionId: l.poTransactionId,
-      batchNo: `<grnId>_${l.poVoucherNo}_${l.itemId}_<detailId>.00`,
+      batchNo: `<grnId>_${l.poVoucherNo}_${l.itemId}_${i + 1}.00`,
+      warehouseId: l.warehouseId ?? context.warehouseId ?? null,
     })),
   };
 }
 
-function previewPi({ header, lines, context, voucherDate, fYear }) {
+function previewPi({ header, lines, context, voucherDate, suffix }) {
   const totals = invoiceTotals(lines, { freight: num(header.freight), roundOff: num(header.roundOff) });
   return {
     table: 'ItemPurchaseInvoiceMain',
     voucherId: VOUCHER.PURCHASE_INVOICE,
-    voucherNo: `${VOUCHER_PREFIX[VOUCHER.PURCHASE_INVOICE]}<next>_${fYear}`,
+    voucherNo: `${VOUCHER_PREFIX[VOUCHER.PURCHASE_INVOICE]}<next>${suffix}`,
     voucherDate,
     ledgerId: context.supplierLedgerId,
     purchaseLedgerId: context.purchaseLedgerId,
-    invoiceNo: header.invoiceNo,
+    invoiceNo: header.billNo || header.invoiceNo,
+    invoiceDate: header.billDate || header.invoiceDate || null,
+    deliveryNoteNo: header.invoiceNo,
+    remark: header.remark ?? null,
     totals,
     taxRows: [
       totals.totalCGSTTaxAmount > 0 && { ledger: 'CGST', amount: totals.totalCGSTTaxAmount, taxInAmount: 0 },
       totals.totalSGSTTaxAmount > 0 && { ledger: 'SGST', amount: totals.totalSGSTTaxAmount, taxInAmount: 0 },
       totals.totalIGSTTaxAmount > 0 && { ledger: 'IGST', amount: totals.totalIGSTTaxAmount, taxInAmount: 0 },
-      totals.freight > 0 && { ledger: `Freight (${context.freightLedgerId})`, amount: totals.freight, taxPercentage: 18, taxInAmount: 1 },
+      ...freightRows(totals, context).map((f) => ({ ledger: f.name || `Freight (${f.ledgerId})`, amount: f.amount, taxPercentage: f.taxPercentage, taxInAmount: 1 })),
       totals.roundOffValue !== 0 && { ledger: 'Round Off', amount: totals.roundOffValue, taxInAmount: 1 },
     ].filter(Boolean),
     lines: lines.map((l, i) => ({

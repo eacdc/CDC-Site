@@ -154,6 +154,21 @@ export const config = {
    */
   romaniseTranscripts: opt('ROMANISE_TRANSCRIPTS', 'true') === 'true',
 
+  /**
+   * Only concerns at or above this severity reach a phone.
+   *
+   * Management reviewed six real alerts and wanted two of them: both `high`,
+   * and nothing `high` was unwanted. Anything below the floor is still raised
+   * and still on the dashboard - the floor governs the DM, not the record.
+   *
+   * Per kind and env-overridable, because this is the line that will be argued
+   * with, and moving it should not need a deploy.
+   */
+  alertMinSeverity: {
+    internal: opt('ALERT_MIN_SEVERITY_INTERNAL', 'high'),
+    client: opt('ALERT_MIN_SEVERITY_CLIENT', 'high'),
+  },
+
   alertAfterMin: {
     internal: num('ALERT_AFTER_MIN_INTERNAL', 30),
     client: num('ALERT_AFTER_MIN_CLIENT', 15),

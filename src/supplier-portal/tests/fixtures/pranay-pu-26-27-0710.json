@@ -1,0 +1,572 @@
+{
+  "source": "Pranay Udyog invoice PU/26-27/0710 (9 Oct 2026), booked by CDC store as REC04597_26_27. poLines are the supplier's open PO lines as they stood BEFORE that booking, read from live Kolkata on 19 Oct 2026. Only the fields the matcher reads are kept.",
+  "supplierLedgerId": 8535,
+  "poLines": [
+    {
+      "TransactionID": 59180,
+      "TransactionDetailID": 99683,
+      "ItemID": 9652,
+      "ItemName": "5 PLY CORRUGATED BOX 550 X 305 X 206 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 550 X 305 X 206 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02420_26_27",
+      "PoDate": "2026-08-20",
+      "PurchaseOrderQuantity": 120,
+      "PurchaseRate": 30.37,
+      "PendingQty": 120
+    },
+    {
+      "TransactionID": 59180,
+      "TransactionDetailID": 99687,
+      "ItemID": 9320,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 315 X 235 MM, 11.22 x, 8.46 x, 6.5, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 315 X 235 MM, SizeL:11.22, SizeW:8.46, SizeH:6.5, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02420_26_27",
+      "PoDate": "2026-08-20",
+      "PurchaseOrderQuantity": 460,
+      "PurchaseRate": 31.08,
+      "PendingQty": 47
+    },
+    {
+      "TransactionID": 59180,
+      "TransactionDetailID": 99688,
+      "ItemID": 8207,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 360 X 335 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 360 X 335 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02420_26_27",
+      "PoDate": "2026-08-20",
+      "PurchaseOrderQuantity": 800,
+      "PurchaseRate": 45.24,
+      "PendingQty": 219
+    },
+    {
+      "TransactionID": 60708,
+      "TransactionDetailID": 102554,
+      "ItemID": 7096,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 400 X 370 MM, 0 x, 0 x, 0, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 400 X 370 MM, SizeL:0, SizeW:0, SizeH:0, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02607_26_27",
+      "PoDate": "2026-08-28",
+      "PurchaseOrderQuantity": 200,
+      "PurchaseRate": 44.4,
+      "PendingQty": 200
+    },
+    {
+      "TransactionID": 60708,
+      "TransactionDetailID": 102555,
+      "ItemID": 5537,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 280 X 385 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 280 X 385 MM, SizeL:19.69, SizeW:11.02, SizeH:15.16",
+      "PoVoucherNo": "PO02607_26_27",
+      "PoDate": "2026-08-28",
+      "PurchaseOrderQuantity": 200,
+      "PurchaseRate": 35.62,
+      "PendingQty": 200
+    },
+    {
+      "TransactionID": 60708,
+      "TransactionDetailID": 102556,
+      "ItemID": 5518,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 300 X 180 MM, 17.72 x, 11.81 x, 7.09, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 300 X 180 MM, SizeL:17.72, SizeW:11.81, SizeH:7.09, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02607_26_27",
+      "PoDate": "2026-08-28",
+      "PurchaseOrderQuantity": 600,
+      "PurchaseRate": 25.32,
+      "PendingQty": 600
+    },
+    {
+      "TransactionID": 61373,
+      "TransactionDetailID": 103776,
+      "ItemID": 5518,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 300 X 180 MM, 17.72 x, 11.81 x, 7.09, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 300 X 180 MM, SizeL:17.72, SizeW:11.81, SizeH:7.09, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02669_26_27",
+      "PoDate": "2026-09-01",
+      "PurchaseOrderQuantity": 200,
+      "PurchaseRate": 25.32,
+      "PendingQty": 200
+    },
+    {
+      "TransactionID": 61373,
+      "TransactionDetailID": 103777,
+      "ItemID": 7996,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 320 X 360 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 320 X 360 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02669_26_27",
+      "PoDate": "2026-09-01",
+      "PurchaseOrderQuantity": 600,
+      "PurchaseRate": 38.15,
+      "PendingQty": 600
+    },
+    {
+      "TransactionID": 61373,
+      "TransactionDetailID": 103780,
+      "ItemID": 5537,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 280 X 385 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 280 X 385 MM, SizeL:19.69, SizeW:11.02, SizeH:15.16",
+      "PoVoucherNo": "PO02669_26_27",
+      "PoDate": "2026-09-01",
+      "PurchaseOrderQuantity": 460,
+      "PurchaseRate": 35.62,
+      "PendingQty": 460
+    },
+    {
+      "TransactionID": 61373,
+      "TransactionDetailID": 103781,
+      "ItemID": 7096,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 400 X 370 MM, 0 x, 0 x, 0, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 400 X 370 MM, SizeL:0, SizeW:0, SizeH:0, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02669_26_27",
+      "PoDate": "2026-09-01",
+      "PurchaseOrderQuantity": 730,
+      "PurchaseRate": 44.4,
+      "PendingQty": 730
+    },
+    {
+      "TransactionID": 61639,
+      "TransactionDetailID": 104340,
+      "ItemID": 8207,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 360 X 335 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 360 X 335 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02693_26_27",
+      "PoDate": "2026-09-03",
+      "PurchaseOrderQuantity": 226,
+      "PurchaseRate": 45.24,
+      "PendingQty": 226
+    },
+    {
+      "TransactionID": 62237,
+      "TransactionDetailID": 106388,
+      "ItemID": 5569,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 285 X 190 MM, 23.62 x, 11.22 x, 7.48, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 285 X 190 MM, SizeL:23.62, SizeW:11.22, SizeH:7.48, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02769_26_27",
+      "PoDate": "2026-09-05",
+      "PurchaseOrderQuantity": 1200,
+      "PurchaseRate": 31.33,
+      "PendingQty": 1103
+    },
+    {
+      "TransactionID": 62237,
+      "TransactionDetailID": 106391,
+      "ItemID": 5571,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 300 X 175 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 300 X 175 MM, SizeL:23.62, SizeW:11.81, SizeH:6.89",
+      "PoVoucherNo": "PO02769_26_27",
+      "PoDate": "2026-09-05",
+      "PurchaseOrderQuantity": 600,
+      "PurchaseRate": 31.84,
+      "PendingQty": 600
+    },
+    {
+      "TransactionID": 62237,
+      "TransactionDetailID": 106393,
+      "ItemID": 9223,
+      "ItemName": "3A PLY CORRUGATED BOX 600 X 360 X 335 MM, 16.93 x, 11.81 x, 8.66, 3 Ply",
+      "ItemDescription": "Quality:3A PLY CORRUGATED BOX 600 X 360 X 335 MM, SizeL:16.93, SizeW:11.81, SizeH:8.66, NoOfPly:3, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02769_26_27",
+      "PoDate": "2026-09-05",
+      "PurchaseOrderQuantity": 1000,
+      "PurchaseRate": 27.69,
+      "PendingQty": 943
+    },
+    {
+      "TransactionID": 62748,
+      "TransactionDetailID": 106382,
+      "ItemID": 6819,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 270 X 320 MM, 17.71 x, 10.62 x, 12.59, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 270 X 320 MM, SizeL:17.71, SizeW:10.62, SizeH:12.59, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02824_26_27",
+      "PoDate": "2026-09-09",
+      "PurchaseOrderQuantity": 1500,
+      "PurchaseRate": 31.53,
+      "PendingQty": 1500
+    },
+    {
+      "TransactionID": 62748,
+      "TransactionDetailID": 106383,
+      "ItemID": 7996,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 320 X 360 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 320 X 360 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02824_26_27",
+      "PoDate": "2026-09-09",
+      "PurchaseOrderQuantity": 800,
+      "PurchaseRate": 40.75,
+      "PendingQty": 500
+    },
+    {
+      "TransactionID": 63389,
+      "TransactionDetailID": 107576,
+      "ItemID": 5519,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 315 X 230 MM, 17.72 x, 12.4 x, 9.06, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 315 X 230 MM, SizeL:17.72, SizeW:12.4, SizeH:9.06, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO02888_26_27",
+      "PoDate": "2026-09-12",
+      "PurchaseOrderQuantity": 1000,
+      "PurchaseRate": 31,
+      "PendingQty": 199
+    },
+    {
+      "TransactionID": 65571,
+      "TransactionDetailID": 111647,
+      "ItemID": 7232,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 315 X 300 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 315 X 300 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03081_26_27",
+      "PoDate": "2026-09-26",
+      "PurchaseOrderQuantity": 350,
+      "PurchaseRate": 36.85,
+      "PendingQty": 350
+    },
+    {
+      "TransactionID": 65571,
+      "TransactionDetailID": 111650,
+      "ItemID": 5560,
+      "ItemName": "5 PLY CORRUGATED BOX 550 X 340 X 240 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 550 X 340 X 240 MM, SizeL:21.65, SizeW:13.39, SizeH:9.45",
+      "PoVoucherNo": "PO03081_26_27",
+      "PoDate": "2026-09-26",
+      "PurchaseOrderQuantity": 600,
+      "PurchaseRate": 37.93,
+      "PendingQty": 90
+    },
+    {
+      "TransactionID": 65571,
+      "TransactionDetailID": 111653,
+      "ItemID": 9560,
+      "ItemName": "5 PLY CORRUGATED BOX 485 X 450 X 170 MM, 11.22 x, 8.46 x, 6.5, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 485 X 450 X 170 MM, SizeL:11.22, SizeW:8.46, SizeH:6.5, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03081_26_27",
+      "PoDate": "2026-09-26",
+      "PurchaseOrderQuantity": 220,
+      "PurchaseRate": 42.32,
+      "PendingQty": 220
+    },
+    {
+      "TransactionID": 66906,
+      "TransactionDetailID": 114351,
+      "ItemID": 6985,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 325 X 320 MM, 0 x, 0 x, 0, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 325 X 320 MM, SizeL:0, SizeW:0, SizeH:0, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03232_26_27",
+      "PoDate": "2026-10-05",
+      "PurchaseOrderQuantity": 400,
+      "PurchaseRate": 38.99,
+      "PendingQty": 400
+    },
+    {
+      "TransactionID": 66906,
+      "TransactionDetailID": 114354,
+      "ItemID": 5569,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 285 X 190 MM, 23.62 x, 11.22 x, 7.48, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 285 X 190 MM, SizeL:23.62, SizeW:11.22, SizeH:7.48, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03232_26_27",
+      "PoDate": "2026-10-05",
+      "PurchaseOrderQuantity": 800,
+      "PurchaseRate": 31.33,
+      "PendingQty": 140
+    },
+    {
+      "TransactionID": 66906,
+      "TransactionDetailID": 114355,
+      "ItemID": 7296,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 340 X 230 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 340 X 230 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03232_26_27",
+      "PoDate": "2026-10-05",
+      "PurchaseOrderQuantity": 800,
+      "PurchaseRate": 33.32,
+      "PendingQty": 800
+    },
+    {
+      "TransactionID": 66906,
+      "TransactionDetailID": 114356,
+      "ItemID": 5560,
+      "ItemName": "5 PLY CORRUGATED BOX 550 X 340 X 240 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 550 X 340 X 240 MM, SizeL:21.65, SizeW:13.39, SizeH:9.45",
+      "PoVoucherNo": "PO03232_26_27",
+      "PoDate": "2026-10-05",
+      "PurchaseOrderQuantity": 400,
+      "PurchaseRate": 37.93,
+      "PendingQty": 400
+    },
+    {
+      "TransactionID": 66906,
+      "TransactionDetailID": 114357,
+      "ItemID": 10447,
+      "ItemName": "5 PLY CORRUGATED BOX 560 X 510 X 145 MM, 16.14 x, 12.01 x, 12.2, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 560 X 510 X 145 MM, SizeL:16.14, SizeW:12.01, SizeH:12.2, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03232_26_27",
+      "PoDate": "2026-10-05",
+      "PurchaseOrderQuantity": 370,
+      "PurchaseRate": 50.7,
+      "PendingQty": 370
+    },
+    {
+      "TransactionID": 67838,
+      "TransactionDetailID": 116036,
+      "ItemID": 5518,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 300 X 180 MM, 17.72 x, 11.81 x, 7.09, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 300 X 180 MM, SizeL:17.72, SizeW:11.81, SizeH:7.09, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03342_26_27",
+      "PoDate": "2026-10-09",
+      "PurchaseOrderQuantity": 800,
+      "PurchaseRate": 27.05,
+      "PendingQty": 800
+    },
+    {
+      "TransactionID": 67838,
+      "TransactionDetailID": 116039,
+      "ItemID": 7232,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 315 X 300 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 315 X 300 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03342_26_27",
+      "PoDate": "2026-10-09",
+      "PurchaseOrderQuantity": 1200,
+      "PurchaseRate": 36.85,
+      "PendingQty": 1200
+    },
+    {
+      "TransactionID": 67838,
+      "TransactionDetailID": 116043,
+      "ItemID": 5581,
+      "ItemName": "5 PLY CORRUGATED BOX 650 X 370 X 270 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 650 X 370 X 270 MM, SizeL:25.59, SizeW:14.57, SizeH:10.63",
+      "PoVoucherNo": "PO03342_26_27",
+      "PoDate": "2026-10-09",
+      "PurchaseOrderQuantity": 250,
+      "PurchaseRate": 47.38,
+      "PendingQty": 250
+    },
+    {
+      "TransactionID": 67838,
+      "TransactionDetailID": 116044,
+      "ItemID": 5528,
+      "ItemName": "5 PLY CORRUGATED BOX 450 X 450 X 140 MM",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 450 X 450 X 140 MM, SizeL:17.72, SizeW:17.72, SizeH:5.51",
+      "PoVoucherNo": "PO03342_26_27",
+      "PoDate": "2026-10-09",
+      "PurchaseOrderQuantity": 600,
+      "PurchaseRate": 38.95,
+      "PendingQty": 600
+    },
+    {
+      "TransactionID": 68022,
+      "TransactionDetailID": 116405,
+      "ItemID": 10494,
+      "ItemName": "5 PLY CORRUGATED BOX 500 X 240 X 270 MM, 16.14 x, 12.01 x, 12.2, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 500 X 240 X 270 MM, SizeL:16.14, SizeW:12.01, SizeH:12.2, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03362_26_27",
+      "PoDate": "2026-10-10",
+      "PurchaseOrderQuantity": 860,
+      "PurchaseRate": 28.25,
+      "PendingQty": 860
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117485,
+      "ItemID": 9558,
+      "ItemName": "5 PLY CORRUGATED BOX 485 X 450 X 180 MM, 0 x, 0 x, 0, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 485 X 450 X 180 MM, SizeL:0, SizeW:0, SizeH:0, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 410,
+      "PurchaseRate": 42.96,
+      "PendingQty": 410
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117486,
+      "ItemID": 6984,
+      "ItemName": "5 PLY CORRUGATED BOX 600 X 200 X 140 MM, 23.62 x, 7.87 x, 5.51, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 600 X 200 X 140 MM, SizeL:23.62, SizeW:7.87, SizeH:5.51, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 430,
+      "PurchaseRate": 21.01,
+      "PendingQty": 430
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117487,
+      "ItemID": 8763,
+      "ItemName": "5 PLY CORRUGATED BOX 515 X 325 X 255 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 515 X 325 X 255 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 50,
+      "PurchaseRate": 35.9,
+      "PendingQty": 50
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117488,
+      "ItemID": 8553,
+      "ItemName": "5 PLY CORRUGATED BOX 590 X 490 X 370 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 590 X 490 X 370 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 110,
+      "PurchaseRate": 66.24,
+      "PendingQty": 110
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117489,
+      "ItemID": 8554,
+      "ItemName": "5 PLY CORRUGATED BOX 497 X 450 X 365 MM, 21.65 x, 10.23 x, 9.45, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 497 X 450 X 365 MM, SizeL:21.65, SizeW:10.23, SizeH:9.45, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 220,
+      "PurchaseRate": 55.49,
+      "PendingQty": 220
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117490,
+      "ItemID": 10514,
+      "ItemName": "5 PLY CORRUGATED BOX 530 X 345 X 108 MM, 16.93 x, 11.81 x, 8.66, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 530 X 345 X 108 MM, SizeL:16.93, SizeW:11.81, SizeH:8.66, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 300,
+      "PurchaseRate": 29.67,
+      "PendingQty": 300
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117491,
+      "ItemID": 10515,
+      "ItemName": "5 PLY CORRUGATED BOX 530 X 308 X 108 MM, 16.93 x, 11.81 x, 8.66, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 530 X 308 X 108 MM, SizeL:16.93, SizeW:11.81, SizeH:8.66, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 100,
+      "PurchaseRate": 26.34,
+      "PendingQty": 100
+    },
+    {
+      "TransactionID": 68575,
+      "TransactionDetailID": 117493,
+      "ItemID": 9560,
+      "ItemName": "5 PLY CORRUGATED BOX 485 X 450 X 170 MM, 11.22 x, 8.46 x, 6.5, 5 Ply",
+      "ItemDescription": "Quality:5 PLY CORRUGATED BOX 485 X 450 X 170 MM, SizeL:11.22, SizeW:8.46, SizeH:6.5, NoOfPly:5, ManufecturerItemCode:",
+      "PoVoucherNo": "PO03420_26_27",
+      "PoDate": "2026-10-13",
+      "PurchaseOrderQuantity": 410,
+      "PurchaseRate": 42.32,
+      "PendingQty": 410
+    }
+  ],
+  "headerPoNumbers": [
+    "2420, 3232, 3342",
+    "3081"
+  ],
+  "aiLines": [
+    {
+      "lineNo": 1,
+      "description": "5 PLY C/B BOX (450X340X230)MM",
+      "qty": 818,
+      "rate": 33.32,
+      "poRef": null
+    },
+    {
+      "lineNo": 2,
+      "description": "5 PLY C/B BOX (450X300X210)MM",
+      "qty": 810,
+      "rate": 27.05,
+      "poRef": null
+    },
+    {
+      "lineNo": 3,
+      "description": "5 PLY C/B BOX (505X305X260)MM",
+      "qty": 118,
+      "rate": 30.37,
+      "poRef": null
+    },
+    {
+      "lineNo": 4,
+      "description": "5 PLY C/B BOX (505X340X240)MM",
+      "qty": 90,
+      "rate": 37.93,
+      "poRef": null
+    },
+    {
+      "lineNo": 5,
+      "description": "5 PLY C/B BOX (505X340X240)MM",
+      "qty": 413,
+      "rate": 37.93,
+      "poRef": null
+    }
+  ],
+  "printedLines": [
+    {
+      "lineNo": 1,
+      "description": "5 PLY C/B BOX (450X340X230)MM",
+      "qty": 818,
+      "rate": 33.32,
+      "poRef": "3232"
+    },
+    {
+      "lineNo": 2,
+      "description": "5 PLY C/B BOX (450X300X180)MM",
+      "qty": 810,
+      "rate": 27.05,
+      "poRef": "3342"
+    },
+    {
+      "lineNo": 3,
+      "description": "5PLY C/B BOX (550X305X206)MM",
+      "qty": 118,
+      "rate": 30.37,
+      "poRef": "2420"
+    },
+    {
+      "lineNo": 4,
+      "description": "5PLY C/B BOX (550X340X240)MM",
+      "qty": 90,
+      "rate": 37.93,
+      "poRef": "3081"
+    },
+    {
+      "lineNo": 5,
+      "description": "5PLY C/B BOX (550X340X240)MM",
+      "qty": 413,
+      "rate": 37.93,
+      "poRef": "3232"
+    }
+  ],
+  "booked": [
+    {
+      "lineNo": 1,
+      "itemId": 7296,
+      "poVoucherNo": "PO03232_26_27",
+      "transactionDetailId": 114355
+    },
+    {
+      "lineNo": 2,
+      "itemId": 5518,
+      "poVoucherNo": "PO03342_26_27",
+      "transactionDetailId": 116036
+    },
+    {
+      "lineNo": 3,
+      "itemId": 9652,
+      "poVoucherNo": "PO02420_26_27",
+      "transactionDetailId": 99683
+    },
+    {
+      "lineNo": 4,
+      "itemId": 5560,
+      "poVoucherNo": "PO03081_26_27",
+      "transactionDetailId": 111650
+    },
+    {
+      "lineNo": 5,
+      "itemId": 5560,
+      "poVoucherNo": "PO03232_26_27",
+      "transactionDetailId": 114356
+    }
+  ]
+}

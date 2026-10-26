@@ -175,6 +175,49 @@ export async function warehouses(site) {
 }
 
 /** ERP users — the ID space `UserID` and the approval columns live in. */
+/**
+ * One ERP user by name, for sign-in.
+ *
+ * Matches `UserName` or `LoginUserName`, case- and space-insensitively, the
+ * same way the Stock Issue Tool does — the two tools must agree on who you
+ * are or the same person gets two different `CreatedBy` values.
+ *
+ * `UserMaster.EmployeeId` is null on every active user (188/188 in Kolkata,
+ * October 2026), so it cannot supply the employee ledger for `ReceivedBy`.
+ * That stays a choice the user makes. `EmailID` is set on only 66 of them, so
+ * it cannot key an account either; `UserName` is distinct across all 188 and
+ * is what the portal keys on.
+ */
+export async function erpUserByName(site, username) {
+  assertSite(site);
+  const name = String(username || '').trim();
+  if (!name) return null;
+
+  const rows = await query(site, `
+    SELECT UserID, UserName, LoginUserName, Designation, IsAdmin, ProductionUnitID
+    FROM UserMaster
+    WHERE CompanyID = @companyId
+      AND ISNULL(IsDeletedUser,0) = 0
+      AND ISNULL(IsBlocked,0) = 0
+      AND (UPPER(LTRIM(RTRIM(UserName))) = UPPER(@username)
+        OR UPPER(LTRIM(RTRIM(ISNULL(LoginUserName,'')))) = UPPER(@username))
+  `, { companyId: COMPANY_ID, username: name });
+
+  if (!rows.length) return null;
+  if (rows.length === 1) return rows[0];
+
+  // An exact UserName match beats a LoginUserName match; a genuine tie is a
+  // master-data problem and must not be resolved by picking one at random.
+  const exact = rows.filter(
+    (r) => String(r.UserName ?? '').trim().toUpperCase() === name.toUpperCase(),
+  );
+  if (exact.length === 1) return exact[0];
+
+  const err = new Error(`More than one ERP user is called "${name}". Ask an admin to make the names unique.`);
+  err.status = 409;
+  throw err;
+}
+
 export async function erpUsers(site) {
   assertSite(site);
   return query(site, `
