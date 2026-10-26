@@ -15,7 +15,7 @@
  * PO-line matching is `PurchaseTransactionID + ItemID`.
  */
 
-import { query, sql, assertSite } from '../db/mssql.js';
+import { query, sql, assertSite, idParam, idSet } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, TOLERANCES } from '../config/constants.js';
 
 const ITD_FILTER = `
@@ -41,17 +41,16 @@ export async function openPoLines(site, {
   months = 12,
 } = {}) {
   assertSite(site);
-  const ledgerFilter = ledgerIds?.length
-    ? `AND ITM.LedgerID IN (${ledgerIds.map(Number).filter(Number.isFinite).join(',')})`
-    : '';
-  const itemFilter = itemIds?.length
-    ? `AND ITD.ItemID IN (${itemIds.map(Number).filter(Number.isFinite).join(',')})`
-    : '';
+  // The ids go in as parameters, not pasted into the text: pasted, every new
+  // PO or supplier was a new query to SQL Server and was planned afresh -
+  // 0.65-0.8 s on the first call for a PO against 0.15-0.2 s after (Oct 2026).
+  const ledgerFilter = ledgerIds?.length ? `AND ITM.LedgerID IN ${idSet('ledgerIds')}` : '';
+  const itemFilter = itemIds?.length ? `AND ITD.ItemID IN ${idSet('itemIds')}` : '';
   // A specific PO is fetched by id rather than by date window — an old PO is
   // still a real PO, and the caller already knows which one it wants.
   const txFilter = transactionIds?.length
-    ? `AND ITD.TransactionID IN (${transactionIds.map(Number).filter(Number.isFinite).join(',')})`
-    : `AND ITM.VoucherDate >= DATEADD(month, -${Number(months) || 12}, GETDATE())`;
+    ? `AND ITD.TransactionID IN ${idSet('transactionIds')}`
+    : 'AND ITM.VoucherDate >= DATEADD(month, -@months, GETDATE())';
   const completedFilter = includeCompleted ? '' : 'AND ISNULL(ITD.IsCompleted,0) = 0';
 
   return query(site, `
@@ -91,6 +90,10 @@ export async function openPoLines(site, {
         ON ITM.TransactionID = ITD.TransactionID AND ITM.CompanyID = ITD.CompanyID
       WHERE ITD.CompanyID = @companyId
         AND ITM.VoucherID = @grn
+        -- Only receipts against the POs above: the result is joined on this
+        -- anyway, and without it every GRN line in the company was summed
+        -- on each call.
+        AND ITD.PurchaseTransactionID IN (SELECT TransactionID FROM Po)
         ${ITD_FILTER}
         ${ITM_FILTER}
       GROUP BY ITD.PurchaseTransactionID, ITD.ItemID
@@ -120,7 +123,11 @@ export async function openPoLines(site, {
     LEFT JOIN ItemGroupMaster IGM ON IGM.ItemGroupID = IM.ItemGroupID AND IGM.CompanyID = @companyId
     LEFT JOIN LedgerMaster CL ON CL.LedgerID = Po.ClientID AND CL.CompanyID = @companyId
     ORDER BY Po.PoDate DESC, Po.PoVoucherNo, Po.TransactionDetailID
-  `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, grn: VOUCHER.GRN }, { long: true });
+  `, {
+    companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, grn: VOUCHER.GRN,
+    months: { type: sql.Int, value: Number(months) || 12 },
+    ledgerIds: idParam(ledgerIds), itemIds: idParam(itemIds), transactionIds: idParam(transactionIds),
+  }, { long: true });
 }
 
 /**
@@ -348,9 +355,7 @@ export async function deliveryPerformance(site, { ledgerIds = null, months = 12 
 export async function findPostedInvoice(site, { invoiceNo, ledgerIds = [] }) {
   assertSite(site);
   if (!invoiceNo) return null;
-  const ledgerFilter = ledgerIds?.length
-    ? `AND ITM.LedgerID IN (${ledgerIds.map(Number).filter(Number.isFinite).join(',')})`
-    : '';
+  const ledgerFilter = ledgerIds?.length ? `AND ITM.LedgerID IN ${idSet('ledgerIds')}` : '';
 
   const rows = await query(site, `
     SELECT TOP 5 ITM.TransactionID, ITM.VoucherNo, ITM.VoucherDate,
@@ -361,7 +366,7 @@ export async function findPostedInvoice(site, { invoiceNo, ledgerIds = [] }) {
       AND ITM.DeliveryNoteNo = @invoiceNo
       ${ledgerFilter}
       ${ITM_FILTER}
-  `, { companyId: COMPANY_ID, grn: VOUCHER.GRN, invoiceNo: String(invoiceNo) });
+  `, { companyId: COMPANY_ID, grn: VOUCHER.GRN, invoiceNo: String(invoiceNo), ledgerIds: idParam(ledgerIds) });
 
   return rows[0] || null;
 }

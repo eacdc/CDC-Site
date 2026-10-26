@@ -60,7 +60,7 @@ export async function receivingDefaults(site, { ledgerIds = [], erpUserId = null
     ORDER BY ITM.VoucherDate DESC, ITM.TransactionID DESC
   `, params);
 
-  const [byUser, bySupplier, whSupplier, whUser, purchase, freight] = await Promise.all([
+  const [byUser, bySupplier, whSupplier, whUser, purchase, freight, recent] = await Promise.all([
     user !== null ? receivedBy(`AND ITM.CreatedBy = ${user}`) : Promise.resolve([]),
     supplier ? receivedBy(`AND ITM.LedgerID IN (${supplier})`) : Promise.resolve([]),
     supplier ? warehouse(`AND ITM.LedgerID IN (${supplier})`) : Promise.resolve([]),
@@ -83,6 +83,21 @@ export async function receivingDefaults(site, { ledgerIds = [], erpUserId = null
         AND ISNULL(PIM.IsDeletedTransaction,0) = 0 AND ISNULL(T.IsDeletedTransaction,0) = 0
       ORDER BY PIM.VoucherDate DESC, PIM.TransactionID DESC
     `, { companyId: COMPANY_ID }) : Promise.resolve([]),
+    // How many of the supplier's last 10 purchase invoices charged freight.
+    supplier ? query(site, `
+      SELECT COUNT(*) AS Bills, SUM(F.Has) AS WithFreight
+      FROM (
+        SELECT TOP 10 PIM.TransactionID, PIM.CompanyID FROM ItemPurchaseInvoiceMain PIM
+        WHERE PIM.CompanyID = @companyId AND PIM.LedgerID IN (${supplier}) AND ISNULL(PIM.IsDeletedTransaction,0) = 0
+        ORDER BY PIM.VoucherDate DESC, PIM.TransactionID DESC
+      ) P
+      CROSS APPLY (SELECT CASE WHEN EXISTS (
+        SELECT 1 FROM ItemPurchaseInvoiceTaxes T
+        JOIN LedgerMaster LM ON LM.LedgerID = T.LedgerID AND LM.CompanyID = T.CompanyID
+        WHERE T.TransactionID = P.TransactionID AND T.CompanyID = P.CompanyID
+          AND LM.LedgerName LIKE '%freight%' AND T.Amount > 0 AND ISNULL(T.IsDeletedTransaction,0) = 0
+      ) THEN 1 ELSE 0 END AS Has) F
+    `, { companyId: COMPANY_ID }) : Promise.resolve([]),
   ]);
 
   const ledger = (row, source) => (row ? { ledgerId: Number(row.LedgerID), name: row.LedgerName, source } : null);
@@ -97,5 +112,10 @@ export async function receivingDefaults(site, { ledgerIds = [], erpUserId = null
     warehouse: wh(whSupplier[0], "this supplier's last GRN") || wh(whUser[0], 'your last GRN'),
     purchaseLedger: ledger(purchase[0], "this supplier's last purchase invoice"),
     freightLedger: ledger(freight[0], "this supplier's last purchase invoice with freight"),
+    // Freight on at least half of the last 10 bills: the screen starts with a
+    // freight row waiting for its amount. Krishna Vanijya charged it on 273 of
+    // 354 bills from July to October 2026.
+    freightUsual: Number(recent[0]?.Bills) > 0 && Number(recent[0]?.WithFreight) * 2 >= Number(recent[0]?.Bills),
+    recentFreight: recent[0] ? { bills: Number(recent[0].Bills), withFreight: Number(recent[0].WithFreight) || 0 } : null,
   };
 }

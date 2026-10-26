@@ -14,7 +14,7 @@
  *    from transactions and so does this application.
  */
 
-import { query, sql, assertSite } from '../db/mssql.js';
+import { query, sql, assertSite, idParam, idSet } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, TOLERANCES, ITEM_LEVEL_GROUPS } from '../config/constants.js';
 
 /**
@@ -56,8 +56,8 @@ export async function getItems(site, itemIds = []) {
       ON SG.ItemSubGroupID = IM.ItemSubGroupID AND SG.CompanyID = IM.CompanyID
     WHERE IM.CompanyID = @companyId
       AND ISNULL(IM.IsDeleted,0) = 0
-      AND IM.ItemID IN (${ids.join(',')})
-  `, { companyId: COMPANY_ID });
+      AND IM.ItemID IN ${idSet('itemIds')}
+  `, { companyId: COMPANY_ID, itemIds: idParam(ids) });
 
   return new Map(rows.map((r) => [r.ItemID, r]));
 }
@@ -409,9 +409,9 @@ export async function hsnForItems(site, itemIds = []) {
     JOIN ProductHSNMaster H
       ON H.ProductHSNID = IM.ProductHSNID AND H.CompanyID = IM.CompanyID
     WHERE IM.CompanyID = @companyId
-      AND IM.ItemID IN (${ids.join(',')})
+      AND IM.ItemID IN ${idSet('itemIds')}
       AND ISNULL(H.IsDeletedTransaction,0) = 0
-  `, { companyId: COMPANY_ID });
+  `, { companyId: COMPANY_ID, itemIds: idParam(ids) });
 
   return new Map(rows.map((r) => [r.ItemID, r]));
 }

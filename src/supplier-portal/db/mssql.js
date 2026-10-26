@@ -52,6 +52,24 @@ export function databaseFor(site) {
   return name;
 }
 
+// ── Id lists as parameters ─────────────────────────────────────────────────
+
+/**
+ * A list of ids as ONE parameter, so the query text is the same whatever the
+ * ids are and SQL Server reuses its plan. Pasting ids into the text made each
+ * new PO or supplier a new query, planned from scratch (0.65-0.8 s on the
+ * first call against 0.15-0.2 s after). Use with `idSet(name)` in the SQL.
+ */
+export function idParam(ids) {
+  const list = [...new Set((ids || []).map(Number).filter(Number.isFinite))];
+  return { type: sql.NVarChar(sql.MAX), value: list.join(',') };
+}
+
+/** `(SELECT ... FROM STRING_SPLIT(@name, ','))` - the SQL side of idParam. */
+export function idSet(name) {
+  return `(SELECT CAST(value AS int) FROM STRING_SPLIT(@${name}, ','))`;
+}
+
 // ── Write pools ─────────────────────────────────────────────────────────────
 // Cached per site. Kept deliberately small: the only writer is the receiving
 // module, which posts one document set at a time.

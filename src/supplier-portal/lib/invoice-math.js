@@ -80,6 +80,57 @@ export function apportionFreight(lines = [], totalFreight = 0) {
   });
 }
 
+/**
+ * The GST percentages as the ERP stores them on a purchase invoice line: all
+ * three filled from the HSN rate (18 → CGST 9, SGST 9, IGST 18) whichever tax
+ * applies - the amounts say which one did. 3,712 of the 5,620 taxed lines
+ * from July to October 2026 look like this; the rest store only the applicable
+ * pair. The tax itself is still worked out from the line's own split, never
+ * from these.
+ */
+export function storedGstPercentages(line) {
+  const gst = Number(line.gstPercentage);
+  if (line.gstPercentage === null || line.gstPercentage === undefined || !Number.isFinite(gst)) {
+    return {
+      cgst: Number(line.cgstPercentage) || 0,
+      sgst: Number(line.sgstPercentage) || 0,
+      igst: Number(line.igstPercentage) || 0,
+    };
+  }
+  return { cgst: gst / 2, sgst: gst / 2, igst: gst };
+}
+
+/**
+ * The rate as the ERP stores it: to 2 decimals. A supplier's 17.925 a sheet
+ * is saved as 17.93 while the line amount stays 95 × 17.925 = 1,702.88 - all
+ * 80 lines with a 3-decimal rate from July to October 2026 are like this.
+ */
+export function storedRate(rate) {
+  const r = Number(rate);
+  return Number.isFinite(r) ? round(r, 2) : rate;
+}
+
+/**
+ * Paper bought by the kilo and stocked in sheets. Only on these does the
+ * purchase invoice carry its own quantity: the kg on the supplier's bill,
+ * while the GRN keeps the kg its sheets work out to. 1,499 of 1,548 such PI
+ * lines from July to October 2026 differ from their GRN's kg, the sheets
+ * agree; on every other kind of line the PI quantity is the GRN's.
+ */
+export function billsByKgStocksSheets(line) {
+  const pu = String(line?.purchaseUnit ?? '').trim().toUpperCase();
+  const su = String(line?.stockUnit ?? '').trim().toUpperCase();
+  return pu === 'KG' && (su === 'SHEET' || su === 'SHEETS');
+}
+
+/** The quantity the purchase invoice bills: the billed kg where there is one. */
+export function piQty(line) {
+  const billed = Number(line?.billedKg);
+  return line?.billedKg !== null && line?.billedKg !== undefined && Number.isFinite(billed) && billsByKgStocksSheets(line)
+    ? billed
+    : Number(line?.qty);
+}
+
 /** Header totals from apportioned lines. */
 export function invoiceTotals(lines = [], { freight = 0, roundOff = 0 } = {}) {
   const sum = (key) => round(lines.reduce((s, l) => s + (Number(l[key]) || 0), 0), 2);

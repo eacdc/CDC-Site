@@ -109,14 +109,17 @@ export async function employeeLedgers(site) {
 export async function chargeLedgers(site) {
   assertSite(site);
   const rows = await query(site, `
-    SELECT LedgerID, LedgerName, LedgerCode, TaxPercentage, GSTLedgerType, IsTaxType
+    SELECT LedgerID, LedgerName, LedgerCode, TaxPercentage, GSTLedgerType, IsTaxType,
+           CAST(ISNULL(ISLedgerActive,0) AS bit) AS IsActive
     FROM LedgerMaster
     WHERE CompanyID = @companyId
       AND LedgerCodePrefix = 'T'
       AND ISNULL(IsDeleted,0) = 0
       AND ISNULL(IsDeletedTransaction,0) = 0
-      AND ISLedgerActive = 1
-    ORDER BY LedgerName
+    -- The ERP's own Additional Charges list: every 'T' ledger, in LedgerID
+    -- order, inactive ones too - "Freight Charge" (10) is marked inactive yet
+    -- the ERP still offers it and it was used on 6 bills from July to Sep 2026.
+    ORDER BY LedgerID
   `, { companyId: COMPANY_ID });
 
   return rows.map((r) => ({
@@ -133,7 +136,7 @@ function classifyChargeLedger(name) {
   if (/ROUND\s*OFF/.test(n)) return 'ROUND_OFF';
   if (/FREIGHT/.test(n)) return 'FREIGHT';
   if (/PACKING/.test(n)) return 'PACKING';
-  if (/COMMISSION/.test(n)) return 'COMMISSION';
+  if (/COMMISS?ION/.test(n)) return 'COMMISSION';   // the ERP spells it "Commision"
   return 'OTHER';
 }
 

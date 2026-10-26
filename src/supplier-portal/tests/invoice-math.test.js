@@ -10,7 +10,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   apportionFreight, invoiceTotals, sheetWeightKg, reconcileSheetKg,
-  receiptSanity, expectedTaxType, stateCodeFromGstin,
+  receiptSanity, expectedTaxType, stateCodeFromGstin, storedGstPercentages, storedRate,
+  billsByKgStocksSheets, piQty,
 } from '../lib/invoice-math.js';
 
 test('freight apportions pro-rata on gross, matching the reference invoice', () => {
@@ -146,4 +147,52 @@ test('tax type follows the ship-to state, not the billing state', () => {
 test('the state code is the first two digits of a GSTIN', () => {
   assert.equal(stateCodeFromGstin('19AABCC2946B1ZZ'), '19');
   assert.equal(stateCodeFromGstin('not-a-gstin'), null);
+});
+
+// ── What the ERP stores, verified on PI04651_26_27 and PI04661_26_27 ───────
+
+test('a 3-decimal rate is stored to 2 decimals while the amount keeps it', () => {
+  // PI04651_26_27 line 1: 95 sheets at 17.925 -> ReceiptRate 17.93, Gross 1,702.88.
+  const [line] = apportionFreight([{ grossAmount: Math.round(95 * 17.925 * 100) / 100, cgstPercentage: 9, sgstPercentage: 9 }], 0);
+  assert.equal(line.grossAmount, 1702.88);
+  assert.equal(storedRate(17.925), 17.93);
+  assert.equal(storedRate(970), 970);
+});
+
+test('all three GST percentages are stored from the HSN rate, whichever tax applies', () => {
+  // PI04661_26_27 (IGST supplier) stores 9 / 9 / 18; so does an in-state one.
+  assert.deepEqual(storedGstPercentages({ gstPercentage: 18, cgstPercentage: 0, sgstPercentage: 0, igstPercentage: 18 }), { cgst: 9, sgst: 9, igst: 18 });
+  assert.deepEqual(storedGstPercentages({ gstPercentage: 5, cgstPercentage: 2.5, sgstPercentage: 2.5, igstPercentage: 0 }), { cgst: 2.5, sgst: 2.5, igst: 5 });
+  assert.deepEqual(storedGstPercentages({ gstPercentage: 0 }), { cgst: 0, sgst: 0, igst: 0 });
+  // No HSN rate known: the line's own figures.
+  assert.deepEqual(storedGstPercentages({ gstPercentage: null, cgstPercentage: 9, sgstPercentage: 9 }), { cgst: 9, sgst: 9, igst: 0 });
+});
+
+test('the tax is still worked out from the applicable split only', () => {
+  const [line] = apportionFreight([{ grossAmount: 1000, gstPercentage: 18, cgstPercentage: 0, sgstPercentage: 0, igstPercentage: 18 }], 0);
+  assert.equal(line.igstAmount, 180);
+  assert.equal(line.cgstAmount, 0);
+  assert.equal(line.netAmount, 1180);
+});
+
+// ── Billed kg on paper bought by the kg, stocked in sheets (PI04670_26_27) ──
+
+test('the purchase invoice bills the billed kg; the GRN keeps its own', () => {
+  // KV/26-27/19351: 174,600 sheets work out to 28,963.783 kg; the bill says 28,983.6.
+  const line = { purchaseUnit: 'Kg', stockUnit: 'Sheet', qty: 28963.783, stockQty: 174600, billedKg: 28983.6, rate: 59.5 };
+  assert.equal(billsByKgStocksSheets(line), true);
+  assert.equal(piQty(line), 28983.6);
+  const [priced] = apportionFreight([{ ...line, grossAmount: Math.round(piQty(line) * 59.5 * 100) / 100, cgstPercentage: 9, sgstPercentage: 9 }], 4348);
+  // The ERP's own figures on PI04670_26_27.
+  assert.equal(priced.grossAmount, 1724524.2);
+  assert.equal(priced.cgstAmount, 155598.5);
+  const totals = invoiceTotals([priced], { freight: 4348, roundOff: -0.2 });
+  assert.equal(totals.netAmount, 2040069);
+});
+
+test('only paper bought by the kg and stocked in sheets bills its own quantity', () => {
+  assert.equal(piQty({ purchaseUnit: 'Kg', stockUnit: 'Kg', qty: 10, billedKg: 12 }), 10);
+  assert.equal(piQty({ purchaseUnit: 'PCS', stockUnit: 'NOS', qty: 136, billedKg: 140 }), 136);
+  assert.equal(piQty({ purchaseUnit: 'KG ', stockUnit: 'SHEETS', qty: 100, billedKg: null }), 100);
+  assert.equal(piQty({ purchaseUnit: 'KG', stockUnit: 'Sheet', qty: 100, billedKg: 101 }), 101);
 });

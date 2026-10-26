@@ -22,7 +22,7 @@
 import { withTransaction, txQuery, sql, assertSite, hasWriteLogin, db } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX, TOLERANCES, STOCK_REFRESH_PROC } from '../config/constants.js';
 import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
-import { apportionFreight, invoiceTotals, round } from '../lib/invoice-math.js';
+import { apportionFreight, invoiceTotals, round, storedGstPercentages, storedRate, piQty } from '../lib/invoice-math.js';
 
 /** Posting is off unless explicitly enabled. */
 export function erpWritesEnabled() {
@@ -293,7 +293,7 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
      * costing falls back to a fixed ladder — ₹80/kg for Gloss Art instead of
      * the ₹76 or ₹79 actually paid. Populating it is a deliberate improvement.
      */
-    landedRate: { type: sql.Float, value: line.landedRate ?? line.rate },
+    landedRate: { type: sql.Float, value: storedRate(line.landedRate ?? line.rate) },
     warehouseId: { type: sql.Int, value: line.warehouseId ?? context.warehouseId },
     poTransactionId: { type: sql.Int, value: line.poTransactionId },
     productHsnId: { type: sql.Int, value: line.productHsnId ?? null },
@@ -379,8 +379,8 @@ async function writePurchaseInvoice({
     voucherDate: { type: sql.DateTime, value: voucherDate },
     ledgerId: { type: sql.Int, value: context.supplierLedgerId },
     purchaseLedgerId: { type: sql.Int, value: context.purchaseLedgerId },
-    // TotalQuantity is in the purchase unit (usually KG).
-    totalQuantity: { type: sql.Float, value: sumBy(lines, 'qty') },
+    // TotalQuantity is in the purchase unit (usually KG): the billed kg.
+    totalQuantity: { type: sql.Float, value: round(lines.reduce((s, l) => s + (piQty(l) || 0), 0), 3) },
     totalBasic: { type: sql.Float, value: totals.totalBasicAmount },
     cgst: { type: sql.Float, value: totals.totalCGSTTaxAmount },
     sgst: { type: sql.Float, value: totals.totalSGSTTaxAmount },
@@ -407,6 +407,7 @@ async function writePurchaseInvoice({
   if (!transactionId) throw new Error('Purchase invoice header insert returned no TransactionID.');
 
   for (const [index, line] of lines.entries()) {
+    const pcts = storedGstPercentages(line);
     await txQuery(tx, `
       INSERT INTO ItemPurchaseInvoiceDetail (
         TransactionID, ParentTransactionID, PurchaseTransactionID, TransID,
@@ -444,22 +445,25 @@ async function writePurchaseInvoice({
       itemGroupId: { type: sql.Int, value: line.itemGroupId },
       productHsnId: { type: sql.Int, value: line.productHsnId ?? null },
       poQty: { type: sql.Float, value: line.poQty ?? line.qty },
-      qty: { type: sql.Float, value: line.qty },
+      // The billed kg for paper bought by the kilo; the GRN keeps its own.
+      qty: { type: sql.Float, value: piQty(line) },
       purchaseUnit: line.purchaseUnit ?? null,
       stockQty: { type: sql.Float, value: line.stockQty ?? line.qty },
       stockUnit: line.stockUnit ?? null,
-      rate: { type: sql.Float, value: line.rate },
+      // To 2 decimals as the ERP stores it; the amounts keep the exact rate.
+      rate: { type: sql.Float, value: storedRate(line.rate) },
       grossAmount: { type: sql.Float, value: line.grossAmount },
       taxableAmount: { type: sql.Float, value: line.taxableAmount },
       gstPct: { type: sql.Float, value: line.gstPercentage ?? 0 },
-      cgstPct: { type: sql.Float, value: line.cgstPercentage ?? 0 },
-      sgstPct: { type: sql.Float, value: line.sgstPercentage ?? 0 },
-      igstPct: { type: sql.Float, value: line.igstPercentage ?? 0 },
+      cgstPct: { type: sql.Float, value: pcts.cgst },
+      sgstPct: { type: sql.Float, value: pcts.sgst },
+      igstPct: { type: sql.Float, value: pcts.igst },
       cgstAmount: { type: sql.Float, value: line.cgstAmount ?? 0 },
       sgstAmount: { type: sql.Float, value: line.sgstAmount ?? 0 },
       igstAmount: { type: sql.Float, value: line.igstAmount ?? 0 },
-      landedRate: { type: sql.Float, value: line.landedRate ?? line.rate },
-      landedAmount: { type: sql.Float, value: round((line.landedRate ?? line.rate) * line.qty, 2) },
+      // LandedAmount is the line amount on every ERP line, not rate x qty.
+      landedRate: { type: sql.Float, value: storedRate(line.landedRate ?? line.rate) },
+      landedAmount: { type: sql.Float, value: line.grossAmount },
       netAmount: { type: sql.Float, value: line.netAmount },
       wtPerPacking: { type: sql.Float, value: line.wtPerPacking ?? null },
       // The ERP's own lines carry the item's name here (5,608 of 5,608).
@@ -655,7 +659,7 @@ export async function repairItemStock(site, itemId) {
 function priceLines({ header, lines }) {
   const withGross = lines.map((line) => ({
     ...line,
-    grossAmount: num(line.amount) ?? round(num(line.qty) * num(line.rate), 2),
+    grossAmount: num(line.amount) ?? round(piQty(line) * num(line.rate), 2),
   }));
   return apportionFreight(withGross, num(header.freight) || 0);
 }
@@ -712,7 +716,7 @@ function previewGrn({ header, lines, context, voucherDate, suffix }) {
       challanWeight: l.qty,
       grsRate: l.rate,
       purchaseRate: 0,
-      landedRate: l.landedRate ?? l.rate,
+      landedRate: storedRate(l.landedRate ?? l.rate),
       purchaseTransactionId: l.poTransactionId,
       batchNo: `<grnId>_${l.poVoucherNo}_${l.itemId}_${i + 1}.00`,
       warehouseId: l.warehouseId ?? context.warehouseId ?? null,
@@ -744,8 +748,8 @@ function previewPi({ header, lines, context, voucherDate, suffix }) {
     lines: lines.map((l, i) => ({
       transId: i + 1,
       itemId: l.itemId,
-      receiptQuantity: l.qty,
-      receiptRate: l.rate,
+      receiptQuantity: piQty(l),
+      receiptRate: storedRate(l.rate),
       grossAmount: l.grossAmount,
       freightShare: l.freightShare,
       taxableAmount: l.taxableAmount,

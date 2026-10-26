@@ -35,6 +35,7 @@ import {
 } from '../services/receiving-match.js';
 import { receivingDefaults } from '../services/receiving-defaults.js';
 import { stockQtyFor, stockQtyFromPurchase, purchaseQtyFromStock } from '../services/receipt-units.js';
+import { billsByKgStocksSheets, piQty } from '../lib/invoice-math.js';
 
 const router = Router();
 
@@ -357,13 +358,27 @@ function gstFor(h, taxSplit) {
  * GSTIN's state against the plant's. Unknown stays unknown (null): a wrong
  * split is worse than an obviously missing one.
  */
+/**
+ * One supplier's GSTIN, kept for 10 minutes. It used to read every supplier
+ * ledger of the site (0.24 s) on each line added, to find one GSTIN.
+ */
+const gstinCache = new Map();
+async function supplierGstin(site, ledgerId) {
+  const key = `${site}:${Number(ledgerId)}`;
+  const hit = gstinCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.gstin;
+  const [row] = await query(site, `
+    SELECT GSTNo FROM LedgerMaster WHERE CompanyID = @companyId AND LedgerID = @ledgerId
+  `, { companyId: COMPANY_ID, ledgerId: Number(ledgerId) });
+  gstinCache.set(key, { gstin: row?.GSTNo ?? null, at: Date.now() });
+  return row?.GSTNo ?? null;
+}
+
 async function taxSplitFor(set) {
   if (set.extractedHeader?.taxType) return set.extractedHeader.taxType;
   let gstin = set.extractedHeader?.supplierGstin;
-  if (!gstin) {
-    const ledger = (await supplierLedgers(set.site))
-      .find((l) => Number(l.LedgerID) === Number(set.context?.supplierLedgerId));
-    gstin = ledger?.GSTNo;
+  if (!gstin && set.context?.supplierLedgerId) {
+    gstin = await supplierGstin(set.site, set.context.supplierLedgerId);
   }
   const state = String(gstin || '').trim().slice(0, 2);
   if (!/^\d{2}$/.test(state)) return null;
@@ -389,6 +404,39 @@ async function matchingInputs(set, { includeClosed }) {
     getItems(site, itemIds), hsnForItems(site, itemIds), taxSplitFor(set),
   ]);
   return { ledgerIds, poLines, receipts, alreadyPosted, items, hsn, taxSplit };
+}
+
+/**
+ * The same, for one PO the person clicked: its lines only, still looked up
+ * among THIS supplier's ledgers. Adding or placing one PO line used to fetch
+ * every PO line the supplier has (3,005 for Krishna Vanijya, 1.2-1.9 s) to
+ * find the one. Without a PO id it falls back to the full fetch.
+ */
+async function poLineInputs(set, poTransactionId) {
+  const id = Number(poTransactionId);
+  if (!Number.isFinite(id) || id <= 0) return matchingInputs(set, { includeClosed: false });
+  const site = set.site;
+  const ledgerIds = await supplierLedgersFor(site, set.context.supplierLedgerId);
+  // Side by side: none of these waits on another.
+  const [poLines, alreadyPosted, taxSplit] = await Promise.all([
+    openPoLines(site, { ledgerIds, transactionIds: [id], includeCompleted: true }),
+    findPostedInvoice(site, { invoiceNo: set.extractedHeader?.invoiceNo, ledgerIds }),
+    taxSplitFor(set),
+  ]);
+  const itemIds = [...new Set(poLines.map((l) => l.ItemID))];
+  const [items, hsn] = await Promise.all([getItems(site, itemIds), hsnForItems(site, itemIds)]);
+  return { ledgerIds, poLines, receipts: [], alreadyPosted, items, hsn, taxSplit };
+}
+
+/**
+ * What re-running the checks after a quantity, rate or removal needs: only
+ * whether the invoice is already in the ERP (INV001). The PO match stands, so
+ * the supplier's PO lines are not fetched again.
+ */
+async function checkInputs(set) {
+  const ledgerIds = await supplierLedgersFor(set.site, set.context.supplierLedgerId);
+  const alreadyPosted = await findPostedInvoice(set.site, { invoiceNo: set.extractedHeader?.invoiceNo, ledgerIds });
+  return { alreadyPosted };
 }
 
 /** Run every check over the lines, store both, and build the reply. */
@@ -508,8 +556,9 @@ router.post('/document-sets/:id/lines/:lineNo/assign', requireRole('STORE', 'BUY
     const index = lines.findIndex((l) => Number(l.lineNo) === lineNo);
     if (index === -1) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
 
-    const inputs = await matchingInputs(set, { includeClosed: false });
     const detailId = req.body?.poTransactionDetailId;
+    const choosing = !(req.body?.unplace === true || detailId === null || detailId === undefined || detailId === '');
+    const inputs = choosing ? await poLineInputs(set, req.body?.poTransactionId) : await checkInputs(set);
     let action;
 
     if (req.body?.unplace === true) {
@@ -573,7 +622,7 @@ router.post('/document-sets/:id/lines', requireRole('STORE', 'BUYER', 'APPROVER'
     if (!set) return undefined;
 
     const detailId = Number(req.body?.poTransactionDetailId);
-    const inputs = await matchingInputs(set, { includeClosed: false });
+    const inputs = await poLineInputs(set, req.body?.poTransactionId);
     const po = inputs.poLines.find((p) => Number(p.TransactionDetailID) === detailId);
     if (!po) return res.status(404).json({ error: "That PO line is not one of this supplier's PO lines." });
 
@@ -639,8 +688,14 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
     if (body.stockQty !== undefined) edits.stockQty = num(body.stockQty);
     if (body.rate !== undefined) edits.rate = num(body.rate);
     if (body.description !== undefined) edits.description = body.description === null ? null : String(body.description);
+    // The kg on the supplier's bill, for the purchase invoice only. null clears it.
+    if (body.billedKg !== undefined) edits.billedKg = body.billedKg === null || body.billedKg === '' ? null : num(body.billedKg);
     const editing = Object.keys(edits).length > 0;
     if (editing && all) return res.status(400).json({ error: 'Quantity and rate are changed one line at a time.' });
+    if ((edits.billedKg !== undefined && edits.billedKg !== null && !(edits.billedKg > 0))
+      || (body.billedKg !== undefined && body.billedKg !== null && body.billedKg !== '' && edits.billedKg === null)) {
+      return res.status(400).json({ error: 'The billed kg must be a number above zero.' });
+    }
     if ((edits.qty !== undefined && (edits.qty === null || edits.qty < 0))
       || (edits.stockQty !== undefined && (edits.stockQty === null || edits.stockQty < 0))
       || (edits.rate !== undefined && (edits.rate === null || edits.rate < 0))) {
@@ -654,12 +709,16 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
       touched++;
       if (warehouseId !== undefined) line.warehouseId = warehouseId;
       if (editing) {
+        if (edits.billedKg !== undefined && edits.billedKg !== null && !billsByKgStocksSheets(line)) {
+          return res.status(400).json({ error: `Line ${line.lineNo} is not paper bought by the kg and stocked in sheets: its purchase invoice bills the GRN's quantity.` });
+        }
         Object.assign(line, edits);
         // Receipt Qty in either unit fills in the other, as on the ERP's screen.
         if (edits.stockQty !== undefined && edits.qty === undefined) line.qty = purchaseQtyFromStock(edits.stockQty, line);
         if (edits.qty !== undefined && edits.stockQty === undefined) line.stockQty = stockQtyFromPurchase(edits.qty, line);
-        if (edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined) {
-          const q = num(line.qty);
+        if (edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined || edits.billedKg !== undefined) {
+          // The amount is what the bill charges: billed kg x rate where there is one.
+          const q = num(piQty(line));
           const r = num(line.rate);
           line.amount = q !== null && r !== null ? Math.round(q * r * 100) / 100 : line.amount;
         }
@@ -673,8 +732,7 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
       await set.save();
       return res.json({ ok: true, warehouseId, lines: touched });
     }
-    const inputs = await matchingInputs(set, { includeClosed: false });
-    return res.json(await checkAndSave(set, lines, inputs));
+    return res.json(await checkAndSave(set, lines, await checkInputs(set)));
   } catch (err) { return next(err); }
 });
 
@@ -689,8 +747,7 @@ router.delete('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', 
     // A removed line's red flags go with it.
     clearEditedFlags(set, set.toObject(), req, kept);
 
-    const inputs = await matchingInputs(set, { includeClosed: false });
-    const reply = await checkAndSave(set, kept, inputs);
+    const reply = await checkAndSave(set, kept, await checkInputs(set));
     await AuditLog.create({
       action: 'LINE_REMOVED', entity: 'documentSet', entityId: String(set._id),
       site: set.site, actor: req.sp.actor, after: { lineNo: Number(req.params.lineNo) },
@@ -813,16 +870,26 @@ router.get('/grns/:transactionId', async (req, res, next) => {
  * Freight rows of Additional charges, each on a freight ledger of this site.
  * TaxPercentage as the ERP writes it: 18 on Inward Freight, 0 on the rest.
  */
+/**
+ * The Additional charges a person added: freight, packing & forwarding,
+ * commission, other charges. GST and round-off rows are the writer's own and
+ * cannot be added by hand. Every charge goes into the taxable value before
+ * GST, as freight does - true of all 699 "Freight Charge" rows the ERP holds.
+ * TaxPercentage is the ledger's own (18 on the Inward Freight ledgers, 0 on
+ * the rest), as the ERP writes it.
+ */
+const AUTO_CHARGE_KINDS = new Set(['CGST', 'SGST', 'IGST', 'ROUND_OFF']);
+
 function resolveFreightRows(ledgers, rows) {
-  const freight = new Map(ledgers.filter((l) => l.kind === 'FREIGHT').map((l) => [Number(l.LedgerID), l]));
+  const addable = new Map(ledgers.filter((l) => !AUTO_CHARGE_KINDS.has(l.kind)).map((l) => [Number(l.LedgerID), l]));
   const out = [];
   for (const r of rows || []) {
     if (!(Number(r.amount) > 0)) continue;
-    const ledger = freight.get(Number(r.ledgerId));
-    if (!ledger) return { error: `Ledger ${r.ledgerId} is not a freight ledger.` };
+    const ledger = addable.get(Number(r.ledgerId));
+    if (!ledger) return { error: `Ledger ${r.ledgerId} cannot be added as a charge: GST and round off are added automatically.` };
     out.push({
       ledgerId: Number(ledger.LedgerID), amount: Math.round(Number(r.amount) * 100) / 100,
-      name: ledger.LedgerName, taxPercentage: /INWARD\s+FREIGHT/i.test(ledger.LedgerName || '') ? 18 : 0,
+      name: ledger.LedgerName, taxPercentage: Number(ledger.TaxPercentage) || 0,
     });
   }
   return { rows: out };
@@ -851,6 +918,13 @@ async function grnInvoiceDraft(site, transactionId) {
   ]);
   const poByDetail = new Map(poRows.map((p) => [Number(p.TransactionDetailID), p]));
   const hsnByItem = new Map([...hsn].map(([k, v]) => [Number(k), v]));
+  // What this GRN itself received on each PO line: PendingQty already has it
+  // taken off, and the over-receipt flag wants what was pending before it.
+  const thisGrnQty = new Map();
+  for (const l of grn.lines) {
+    const k = Number(l.poTransactionDetailId);
+    thisGrnQty.set(k, (thisGrnQty.get(k) || 0) + (num(l.qty) || 0));
+  }
   const lines = grn.lines.map((l) => {
     const po = poByDetail.get(Number(l.poTransactionDetailId)) || {};
     const h = hsnByItem.get(Number(l.itemId));
@@ -867,6 +941,9 @@ async function grnInvoiceDraft(site, transactionId) {
       poDate: po.PoDate ?? null,
       poFYear: po.FYear ?? null,
       poQty: po.PurchaseOrderQuantity ?? null,
+      poTransactionDetailId: l.poTransactionDetailId ?? null,
+      poPendingQty: num(po.PendingQty) === null ? null
+        : Math.round((num(po.PendingQty) + (thisGrnQty.get(Number(l.poTransactionDetailId)) || 0)) * 1000) / 1000,
       qty: l.qty,
       stockQty: l.stockQty,
       purchaseUnit: l.purchaseUnit,
@@ -909,7 +986,8 @@ router.get('/grns/:transactionId/purchase-invoice', async (req, res, next) => {
 /**
  * Make that purchase invoice. ?dryRun=true says what would be written.
  * Body: {purchaseLedgerId, billNo, billDate, remark, roundOff,
- *        freightCharges: [{ledgerId, amount}], rates: {transactionDetailId: rate}}.
+ *        freightCharges: [{ledgerId, amount}], rates: {transactionDetailId: rate},
+ *        billedKg: {transactionDetailId: kg}}.
  * The lines are the GRN's own, read again here - never the page's copy.
  */
 router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
@@ -930,9 +1008,21 @@ router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER
     if (freight.error) return res.status(400).json({ error: freight.error });
 
     const rates = body.rates || {};
+    // {transactionDetailId: kg}: the kg on the bill, for paper bought by the kg
+    // and stocked in sheets. The GRN's own kg and sheets are not touched.
+    const billed = body.billedKg || {};
+    for (const [id, kg] of Object.entries(billed)) {
+      const line = draft.lines.find((l) => String(l.transactionDetailId) === String(id));
+      if (kg === null || kg === '') continue;
+      if (!line) return res.status(400).json({ error: `GRN line ${id} is not on this GRN.` });
+      if (!billsByKgStocksSheets(line)) return res.status(400).json({ error: `Line ${line.lineNo} is not paper bought by the kg and stocked in sheets: its purchase invoice bills the GRN's quantity.` });
+      if (!(num(kg) > 0)) return res.status(400).json({ error: `The billed kg on line ${line.lineNo} must be a number above zero.` });
+    }
     const lines = draft.lines.map((l) => {
       const rate = rates[l.transactionDetailId] !== undefined ? num(rates[l.transactionDetailId]) : l.rate;
-      return { ...l, rate, amount: rate === null ? null : Math.round(Number(l.qty) * rate * 100) / 100 };
+      const kg = billed[l.transactionDetailId];
+      const withKg = { ...l, rate, billedKg: kg === undefined || kg === null || kg === '' ? null : num(kg) };
+      return { ...withKg, amount: rate === null ? null : Math.round(piQty(withKg) * rate * 100) / 100 };
     });
     const header = {
       invoiceNo: draft.grn.header.deliveryNoteNo,

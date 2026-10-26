@@ -14,7 +14,7 @@
 
 import { check } from '../config/validations.js';
 import { CDC_IDENTITY, TOLERANCES } from '../config/constants.js';
-import { expectedTaxType, reconcileSheetKg, round } from '../lib/invoice-math.js';
+import { expectedTaxType, reconcileSheetKg, round, piQty } from '../lib/invoice-math.js';
 
 /** E-way bill thresholds (₹). */
 const EWAY_THRESHOLD = { interstate: 50000, intrastate: 100000 };
@@ -96,14 +96,16 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
     const qty = num(line.qty);
     const rate = num(line.rate);
     const amount = num(line.amount);
+    // What the amount is billed on: the billed kg where a person gave one.
+    const billedQty = num(piQty(line));
 
     // INV006 — the line's own arithmetic.
-    if (qty !== null && rate !== null && amount !== null) {
-      const expected = round(qty * rate, 2);
+    if (billedQty !== null && rate !== null && amount !== null) {
+      const expected = round(billedQty * rate, 2);
       results.push(check('INV006', Math.abs(amount - expected) <= tol, {
         lineNo: line.lineNo,
         message: Math.abs(amount - expected) > tol
-          ? `Line ${line.lineNo}: ${qty} × ₹${rate} = ₹${expected}, but the invoice shows ₹${amount}`
+          ? `Line ${line.lineNo}: ${billedQty} × ₹${rate} = ₹${expected}, but the invoice shows ₹${amount}`
           : undefined,
         actualValue: amount,
         expectedValue: expected,

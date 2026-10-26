@@ -50,6 +50,21 @@ const longQueryPools = new Map();
 
 /** How long a health check may run before the pool is treated as dead. */
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
+/**
+ * A pool checked this recently is used without checking again. The check is
+ * a round trip to the ERP server (~100 ms from Kolkata); it used to be two,
+ * before EVERY query - so a screen that ran six queries spent over a second
+ * on checks alone. One `SELECT DB_NAME()` both pings and verifies the
+ * database, at most once per this interval per pool.
+ */
+const HEALTH_CHECK_INTERVAL_MS = Number(process.env.DB_HEALTH_CHECK_INTERVAL_MS) || 30_000;
+/** When each pool last passed its check. Weak, so a closed pool is not kept alive. */
+const lastVerified = new WeakMap();
+
+function recentlyVerified(pool) {
+	const at = lastVerified.get(pool);
+	return at !== undefined && Date.now() - at < HEALTH_CHECK_INTERVAL_MS;
+}
 /** How long to wait for a close() before abandoning the pool object. */
 const POOL_CLOSE_TIMEOUT_MS = 5000;
 /** Idle time after which an unused pool is closed. Reset on every use. */
@@ -196,13 +211,10 @@ async function resolveHealthyPool(cacheKey, dbKey, dbName, requestTimeout, cache
       return recreate();
     }
 
-    try {
-      await withTimeout(
-        pool.request().query('SELECT 1'),
-        HEALTH_CHECK_TIMEOUT_MS,
-        'Health check timeout',
-      );
+    if (recentlyVerified(pool)) return pool;
 
+    try {
+      // One round trip: it pings the connection and names the database.
       const dbCheck = await withTimeout(
         pool.request().query('SELECT DB_NAME() AS currentDb'),
         HEALTH_CHECK_TIMEOUT_MS,
@@ -218,6 +230,7 @@ async function resolveHealthyPool(cacheKey, dbKey, dbName, requestTimeout, cache
       }
 
       console.log(`[DB] Reusing healthy pool for ${cacheKey}`);
+      lastVerified.set(pool, Date.now());
       return pool;
     } catch (pingErr) {
       console.warn(`[DB] Pool for ${cacheKey} failed health check, recreating`, { error: String(pingErr) });
@@ -265,17 +278,15 @@ export function getPool(database, _attempt = 0) {
 		return existingPool.then(async pool => {
 			// Check if pool appears connected
 			if (pool && pool.connected) {
-				// Actively verify with a lightweight ping AND check which database we're connected to
+				// Checked within the last HEALTH_CHECK_INTERVAL_MS: use it as it is.
+				if (recentlyVerified(pool)) {
+					armIdleTimer(dbKey, pool, pools);
+					return pool;
+				}
+				// Actively verify: one bounded query that both pings the connection
+				// and says which database it is on. (It was two - a SELECT 1, then
+				// this - before every single query.)
 				try {
-					// Both checks are bounded. Previously only the ping was, so a
-					// half-dead socket could still block here for the full 2-minute
-					// requestTimeout on the DB_NAME() call.
-					await withTimeout(
-						pool.request().query('SELECT 1'),
-						HEALTH_CHECK_TIMEOUT_MS,
-						'Health check timeout'
-					);
-
 					// CRITICAL: Verify we're connected to the CORRECT database
 					const dbCheck = await withTimeout(
 						pool.request().query('SELECT DB_NAME() AS currentDb'),
@@ -300,6 +311,7 @@ export function getPool(database, _attempt = 0) {
 					}
 
 					console.log(`[DB] Existing pool for ${dbKey} is healthy and connected to correct database`);
+					lastVerified.set(pool, Date.now());
 					armIdleTimer(dbKey, pool, pools);
 					return pool;
 				} catch (pingErr) {
