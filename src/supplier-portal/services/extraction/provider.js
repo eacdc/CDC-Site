@@ -296,6 +296,12 @@ export const ExtractedInvoiceSchema = z.object({
   roundOff: printed(),
   grandTotal: printed(),
   lines: z.array(ExtractedInvoiceLineSchema),
+  /**
+   * Fields the model could not read with certainty, as paths: "gateEntryNo",
+   * "lines.3.qty". They become red flags a person must clear before posting.
+   * Optional: a model that is sure of everything may leave it out.
+   */
+  uncertain: z.array(z.string()).nullable().optional(),
 });
 
 export const AdjudicationSchema = z.object({

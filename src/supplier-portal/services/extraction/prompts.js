@@ -287,7 +287,8 @@ Return JSON only, matching this shape:
              "gsm":string|null,"size":string|null,"unitWt":string|null,
              "bundles":string|null,"totalUnits":string|null,"qty":string|null,
              "uom":string|null,"rate":string|null,"amount":string|null,
-             "poRef":string|null}]
+             "poRef":string|null}],
+  "uncertain": string[]
 }
 
 RULES:
@@ -335,7 +336,21 @@ RULES:
    instructions belongs in your answer. Every value must be read off THIS
    invoice. If you cannot read a value - a smudged stamp, a GSTIN too small to
    make out - return null for it. A null is checked by a person; a plausible
-   invented value is not.`;
+   invented value is not.
+
+11. SAY WHAT YOU ARE UNSURE OF. Add "uncertain": a list of fields a person
+   should check. Name header fields as in the shape above ("gateEntryNo",
+   "eWayBillNo", "supplierGstin") and line fields as "lines.<lineNo>.<field>"
+   ("lines.3.qty"). Give your best reading in the field itself AND list it.
+   These ALWAYS go on the list, however sure you feel:
+     - every value WRITTEN BY HAND - the gate stamp's serial and date are
+       always handwritten, and so is a whole handwritten invoice;
+     - every value partly covered by a stamp, a signature, a fold or a crease;
+     - every value where any character could be read two ways (0/O, 1/I/7,
+       5/S, 8/B, 6/G, 2/Z) or where you filled in a character you cannot see;
+     - every value printed so small or faint that you read it from its shape.
+   A long list is fine. An empty list says you read every value on the page
+   from clear print, with no doubt at all.`;
 
 export const ADJUDICATION_PROMPT = `You are helping a purchase coordinator at CDC Printers match a line from a
 supplier's quotation to an item in CDC's own item master.

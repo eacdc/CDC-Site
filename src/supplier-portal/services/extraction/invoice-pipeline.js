@@ -95,6 +95,28 @@ export async function preparePages(provider, pages = []) {
   return { pages: out, notes };
 }
 
+/**
+ * Fields the two reads answered differently. The model does not report doubt
+ * reliably, but a value it reads two ways is one it was not sure of.
+ */
+export function readingsDiffer(first = {}, second = {}) {
+  const out = [];
+  const clean = (v) => String(v ?? '').replace(/[\s,]/g, '').toUpperCase();
+  for (const field of ['invoiceNo', 'invoiceDate', 'supplierGstin', 'shipToGstin', 'eWayBillNo', 'vehicleNo',
+    'gateEntryNo', 'gateEntryDate', 'subTotal', 'taxable', 'cgst', 'sgst', 'igst', 'grandTotal']) {
+    if (clean(first[field]) !== clean(second[field])) out.push({ field, first: first[field] ?? null, second: second[field] ?? null });
+  }
+  const byNo = new Map((first.lines || []).map((l) => [Number(l.lineNo), l]));
+  for (const l of second.lines || []) {
+    const was = byNo.get(Number(l.lineNo));
+    if (!was) continue;
+    for (const f of ['qty', 'rate', 'amount']) {
+      if (clean(was[f]) !== clean(l[f])) out.push({ field: `lines.${l.lineNo}.${f}`, first: was[f] ?? null, second: l[f] ?? null });
+    }
+  }
+  return out;
+}
+
 /** Told to the model alongside the images, so a close-up is not read as another page. */
 function imageGuide(pages) {
   if (!pages.some((p) => p.closeUp)) return null;
@@ -127,10 +149,11 @@ export async function readInvoice(provider, { pages, hints = {} } = {}) {
       hints: { ...hints, notes: [...notes, retryInstruction(firstData, before)] },
     });
     const after = invoiceProblems(second);
+    const disagreements = readingsDiffer(firstData, second);
     if (after.length < before.length) {
-      return { ...second, _review: { ...review, problemsAfter: after, kept: 'second' } };
+      return { ...second, _review: { ...review, problemsAfter: after, kept: 'second', disagreements } };
     }
-    return { ...first, _review: { ...review, problemsAfter: before, secondProblems: after } };
+    return { ...first, _review: { ...review, problemsAfter: before, secondProblems: after, disagreements } };
   } catch (err) {
     return { ...first, _review: { ...review, retryError: err.message } };
   }

@@ -13,6 +13,7 @@ import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, DocumentSet, AuditLog } from '../db/mongo.js';
 import { getProvider } from '../services/extraction/provider.js';
 import { readInvoice } from '../services/extraction/invoice-pipeline.js';
+import { buildFieldFlags, resolveEditedFlags, confirmFlag, openFlags } from '../services/extraction/field-flags.js';
 // Amounts as suppliers print them: "1,38,550/-", "(-)0.22", "815 Kg".
 import { toNumber as printedNumber } from '../services/extraction/invoice-review.js';
 import { runInvoiceChecks } from '../services/invoice-checks.js';
@@ -233,6 +234,14 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       set.set('extractedHeader.supplierGstinRead', extracted.supplierGstin ?? null);
       set.set('extractedHeader.supplierGstin', identified.correctedGstin);
     }
+    // Red flags: what the model was unsure of, and what the checks proved wrong.
+    set.fieldFlags = buildFieldFlags({
+      uncertain: extracted.uncertain,
+      problems: extracted._review?.problemsAfter,
+      identification: identified,
+      read: extracted,
+      disagreements: extracted._review?.disagreements,
+    });
     if (!set.context?.supplierLedgerId && identified.ledgerId) {
       set.set('context.supplierLedgerId', identified.ledgerId);
     }
@@ -435,7 +444,7 @@ router.post('/document-sets/:id/match', requireRole('STORE', 'BUYER', 'APPROVER'
     const fixed = [];
     const lost = new Set();
     lines.forEach((line, index) => {
-      if (!line.matchManual) return;
+      if (!line.matchManual || line.unplacedByHand) return;
       const po = byDetailId.get(Number(line.matchedPoTransactionDetailId));
       if (po) fixed.push({ index, po });
       else lost.add(index);
@@ -443,18 +452,23 @@ router.post('/document-sets/:id/match', requireRole('STORE', 'BUYER', 'APPROVER'
 
     // The whole invoice at once: the printed PO number decides, a rejection
     // floor refuses word-only matches, and pending is spent as lines are placed.
-    const placements = matchInvoiceLines({
-      lines,
+    // Lines a person took off every PO line are not offered to the matcher,
+    // so they neither move nor use up a PO line's pending.
+    const offered = lines.map((line, index) => ({ line, index })).filter(({ line }) => !line.unplacedByHand);
+    const offeredAt = new Map(offered.map(({ index }, i) => [index, i]));
+    const placed = matchInvoiceLines({
+      lines: offered.map(({ line }) => line),
       poLines: inputs.poLines,
       items: inputs.items,
       poNumbers: set.extractedHeader?.poNumbers,
       includeClosed,
       receipts: inputs.receipts,
-      fixed,
+      fixed: fixed.map((f) => ({ ...f, index: offeredAt.get(f.index) })),
     });
 
     const matched = lines.map((line, i) => {
-      const { po, basis, closed, manual } = placements[i];
+      if (line.unplacedByHand) return { ...line, ...UNMATCHED };
+      const { po, basis, closed, manual } = placed[offeredAt.get(i)];
       if (manual) {
         return {
           ...line, ...UNMATCHED, ...fieldsForPo(line, po, { ...inputs, closed }),
@@ -498,9 +512,17 @@ router.post('/document-sets/:id/lines/:lineNo/assign', requireRole('STORE', 'BUY
     const detailId = req.body?.poTransactionDetailId;
     let action;
 
-    if (detailId === null || detailId === undefined || detailId === '') {
+    if (req.body?.unplace === true) {
+      // From the Pending POs grid: this invoice line is on no PO line, and
+      // "Match again" must not put it back.
       lines[index] = {
-        ...lines[index], ...UNMATCHED, matchManual: false,
+        ...lines[index], ...UNMATCHED, matchManual: true, unplacedByHand: true,
+        matchBasis: `Taken off its PO line by ${personName(req)}.`,
+      };
+      action = 'LINE_UNPLACED_BY_HAND';
+    } else if (detailId === null || detailId === undefined || detailId === '') {
+      lines[index] = {
+        ...lines[index], ...UNMATCHED, matchManual: false, unplacedByHand: false,
         matchBasis: `Match cleared by ${personName(req)}; it will be matched automatically next time.`,
       };
       action = 'LINE_MATCH_CLEARED';
@@ -518,6 +540,7 @@ router.post('/document-sets/:id/lines/:lineNo/assign', requireRole('STORE', 'BUY
       lines[index] = {
         ...lines[index], ...UNMATCHED, ...fieldsForPo(lines[index], po, { ...inputs, closed }),
         matchManual: true,
+        unplacedByHand: false,
         matchBasis: `Chosen by ${personName(req)}${assessed.reasons.length ? ` - ${assessed.reasons.join(', ')}` : ''}.`,
       };
       action = 'LINE_MATCHED_BY_HAND';
@@ -643,6 +666,7 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
       }
     }
     if (!touched) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
+    if (editing) clearEditedFlags(set, set.toObject(), req, lines);
 
     if (!editing) {
       set.extractedLines = lines;
@@ -662,6 +686,8 @@ router.delete('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', 
     const lines = plainLinesOf(set);
     const kept = lines.filter((l) => Number(l.lineNo) !== Number(req.params.lineNo));
     if (kept.length === lines.length) return res.status(404).json({ error: `There is no line ${req.params.lineNo}.` });
+    // A removed line's red flags go with it.
+    clearEditedFlags(set, set.toObject(), req, kept);
 
     const inputs = await matchingInputs(set, { includeClosed: false });
     const reply = await checkAndSave(set, kept, inputs);
@@ -1086,6 +1112,7 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
           ...kept,
           warehouseId: was.warehouseId ?? null,
           ...(was.addedByHand ? { addedByHand: true } : {}),
+          ...(was.unplacedByHand ? { unplacedByHand: true } : {}),
           ...(was.matchManual ? {
             matchManual: true,
             matchedPoTransactionDetailId: was.matchedPoTransactionDetailId,
@@ -1120,6 +1147,7 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
       }
       set.context = { ...set.context, ...rest };
     }
+    clearEditedFlags(set, before, req);
     await set.save();
 
     await AuditLog.create({
@@ -1134,6 +1162,39 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
     });
 
     return res.json(set);
+  } catch (err) { return next(err); }
+});
+
+/**
+ * Clear the red flags on values that changed. `before` is the set as it was
+ * (toObject()); `lines`, when given, are the lines about to be saved.
+ */
+function clearEditedFlags(set, before, req, lines = null) {
+  if (!(before.fieldFlags || []).length) return;
+  const now = set.toObject();
+  set.fieldFlags = resolveEditedFlags(
+    before.fieldFlags,
+    { header: before.extractedHeader, lines: before.extractedLines },
+    { header: now.extractedHeader, lines: lines ?? now.extractedLines },
+    personName(req),
+  );
+}
+
+/** Mark a red-flagged field checked: "I looked, the value is right." Body: {field}. */
+router.post('/document-sets/:id/flags/confirm', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const field = String(req.body?.field || '');
+    const { flags, found } = confirmFlag(set.toObject().fieldFlags, field, personName(req));
+    if (!found) return res.status(404).json({ error: `No flag on ${field}.` });
+    set.fieldFlags = flags;
+    await set.save();
+    await AuditLog.create({
+      action: 'FIELD_FLAG_CONFIRMED', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor, after: { field },
+    });
+    return res.json({ fieldFlags: set.fieldFlags });
   } catch (err) { return next(err); }
 });
 
@@ -1157,6 +1218,15 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
     }
 
     const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
+
+    const flagged = openFlags(set.fieldFlags);
+    if (flagged.length && !dryRun) {
+      return res.status(422).json({
+        error: `${flagged.length} field${flagged.length > 1 ? 's are' : ' is'} still red-flagged: `
+          + `${flagged.map((f) => f.field).join(', ')}. Correct each one, or mark it checked.`,
+        fieldFlags: flagged,
+      });
+    }
 
     // A closed PO line is in the record only because someone asked to see where
     // the invoice belonged. INV002 already blocks it; this refusal does not

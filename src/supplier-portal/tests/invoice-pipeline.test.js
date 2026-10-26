@@ -77,3 +77,9 @@ test('a second answer no better than the first is not taken', async () => {
   assert.equal(x._review.kept, 'first');
   assert.equal(x._review.problemsAfter.length, 1);
 });
+
+test('fields the two reads answered differently are reported', async () => {
+  const p = provider({ answers: [{ ...SLID, gateEntryNo: '5212' }, { ...GOOD, gateEntryNo: '25712' }] });
+  const x = await readInvoice(p, { pages: [await page()] });
+  assert.deepEqual(x._review.disagreements.map((d) => d.field).sort(), ['gateEntryNo', 'lines.1.qty']);
+});

@@ -857,6 +857,8 @@ export const documentSetSchema = new Schema({
     matchManual: Boolean,
     /** Added from a PO line by a person (manual entry), not read off an invoice. */
     addedByHand: Boolean,
+    /** Taken off every PO line by a person: "Match again" leaves it unplaced. */
+    unplacedByHand: Boolean,
     /** The GRN line's warehouse - where the ERP keeps it; the header carries 0. */
     warehouseId: Number,
     /** Tax rates per line; without these the purchase invoice computes 0 tax. */
@@ -875,6 +877,25 @@ export const documentSetSchema = new Schema({
    * answer showed on its own face, and whether a second read fixed them.
    */
   extractionReview: Schema.Types.Mixed,
+
+  /**
+   * Red flags: fields a person must look at before posting. From the model
+   * (could not read it) or from the checks (provably wrong). Cleared by an
+   * edit or by being marked checked. See extraction/field-flags.js.
+   */
+  fieldFlags: {
+    type: [{
+      _id: false,
+      field: String,
+      source: { type: String, enum: ['MODEL', 'CHECK'] },
+      reason: String,
+      resolved: Boolean,
+      how: { type: String, enum: ['EDITED', 'CONFIRMED', null] },
+      by: String,
+      at: Date,
+    }],
+    default: [],
+  },
 
   supplierIdentification: {
     ledgerId: Number,
