@@ -430,20 +430,25 @@ BEGIN
     END
 
     -- Per batch: several lines may draw on the same batch, so compare the sum.
-    INSERT INTO @Warnings (Code, LineNum, ItemID, Quantity, Limit, StockUnit, Message)
-    SELECT 'OVER_BATCH_STOCK', B.FirstLine, B.ItemID, B.Qty, B.BatchStock, B.StockUnit,
-           CONCAT(N'Line ', B.FirstLine, N' takes ', FORMAT(B.Qty, '0.###'), N' ', B.StockUnit,
+    -- A batch can never give more than it holds: this is a hard error, not a
+    -- warning. A job that needs more takes the rest from other batches.
+    DECLARE @OverBatchMsg NVARCHAR(400);
+    SELECT TOP (1) @OverBatchMsg =
+           CONCAT(N'OVER_BATCH_STOCK: Line ', B.FirstLine, N' takes ', FORMAT(B.Qty, '0.###'), N' ', B.StockUnit,
                   N' from batch ', ISNULL(B.BatchNo, N'(no batch no.)'), N', which holds only ',
-                  FORMAT(B.BatchStock, '0.###'), N' ', B.StockUnit,
-                  N'. This drives the batch negative, and a negative batch silently drops out of physical stock. ',
-                  N'Check the batch and the quantity before you continue.')
+                  FORMAT(ISNULL(B.BatchStock, 0), '0.###'), N' ', B.StockUnit,
+                  N'. Issue at most the batch stock and take the rest from another batch.')
     FROM (
         SELECT MIN(LineNum) AS FirstLine, ItemID, ParentTransactionID, WarehouseID, BatchNo,
                MIN(StockUnit) AS StockUnit, SUM(Quantity) AS Qty, MIN(BatchStock) AS BatchStock
         FROM @Lines
         GROUP BY ItemID, ParentTransactionID, WarehouseID, BatchNo
     ) B
-    WHERE B.Qty > ISNULL(B.BatchStock, 0);
+    WHERE B.Qty > ISNULL(B.BatchStock, 0)
+    ORDER BY B.FirstLine;
+
+    IF @OverBatchMsg IS NOT NULL
+        THROW 51015, @OverBatchMsg, 1;
 
     IF EXISTS (SELECT 1 FROM @Warnings) AND ISNULL(@AcknowledgeWarnings, 0) = 0
     BEGIN

@@ -83,6 +83,7 @@ Some codes add fields (`details`, `warnings`).
 | 409 | `WARNINGS_NOT_ACKNOWLEDGED` | The issue has warnings; see section 5.8. Body has `warnings`. |
 | 409 | `VOUCHER_NUMBER_CONFLICT` | The ERP took the same voucher number three times running. Nothing was saved. Save again with the same `requestId`. |
 | 409 | `ALREADY_DELETED` / `ISSUE_CONSUMED` | Delete refused. |
+| 409 | `OVER_BATCH_STOCK` | A batch would give more than it holds (several lines on one batch are summed, against stock recomputed at save time). Never allowed: issue at most the batch stock and take the rest from another batch. Nothing was saved. |
 | 409 | `PICKLIST_LINE_CLOSED` | Picklist line is already closed (`IsCompleted`): posting against it, or closing it again. |
 | 409 | `PICKLIST_LINE_DELETED` / `PICKLIST_LINE_CANCELLED` | Close refused: the picklist was deleted or the line cancelled. |
 | 502 | `STOCK_REFRESH_FAILED` | Only from `refresh-stock`: the retry failed again. The issue itself is saved. |
@@ -93,29 +94,28 @@ Some codes add fields (`details`, `warnings`).
 
 ## 3. Warning codes
 
-Over-issue is allowed (as in the ERP) but must be acknowledged. Warnings are computed by the server **at save time**, from current stock.
+Issuing more than the picklist or job needs is allowed (as in the ERP) but must be acknowledged. Issuing more than a batch holds is not: that is the `OVER_BATCH_STOCK` error in section 2. Warnings are computed by the server **at save time**, from current stock.
 
 | `code` | Meaning |
 |---|---|
 | `OVER_PICKLIST_PENDING` | Allocated issue: the total is more than the picklist line's pending quantity. |
 | `OVER_JOB_PENDING` | Direct issue: the total for an item group + stock unit is more than the job content's pending requirement for that group and unit. A substitute counts against the planned item of the same group and unit. If nothing is planned in that group, the whole quantity is over-issue. |
-| `OVER_BATCH_STOCK` | A batch would go negative (several lines on one batch are summed). The message is deliberately strong: a negative batch silently drops out of physical stock. |
 
 Warning object:
 
 ```json
 {
-  "code": "OVER_BATCH_STOCK",
-  "lineNo": 1,
+  "code": "OVER_PICKLIST_PENDING",
+  "lineNo": null,
   "itemId": 9681,
   "quantity": 152,
   "limit": 140.5,
   "stockUnit": "Kg",
-  "message": "Line 1 takes 152 Kg from batch 52873_PO01565_26_27_9681_1.00, which holds only 140.5 Kg. This drives the batch negative, and a negative batch silently drops out of physical stock. Check the batch and the quantity before you continue."
+  "message": "Total 152 Kg is more than the picklist's pending 140.5 Kg."
 }
 ```
 
-`lineNo` is 1-based in the order the lines were sent; it is `null` for whole-issue warnings. `limit` is the pending quantity or batch stock it was compared with (can be negative or zero).
+`lineNo` is 1-based in the order the lines were sent; it is `null` for whole-issue warnings. `limit` is the pending quantity it was compared with (can be negative or zero).
 
 ---
 
