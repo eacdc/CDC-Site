@@ -1061,12 +1061,8 @@ router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER
   } catch (err) { return next(err); }
 });
 
-/** Guard for both writes: a named editor, and ids that belong to this site. */
+/** Guard for both writes: the ids must belong to this site. Anyone signed in may edit. */
 async function checkEditRequest(req, res, edit = {}) {
-  if (!canEditGrns(req.sp.user)) {
-    res.status(403).json({ error: 'Only the people named in SP_GRN_EDITORS may edit or delete posted GRNs.' });
-    return false;
-  }
   const site = req.sp.site;
   const whs = (edit.lines || []).map((l) => l.warehouseId).filter((v) => v !== undefined && v !== null);
   if (whs.length) {

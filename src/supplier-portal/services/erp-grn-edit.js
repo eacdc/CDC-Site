@@ -3,8 +3,10 @@
  *
  *  1. **Gated** behind SP_ENABLE_ERP_WRITES, like posting. Until then only the
  *     dry run works - it returns exactly what would change.
- *  2. **Only named people**: ERP user names listed in SP_GRN_EDITORS. Unset,
- *     nobody may edit or delete.
+ *  2. **Anyone signed in** with a receiving role (every ERP sign-in has one)
+ *     may edit or delete. It used to be limited to the ERP user names in
+ *     SP_GRN_EDITORS; CDC opened it to everyone on 27 Oct 2026. Who did it is
+ *     in the audit log, and the ERP's history triggers keep before and after.
  *  3. **The rules are checked twice**: once for the page, and again inside the
  *     write's own transaction, on rows locked against change, so nothing that
  *     happened in between - an issue, a purchase invoice, someone else's edit -
@@ -37,12 +39,13 @@ import { purchaseQtyFromStock, stockQtyFromPurchase } from './receipt-units.js';
 const HEADER_FIELDS = ['deliveryNoteNo', 'deliveryNoteDate', 'gateEntryNo', 'gateEntryDate', 'eWayBillNo', 'eWayBillDate', 'vehicleNo', 'receivedBy'];
 const DATE_FIELDS = new Set(['deliveryNoteDate', 'gateEntryDate', 'eWayBillDate']);
 
-/** May this signed-in person edit and delete posted GRNs? */
+/**
+ * May this signed-in person edit and delete posted GRNs? Anyone may - the
+ * routes already need a receiving role. Kept as a function so the pages still
+ * ask the server rather than assume.
+ */
 export function canEditGrns(user) {
-  const names = String(process.env.SP_GRN_EDITORS || '')
-    .split(',').map((n) => n.trim().toUpperCase()).filter(Boolean);
-  const me = String(user?.erpUserName || '').trim().toUpperCase();
-  return Boolean(me) && names.includes(me);
+  return Boolean(user);
 }
 
 const finite = (v) => (v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null);

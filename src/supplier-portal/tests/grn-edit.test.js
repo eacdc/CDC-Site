@@ -116,15 +116,17 @@ test('a line from another GRN is refused', () => {
   assert.match(planGrnEdit(grn(), { lines: [{ transactionDetailId: 1, stockQty: 5 }] }).errors.join(' '), /not on REC04597_26_27/);
 });
 
-test('only the people named in SP_GRN_EDITORS may edit', () => {
+test('anyone signed in may edit, whatever SP_GRN_EDITORS says', () => {
   const before = process.env.SP_GRN_EDITORS;
   try {
+    // The old allow-list is gone: a leftover value on a server changes nothing.
+    process.env.SP_GRN_EDITORS = 'Admin';
+    assert.equal(canEditGrns({ erpUserName: 'Manik' }), true);
     delete process.env.SP_GRN_EDITORS;
-    assert.equal(canEditGrns({ erpUserName: 'Manu' }), false);
-    process.env.SP_GRN_EDITORS = 'manu, Pranay';
-    assert.equal(canEditGrns({ erpUserName: 'MANU' }), true);
-    assert.equal(canEditGrns({ erpUserName: 'Manik' }), false);
-    assert.equal(canEditGrns({}), false);
+    assert.equal(canEditGrns({ erpUserName: 'Manu' }), true);
+    assert.equal(canEditGrns({}), true);
+    // Only a request with no signed-in user is refused (the routes' auth stops it first).
+    assert.equal(canEditGrns(null), false);
   } finally {
     if (before === undefined) delete process.env.SP_GRN_EDITORS; else process.env.SP_GRN_EDITORS = before;
   }
