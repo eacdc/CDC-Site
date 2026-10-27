@@ -35,6 +35,7 @@ import {
 } from '../services/receiving-match.js';
 import { receivingDefaults } from '../services/receiving-defaults.js';
 import { stockQtyFor, stockQtyFromPurchase, purchaseQtyFromStock } from '../services/receipt-units.js';
+import { correctedLine } from '../services/line-corrections.js';
 import { billsByKgStocksSheets, piQty } from '../lib/invoice-math.js';
 
 const router = Router();
@@ -1193,7 +1194,8 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
       const existing = new Map(plainLinesOf(set).map((l) => [Number(l.lineNo), l]));
       set.extractedLines = req.body.extractedLines.map((l) => {
         const was = existing.get(Number(l.lineNo)) || {};
-        const kept = Object.fromEntries(EDITABLE_LINE_FIELDS.map((k) => [k, l[k] ?? null]));
+        // A field the page did not send keeps what the reader found.
+        const kept = correctedLine(l, was, EDITABLE_LINE_FIELDS);
         return {
           ...kept,
           warehouseId: was.warehouseId ?? null,
