@@ -112,10 +112,8 @@ export async function receivingDefaults(site, { ledgerIds = [], erpUserId = null
     warehouse: wh(whSupplier[0], "this supplier's last GRN") || wh(whUser[0], 'your last GRN'),
     purchaseLedger: ledger(purchase[0], "this supplier's last purchase invoice"),
     freightLedger: ledger(freight[0], "this supplier's last purchase invoice with freight"),
-    // Freight on at least half of the last 10 bills: the screen starts with a
-    // freight row waiting for its amount. Krishna Vanijya charged it on 273 of
-    // 354 bills from July to October 2026.
-    freightUsual: Number(recent[0]?.Bills) > 0 && Number(recent[0]?.WithFreight) * 2 >= Number(recent[0]?.Bills),
+    // How many of the last 10 bills charged freight, for the ledger's hint.
+    // The screen adds no freight row by itself: the person adds one if needed.
     recentFreight: recent[0] ? { bills: Number(recent[0].Bills), withFreight: Number(recent[0].WithFreight) || 0 } : null,
   };
 }
