@@ -62,9 +62,14 @@ const checkSchema = new Schema({
   actualValue: Schema.Types.Mixed,
   expectedValue: Schema.Types.Mixed,
   lineNo: Number,
-  /** Set when a WARN was accepted; a BLOCK can never carry one. */
+  /**
+   * Set when a WARN was accepted. A BLOCK carries one only on a GRN, where a
+   * person ignored it with a reason (services/check-overrides.js).
+   * overriddenBy is the account key; overriddenByName the name people know.
+   */
   overrideReason: String,
   overriddenBy: String,
+  overriddenByName: String,
   overriddenAt: Date,
 }, { _id: false });
 
@@ -766,6 +771,13 @@ export const documentSetSchema = new Schema({
     vehicleNo: String,
     taxType: { type: String, enum: ['CGST_SGST', 'IGST'] },
     subTotal: Number,
+    /**
+     * A discount on the whole bill, "Less: Discount" under the subtotal and
+     * before tax: the amount as printed, or its percentage where only that is.
+     * Posting spreads it over the lines (lib/invoice-math.js).
+     */
+    discount: Number,
+    discountPct: Number,
     freight: Number,
     taxable: Number,
     cgst: Number,
@@ -808,6 +820,14 @@ export const documentSetSchema = new Schema({
     uom: String,
     rate: Number,
     amount: Number,
+    /**
+     * The line's trade discount as printed - a "Disc %" column, a discount
+     * amount, and the line's value after it (Sonafine KOLGST26/5003360: 20%,
+     * 1,10,544 less 22,108.80 = 88,435.20). Posted net of it; see lineMoney.
+     */
+    discountPct: Number,
+    discountAmount: Number,
+    taxableValue: Number,
     /** CDC's PO number as the supplier wrote it against this line. */
     poRef: String,
     /** Weight CDC computes on rounded metric, vs what the supplier billed. */
@@ -921,6 +941,25 @@ export const documentSetSchema = new Schema({
   },
 
   checks: { type: [checkSchema], default: [] },
+  /**
+   * Blocking checks a person chose to ignore, each with its reason. Kept apart
+   * from `checks`, which are replaced on every run: an ignore outlives a run
+   * while its check (code + line) still fails, and is dropped once it passes.
+   * See services/check-overrides.js.
+   */
+  ignoredChecks: {
+    type: [{
+      _id: false,
+      code: String,
+      lineNo: Number,
+      reason: String,
+      message: String,
+      by: String,
+      byName: String,
+      at: Date,
+    }],
+    default: [],
+  },
 
   status: {
     type: String,

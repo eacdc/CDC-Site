@@ -22,7 +22,9 @@
 import { withTransaction, txQuery, sql, assertSite, hasWriteLogin, db } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX, TOLERANCES, STOCK_REFRESH_PROC } from '../config/constants.js';
 import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
-import { apportionFreight, invoiceTotals, round, storedGstPercentages, storedRate, piQty } from '../lib/invoice-math.js';
+import {
+  apportionFreight, invoiceTotals, round, storedGstPercentages, storedRate, piQty, discountedLines,
+} from '../lib/invoice-math.js';
 
 /** Posting is off unless explicitly enabled. */
 export function erpWritesEnabled() {
@@ -393,7 +395,8 @@ async function writePurchaseInvoice({
     deliveryNoteNo: header.invoiceNo ?? null,
     invoiceNo: header.billNo || header.invoiceNo || null,
     invoiceDate: { type: sql.DateTime, value: toDate(header.billDate || header.invoiceDate) },
-    narration: header.remark ?? '',
+    // A discount posted into the rate is recorded here, if the remark leaves room.
+    narration: narrationFor(header.remark, discountNote(lines)),
     roundOff: { type: sql.Float, value: totals.roundOffValue },
     amountInWords: amountInWords(totals.netAmount),
     companyId: { type: sql.Int, value: COMPANY_ID },
@@ -655,13 +658,64 @@ export async function repairItemStock(site, itemId) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Apply freight apportionment and tax to the matched lines. */
-function priceLines({ header, lines }) {
-  const withGross = lines.map((line) => ({
-    ...line,
-    grossAmount: num(line.amount) ?? round(piQty(line) * num(line.rate), 2),
-  }));
+/**
+ * Apply discount, freight apportionment and tax to the matched lines.
+ *
+ * A discounted line is posted the way CDC has always posted one: at the rate
+ * after discount, with no discount on the ERP's lines. Not one purchase
+ * invoice in either plant carries a DiscountAmount, and every PI for
+ * Sonafine's item 4360 is at 28.20 with Gross = Basic - 35.25 less 20%. So
+ * the rate becomes net / qty, the gross is the net to the paisa (as the ERP
+ * keeps the gross of a 3-decimal rate exact while storing the rate to 2), and
+ * the discount as printed is kept beside the line for the remark and the
+ * audit (`printed`). The landed rate follows the rate, as on every PI.
+ */
+export function priceLines({ header, lines }) {
+  const money = discountedLines(lines, header);
+  const withGross = lines.map((line, i) => {
+    const m = money[i];
+    const qty = piQty(line);
+    if (m.discount === 0 || !(qty > 0)) {
+      return { ...line, grossAmount: num(line.amount) ?? round(qty * num(line.rate), 2) };
+    }
+    return {
+      ...line,
+      rate: round(m.net / qty, 6),
+      grossAmount: m.net,
+      printed: { rate: num(line.rate), gross: m.gross, discount: m.discount, pct: m.pct },
+    };
+  });
   return apportionFreight(withGross, num(header.freight) || 0);
+}
+
+/**
+ * The discounts as printed, in words, for the purchase invoice's remark and
+ * the audit: "Trade discount 20% on line 1: printed rate 35.25, gross
+ * 1,10,544.00, discount 22,108.80; posted at 28.20."
+ */
+export function discountNote(priced = []) {
+  const parts = priced.map((l, i) => {
+    const p = l.printed;
+    if (!p) return null;
+    const pct = p.pct ? `${p.pct}% ` : '';
+    return `Trade discount ${pct}on line ${l.lineNo ?? i + 1}: printed rate ${p.rate}, gross ${inr(p.gross)}, `
+      + `discount ${inr(p.discount)}; posted at ${Number(storedRate(l.rate)).toFixed(2)}`;
+  }).filter(Boolean);
+  return parts.length ? `${parts.join('. ')}.` : '';
+}
+
+/** The ERP's Narration is nvarchar(512): a person's remark first, the note only where it fits. */
+const NARRATION_MAX = 512;
+
+export function narrationFor(remark, note) {
+  const own = String(remark ?? '').trim();
+  if (!note) return own;
+  const joined = own ? `${own} | ${note}` : note;
+  return joined.length <= NARRATION_MAX ? joined : own;
+}
+
+function inr(n) {
+  return Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function validatePostInput({ header, lines, context }) {
@@ -737,6 +791,8 @@ function previewPi({ header, lines, context, voucherDate, suffix }) {
     invoiceDate: header.billDate || header.invoiceDate || null,
     deliveryNoteNo: header.invoiceNo,
     remark: header.remark ?? null,
+    narration: narrationFor(header.remark, discountNote(lines)),
+    discountNote: discountNote(lines) || null,
     totals,
     taxRows: [
       totals.totalCGSTTaxAmount > 0 && { ledger: 'CGST', amount: totals.totalCGSTTaxAmount, taxInAmount: 0 },
@@ -751,6 +807,10 @@ function previewPi({ header, lines, context, voucherDate, suffix }) {
       receiptQuantity: piQty(l),
       receiptRate: storedRate(l.rate),
       grossAmount: l.grossAmount,
+      discountAmount: 0,
+      basicAmount: l.grossAmount,
+      landedRate: storedRate(l.landedRate ?? l.rate),
+      ...(l.printed ? { printed: l.printed } : {}),
       freightShare: l.freightShare,
       taxableAmount: l.taxableAmount,
       cgstAmount: l.cgstAmount,

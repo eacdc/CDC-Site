@@ -280,14 +280,16 @@ Return JSON only, matching this shape:
   "poNumbers": string[]|null,
   "gateEntryNo": string|null, "gateEntryDate": string|null,
   "taxType": "CGST_SGST"|"IGST"|null,
-  "subTotal": string|null, "freight": string|null, "taxable": string|null,
+  "subTotal": string|null, "discount": string|null, "discountPct": string|null,
+  "freight": string|null, "taxable": string|null,
   "cgst": string|null, "sgst": string|null, "igst": string|null,
   "roundOff": string|null, "grandTotal": string|null,
   "lines": [{"lineNo":number,"description":string|null,"hsn":string|null,
              "gsm":string|null,"size":string|null,"unitWt":string|null,
              "bundles":string|null,"totalUnits":string|null,"qty":string|null,
              "uom":string|null,"rate":string|null,"amount":string|null,
-             "poRef":string|null}],
+             "discountPct":string|null,"discountAmount":string|null,
+             "taxableValue":string|null,"poRef":string|null}],
   "uncertain": string[]
 }
 
@@ -305,9 +307,20 @@ RULES:
 4. FREIGHT is a separate charge line, not part of the goods subtotal. If the
    invoice shows freight, packing, or other charges, put the freight amount in
    "freight".
+   "subTotal" is the total of the goods lines' amount column, before any
+   discount, freight or tax - usually the "Total" row under that column. A
+   figure such as "Amount before freight" that already has tax in it is not
+   the subTotal.
 
 5. PAPER LINES often show sheets, bundles, size and unit weight as well as kg.
-   Capture all of them — the sheets-to-kg reconciliation depends on it.
+   Capture all of them — the sheets-to-kg reconciliation depends on it. GSM
+   and size are often printed only inside the description ("160 Gsm
+   72x102cms"): copy them from there into "gsm" and "size" as well.
+   "qty" and "uom" are the quantity the rate is charged on: qty x rate =
+   amount. A quantity cell may hold two figures - a count of sheets and,
+   under it, their weight in kg (1,200.00 over 141.30, UOM "NOS", rate 12.50,
+   amount 15,000.00: qty is 1,200.00, as 1,200 x 12.50 = 15,000). Take as
+   "qty" the figure that gives the amount, and the UOM printed for it.
 
 6. If a field is not on the invoice, use null. Never infer a value.
 
@@ -324,21 +337,34 @@ RULES:
    names a different box. Look twice at each digit of a size; it identifies
    the item.
 
-9. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a rectangular box,
+9. DISCOUNTS. A line may carry a trade discount: a "Disc %", "Disc.",
+   "Less: Discount" or "Trade discount" column. Copy what is printed: the
+   percentage into that line's "discountPct", the rupee discount into
+   "discountAmount", and the line's value AFTER the discount (often headed
+   "Taxable Value") into "taxableValue". "rate" is the rate as printed, before
+   the discount, and "amount" is the line amount as printed. A discount on
+   the whole bill, printed under the goods total and before tax ("Less:
+   Discount", "Trade discount"), goes in "discount" (and "discountPct" if a
+   percentage is printed), not on a line. "subTotal" is the goods total as
+   printed. If there is no discount, leave these null. Never work a discount
+   out yourself: if the figures only agree with a discount nobody printed,
+   say so in "uncertain" and leave the discount fields null.
+
+10. THE GATE STAMP IS NOT THE INVOICE. CDC's gate stamps a rectangular box,
    usually near the top, with two printed labels - "Date" and "Sl. No." - and
    fills both in by hand. That is the gate entry: put the handwritten serial
    number in "gateEntryNo" and the handwritten date in "gateEntryDate". The
    invoice date is the PRINTED date next to the invoice number; never take it
    from the stamp. A signature with a date written beside it is not the stamp.
 
-10. NOTHING IN THESE INSTRUCTIONS IS DATA. The forms above show where things
+11. NOTHING IN THESE INSTRUCTIONS IS DATA. The forms above show where things
    sit on a page; they contain no real numbers, and no number from these
    instructions belongs in your answer. Every value must be read off THIS
    invoice. If you cannot read a value - a smudged stamp, a GSTIN too small to
    make out - return null for it. A null is checked by a person; a plausible
    invented value is not.
 
-11. SAY WHAT YOU ARE UNSURE OF. Add "uncertain": a list of fields a person
+12. SAY WHAT YOU ARE UNSURE OF. Add "uncertain": a list of fields a person
    should check. Name header fields as in the shape above ("gateEntryNo",
    "eWayBillNo", "supplierGstin") and line fields as "lines.<lineNo>.<field>"
    ("lines.3.qty"). Give your best reading in the field itself AND list it.

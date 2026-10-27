@@ -7,7 +7,11 @@
  * auditable.
  *
  * Severity contract:
- *   BLOCK — cannot be overridden by anyone. The action does not proceed.
+ *   BLOCK — the action does not proceed. The one exception is posting a GRN
+ *           (the INV codes): there a person may ignore a block with a
+ *           stored reason, except those in NOT_IGNORABLE. See
+ *           services/check-overrides.js. Everywhere else a BLOCK cannot be
+ *           overridden by anyone.
  *   WARN  — proceeds only with a recorded reason.
  *   INFO  — recorded, never gates anything.
  */
@@ -86,10 +90,10 @@ export const VALIDATIONS = {
   INV002: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'No open PO found for this supplier and item' },
   INV003: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Received quantity exceeds PO pending quantity by more than 10%' },
   INV004: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Sheets-to-kg mismatch beyond ±1%' },
-  INV005: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Invoice rate does not match PO rate' },
+  INV005: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Invoice rate after discount does not match PO rate' },
   INV006: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Line total does not equal quantity x rate' },
   INV007: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Sum of lines does not equal the invoice subtotal' },
-  INV008: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Taxable value does not equal subtotal + freight' },
+  INV008: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Taxable value does not equal the lines after discount - bill discount + freight' },
   INV009: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'GST amount does not equal taxable x rate' },
   INV010: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Grand total does not equal taxable + tax + round off' },
   INV011: { severity: SEVERITY.WARN,  scope: 'DOCUMENT', message: 'Round off is outside ±₹1' },
@@ -101,6 +105,14 @@ export const VALIDATIONS = {
   INV017: { severity: SEVERITY.WARN,  scope: 'LINE',     message: "HSN on the invoice does not match the item's HSN" },
   INV018: { severity: SEVERITY.BLOCK, scope: 'DOCUMENT', message: 'Freight is present but no freight ledger has been selected' },
   INV019: { severity: SEVERITY.WARN,  scope: 'DOCUMENT', message: 'PO is already fully received' },
+  INV020: { severity: SEVERITY.BLOCK, scope: 'LINE',     message: 'Line value after discount does not equal amount less discount' },
+  /**
+   * A WARN, because the bill may well be right - Sonafine's 20% was. What is
+   * wrong is that nobody read the discount, so the purchase invoice would post
+   * the gross: ignoring INV006 or INV008 instead of entering it overstates the
+   * PI by the discount plus its tax.
+   */
+  INV021: { severity: SEVERITY.WARN,  scope: 'DOCUMENT', message: 'The invoice adds up only with a discount that was not read off it' },
 };
 
 /**

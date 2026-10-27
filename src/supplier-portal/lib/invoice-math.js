@@ -154,6 +154,116 @@ export function invoiceTotals(lines = [], { freight = 0, roundOff = 0 } = {}) {
   };
 }
 
+// ── Trade discount ──────────────────────────────────────────────────────────
+
+/** Rupees of slack in a discount's arithmetic, as INV006 allows. */
+const DISCOUNT_TOLERANCE = 1;
+
+/**
+ * A line's money, discount included, however the invoice prints it.
+ *
+ * Sonafine's KOLGST26/5003360 (October 2026) prints 3,136 sheets at 35.25 =
+ * 1,10,544, a "Disc %" column of 20.00 and a taxable value of 88,435.20: the
+ * PO's 28.20 is the rate after the discount. A line may carry any of
+ * `discountPct`, `discountAmount` and `taxableValue` (the line's value after
+ * discount), or none. Some bills print the amount column after the discount
+ * instead; that is recognised when the quantity, rate and discount say so,
+ * and the gross is then quantity x rate.
+ *
+ * @returns {{gross: number|null, net: number|null, discount: number,
+ *            pct: number|null, stated: number|null, read: boolean,
+ *            netFromAmount: boolean}}
+ *   `discount` is gross - net, what posting takes off; `stated` is the
+ *   discount the invoice printed (or its percentage of gross), for the checks;
+ *   `read` says a discount figure was read off the invoice at all.
+ */
+export function lineMoney(line = {}) {
+  const q = finite(piQty(line));
+  const r = finite(line.rate);
+  const amount = finite(line.amount);
+  const pctRead = finite(line.discountPct);
+  const pct = pctRead ? pctRead : null;
+  const printed = finite(line.discountAmount) ? finite(line.discountAmount) : null;
+  const printedNet = finite(line.taxableValue);
+  const extended = q !== null && r !== null ? round(q * r, 2) : null;
+
+  let gross = amount ?? extended;
+  let net = printedNet;
+  let netFromAmount = false;
+  if (amount !== null && extended !== null && Math.abs(extended - amount) > DISCOUNT_TOLERANCE && (pct || printed)) {
+    const less = printed ?? round((extended * pct) / 100, 2);
+    if (Math.abs(extended - less - amount) <= DISCOUNT_TOLERANCE) {
+      gross = extended;
+      if (net === null) { net = amount; netFromAmount = true; }
+    }
+  }
+  const stated = printed ?? (pct !== null && gross !== null ? round((gross * pct) / 100, 2) : null);
+  if (net === null && gross !== null) net = round(gross - (stated ?? 0), 2);
+  return {
+    gross,
+    net,
+    discount: gross !== null && net !== null ? round(gross - net, 2) : 0,
+    pct,
+    stated,
+    read: Boolean(pct || printed),
+    netFromAmount,
+  };
+}
+
+/**
+ * A discount on the whole bill ("Less: Discount" under the subtotal), in
+ * rupees. Printed as an amount, or as a percentage of the lines' value after
+ * their own discounts.
+ */
+export function headerDiscount(header = {}, linesNet = 0) {
+  const amount = finite(header.discount);
+  if (amount) return round(Math.abs(amount), 2);
+  const pct = finite(header.discountPct);
+  return pct ? round((linesNet * pct) / 100, 2) : 0;
+}
+
+/**
+ * Each line's discount: its own, plus its share of a whole-bill discount,
+ * pro-rata on the line's value after its own discount. A bill discount has to
+ * land on the lines - the purchase invoice is posted line by line at the rate
+ * after discount - and the last line takes the rounding remainder, as with
+ * freight, so the lines' values add up to the bill's to the paisa.
+ *
+ * @returns {Array<{gross: number, discount: number, net: number, pct: number|null}>}
+ */
+export function discountedLines(lines = [], header = {}) {
+  const money = lines.map((l) => lineMoney(l));
+  const nets = money.map((m) => m.net ?? 0);
+  const total = nets.reduce((s, n) => s + n, 0);
+  const bill = headerDiscount(header, total);
+  let spread = 0;
+  return money.map((m, i) => {
+    const share = !bill || !(total > 0) ? 0
+      : (i === money.length - 1 ? round(bill - spread, 2) : round((bill * nets[i]) / total, 2));
+    spread = round(spread + share, 2);
+    const gross = m.gross ?? 0;
+    const discount = round(m.discount + share, 2);
+    return { gross, discount, net: round(gross - discount, 2), pct: share ? null : m.pct };
+  });
+}
+
+/**
+ * The goods value the taxable value is built on: the printed subtotal, less
+ * the line discounts when it is printed before them (it matches the gross),
+ * or the lines after discount when no subtotal was read.
+ */
+export function goodsValue({ subTotal, lineSum, netSum, hasAmounts, tol = 1 }) {
+  if (subTotal === null || subTotal === undefined) return hasAmounts ? netSum : null;
+  const lineDiscounts = lineSum - netSum;
+  return lineDiscounts > 0.005 && Math.abs(subTotal - lineSum) <= tol ? round(subTotal - lineDiscounts, 2) : subTotal;
+}
+
+function finite(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 // ── Sheet ↔ kg reconciliation ───────────────────────────────────────────────
 
 /**

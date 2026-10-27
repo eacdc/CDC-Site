@@ -26,11 +26,13 @@
 export const HEADER_FLAG_FIELDS = [
   'invoiceNo', 'invoiceDate', 'supplierGstin', 'buyerGstin', 'shipToGstin',
   'eWayBillNo', 'vehicleNo', 'gateEntryNo', 'gateEntryDate', 'poNumbers', 'taxType',
-  'subTotal', 'taxable', 'cgst', 'sgst', 'igst', 'grandTotal',
+  'subTotal', 'discount', 'discountPct', 'taxable', 'cgst', 'sgst', 'igst', 'grandTotal',
 ];
-const LINE_FLAG_FIELDS = ['description', 'hsn', 'qty', 'uom', 'rate', 'amount', 'poRef'];
+const LINE_FLAG_FIELDS = [
+  'description', 'hsn', 'qty', 'uom', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue', 'poRef',
+];
 /** Editing any of these on a line clears a whole-line flag on it. */
-const LINE_MONEY = ['qty', 'stockQty', 'rate', 'amount'];
+const LINE_MONEY = ['qty', 'stockQty', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue'];
 
 /**
  * A path as the model might write it - "lines[2].qty", "line 2 qty",
@@ -80,7 +82,7 @@ export function buildFieldFlags({ uncertain = [], problems = [], identification 
   }
 
   for (const p of problems || []) {
-    if (p.kind === 'LINE_ARITHMETIC' || p.kind === 'LINE_WITHOUT_QTY') add(`lines.${p.lineNo}`, 'CHECK', p.message.split('. ')[0] + '.');
+    if (p.kind === 'LINE_ARITHMETIC' || p.kind === 'LINE_WITHOUT_QTY' || p.kind === 'LINE_DISCOUNT') add(`lines.${p.lineNo}`, 'CHECK', p.message.split('. ')[0] + '.');
     else if (p.kind === 'GSTIN') {
       if (p.field === 'supplierGstin' && identification?.matchedBy === 'GSTIN_NEAR') {
         add('supplierGstin', 'CHECK', `Read as ${read.supplierGstin ?? '?'}, which fails the GSTIN check character; `

@@ -29,14 +29,38 @@ function provider({ answers, turnIndex = 0 }) {
   };
 }
 
-test('each page goes as the whole page and a close-up of its top, at high detail', async () => {
-  const { pages } = await preparePages(provider({ answers: [] }), [await page()]);
-  assert.equal(pages.length, 2);
-  assert.deepEqual(pages.map((p) => [p.detail, Boolean(p.closeUp)]), [['high', false], ['high', true]]);
-  const full = await sharp(Buffer.from(pages[0].url.split(',')[1], 'base64')).metadata();
-  const top = await sharp(Buffer.from(pages[1].url.split(',')[1], 'base64')).metadata();
-  assert.equal(top.width, full.width);
-  assert.equal(top.height, Math.round(full.height * 0.45));
+test('each page goes as the whole page and four overlapping close-ups, enlarged to what the model keeps', async () => {
+  const { pages } = await preparePages(provider({ answers: [] }), [await page(1080, 1414)]);
+  assert.equal(pages.length, 5);
+  assert.deepEqual(pages.map((p) => [p.detail, Boolean(p.closeUp)]),
+    [['high', false], ['high', true], ['high', true], ['high', true], ['high', true]]);
+  const size = (p) => sharp(Buffer.from(p.url.split(',')[1], 'base64')).metadata();
+  const full = await size(pages[0]);
+  assert.deepEqual([full.width, full.height], [1080, 1414]);
+  // A strip is 32% of the page: 1080 x 452, scaled up to 768 on its short side.
+  for (const strip of pages.slice(1)) {
+    const m = await size(strip);
+    assert.deepEqual([m.width, m.height], [1835, 768]);
+  }
+});
+
+test('the close-ups cover the page from top to bottom, each overlapping the next', async () => {
+  // Bands of colour down the page; each strip's top and bottom rows show where it was cut.
+  const W = 200; const H = 1000;
+  const raw = Buffer.alloc(W * H * 3);
+  for (let y = 0; y < H; y += 1) raw.fill(Math.floor((y / H) * 250), y * W * 3, (y + 1) * W * 3);
+  const png = await sharp(raw, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
+  const { pages } = await preparePages(provider({ answers: [] }), [{ url: `data:image/png;base64,${png.toString('base64')}`, pageNo: 1 }]);
+  const rows = [];
+  for (const strip of pages.slice(1)) {
+    const buf = Buffer.from(strip.url.split(',')[1], 'base64');
+    const { data, info } = await sharp(buf).greyscale().raw().toBuffer({ resolveWithObject: true });
+    const at = (y) => Math.round((data[y * info.width + Math.floor(info.width / 2)] / 250) * H);
+    rows.push([at(2), at(info.height - 3)]);
+  }
+  assert.ok(rows[0][0] <= 15, `the first strip starts at the top (${rows[0][0]})`);
+  assert.ok(rows.at(-1)[1] >= H - 15, `the last strip reaches the bottom (${rows.at(-1)[1]})`);
+  for (let i = 1; i < rows.length; i += 1) assert.ok(rows[i][0] < rows[i - 1][1] - 50, `strip ${i + 1} overlaps strip ${i}`);
 });
 
 test('a page the model says is sideways is turned before it is read', async () => {
@@ -58,7 +82,7 @@ test('a clean answer is read once', async () => {
   const x = await readInvoice(p, { pages: [await page()] });
   assert.equal(p.calls.length, 1);
   assert.equal(x._review.retried, false);
-  assert.match(p.calls[0].hints.notes.join(' '), /close-up of the top/);
+  assert.match(p.calls[0].hints.notes.join(' '), /4 close-ups of that SAME page/);
 });
 
 test('a provably wrong answer is read again with the problem named, and the better one kept', async () => {

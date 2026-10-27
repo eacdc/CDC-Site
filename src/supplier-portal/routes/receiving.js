@@ -17,7 +17,9 @@ import { buildFieldFlags, resolveEditedFlags, confirmFlag, openFlags } from '../
 // Amounts as suppliers print them: "1,38,550/-", "(-)0.22", "815 Kg".
 import { toNumber as printedNumber } from '../services/extraction/invoice-review.js';
 import { runInvoiceChecks } from '../services/invoice-checks.js';
-import { postDocumentSet, erpWritesEnabled, postPurchaseInvoiceForGrn } from '../services/erp-receiving.js';
+import {
+  postDocumentSet, erpWritesEnabled, postPurchaseInvoiceForGrn, priceLines, discountNote,
+} from '../services/erp-receiving.js';
 import { openPoLines, findPostedInvoice, receiptsForInvoice } from '../services/erp-po.js';
 import { getItems, hsnForItems } from '../services/erp-items.js';
 import { groupForLedger, ledgerIdsForSite } from '../services/supplier-groups.js';
@@ -28,14 +30,17 @@ import { listGrns, loadGrn } from '../services/grn-register.js';
 import { editGrn, deleteGrn, canEditGrns } from '../services/erp-grn-edit.js';
 import { query } from '../db/mssql.js';
 import { COMPANY_ID } from '../config/constants.js';
-import { hasBlockingFailure, warningsNeedingReason } from '../config/validations.js';
+import { warningsNeedingReason } from '../config/validations.js';
+import {
+  ignoreCheck, undoIgnore, liveIgnores, withIgnores, unresolvedBlocks,
+} from '../services/check-overrides.js';
 import { createUploadUrl, viewUrl, deleteObjects } from '../../lib/r2-storage.js';
 import {
   matchInvoiceLines, assessCandidate, poNumbersFrom, isClosed,
 } from '../services/receiving-match.js';
 import { receivingDefaults } from '../services/receiving-defaults.js';
 import { stockQtyFor, stockQtyFromPurchase, purchaseQtyFromStock } from '../services/receipt-units.js';
-import { correctedLine } from '../services/line-corrections.js';
+import { correctedLine, repricedDiscount } from '../services/line-corrections.js';
 import { billsByKgStocksSheets, piQty } from '../lib/invoice-math.js';
 
 const router = Router();
@@ -43,7 +48,7 @@ const router = Router();
 /** The line fields a person may correct: what was read off the invoice. */
 const EDITABLE_LINE_FIELDS = [
   'lineNo', 'description', 'hsn', 'gsm', 'size', 'unitWt', 'bundles', 'totalUnits',
-  'qty', 'stockQty', 'uom', 'rate', 'amount', 'poRef',
+  'qty', 'stockQty', 'uom', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue', 'poRef',
 ];
 
 /** Every field the matcher writes about a PO, cleared. See the match route. */
@@ -190,6 +195,9 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       vehicleNo: extracted.vehicleNo,
       taxType: extracted.taxType,
       subTotal: printedNumber(extracted.subTotal),
+      // "Less: Discount" on the whole bill, kept positive however it is signed.
+      discount: positive(printedNumber(extracted.discount)),
+      discountPct: positive(printedNumber(extracted.discountPct)),
       freight: printedNumber(extracted.freight),
       taxable: printedNumber(extracted.taxable),
       cgst: printedNumber(extracted.cgst),
@@ -218,6 +226,9 @@ router.post('/document-sets/:id/extract', requireRole('STORE', 'BUYER', 'APPROVE
       uom: l.uom,
       rate: printedNumber(l.rate),
       amount: printedNumber(l.amount),
+      discountPct: positive(printedNumber(l.discountPct)),
+      discountAmount: positive(printedNumber(l.discountAmount)),
+      taxableValue: printedNumber(l.taxableValue),
       poRef: l.poRef ?? null,
     }));
 
@@ -447,13 +458,26 @@ async function checkAndSave(set, lines, { alreadyPosted }) {
   });
   set.extractedLines = lines;
   set.poCandidates = [...new Set(lines.map((l) => l.matchedPoTransactionId).filter(Boolean))];
-  set.checks = checks;
-  set.status = hasBlockingFailure(checks) ? 'NEEDS_REVIEW' : 'MATCHED';
+  return saveChecks(set, checks);
+}
+
+/**
+ * Store a run of the checks with the ignores that still apply to it - one
+ * whose check now passes is dropped - and build the reply. An ignored block
+ * no longer blocks; one nothing excuses does.
+ */
+async function saveChecks(set, checks) {
+  const ignored = liveIgnores(set.toObject().ignoredChecks || [], checks);
+  const stamped = withIgnores(checks, ignored);
+  const blocked = unresolvedBlocks(checks, ignored).length > 0;
+  set.ignoredChecks = ignored;
+  set.checks = stamped;
+  set.status = blocked ? 'NEEDS_REVIEW' : 'MATCHED';
   await set.save();
   return {
     documentSet: set,
-    checks,
-    isBlocked: hasBlockingFailure(checks),
+    checks: stamped,
+    isBlocked: blocked,
     warningsNeedingReason: warningsNeedingReason(checks),
   };
 }
@@ -688,6 +712,10 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
     if (body.qty !== undefined) edits.qty = num(body.qty);
     if (body.stockQty !== undefined) edits.stockQty = num(body.stockQty);
     if (body.rate !== undefined) edits.rate = num(body.rate);
+    // The trade discount, as a percentage or an amount; null clears it.
+    for (const k of ['discountPct', 'discountAmount']) {
+      if (body[k] !== undefined) edits[k] = body[k] === null || body[k] === '' ? null : num(body[k]);
+    }
     if (body.description !== undefined) edits.description = body.description === null ? null : String(body.description);
     // The kg on the supplier's bill, for the purchase invoice only. null clears it.
     if (body.billedKg !== undefined) edits.billedKg = body.billedKg === null || body.billedKg === '' ? null : num(body.billedKg);
@@ -701,6 +729,11 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
       || (edits.stockQty !== undefined && (edits.stockQty === null || edits.stockQty < 0))
       || (edits.rate !== undefined && (edits.rate === null || edits.rate < 0))) {
       return res.status(400).json({ error: 'Quantity and rate must be numbers, zero or more.' });
+    }
+    if ((edits.discountPct !== undefined && edits.discountPct !== null && !(edits.discountPct >= 0 && edits.discountPct < 100))
+      || (edits.discountAmount !== undefined && edits.discountAmount !== null && !(edits.discountAmount >= 0))
+      || ['discountPct', 'discountAmount'].some((k) => body[k] !== undefined && body[k] !== null && body[k] !== '' && edits[k] === null)) {
+      return res.status(400).json({ error: 'A discount is a percentage from 0 to under 100, or an amount of zero or more.' });
     }
 
     const lines = plainLinesOf(set);
@@ -721,11 +754,15 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
         // worked out from the kg is worked out again.
         if (edits.stockQty !== undefined) line.stockQtyByHand = true;
         else if (edits.qty !== undefined) line.stockQtyByHand = false;
-        if (edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined || edits.billedKg !== undefined) {
+        const priced = edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined || edits.billedKg !== undefined;
+        if (priced) {
           // The amount is what the bill charges: billed kg x rate where there is one.
           const q = num(piQty(line));
           const r = num(line.rate);
           line.amount = q !== null && r !== null ? Math.round(q * r * 100) / 100 : line.amount;
+        }
+        if (priced || edits.discountPct !== undefined || edits.discountAmount !== undefined) {
+          Object.assign(line, repricedDiscount(line, edits));
         }
       }
     }
@@ -1235,6 +1272,8 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
           ...l, ...UNMATCHED, matchManual: false, matchBasis: null,
         }));
         set.checks = [];
+        // Nor can an ignored check: it excused the old supplier's PO, not the new one's.
+        set.ignoredChecks = [];
         set.poCandidates = [];
         set.status = 'EXTRACTED';
       }
@@ -1292,11 +1331,65 @@ router.post('/document-sets/:id/flags/confirm', requireRole('STORE', 'BUYER', 'A
 });
 
 /**
+ * Ignore a blocking check: "I know - post it anyway". Body: {code, lineNo, reason}.
+ *
+ * The reason is required, and who ignored it is whoever is signed in, never
+ * what the client says. Only a block that is failing in the stored checks can
+ * be ignored, and not the ones in NOT_IGNORABLE. The reply is the checks', as
+ * from /match.
+ */
+router.post('/document-sets/:id/checks/ignore', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const stored = set.toObject();
+    const result = ignoreCheck(stored.ignoredChecks || [], stored.checks || [], {
+      code: req.body?.code,
+      lineNo: req.body?.lineNo,
+      reason: req.body?.reason,
+      by: req.sp.actor,
+      byName: personName(req),
+    });
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    set.ignoredChecks = result.ignored;
+    const reply = await saveChecks(set, stored.checks || []);
+    const added = result.ignored[result.ignored.length - 1];
+    await AuditLog.create({
+      action: 'CHECK_IGNORED', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor,
+      after: { code: added.code, lineNo: added.lineNo, message: added.message },
+      reason: added.reason,
+    });
+    return res.json(reply);
+  } catch (err) { return next(err); }
+});
+
+/** Take an ignore back: the check blocks posting again. Body: {code, lineNo}. */
+router.post('/document-sets/:id/checks/unignore', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
+  try {
+    const set = await loadOpenSet(req, res);
+    if (!set) return undefined;
+    const stored = set.toObject();
+    const { ignored, found } = undoIgnore(stored.ignoredChecks || [], { code: req.body?.code, lineNo: req.body?.lineNo });
+    if (!found) return res.status(404).json({ error: `${req.body?.code || 'That check'} is not ignored.` });
+    set.ignoredChecks = ignored;
+    const reply = await saveChecks(set, stored.checks || []);
+    await AuditLog.create({
+      action: 'CHECK_IGNORE_UNDONE', entity: 'documentSet', entityId: String(set._id),
+      site: set.site, actor: req.sp.actor,
+      after: { code: String(req.body?.code ?? ''), lineNo: req.body?.lineNo ?? null },
+    });
+    return res.json(reply);
+  } catch (err) { return next(err); }
+});
+
+/**
  * Post: GRN + purchase invoice + PO line closure, in one transaction.
  *
- * A blocking check cannot be overridden by anyone. A warning needs a recorded
- * reason. Both rules are enforced here rather than in the client, because the
- * client is a tablet in a warehouse and the rule has to hold regardless.
+ * A blocking check posts only once a person has ignored it with a reason,
+ * stored on the set through /checks/ignore. A warning needs a recorded reason.
+ * Both rules are enforced here rather than in the client, because the client
+ * is a tablet in a warehouse and the rule has to hold regardless.
  */
 router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
   try {
@@ -1333,10 +1426,15 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       return res.status(422).json({ error: `${which}. Match again against open POs before posting.` });
     }
 
-    if (hasBlockingFailure(set.checks)) {
+    // From the stored checks and the stored ignores only: an ignore whose
+    // check now passes, or that has no reason, excuses nothing.
+    const stored = set.toObject();
+    const ignored = liveIgnores(stored.ignoredChecks || [], stored.checks || []);
+    const unresolved = unresolvedBlocks(stored.checks || [], ignored);
+    if (unresolved.length) {
       return res.status(422).json({
-        error: 'Blocking checks must be resolved before posting. These cannot be overridden.',
-        checks: set.checks.filter((c) => !c.passed && c.severity === 'BLOCK'),
+        error: 'Blocking checks must be resolved, or ignored with a reason, before posting.',
+        checks: unresolved,
       });
     }
 
@@ -1373,6 +1471,7 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
     const lines = set.extractedLines
       .filter((l) => l.matchedPoTransactionId)
       .map((l) => ({
+        lineNo: l.lineNo,
         itemId: l.matchedItemId,
         itemGroupId: l.itemGroupId ?? null,
         poTransactionId: l.matchedPoTransactionId,
@@ -1384,6 +1483,10 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
         stockQty: l.stockQty ?? stockQtyFor(l),
         rate: l.rate,
         amount: l.amount,
+        // The trade discount as read: the writer posts the line net of it.
+        discountPct: l.discountPct ?? null,
+        discountAmount: l.discountAmount ?? null,
+        taxableValue: l.taxableValue ?? null,
         purchaseUnit: l.uom,
         stockUnit: l.stockUnit ?? null,
         productHsnId: l.productHsnId ?? null,
@@ -1429,6 +1532,9 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       }
     }
     set.markModified('checks');
+    // The ignored blocks are already stamped onto the checks by saveChecks;
+    // the list of them stays on the posted set as well, as it stood.
+    set.ignoredChecks = ignored;
     await set.save();
 
     await AuditLog.create({
@@ -1438,8 +1544,16 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       site: set.site,
       actor: req.sp.actor,
       after: set.posted,
-      reason: [...reasons.entries()].map(([code, reason]) => `${code}: ${reason}`).join('; ') || null,
-      meta: { closedPoLines: result.closedLines },
+      reason: [
+        ...[...reasons.entries()].map(([code, reason]) => `${code}: ${reason}`),
+        ...ignored.map((o) => `${o.code}${o.lineNo === null || o.lineNo === undefined ? '' : ` line ${o.lineNo}`} IGNORED by ${o.byName || o.by}: ${o.reason}`),
+      ].join('; ') || null,
+      meta: {
+        closedPoLines: result.closedLines,
+        ignoredChecks: ignored,
+        // A discount posted into the rate, as printed: the ERP's lines carry none.
+        discountNote: discountNote(priceLines({ header: set.extractedHeader, lines })) || null,
+      },
     });
 
     return res.json({ documentSet: set, ...result });
@@ -1597,6 +1711,11 @@ function inferShipToState(extracted) {
   if (code === '19') return 'West Bengal';
   if (code === '24') return 'Gujarat';
   return null;
+}
+
+/** A discount figure as a positive number: bills print it "-22,108.80" or "(-)". */
+function positive(n) {
+  return n === null || n === undefined ? null : Math.abs(n);
 }
 
 function num(value) {

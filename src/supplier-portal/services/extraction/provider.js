@@ -258,6 +258,16 @@ export const ExtractedInvoiceLineSchema = z.object({
   rate: printed(),
   amount: printed(),
   /**
+   * A trade discount on the line, as printed: a "Disc %" column, a discount
+   * amount, and the line's value after it. Optional like poRef: most
+   * invoices carry none, and a plain z.object drops a key it does not name -
+   * which is how Sonafine's 20% (KOLGST26/5003360) vanished and the bill was
+   * about to post 22,108.80 high.
+   */
+  discountPct: printed().optional(),
+  discountAmount: printed().optional(),
+  taxableValue: printed().optional(),
+  /**
    * CDC's PO number as the supplier wrote it against this line ("PO NO =
    * 3232", "3081 26-09-2026"). Optional rather than nullable: printed()
    * rejects a missing key, and a model that leaves out a field it found no
@@ -288,6 +298,9 @@ export const ExtractedInvoiceSchema = z.object({
   gateEntryDate: printed().optional(),
   taxType: z.enum(['CGST_SGST', 'IGST']).nullable(),
   subTotal: printed(),
+  /** "Less: Discount" on the whole bill, before tax - amount and/or percentage. */
+  discount: printed().optional(),
+  discountPct: printed().optional(),
   freight: printed(),
   taxable: printed(),
   cgst: printed(),

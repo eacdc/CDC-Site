@@ -16,6 +16,7 @@
  */
 
 import { isValidGstin, cleanGstin } from '../../lib/gstin.js';
+import { lineMoney, headerDiscount, goodsValue } from '../../lib/invoice-math.js';
 
 /** Rupees of slack, as check INV006 allows. */
 const TOLERANCE = 1;
@@ -53,17 +54,31 @@ export function invoiceProblems(x = {}) {
   const lines = Array.isArray(x.lines) ? x.lines : [];
 
   let sum = 0;
+  let netSum = 0;
   let summed = 0;
   for (const l of lines) {
     const q = toNumber(l.qty);
     const r = toNumber(l.rate);
     const a = toNumber(l.amount);
-    if (a !== null) { sum += a; summed += 1; }
-    if (q !== null && r !== null && a !== null && Math.abs(q * r - a) > TOLERANCE) {
+    // The line as numbers, discount and all: a discounted line is not a misread one.
+    const m = lineMoney({
+      qty: q, rate: r, amount: a,
+      discountPct: toNumber(l.discountPct), discountAmount: toNumber(l.discountAmount), taxableValue: toNumber(l.taxableValue),
+    });
+    if (a !== null) { sum += m.gross; netSum += m.net; summed += 1; }
+    if (q !== null && r !== null && a !== null && Math.abs(q * r - m.gross) > TOLERANCE) {
       problems.push({
         kind: 'LINE_ARITHMETIC', field: `lines.${l.lineNo}`, lineNo: l.lineNo,
         message: `Line ${l.lineNo}: quantity ${l.qty} x rate ${l.rate} = ${fmt(q * r)}, but you gave the amount as ${l.amount}. `
-          + 'One of the three was misread - read that row again, column by column.',
+          + 'One of the three was misread - read that row again, column by column. If the row carries a discount column, '
+          + 'put it in "discountPct" / "discountAmount" and the value after it in "taxableValue".',
+      });
+    }
+    if (m.stated !== null && toNumber(l.taxableValue) !== null && Math.abs(m.gross - m.stated - m.net) > TOLERANCE) {
+      problems.push({
+        kind: 'LINE_DISCOUNT', field: `lines.${l.lineNo}`, lineNo: l.lineNo,
+        message: `Line ${l.lineNo}: amount ${fmt(m.gross)} less discount ${fmt(m.stated)} = ${fmt(m.gross - m.stated)}, but you gave `
+          + `the value after discount as ${l.taxableValue}. Read the discount and the taxable value on that row again.`,
       });
     }
     if (a !== null && q === null && r === null) {
@@ -82,7 +97,8 @@ export function invoiceProblems(x = {}) {
   const roundOff = toNumber(x.roundOff) ?? 0;
   const grandTotal = toNumber(x.grandTotal);
 
-  if (summed && subTotal !== null && Math.abs(sum - subTotal) > TOLERANCE) {
+  // The goods total may be printed before the line discounts or after them.
+  if (summed && subTotal !== null && Math.abs(sum - subTotal) > TOLERANCE && Math.abs(netSum - subTotal) > TOLERANCE) {
     problems.push({
       kind: 'SUBTOTAL', field: 'subTotal',
       message: `The line amounts add up to ${fmt(sum)}, but you gave subTotal as ${x.subTotal}. "subTotal" is the value of the `
@@ -90,13 +106,21 @@ export function invoiceProblems(x = {}) {
         + 'value: put it in "taxable" instead. If a goods line is missing or misread, read the table again.',
     });
   }
-  if (subTotal !== null && taxable !== null && Math.abs(subTotal + freight - taxable) > TOLERANCE) {
+  // The goods after their discounts, less a discount on the whole bill, plus
+  // freight: the taxable value. The goods are the subtotal, as check INV008
+  // takes them, so a misread line is a line problem and not this one.
+  const goods = goodsValue({ subTotal, lineSum: sum, netSum, hasAmounts: summed > 0, tol: TOLERANCE });
+  const billDiscount = headerDiscount({ discount: toNumber(x.discount), discountPct: toNumber(x.discountPct) }, goods ?? 0);
+  if (goods !== null && taxable !== null && Math.abs(goods - billDiscount + freight - taxable) > TOLERANCE) {
+    const less = billDiscount ? ` - discount ${fmt(billDiscount)}` : '';
     problems.push({
       kind: 'TAXABLE', field: 'taxable',
-      message: `subTotal ${x.subTotal} + freight ${x.freight ?? 0} = ${fmt(subTotal + freight)}, but you gave taxable as ${x.taxable}.`,
+      message: `${subTotal === null ? 'The lines' : 'subTotal'} ${fmt(goods)}${goods !== subTotal && subTotal !== null ? ' after line discounts' : ''}${less} + freight ${x.freight ?? 0} = `
+        + `${fmt(goods - billDiscount + freight)}, but you gave taxable as ${x.taxable}. If the invoice takes a discount off before `
+        + 'tax, put it on its line ("discountPct", "discountAmount", "taxableValue") or, for the whole bill, in "discount".',
     });
   }
-  const base = taxable ?? (subTotal !== null ? subTotal + freight : null);
+  const base = taxable ?? (goods !== null ? goods - billDiscount + freight : null);
   if (base !== null && grandTotal !== null && Math.abs(base + tax + roundOff - grandTotal) > TOLERANCE) {
     problems.push({
       kind: 'GRAND_TOTAL', field: 'grandTotal',

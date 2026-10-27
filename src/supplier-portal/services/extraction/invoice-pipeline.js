@@ -1,14 +1,18 @@
 /**
  * Reading a supplier invoice: prepare the photos, read, check, retry once.
  *
- * PREPARE. Each page is turned upright and sent twice: the whole page, and a
- * close-up of its top part, where the GSTIN, invoice number, e-way bill and
- * CDC's gate stamp sit. In the October 2026 run a photo of a Siegwerk invoice
- * lying on its side came back as an invented invoice - plausible ink lines and
- * a total that is nowhere on the page - and the same photo turned upright read
- * correctly. The model shrinks every image to about 768 pixels on its short
- * side, so on a whole page the small print is the first thing lost; the
- * close-up gives it back.
+ * PREPARE. Each page is turned upright and sent as the whole page, then as
+ * close-ups: strips from top to bottom, overlapping a little so no row is cut
+ * in two. In the October 2026 run a photo of a Siegwerk invoice lying on its
+ * side came back as an invented invoice - plausible ink lines and a total that
+ * is nowhere on the page - and the same photo turned upright read correctly.
+ * The model shrinks every image to about 768 pixels on its short side, so on
+ * a whole page the small print is the first thing lost; the close-ups give it
+ * back. They once covered only the top of the page - GSTIN, invoice number,
+ * gate stamp - and Sonafine's KOLGST26/5003360 showed what that left out: its
+ * item row, read off the whole page alone, came back as 120 GSM for 160, size
+ * "TCF/2020ms" for 72x102cms, a 20% discount as 2%, and 368.49 KG for
+ * 3,136 NOS.
  *
  * Upright is decided two ways: the camera's own EXIF orientation, and then -
  * for a page photographed or scanned sideways, which EXIF knows nothing about
@@ -23,8 +27,11 @@
 import sharp from 'sharp';
 import { invoiceProblems, retryInstruction } from './invoice-review.js';
 
-/** The share of the page height the close-up covers. */
-const CLOSE_UP_SHARE = 0.45;
+/** Close-ups per page, and the share of the page height each covers. */
+const STRIPS = 4;
+const STRIP_SHARE = 0.32;
+/** The short side the model keeps of an image at high detail. */
+const MODEL_SHORT_SIDE = 768;
 /** Longest side sent; the model scales anything larger down to this anyway. */
 const MAX_SIDE = 2048;
 
@@ -58,8 +65,28 @@ async function uprightTurn(provider, upright) {
 }
 
 /**
- * Pages as the model should see them: upright, each followed by a close-up of
- * its top. Anything that is not an image (a PDF page passed through as a URL)
+ * A page cut into STRIPS strips from top to bottom, overlapping, each scaled
+ * to what the model keeps: up to MODEL_SHORT_SIDE on its short side, enlarged
+ * if need be - a phone photo's row of 10-pixel figures is read at 17.
+ */
+async function strips(pageImage) {
+  const { width, height } = await sharp(pageImage).metadata();
+  const h = Math.max(1, Math.min(height, Math.round(height * STRIP_SHARE)));
+  const out = [];
+  for (let i = 0; i < STRIPS; i += 1) {
+    const top = Math.round(((height - h) * i) / Math.max(1, STRIPS - 1));
+    const scale = Math.min(MAX_SIDE / width, MODEL_SHORT_SIDE / Math.min(width, h));
+    out.push(await sharp(pageImage)
+      .extract({ left: 0, top, width, height: h })
+      .resize(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(h * scale)), { kernel: 'lanczos3' })
+      .jpeg({ quality: 92 }).toBuffer());
+  }
+  return out;
+}
+
+/**
+ * Pages as the model should see them: upright, each followed by close-ups of
+ * it, top to bottom. Anything that is not an image (a PDF page passed through as a URL)
  * is left exactly as it was.
  */
 export async function preparePages(provider, pages = []) {
@@ -84,13 +111,10 @@ export async function preparePages(provider, pages = []) {
     if (turn) notes.push(`page ${pageNo} was turned ${turn} degrees to read upright`);
     const pageImage = await sharp(exifUpright).rotate(turn)
       .resize(MAX_SIDE, MAX_SIDE, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 90 }).toBuffer();
-    const { width, height } = await sharp(pageImage).metadata();
-    const closeUp = await sharp(pageImage)
-      .extract({ left: 0, top: 0, width, height: Math.max(1, Math.round(height * CLOSE_UP_SHARE)) })
-      .jpeg({ quality: 92 }).toBuffer();
-
     out.push({ url: asDataUrl(pageImage), pageNo, detail: 'high' });
-    out.push({ url: asDataUrl(closeUp), pageNo, detail: 'high', closeUp: true });
+    for (const strip of await strips(pageImage)) {
+      out.push({ url: asDataUrl(strip), pageNo, detail: 'high', closeUp: true });
+    }
   }
   return { pages: out, notes };
 }
@@ -121,10 +145,12 @@ export function readingsDiffer(first = {}, second = {}) {
 function imageGuide(pages) {
   if (!pages.some((p) => p.closeUp)) return null;
   const count = new Set(pages.map((p) => p.pageNo)).size;
-  return `The images come in pairs: for each of the ${count} page(s), first the whole page, then a close-up of the top `
-    + 'part of that SAME page. The close-up is not another page and adds no lines; it is there so you can read small '
-    + 'print exactly - GSTINs, the invoice number, the e-way bill and the gate stamp. Where a value appears in both, take '
-    + 'its characters from the close-up.';
+  return `The images come in groups of ${STRIPS + 1}: for each of the ${count} page(s), first the whole page, then `
+    + `${STRIPS} close-ups of that SAME page - strips from its top to its bottom, each overlapping the next a little. `
+    + 'The close-ups are not more pages and add no lines: a row that shows in two strips is one row. Take the layout - '
+    + 'which lines there are, which column is which - from the whole page; take the characters of every value - GSTINs, the '
+    + 'invoice number, descriptions, GSM and size, HSN, quantities, rates, discounts and amounts, the gate stamp - from '
+    + 'the close-ups, where they are large enough to read exactly.';
 }
 
 /**
