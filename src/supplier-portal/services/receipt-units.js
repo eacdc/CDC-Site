@@ -56,6 +56,27 @@ export function purchaseQtyFromStock(stockQty, units) {
  */
 export function stockQtyFor(line = {}) {
   if (!kgPerSheet(line)) return finite(line.qty);
-  return finite(line.stockQty) ?? (finite(line.totalUnits) > 0 ? finite(line.totalUnits) : null)
-    ?? stockQtyFromPurchase(line.qty, line);
+  const fromKg = stockQtyFromPurchase(line.qty, line);
+  // Typed by a person: theirs.
+  if (line.stockQtyByHand && finite(line.stockQty) !== null) return finite(line.stockQty);
+  // Written on the invoice as the sheet total: "123 x 250 = 30750 Sheet".
+  const written = sheetsWritten(line.description);
+  if (written) return written;
+  // The units column, only when it agrees with the kg. On Krishna Vanijya's
+  // invoices "Total Units" is reams - 123 of them for 30,750 sheets - and
+  // taken for sheets it would have put 123 sheets into stock.
+  const units = finite(line.totalUnits);
+  if (units > 0 && (fromKg === null || Math.abs(units - fromKg) <= fromKg * SHEET_AGREEMENT)) return units;
+  return fromKg;
+}
+
+/** How close a printed sheet count must be to the kg's to be taken as sheets. */
+const SHEET_AGREEMENT = 0.03;
+
+/** A sheet total written out on the line: "59 x 500 = 29500 Sheet" -> 29500. */
+export function sheetsWritten(text) {
+  const m = String(text ?? '').match(/=\s*([\d,]+(?:\.\d+)?)\s*sheets?/i);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
 }

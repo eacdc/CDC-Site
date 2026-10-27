@@ -843,6 +843,8 @@ export const documentSetSchema = new Schema({
     itemGroupName: String,
     // Receipt Qty (S.U.) - sheets for paper bought by the kilo; else the qty.
     stockQty: Number,
+    /** Typed by a person, so a re-match keeps it rather than working it out again. */
+    stockQtyByHand: Boolean,
     productHsnId: Number,
     expectedHsn: String,
     wtPerPacking: Number,

@@ -6,7 +6,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { kgPerSheet, stockQtyFromPurchase, purchaseQtyFromStock, stockQtyFor } from '../services/receipt-units.js';
+import { kgPerSheet, stockQtyFromPurchase, purchaseQtyFromStock, stockQtyFor, sheetsWritten } from '../services/receipt-units.js';
 
 const P00026 = { purchaseUnit: 'KG', stockUnit: 'Sheet', wtPerPacking: 9.87743, unitPerPacking: 100 };
 const BOX = { purchaseUnit: 'PCS', stockUnit: 'NOS', wtPerPacking: 0, unitPerPacking: 0 };
@@ -36,8 +36,24 @@ test('no weight per packing, no conversion', () => {
 test('a count already on the line wins over the arithmetic', () => {
   // The invoice said 1,498 sheets for 148.161 kg; that is what arrived.
   assert.equal(stockQtyFor({ ...P00026, qty: 148.161, totalUnits: 1498 }), 1498);
-  assert.equal(stockQtyFor({ ...P00026, qty: 148.161, stockQty: 1490, totalUnits: 1498 }), 1490);
+  assert.equal(stockQtyFor({ ...P00026, qty: 148.161, stockQty: 1490, stockQtyByHand: true, totalUnits: 1498 }), 1490);
+  // A count worked out earlier, not typed, is worked out again.
+  assert.equal(stockQtyFor({ ...P00026, qty: 148.161, stockQty: 123 }), 1500);
   assert.equal(stockQtyFor({ ...P00026, qty: 148.161 }), 1500);
   // Same units: always the qty, whatever else the line says.
   assert.equal(stockQtyFor({ ...BOX, qty: 410, totalUnits: 41, stockQty: 7 }), 410);
+});
+
+test('reams in the units column are not sheets (Krishna Vanijya KV/26-27/19508)', () => {
+  const P00023 = { purchaseUnit: 'Kg', stockUnit: 'Sheet', wtPerPacking: 6.58063, unitPerPacking: 100 };
+  // "Total Units 123" is 123 reams of 250; the description writes the sheets out.
+  assert.equal(stockQtyFor({ ...P00023, qty: 2024.58, totalUnits: 123, description: 'NI KOTE PAPER 123 x 250 = 30750 Sheet' }), 30750);
+  // Without the sum written out, the kg decide - not the 123.
+  assert.equal(stockQtyFor({ ...P00023, qty: 2024.58, totalUnits: 123, description: 'NI KOTE PAPER' }), 30766);
+});
+
+test('a sheet total written on the line', () => {
+  assert.equal(sheetsWritten('HI KOTE PAPER 59 x 500 = 29500 Sheet'), 29500);
+  assert.equal(sheetsWritten('80X144=11,520 sheets'), 11520);
+  assert.equal(sheetsWritten('HI KOTE PAPER'), null);
 });

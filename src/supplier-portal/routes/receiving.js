@@ -717,6 +717,10 @@ router.patch('/document-sets/:id/lines/:lineNo', requireRole('STORE', 'BUYER', '
         // Receipt Qty in either unit fills in the other, as on the ERP's screen.
         if (edits.stockQty !== undefined && edits.qty === undefined) line.qty = purchaseQtyFromStock(edits.stockQty, line);
         if (edits.qty !== undefined && edits.stockQty === undefined) line.stockQty = stockQtyFromPurchase(edits.qty, line);
+        // A sheet count a person typed is kept through every re-match; one
+        // worked out from the kg is worked out again.
+        if (edits.stockQty !== undefined) line.stockQtyByHand = true;
+        else if (edits.qty !== undefined) line.stockQtyByHand = false;
         if (edits.qty !== undefined || edits.stockQty !== undefined || edits.rate !== undefined || edits.billedKg !== undefined) {
           // The amount is what the bill charges: billed kg x rate where there is one.
           const q = num(piQty(line));
@@ -1201,6 +1205,7 @@ router.patch('/document-sets/:id', requireRole('STORE', 'BUYER', 'APPROVER'), as
           warehouseId: was.warehouseId ?? null,
           ...(was.addedByHand ? { addedByHand: true } : {}),
           ...(was.unplacedByHand ? { unplacedByHand: true } : {}),
+          ...(was.stockQtyByHand ? { stockQtyByHand: true } : {}),
           ...(was.matchManual ? {
             matchManual: true,
             matchedPoTransactionDetailId: was.matchedPoTransactionDetailId,
