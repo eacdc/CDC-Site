@@ -84,16 +84,89 @@ export function sizeFrom(text) {
 
 /** The same size in the order it was printed - for showing a person. */
 export function sizeAsPrinted(text) {
-  const m = String(text ?? '').match(
-    /(\d{2,4}(?:\.\d+)?)\s*[x×*]\s*(\d{2,4}(?:\.\d+)?)(?:\s*[x×*]\s*(\d{2,4}(?:\.\d+)?))?/i,
-  );
-  if (!m) return null;
-  return [m[1], m[2], m[3]].filter(Boolean).map(Number);
+  const m = firstSize(text);
+  return m ? [m[1], m[2], m[3]].filter(Boolean).map(Number) : null;
 }
 
-function compareSizes(a, b) {
-  if (!a || !b || a.length !== b.length) return 'unknown';
-  return a.every((v, i) => v === b[i]) ? 'exact' : 'mismatch';
+const SIZE_RE = /(\d{2,4}(?:\.\d+)?)\s*[x×*]\s*(\d{2,4}(?:\.\d+)?)(?:\s*[x×*]\s*(\d{2,4}(?:\.\d+)?))?/gi;
+
+/**
+ * The first size in the text - skipping arithmetic. "123 x 250 = 30750 Sheet"
+ * is a sheet count worked out, not a 123 x 250 sheet; taken for a size it made
+ * every paper line look like the wrong item.
+ */
+function firstSize(text) {
+  const t = String(text ?? '');
+  for (const m of t.matchAll(SIZE_RE)) {
+    if (/^\s*=/.test(t.slice(m.index + m[0].length))) continue;
+    return m;
+  }
+  return null;
+}
+
+/**
+ * A size with the unit printed right after it, if any: "600X360X335 mm",
+ * "( 320 X 225 X 285 )MM", "20X30" (none). A unit further along belongs to
+ * something else - in "63.5X091.4-1.9 MM" the MM is the caliper.
+ */
+export function sizeWithUnit(text) {
+  const t = String(text ?? '');
+  const m = firstSize(t);
+  if (!m) return null;
+  const after = t.slice(m.index + m[0].length);
+  const u = after.match(/^\s*\)?\s*(mm|cm|inches|inch|in\b|")/i);
+  const unit = !u ? null : /mm/i.test(u[1]) ? 'mm' : /cm/i.test(u[1]) ? 'cm' : 'inch';
+  const shown = [m[1], m[2], m[3]].filter(Boolean).map(Number);
+  return { dims: [...shown].sort((a, b) => a - b), shown, unit };
+}
+
+/** mm per unit, and the slack a conversion is allowed. */
+const UNIT_MM = { mm: 1, cm: 10, inch: 25.4 };
+
+/**
+ * Compare a size as printed on the invoice with the item's size in mm.
+ *
+ * Suppliers print sizes in mm, cm or inches, and CDC's item master holds mm:
+ * 20 x 30 in is the 508 x 762 mm sheet, 63.5 x 91.4 cm the 635 x 914 mm board.
+ * When the unit is printed it is used; when it is not, each unit is tried and
+ * the size matches if one of them fits.
+ *
+ * In the same unit the size is still digit for digit - a box 2 mm off is a
+ * different box. A converted size gets the slack its rounding needs: CDC
+ * writes 23 x 36 in as 585 x 915, which is 584.2 x 914.4.
+ *
+ * @returns {{result: 'exact'|'mismatch'|'unknown', unit?: string}}
+ */
+export function compareSizeUnits(printed, itemMm) {
+  if (!printed || !itemMm || printed.dims.length !== itemMm.length) return { result: 'unknown' };
+  const units = printed.unit ? [printed.unit] : ['mm', 'cm', 'inch'];
+  for (const unit of units) {
+    const f = UNIT_MM[unit];
+    const fits = printed.dims.every((v, i) => {
+      const mm = v * f;
+      const slack = f === 1 ? 0 : f === 10 ? 1 : Math.max(2, itemMm[i] * 0.006);
+      return Math.abs(mm - itemMm[i]) <= slack + 1e-9;
+    });
+    if (fits) return { result: 'exact', unit };
+  }
+  return { result: 'mismatch' };
+}
+
+/** The item's size in mm, sorted: its own name, else the master's SizeW x SizeL. */
+function itemSizeMm(item, po) {
+  const fromName = sizeFrom(item.ItemName) || sizeFrom(po.ItemDescription);
+  if (fromName) return fromName;
+  const w = num(item.SizeW);
+  const l = num(item.SizeL);
+  return w > 0 && l > 0 ? [w, l].sort((a, b) => a - b) : null;
+}
+
+/** GSM as a number: the line's own field, else "170 GSM" in its wording. */
+function gsmOf(value, text) {
+  const n = num(String(value ?? '').replace(/^0+(?=\d)/, ''));
+  if (n !== null && n > 0) return n;
+  const m = String(text ?? '').match(/(\d{2,4})\s*GSM/i);
+  return m ? Number(m[1]) : null;
 }
 
 function num(value) {
@@ -166,11 +239,20 @@ export function assessCandidate(line, po, { items, headerPoNumbers, receivedFrom
     rateFar = delta / poRate > MATCH_RULES.rateFarPct;
   }
 
-  const lineSize = sizeFrom(line.description);
-  const poSize = sizeFrom(item.ItemName) || sizeFrom(po.ItemDescription);
-  const size = compareSizes(lineSize, poSize);
-  const sizeExact = size === 'exact';
-  const sizeMismatch = size === 'mismatch';
+  // The size from the line's own size field first - the reader puts a paper
+  // invoice's "20X30" there, not in the description - then its wording.
+  const linePrinted = sizeWithUnit(line.size) || sizeWithUnit(line.description);
+  const poSize = itemSizeMm(item, po);
+  const size = compareSizeUnits(linePrinted, poSize);
+  const sizeExact = size.result === 'exact';
+  const sizeMismatch = size.result === 'mismatch';
+
+  // GSM tells paper apart: one PO can carry 128 and 210 GSM in the same size
+  // at the same rate. A different GSM is a different item.
+  const lineGsm = gsmOf(line.gsm, line.description);
+  const itemGsm = gsmOf(item.GSM, item.ItemName);
+  const gsmExact = lineGsm !== null && itemGsm !== null && lineGsm === itemGsm;
+  const gsmMismatch = lineGsm !== null && itemGsm !== null && lineGsm !== itemGsm;
 
   // Name and PO description scored apart, best taken. Joined, the description's
   // labels (Quality:, SizeL:, NoOfPly:, ManufecturerItemCode:) dilute the share
@@ -189,11 +271,15 @@ export function assessCandidate(line, po, { items, headerPoNumbers, receivedFrom
   // as strong. It does not lift the contradictions: the same invoice puts
   // several boxes on one PO, and each line must still be the right box.
   const strong = poRefMatch || rateExact || sizeExact || receivedHere;
-  const contradicted = (rateFar && !sizeExact) || (sizeMismatch && !rateExact);
-  const accepted = strong && !contradicted && coverage >= MATCH_RULES.minCoverage;
+  const contradicted = (rateFar && !sizeExact) || (sizeMismatch && !rateExact) || gsmMismatch;
+  // Paper suppliers print their own trade names ("HI KOTE PAPER" for CDC's
+  // "Gloss Art"), so a name share is not required when the specification
+  // itself agrees: the size, and the GSM where there is one.
+  const specAgrees = sizeExact && (gsmExact || (lineGsm === null && rateExact));
+  const accepted = strong && !contradicted && (coverage >= MATCH_RULES.minCoverage || specAgrees);
 
   const score = (poRefMatch ? 3 : 0) + (headerPoMatch ? 0.5 : 0)
-    + (rateExact ? 1.5 : 0) + (sizeExact ? 1.5 : 0) + coverage;
+    + (rateExact ? 1.5 : 0) + (sizeExact ? 1.5 : 0) + (gsmExact ? 1 : 0) + coverage;
 
   const reasons = [];
   if (poRefMatch) reasons.push(`PO ${linePoNo} printed on the invoice`);
@@ -203,16 +289,21 @@ export function assessCandidate(line, po, { items, headerPoNumbers, receivedFrom
     reasons.push(`rate ₹${rate} vs PO ₹${Math.round(poRate * 100) / 100}`);
   }
   // Compared sorted, shown as printed: "450×340×230", not "230×340×450".
-  const lineShown = sizeAsPrinted(line.description);
-  const poShown = sizeAsPrinted(item.ItemName) || sizeAsPrinted(po.ItemDescription);
-  if (sizeExact) reasons.push(`size ${fmtSize(lineShown)} matches`);
-  else if (sizeMismatch) reasons.push(`size ${fmtSize(lineShown)} vs ${fmtSize(poShown)}`);
+  const lineShown = linePrinted ? linePrinted.shown : null;
+  const poShown = sizeAsPrinted(item.ItemName) || sizeAsPrinted(po.ItemDescription) || poSize;
+  if (sizeExact) {
+    reasons.push(size.unit === 'mm'
+      ? `size ${fmtSize(lineShown)} matches`
+      : `size ${fmtSize(lineShown)} ${size.unit === 'inch' ? 'in' : size.unit} = ${fmtSize(poShown)} mm`);
+  } else if (sizeMismatch) reasons.push(`size ${fmtSize(lineShown)} vs ${fmtSize(poShown)}`);
+  if (gsmExact) reasons.push(`${lineGsm} GSM matches`);
+  else if (gsmMismatch) reasons.push(`${lineGsm} GSM vs ${itemGsm} GSM`);
   if (receivedHere) reasons.push(`already received from this invoice on ${receipt.GrnVoucherNo} (${num(receipt.ReceivedQty)})`);
   if (closed) reasons.push(closedNote(po));
 
   return {
     po, item, accepted, score, poRefMatch, headerPoMatch, closed, receivedHere, receipt,
-    rateExact, rateFar, sizeExact, sizeMismatch, coverage, reasons,
+    rateExact, rateFar, sizeExact, sizeMismatch, gsmExact, gsmMismatch, coverage, reasons,
   };
 }
 
