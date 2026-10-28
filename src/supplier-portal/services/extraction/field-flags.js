@@ -22,14 +22,17 @@
  * Only fields the page shows can carry a flag: a flag nobody can see would
  * block posting with no way to clear it. Header fields of steps 2 and 4, and
  * the line fields of step 2.
+ *
+ * Not the e-way bill, the vehicle number or a line's HSN: CDC does not hold a
+ * GRN for any of them (28 Oct 2026), so they are never flagged.
  */
 export const HEADER_FLAG_FIELDS = [
   'invoiceNo', 'invoiceDate', 'supplierGstin', 'buyerGstin', 'shipToGstin',
-  'eWayBillNo', 'vehicleNo', 'gateEntryNo', 'gateEntryDate', 'poNumbers', 'taxType',
+  'gateEntryNo', 'gateEntryDate', 'poNumbers', 'taxType',
   'subTotal', 'discount', 'discountPct', 'taxable', 'cgst', 'sgst', 'igst', 'grandTotal',
 ];
 const LINE_FLAG_FIELDS = [
-  'description', 'hsn', 'qty', 'uom', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue', 'poRef',
+  'description', 'qty', 'uom', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue', 'poRef',
 ];
 /** Editing any of these on a line clears a whole-line flag on it. */
 const LINE_MONEY = ['qty', 'stockQty', 'rate', 'amount', 'discountPct', 'discountAmount', 'taxableValue'];
@@ -52,7 +55,7 @@ export function normaliseFlagPath(raw) {
 }
 
 const CHECK_FIELD = {
-  SUBTOTAL: 'subTotal', TAXABLE: 'taxable', GRAND_TOTAL: 'grandTotal', EWAY_BILL: 'eWayBillNo',
+  SUBTOTAL: 'subTotal', TAXABLE: 'taxable', GRAND_TOTAL: 'grandTotal',
 };
 
 /**
@@ -149,4 +152,7 @@ export function confirmFlag(flags = [], field, who = null) {
   return { flags: out, found };
 }
 
-export const openFlags = (flags = []) => (flags || []).filter((f) => !f.resolved);
+/** Can this field carry a flag? An invoice read before 28 Oct 2026 may hold one that no longer can. */
+export const isFlaggable = (field) => normaliseFlagPath(field) === field || /^lines\.\d+$/.test(String(field));
+
+export const openFlags = (flags = []) => (flags || []).filter((f) => !f.resolved && isFlaggable(f.field));

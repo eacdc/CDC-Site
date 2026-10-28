@@ -18,9 +18,6 @@ import {
   expectedTaxType, reconcileSheetKg, round, piQty, lineMoney, headerDiscount, discountedLines, goodsValue,
 } from '../lib/invoice-math.js';
 
-/** E-way bill thresholds (₹). */
-const EWAY_THRESHOLD = { interstate: 50000, intrastate: 100000 };
-
 /**
  * Run the full catalogue.
  *
@@ -230,18 +227,8 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
       }));
     }
 
-    // INV017 — HSN disagreement. A warning: HSN classification is genuinely
-    // arguable, and a mismatch is a question for the supplier rather than a
-    // reason to refuse the goods at the gate.
-    if (line.hsn && line.expectedHsn) {
-      const same = String(line.hsn).replace(/\D/g, '').startsWith(String(line.expectedHsn).replace(/\D/g, '').slice(0, 4));
-      results.push(check('INV017', same, {
-        lineNo: line.lineNo,
-        message: same ? undefined : `Line ${line.lineNo}: invoice HSN ${line.hsn}, item master says ${line.expectedHsn}`,
-        actualValue: line.hsn,
-        expectedValue: line.expectedHsn,
-      }));
-    }
+    // INV017 (HSN against the item master) was dropped on 28 Oct 2026: CDC
+    // does not hold a GRN over an HSN, so the warning only asked for a reason.
   }
 
   // ── Header arithmetic ────────────────────────────────────────────────────
@@ -379,19 +366,10 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
     }));
   }
 
-  // ── E-way bill and freight ledger ────────────────────────────────────────
+  // ── Freight ledger ───────────────────────────────────────────────────────
 
-  const threshold = expectedType === 'IGST' ? EWAY_THRESHOLD.interstate : EWAY_THRESHOLD.intrastate;
-  const needsEway = grandTotal !== null && grandTotal >= threshold;
-  const ewayOk = !needsEway || isValidEwayBill(header.eWayBillNo);
-  results.push(check('INV014', ewayOk, {
-    message: ewayOk
-      ? undefined
-      : (header.eWayBillNo
-          ? `E-way bill "${header.eWayBillNo}" is not a 12-digit number`
-          : `No e-way bill on an invoice of ₹${grandTotal}, above the ₹${threshold} threshold`),
-    actualValue: header.eWayBillNo ?? null,
-  }));
+  // INV014 (e-way bill above the threshold) was dropped on 28 Oct 2026: CDC
+  // does not hold a GRN over the e-way bill.
 
   // INV018 — freight charged but no ledger chosen. Blocking because the
   // freight ledger is picked by a human to match the material's GST rate, and
@@ -421,12 +399,6 @@ function pctOf(part, whole) {
 function listLineNos(nos) {
   const list = nos.map(String);
   return list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join('');
-}
-
-/** A GST e-way bill number is 12 digits. */
-export function isValidEwayBill(value) {
-  const digits = String(value ?? '').replace(/\s|-/g, '');
-  return /^\d{12}$/.test(digits);
 }
 
 function normaliseGstin(value) {

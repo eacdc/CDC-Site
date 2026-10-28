@@ -73,9 +73,9 @@ test('a total that does not add up names the parts', () => {
   assert.match(p[0].message, /= 117\.78/);
 });
 
-test('GSTIN check character and e-way bill length', () => {
+test('GSTIN check character; a short e-way bill is not worth a second read', () => {
   assert.deepEqual(kinds({ supplierGstin: '19AADFR0768H1Z1', shipToGstin: '19AABCC2946B1ZZ', eWayBillNo: '71167943180', lines: [] }),
-    ['EWAY_BILL', 'GSTIN']);
+    ['GSTIN']);
   assert.deepEqual(kinds({ supplierGstin: '19AADCP6122G1ZI', eWayBillNo: '8917 5691 9164', lines: [] }), []);
 });
 

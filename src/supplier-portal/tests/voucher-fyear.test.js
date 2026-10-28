@@ -65,3 +65,14 @@ test('passing the column form where a suffix belongs is refused', () => {
 test('an unknown voucher type has no prefix and must not be numbered', () => {
   assert.throws(() => formatVoucherNo(VOUCHER.ITEM_ISSUE, 1, '_26_27'), /No voucher prefix/);
 });
+
+test('a voucher number read back as a bigint string is still allocated', async (t) => {
+  // MaxVoucherNo is a bigint; the driver hands bigints back as strings
+  // ('4811'), and the allocator once refused every one of them.
+  const { allocateVoucherNo } = await import('../services/erp-voucher.js');
+  const { sql } = await import('../db/mssql.js');
+  t.mock.method(sql.Request.prototype, 'query', async () => ({ recordset: [{ NextNo: '4811' }] }));
+  const got = await allocateVoucherNo({}, { voucherId: VOUCHER.GRN, fYear: '2026-2027', suffix: '_26_27' });
+  assert.equal(got.maxVoucherNo, 4811);
+  assert.equal(got.voucherNo, 'REC04811_26_27');
+});

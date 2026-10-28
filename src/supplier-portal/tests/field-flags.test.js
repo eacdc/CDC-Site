@@ -25,11 +25,10 @@ test('flags from the model and from the checks; a proof beats a doubt', () => {
     problems: [
       { kind: 'LINE_ARITHMETIC', lineNo: 4, field: 'lines.4', message: 'Line 4: quantity 1.000 x rate 51.20 = 51.2, but you gave the amount as 2252.80. One of the three was misread.' },
       { kind: 'SUBTOTAL', field: 'subTotal', message: 'The line amounts add up to 16,200, but you gave subTotal as 16,700. "subTotal" is goods only.' },
-      { kind: 'EWAY_BILL', field: 'eWayBillNo', message: 'eWayBillNo "123" is not twelve digits; an e-way bill number always is.' },
     ],
   });
   const by = Object.fromEntries(flags.map((f) => [f.field, f]));
-  assert.deepEqual(Object.keys(by).sort(), ['eWayBillNo', 'gateEntryNo', 'lines.4', 'lines.4.qty', 'subTotal']);
+  assert.deepEqual(Object.keys(by).sort(), ['gateEntryNo', 'lines.4', 'lines.4.qty', 'subTotal']);
   assert.equal(by.gateEntryNo.source, 'MODEL');
   assert.equal(by.subTotal.source, 'CHECK');
   assert.match(by['lines.4'].reason, /^Line 4: quantity 1\.000 x rate 51\.20 = 51\.2, but you gave the amount as 2252\.80\.$/);
@@ -93,4 +92,13 @@ test('two reads that disagree flag the field, with both answers', () => {
   assert.equal(f.field, 'gateEntryNo');
   assert.equal(f.source, 'MODEL');
   assert.match(f.reason, /"5212" and "25712"/);
+});
+
+test('the e-way bill, the vehicle number and a line HSN are never flagged', () => {
+  const flags = buildFieldFlags({ uncertain: ['eWayBillNo', 'vehicleNo', 'lines.2.hsn', 'lines.2.qty'] });
+  assert.deepEqual(flags.map((f) => f.field), ['lines.2.qty']);
+  // An invoice read before the change keeps its old flags; they no longer block.
+  const old = ['eWayBillNo', 'vehicleNo', 'lines.2.hsn', 'lines.2', 'gateEntryNo']
+    .map((field) => ({ field, source: 'MODEL', reason: 'x', resolved: false }));
+  assert.deepEqual(openFlags(old).map((f) => f.field), ['lines.2', 'gateEntryNo']);
 });

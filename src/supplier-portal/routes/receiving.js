@@ -1081,7 +1081,8 @@ router.post('/grns/:transactionId/purchase-invoice', requireRole('STORE', 'BUYER
       freightLedgerId: freight.rows[0]?.ledgerId ?? null,
       freightCharges: freight.rows,
       userId: Number(req.sp.context?.erpUserId),
-      branchId: 1,
+      // 0 on every voucher the ERP itself has made.
+      branchId: 0,
       chargeLedgers: Object.fromEntries(['CGST', 'SGST', 'IGST', 'ROUND_OFF'].map((kind) => [
         kind, ledgers.find((l) => l.kind === kind)?.LedgerID ?? null,
       ])),
@@ -1461,7 +1462,8 @@ router.post('/document-sets/:id/post', requireRole('STORE', 'BUYER', 'APPROVER')
       ...bodyContext,
       // CreatedBy on every ERP row is the person posting, from their session.
       userId: Number(req.sp.context?.erpUserId ?? set.context?.userId),
-      branchId: bodyContext.branchId ?? set.context?.branchId ?? 1,
+      // 0 on every voucher the ERP itself has made; a draft saved earlier may say 1.
+      branchId: 0,
       chargeLedgers: chargeLedgerIds,
     };
     const rows = resolveFreightRows(ledgers, context.freightCharges);

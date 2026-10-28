@@ -178,6 +178,7 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
       Particular, DeliveryNoteNo, DeliveryNoteDate,
       GateEntryNo, GateEntryDate, ReceivedBy,
       EWayBillNumber, EWayBillDate, VehicleNo,
+      Transporter, LRNoVehicleNo, Narration,
       IsPurchaseInvoiceCreated,
       CompanyID, BranchID, UserID, FYear,
       CreatedBy, CreatedDate, ModifiedBy, ModifiedDate,
@@ -193,9 +194,10 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
       'Receipt Note', @deliveryNoteNo, @deliveryNoteDate,
       @gateEntryNo, @gateEntryDate, @receivedBy,
       @ewayBillNo, @ewayBillDate, @vehicleNo,
+      '', '', '',
       1,
       @companyId, @branchId, @userId, @fYear,
-      @userId, @now, @userId, @now,
+      @userId, @now, 0, @now,
       0, 0
     )
   `, {
@@ -210,7 +212,9 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
     // line (ItemTransactionDetail.WarehouseID) - every one of their 4,267
     // lines carried one.
     warehouseId: { type: sql.Int, value: 0 },
-    totalQuantity: { type: sql.Float, value: sumBy(lines, 'qty') },
+    // 0 on every GRN the ERP has made (8,694 in 2025-26): the quantities
+    // live on the lines.
+    totalQuantity: { type: sql.Float, value: 0 },
     deliveryNoteNo: header.invoiceNo ?? null,
     deliveryNoteDate: { type: sql.DateTime, value: toDate(header.invoiceDate) },
     gateEntryNo: header.gateEntryNo ?? null,
@@ -221,13 +225,14 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
     ewayBillDate: { type: sql.DateTime, value: toDate(header.eWayBillDate) },
     vehicleNo: header.vehicleNo ?? null,
     companyId: { type: sql.Int, value: COMPANY_ID },
-    branchId: { type: sql.Int, value: context.branchId ?? 1 },
+    branchId: { type: sql.Int, value: context.branchId ?? 0 },
     userId: { type: sql.Int, value: context.userId },
     fYear,
     now: { type: sql.DateTime, value: new Date() },
   });
 
-  const transactionId = inserted[0]?.TransactionID;
+  // A bigint: the driver returns it as a string.
+  const transactionId = Number(inserted[0]?.TransactionID);
   if (!transactionId) throw new Error('GRN header insert returned no TransactionID.');
 
   const detailIds = [];
@@ -257,7 +262,8 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
       BatchNo,
       CompanyID, BranchID, UserID, FYear,
       CreatedBy, CreatedDate, ModifiedBy, ModifiedDate,
-      IsDeletedTransaction, IsCancelled, ItemDescription
+      IsDeletedTransaction, IsCancelled, ItemDescription,
+      SupplierBatchNo, MfgDate, ExpiryDate
     )
     OUTPUT INSERTED.TransactionDetailID
     VALUES (
@@ -273,15 +279,19 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
       1, @userId, @now,
       @batchNoPlaceholder,
       @companyId, @branchId, @userId, @fYear,
-      @userId, @now, @userId, @now,
-      0, 0, @itemDescription
+      @userId, @now, 0, @now,
+      0, 0, NULL,
+      '-', '1900-01-01', '1900-01-01'
     )
   `, {
     transactionId: { type: sql.Int, value: transactionId },
     transId: { type: sql.Int, value: index + 1 },
     itemGroupId: { type: sql.Int, value: line.itemGroupId },
     itemId: { type: sql.Int, value: line.itemId },
-    poQty: { type: sql.Float, value: line.poQty ?? line.qty },
+    // As the ERP's own GRN lines carry them - 18,000+ of them, both years:
+    // PurchaseOrderQuantity 0, GrsRate NULL and ProductHSNID 0. The rate
+    // and the HSN live on the purchase invoice line.
+    poQty: { type: sql.Float, value: 0 },
     purchaseUnit: line.purchaseUnit ?? null,
     stockUnit: line.stockUnit ?? null,
     // ChallanQuantity / ReceiptQuantity / ApprovedQuantity are in StockUnit;
@@ -289,7 +299,7 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
     stockQty: { type: sql.Float, value: line.stockQty ?? line.qty },
     challanWeight: { type: sql.Float, value: line.qty },
     wtPerPacking: { type: sql.Float, value: line.wtPerPacking ?? null },
-    grsRate: { type: sql.Float, value: line.rate },
+    grsRate: { type: sql.Float, value: null },
     /**
      * LandedRate is currently left at 0 by the ERP's own screens, so job
      * costing falls back to a fixed ladder — ₹80/kg for Gloss Art instead of
@@ -298,17 +308,16 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
     landedRate: { type: sql.Float, value: storedRate(line.landedRate ?? line.rate) },
     warehouseId: { type: sql.Int, value: line.warehouseId ?? context.warehouseId },
     poTransactionId: { type: sql.Int, value: line.poTransactionId },
-    productHsnId: { type: sql.Int, value: line.productHsnId ?? null },
+    productHsnId: { type: sql.Int, value: 0 },
     userId: { type: sql.Int, value: context.userId },
     now: { type: sql.DateTime, value: new Date() },
     batchNoPlaceholder: '',
     companyId: { type: sql.Int, value: COMPANY_ID },
-    branchId: { type: sql.Int, value: context.branchId ?? 1 },
+    branchId: { type: sql.Int, value: context.branchId ?? 0 },
     fYear,
-    itemDescription: line.itemDescription ?? null,
   });
 
-  const detailId = inserted[0]?.TransactionDetailID;
+  const detailId = Number(inserted[0]?.TransactionDetailID);
   if (!detailId) throw new Error(`GRN detail insert for item ${line.itemId} returned no TransactionDetailID.`);
 
   /**
@@ -400,13 +409,14 @@ async function writePurchaseInvoice({
     roundOff: { type: sql.Float, value: totals.roundOffValue },
     amountInWords: amountInWords(totals.netAmount),
     companyId: { type: sql.Int, value: COMPANY_ID },
-    branchId: { type: sql.Int, value: context.branchId ?? 1 },
+    branchId: { type: sql.Int, value: context.branchId ?? 0 },
     userId: { type: sql.Int, value: context.userId },
     fYear,
     now: { type: sql.DateTime, value: new Date() },
   });
 
-  const transactionId = inserted[0]?.TransactionID;
+  // A bigint: the driver returns it as a string.
+  const transactionId = Number(inserted[0]?.TransactionID);
   if (!transactionId) throw new Error('Purchase invoice header insert returned no TransactionID.');
 
   for (const [index, line] of lines.entries()) {
@@ -472,7 +482,7 @@ async function writePurchaseInvoice({
       // The ERP's own lines carry the item's name here (5,608 of 5,608).
       narration: line.itemName ?? line.itemDescription ?? null,
       companyId: { type: sql.Int, value: COMPANY_ID },
-      branchId: { type: sql.Int, value: context.branchId ?? 1 },
+      branchId: { type: sql.Int, value: context.branchId ?? 0 },
       userId: { type: sql.Int, value: context.userId },
       fYear,
       now: { type: sql.DateTime, value: new Date() },
@@ -511,22 +521,22 @@ async function writeTaxRows({ tx, transactionId, totals, context, fYear }) {
     rows.push({ transId: transId++, ledgerId: f.ledgerId, taxPercentage: f.taxPercentage, amount: f.amount, taxInAmount: 1 });
   }
   if (totals.roundOffValue !== 0 && ledgers.ROUND_OFF) {
-    rows.push({ transId: transId++, ledgerId: ledgers.ROUND_OFF, taxPercentage: 0, amount: totals.roundOffValue, taxInAmount: 1 });
+    rows.push({ transId: transId++, ledgerId: ledgers.ROUND_OFF, taxPercentage: 0, amount: totals.roundOffValue, taxInAmount: 1, roundOff: true });
   }
 
   for (const row of rows) {
     await txQuery(tx, `
       INSERT INTO ItemPurchaseInvoiceTaxes (
         TransactionID, TransID, LedgerID, TaxPercentage, Amount, TaxInAmount,
-        TaxTiming, CalculatedON,
+        TaxTiming, GSTApplicable, CalculatedON,
         CompanyID, BranchID, UserID, FYear,
-        CreatedBy, CreatedDate, IsDeletedTransaction
+        CreatedBy, CreatedDate, ModifiedBy, IsDeletedTransaction
       )
       VALUES (
         @transactionId, @transId, @ledgerId, @taxPercentage, @amount, @taxInAmount,
-        1, 'Value',
+        0, @gstApplicable, 'Value',
         @companyId, @branchId, @userId, @fYear,
-        @userId, @now, 0
+        @userId, @now, @userId, 0
       )
     `, {
       transactionId: { type: sql.Int, value: transactionId },
@@ -535,8 +545,10 @@ async function writeTaxRows({ tx, transactionId, totals, context, fYear }) {
       taxPercentage: { type: sql.Float, value: row.taxPercentage },
       amount: { type: sql.Float, value: row.amount },
       taxInAmount: { type: sql.Int, value: row.taxInAmount },
+      // The ERP marks every tax and freight row GST-applicable, round off not.
+      gstApplicable: { type: sql.Bit, value: !row.roundOff },
       companyId: { type: sql.Int, value: COMPANY_ID },
-      branchId: { type: sql.Int, value: context.branchId ?? 1 },
+      branchId: { type: sql.Int, value: context.branchId ?? 0 },
       userId: { type: sql.Int, value: context.userId },
       fYear,
       now: { type: sql.DateTime, value: new Date() },
@@ -819,10 +831,6 @@ function previewPi({ header, lines, context, voucherDate, suffix }) {
       netAmount: l.netAmount,
     })),
   };
-}
-
-function sumBy(rows, key) {
-  return round(rows.reduce((sum, r) => sum + (num(r[key]) || 0), 0), 3);
 }
 
 function num(value) {

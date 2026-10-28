@@ -142,13 +142,8 @@ export function invoiceProblems(x = {}) {
     }
   }
 
-  const eway = String(x.eWayBillNo ?? '').replace(/[\s-]/g, '');
-  if (eway && !/^\d{12}$/.test(eway)) {
-    problems.push({
-      kind: 'EWAY_BILL', field: 'eWayBillNo',
-      message: `eWayBillNo "${x.eWayBillNo}" is not twelve digits; an e-way bill number always is. Read it again, or return null.`,
-    });
-  }
+  // A misread e-way bill is not worth a second read: CDC does not hold a
+  // GRN over it (28 Oct 2026).
 
   return problems;
 }

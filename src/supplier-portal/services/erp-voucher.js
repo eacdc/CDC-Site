@@ -70,7 +70,8 @@ export async function allocateVoucherNo(tx, { voucherId, fYear, suffix, table = 
     fYear: { type: sql.NVarChar, value: fYear },
   });
 
-  const maxVoucherNo = rows[0]?.NextNo;
+  // MaxVoucherNo is a bigint, which the driver returns as a string.
+  const maxVoucherNo = Number(rows[0]?.NextNo);
   if (!Number.isFinite(maxVoucherNo)) {
     throw new Error(`Could not allocate a voucher number for VoucherID ${voucherId} in ${fYear}.`);
   }

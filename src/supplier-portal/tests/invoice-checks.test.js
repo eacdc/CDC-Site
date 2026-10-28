@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runInvoiceChecks, isValidEwayBill } from '../services/invoice-checks.js';
+import { runInvoiceChecks } from '../services/invoice-checks.js';
 import { hasBlockingFailure, warningsNeedingReason, check } from '../config/validations.js';
 
 /** A clean invoice, used as the baseline every case perturbs. */
@@ -144,24 +144,12 @@ test('INV018 blocks freight with no ledger selected', () => {
   assert.equal(find(checks, 'INV018')[0].passed, false);
 });
 
-test('INV014 requires an e-way bill above the threshold', () => {
-  // Intrastate threshold is ₹1,00,000.
-  const missing = runInvoiceChecks(goodInvoice({
-    header: { grandTotal: 150000, eWayBillNo: null },
-  }));
-  assert.equal(find(missing, 'INV014')[0].passed, false);
-
-  const below = runInvoiceChecks(goodInvoice({
-    header: { grandTotal: 50000, eWayBillNo: null },
-  }));
-  assert.equal(find(below, 'INV014')[0].passed, true, 'below the threshold none is needed');
-});
-
-test('an e-way bill number is twelve digits', () => {
-  assert.equal(isValidEwayBill('123456789012'), true);
-  assert.equal(isValidEwayBill('1234 5678 9012'), true);
-  assert.equal(isValidEwayBill('12345'), false);
-  assert.equal(isValidEwayBill(null), false);
+test('no e-way bill or HSN check: CDC does not hold a GRN over either', () => {
+  const input = goodInvoice({ header: { grandTotal: 150000, eWayBillNo: null } });
+  input.lines = input.lines.map((l) => ({ ...l, hsn: '48101990', expectedHsn: '39069090' }));
+  const checks = runInvoiceChecks(input);
+  assert.equal(find(checks, 'INV014').length, 0);
+  assert.equal(find(checks, 'INV017').length, 0);
 });
 
 test('a BLOCK can never be overridden, a WARN needs a reason', () => {
