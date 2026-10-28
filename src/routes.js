@@ -7576,6 +7576,14 @@ router.get('/jobs', async (req, res) => {
   }
 });
 
+// Qty / Book as the user typed it: 1/x operations are stored as 1/x (4 -> 0.25), so invert back.
+function toQtyBookDisplay(opType, storedQty) {
+  const q = Number(storedQty);
+  if (!isFinite(q) || q <= 0) return null;
+  if (opType === '1/x') return Math.round(1 / q);
+  return parseFloat(q.toFixed(4));
+}
+
 router.get('/jobs/search/:jobNumber', async (req, res) => {
   try {
     const { jobNumber } = req.params;
@@ -7592,12 +7600,14 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
         // Get operation names from Operation collection
         const opsDocs = await Operation.find(
           { _id: { $in: opIds } },
-          { _id: 1, opsName: 1 }
+          { _id: 1, opsName: 1, type: 1 }
         ).lean();
 
         const opsNameById = {};
+        const opsTypeById = {};
         opsDocs.forEach(op => {
           opsNameById[op._id.toString()] = op.opsName;
+          opsTypeById[op._id.toString()] = op.type;
         });
 
         // Check Contractor_WD for completed work (jobId is job number string)
@@ -7683,6 +7693,7 @@ router.get('/jobs/search/:jobNumber', async (req, res) => {
             return {
               opsId: op.opId,
               opsName: opOpsName,
+              qtyBookDisplay: toQtyBookDisplay(opsTypeById[String(op.opId)], op.qtyPerBook),
               totalOpsQty,
               totalCompleted,
               pending,
@@ -9850,6 +9861,7 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
     operations.forEach(op => {
       opsMap[op._id.toString()] = {
         opsName: op.opsName,
+        opsType: op.type,
         ratePerUnit: op.ratePerUnit || 0
       };
     });
@@ -9877,6 +9889,7 @@ router.get('/work/pending/jobopsmaster/:jobNumber', async (req, res) => {
           ? Math.max(0, Number(op.totalOpsQty || 0) + allowance - recordedOpsQty - pending)
           : 0,
         qtyPerBook: op.qtyPerBook,
+        qtyBookDisplay: toQtyBookDisplay(operationData.opsType, op.qtyPerBook),
         rate: rate,
         valuePerBook: op.valuePerBook || 0
       };

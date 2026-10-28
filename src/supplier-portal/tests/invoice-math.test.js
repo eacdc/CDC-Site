@@ -144,6 +144,16 @@ test('tax type follows the ship-to state, not the billing state', () => {
   assert.equal(expectedTaxType({ supplierState: null, shipToState: 'Gujarat' }), null);
 });
 
+test('a state printed as its short form or code is the same state', () => {
+  // A Krishna Vanijya bill: "WB" read off the bill, "West Bengal" from CDC's GSTIN.
+  assert.equal(expectedTaxType({ supplierState: 'WB', shipToState: 'West Bengal' }), 'CGST_SGST');
+  assert.equal(expectedTaxType({ supplierState: '19 - West Bengal', shipToState: 'West Bengal' }), 'CGST_SGST');
+  assert.equal(expectedTaxType({ supplierState: 'West Bengal (Code: 19)', shipToState: 'west bengal' }), 'CGST_SGST');
+  assert.equal(expectedTaxType({ supplierState: 'Orissa', shipToState: 'Odisha' }), 'CGST_SGST');
+  assert.equal(expectedTaxType({ supplierState: 'GJ', shipToState: 'West Bengal' }), 'IGST');
+  assert.equal(expectedTaxType({ supplierState: 'WB', shipToState: 'Gujarat' }), 'IGST');
+});
+
 test('the state code is the first two digits of a GSTIN', () => {
   assert.equal(stateCodeFromGstin('19AABCC2946B1ZZ'), '19');
   assert.equal(stateCodeFromGstin('not-a-gstin'), null);

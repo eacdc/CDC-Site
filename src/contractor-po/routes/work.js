@@ -7,6 +7,14 @@ const JobopsMaster = require('../models/JobOpsMaster');
 const Operation = require('../models/Operation');
 const ContractorWD = require('../models/ContractorWD');
 
+// Qty / Book as the user typed it: 1/x operations are stored as 1/x (4 -> 0.25), so invert back.
+function toQtyBookDisplay(opType, storedQty) {
+  const q = Number(storedQty);
+  if (!isFinite(q) || q <= 0) return null;
+  if (opType === '1/x') return Math.round(1 / q);
+  return parseFloat(q.toFixed(4));
+}
+
 // Get pending operations from JobOpsMaster by job number
 router.get('/pending/jobopsmaster/:jobNumber', async (req, res) => {
   try {
@@ -49,6 +57,7 @@ router.get('/pending/jobopsmaster/:jobNumber', async (req, res) => {
     operations.forEach(op => {
       opsMap[op._id.toString()] = {
         opsName: op.opsName,
+        opsType: op.type,
         ratePerUnit: op.ratePerUnit || 0
       };
     });
@@ -65,6 +74,7 @@ router.get('/pending/jobopsmaster/:jobNumber', async (req, res) => {
         totalOpsQty: op.totalOpsQty,
         pendingOpsQty: op.pendingOpsQty,
         qtyPerBook: op.qtyPerBook,
+        qtyBookDisplay: toQtyBookDisplay(operationData.opsType, op.qtyPerBook),
         rate: rate,
         valuePerBook: op.valuePerBook || 0
       };

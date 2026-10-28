@@ -20,6 +20,14 @@ const { getConnection, sql } = require('../config/db');
 
 // Get all jobs
 
+// Qty / Book as the user typed it: 1/x operations are stored as 1/x (4 -> 0.25), so invert back.
+function toQtyBookDisplay(opType, storedQty) {
+  const q = Number(storedQty);
+  if (!isFinite(q) || q <= 0) return null;
+  if (opType === '1/x') return Math.round(1 / q);
+  return parseFloat(q.toFixed(4));
+}
+
 router.get('/', async (req, res) => {
 
   try {
@@ -78,17 +86,19 @@ router.get('/search/:jobNumber', async (req, res) => {
 
           { _id: { $in: opIds } },
 
-          { _id: 1, opsName: 1 }
+          { _id: 1, opsName: 1, type: 1 }
 
         ).lean();
 
 
 
         const opsNameById = {};
+        const opsTypeById = {};
 
         opsDocs.forEach(op => {
 
           opsNameById[op._id.toString()] = op.opsName;
+          opsTypeById[op._id.toString()] = op.type;
 
         });
 
@@ -228,6 +238,8 @@ router.get('/search/:jobNumber', async (req, res) => {
               opsId: op.opId,
 
               opsName: opOpsName,
+
+              qtyBookDisplay: toQtyBookDisplay(opsTypeById[String(op.opId)], op.qtyPerBook),
 
               totalOpsQty,
 

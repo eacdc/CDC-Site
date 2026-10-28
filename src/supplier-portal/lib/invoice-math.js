@@ -420,9 +420,36 @@ export function stateCodeFromGstin(gstin) {
   return /^\d{2}/.test(t) ? t.slice(0, 2) : null;
 }
 
+/**
+ * GST state codes with the names and short forms bills print. A Krishna
+ * Vanijya bill reads "WB" where the GSTIN-derived ship-to is "West Bengal",
+ * and the two must count as one state.
+ */
+const STATES = [
+  ['01', 'JAMMU AND KASHMIR', 'JK'], ['02', 'HIMACHAL PRADESH', 'HP'], ['03', 'PUNJAB', 'PB'],
+  ['04', 'CHANDIGARH', 'CH'], ['05', 'UTTARAKHAND', 'UK', 'UTTARANCHAL'], ['06', 'HARYANA', 'HR'],
+  ['07', 'DELHI', 'DL', 'NEW DELHI'], ['08', 'RAJASTHAN', 'RJ'], ['09', 'UTTAR PRADESH', 'UP'],
+  ['10', 'BIHAR', 'BR'], ['11', 'SIKKIM', 'SK'], ['12', 'ARUNACHAL PRADESH', 'AR'], ['13', 'NAGALAND', 'NL'],
+  ['14', 'MANIPUR', 'MN'], ['15', 'MIZORAM', 'MZ'], ['16', 'TRIPURA', 'TR'], ['17', 'MEGHALAYA', 'ML'],
+  ['18', 'ASSAM', 'AS'], ['19', 'WEST BENGAL', 'WB'], ['20', 'JHARKHAND', 'JH'], ['21', 'ODISHA', 'OD', 'OR', 'ORISSA'],
+  ['22', 'CHHATTISGARH', 'CG'], ['23', 'MADHYA PRADESH', 'MP'], ['24', 'GUJARAT', 'GJ'],
+  ['26', 'DADRA AND NAGAR HAVELI AND DAMAN AND DIU', 'DN', 'DD', 'DAMAN AND DIU', 'DADRA AND NAGAR HAVELI'],
+  ['27', 'MAHARASHTRA', 'MH'], ['29', 'KARNATAKA', 'KA'], ['30', 'GOA', 'GA'], ['31', 'LAKSHADWEEP', 'LD'],
+  ['32', 'KERALA', 'KL'], ['33', 'TAMIL NADU', 'TN'], ['34', 'PUDUCHERRY', 'PY', 'PONDICHERRY'],
+  ['35', 'ANDAMAN AND NICOBAR ISLANDS', 'AN', 'ANDAMAN AND NICOBAR'], ['36', 'TELANGANA', 'TS', 'TG'],
+  ['37', 'ANDHRA PRADESH', 'AP'], ['38', 'LADAKH', 'LA'],
+];
+const STATE_KEYS = new Map(STATES.flatMap(([code, ...names]) => [[code, code], ...names.map((n) => [n, code])]));
+
+/** A state as its GST code when it is one we know: "WB", "West Bengal", "19" and "19 - West Bengal" agree. */
 function normaliseState(state) {
-  const t = String(state ?? '').trim().toUpperCase();
-  return t || null;
+  const t = String(state ?? '').toUpperCase().replace(/&/g, ' AND ').replace(/[^A-Z0-9]+/g, ' ').trim();
+  if (!t) return null;
+  if (STATE_KEYS.has(t)) return STATE_KEYS.get(t);
+  // "19 - West Bengal", "West Bengal (Code: 19)": the code decides.
+  const code = t.match(/\b(\d{2})\b/);
+  if (code && STATE_KEYS.has(code[1])) return code[1];
+  return t;
 }
 
 function pct(value) {
