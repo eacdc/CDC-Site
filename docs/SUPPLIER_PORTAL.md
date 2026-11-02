@@ -84,10 +84,15 @@ SP_DB_WRITE_PASSWORD=...
 SP_ENABLE_ERP_WRITES=false
 
 # Extraction
-EXTRACTION_PROVIDER=openai         # or "anthropic"
-OPENAI_API_KEY=...
-SP_EXTRACTION_MODEL=gpt-4o
-ANTHROPIC_API_KEY=...              # only if using the anthropic provider
+EXTRACTION_PROVIDER=anthropic      # default; "openai" to roll back
+ANTHROPIC_API_KEY=...
+# SP_ANTHROPIC_MODEL=claude-opus-5-5             quotes, invoices (default)
+# SP_ANTHROPIC_ADJUDICATION_MODEL=claude-sonnet-5-5
+# SP_ANTHROPIC_EFFORT=medium
+# SP_INK_RESEARCH_MODEL=claude-sonnet-5-5        "" turns web research off
+# Rollback only:
+# OPENAI_API_KEY=...
+# SP_EXTRACTION_MODEL=gpt-4o
 
 # Optional
 SP_SESSION_DAYS=7

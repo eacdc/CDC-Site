@@ -1,13 +1,12 @@
 import { Router } from 'express';
 import multer from 'multer';
-import OpenAI from 'openai';
 import { PDFParse } from 'pdf-parse';
+import { askJson, askText, mediaBlock, envModel, MODELS } from './lib/claude.js';
 
 const router = Router();
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const OCR_MODEL = envModel('JOB_CARD_COMPARE_OCR_MODEL', MODELS.standard);
+const COMPARE_MODEL = envModel('JOB_CARD_COMPARE_MODEL', MODELS.standard);
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -38,112 +37,77 @@ function isLikelyPdf(file) {
   return type === 'application/pdf' || (file?.originalname || '').toLowerCase().endsWith('.pdf');
 }
 
-function bufferToDataUrl(file) {
-  const mime = (file?.mimetype || 'image/png').toLowerCase();
-  const base64 = file.buffer.toString('base64');
-  return `data:${mime};base64,${base64}`;
+async function extractImageTextWithVision(file) {
+  const { text } = await askText({
+    feature: 'job-card-compare-ocr',
+    model: OCR_MODEL,
+    effort: 'low',
+    system: 'You extract text from print documents. Return plain text only. Preserve key structure and labels.',
+    content: [
+      await mediaBlock(file.buffer, file.mimetype),
+      {
+        type: 'text',
+        text: 'Extract all text and specifications from this document. Keep line breaks and section labels where possible. Return plain text only.'
+      }
+    ]
+  });
+  return normalizeText(text);
 }
 
-async function extractImageTextWithVision(file) {
-  const imageDataUrl = bufferToDataUrl(file);
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [
-      {
-        role: 'system',
-        content: 'You extract text from print documents. Return plain text only. Preserve key structure and labels.'
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: 'Extract all text and specifications from this document. Keep line breaks and section labels where possible. Return plain text only.'
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: imageDataUrl,
-              detail: 'high'
-            }
-          }
-        ]
+const COMPARISON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    present: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    missing: {
+      type: 'array',
+      items: { type: 'string' }
+    },
+    discrepancies: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          client: { type: 'string' },
+          jobCard: { type: 'string' },
+          note: { type: 'string' }
+        },
+        required: ['client', 'jobCard', 'note']
       }
-    ],
-    temperature: 0
-  });
-  return normalizeText(completion?.choices?.[0]?.message?.content);
-}
+    },
+    summary: { type: 'string' }
+  },
+  required: ['present', 'missing', 'discrepancies', 'summary']
+};
 
 async function compareInputsWithAI(clientText, jobCardText, internalJobCardJson) {
   const hasJson = internalJobCardJson && typeof internalJobCardJson === 'object';
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o',
-    messages: [
-      {
-        role: 'system',
-        content: [
-          'You compare client requirements against an internal job card.',
-          'Return strict JSON only.',
-          'Treat semantically equivalent values as matching (e.g., 5k and 5000).',
-          'Each and every detail in the client text must be present in the internal job card.',
-          'numbers should match exactly, no tolerance for slight variations.',
-          'for text field the meaning of the text should be the same, no tolerance for slight variations.',
-          'in client text there can be details of multiple jobs, so you need to compare the job details with text that came from searched internal job card only, not from other jobs. you understad which job to compare by job umber/jobtitle/PO No, if not able to understand, then compare all jobs details with client text.',
-          'dont compare pricings, only compare the job details.'
-        ].join(' ')
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          clientText,
-          jobCardText: hasJson ? undefined : jobCardText,
-          internalJobCardJson: hasJson ? internalJobCardJson : undefined,
-          instruction: 'Identify which client-required details are present, missing, or contradictory in the internal job card. Internal data may be provided as structured JSON.'
-        })
-      }
-    ],
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'job_card_comparison',
-        strict: true,
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            present: {
-              type: 'array',
-              items: { type: 'string' }
-            },
-            missing: {
-              type: 'array',
-              items: { type: 'string' }
-            },
-            discrepancies: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  client: { type: 'string' },
-                  jobCard: { type: 'string' },
-                  note: { type: 'string' }
-                },
-                required: ['client', 'jobCard', 'note']
-              }
-            },
-            summary: { type: 'string' }
-          },
-          required: ['present', 'missing', 'discrepancies', 'summary']
-        }
-      }
-    },
-    temperature: 0
+  const { data } = await askJson({
+    feature: 'job-card-compare',
+    model: COMPARE_MODEL,
+    effort: 'medium',
+    schema: COMPARISON_SCHEMA,
+    system: [
+      'You compare client requirements against an internal job card.',
+      'Treat semantically equivalent values as matching (e.g., 5k and 5000).',
+      'Each and every detail in the client text must be present in the internal job card.',
+      'numbers should match exactly, no tolerance for slight variations.',
+      'for text field the meaning of the text should be the same, no tolerance for slight variations.',
+      'in client text there can be details of multiple jobs, so you need to compare the job details with text that came from searched internal job card only, not from other jobs. you understad which job to compare by job umber/jobtitle/PO No, if not able to understand, then compare all jobs details with client text.',
+      'dont compare pricings, only compare the job details.'
+    ].join(' '),
+    content: JSON.stringify({
+      clientText,
+      jobCardText: hasJson ? undefined : jobCardText,
+      internalJobCardJson: hasJson ? internalJobCardJson : undefined,
+      instruction: 'Identify which client-required details are present, missing, or contradictory in the internal job card. Internal data may be provided as structured JSON.'
+    })
   });
-
-  const raw = completion?.choices?.[0]?.message?.content || '{}';
-  return JSON.parse(raw);
+  return data;
 }
 
 router.post('/job-card-compare/extract', upload.single('file'), async (req, res) => {

@@ -89,6 +89,7 @@ const FALLBACK_MODELS = /^claude-(opus-5-5|opus-5|sonnet-5-5|fable-5-1)$/;
  * @param {string}  opts.model      a model id, usually one of MODELS
  * @param {string}  [opts.system]   system prompt
  * @param {string|Array} opts.content  user content: a string, or blocks
+ * @param {Array}   [opts.messages]    a whole conversation, instead of `content`
  * @param {number}  [opts.maxTokens]   output cap, thinking included
  * @param {string}  [opts.effort]      low | medium | high | xhigh | max
  * @param {Object}  [opts.format]      output_config.format
@@ -96,12 +97,12 @@ const FALLBACK_MODELS = /^claude-(opus-5-5|opus-5|sonnet-5-5|fable-5-1)$/;
  * @param {string}  [opts.feature]     label for the usage log line
  */
 export async function ask({
-  model, system, content, maxTokens = 8000, effort, format, tools, feature,
+  model, system, content, messages, maxTokens = 8000, effort, format, tools, feature,
 }) {
   const params = {
     model,
     max_tokens: maxTokens,
-    messages: [{ role: 'user', content }],
+    messages: messages || [{ role: 'user', content }],
     ...(system ? { system } : {}),
     ...(tools?.length ? { tools } : {}),
   };

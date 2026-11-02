@@ -18,6 +18,10 @@ import {
 import { inkLabel, comparisonKey, FAMILY_CHEMISTRY } from '../../config/ink-vocabulary.js';
 import { interpretInkQuote, summariseInkQuote, NOT_MEANINGFUL } from './interpreter.js';
 import { sendToOpenAI, researchWithOpenAI } from './openai-send.js';
+import { sendToClaude, researchWithClaude } from './claude-send.js';
+
+// Claude unless EXTRACTION_PROVIDER=openai, the same switch as extraction.
+const useOpenAI = () => process.env.EXTRACTION_PROVIDER === 'openai';
 
 /**
  * Terms already settled for this supplier.
@@ -85,7 +89,8 @@ async function supplierNameFor(supplierGroupId) {
  */
 export async function runInkInterpretation({
   documentId, pages = [], textLayer = null, answers = [], actor = null,
-  send = sendToOpenAI, research = researchWithOpenAI,
+  send = useOpenAI() ? sendToOpenAI : sendToClaude,
+  research = useOpenAI() ? researchWithOpenAI : researchWithClaude,
 } = {}) {
   await ensureSupplierPortalReady();
 

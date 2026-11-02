@@ -15,6 +15,7 @@ import {
 import { paperTypeLabel } from '../../config/paper-vocabulary.js';
 import { interpretPaperQuote, rulesFromAnswers, summarisePreviousQuote } from './interpreter.js';
 import { sendToOpenAI } from './openai-send.js';
+import { sendToClaude } from './claude-send.js';
 import { BRAND_TYPES } from '../../config/paper-vocabulary.js';
 
 /**
@@ -85,7 +86,9 @@ async function supplierNameFor(supplierGroupId) {
  * newest answer would re-ask the questions already closed.
  */
 export async function runInterpretation({
-  documentId, pages = [], textLayer = null, answers = [], actor = null, send = sendToOpenAI,
+  documentId, pages = [], textLayer = null, answers = [], actor = null,
+  // Claude unless EXTRACTION_PROVIDER=openai, the same switch as extraction.
+  send = process.env.EXTRACTION_PROVIDER === 'openai' ? sendToOpenAI : sendToClaude,
 } = {}) {
   await ensureSupplierPortalReady();
 

@@ -1,5 +1,7 @@
 /**
  * The OpenAI adapters for the ink interpreter: reading, and looking things up.
+ * Used only with EXTRACTION_PROVIDER=openai; Claude (claude-send.js) is the
+ * default.
  *
  * Deliberately thin. The interpreter takes `send` and `research` as arguments
  * so its control flow — which exit fires, what the model is told when it errs,
@@ -108,7 +110,7 @@ export async function researchWithOpenAI(gaps = []) {
   return findings.filter((f) => f?.subject && f?.field && f?.value && f?.source);
 }
 
-const RESEARCH_PROMPT = `You identify printing-industry products for a carton printer's purchasing system.
+export const RESEARCH_PROMPT = `You identify printing-industry products for a carton printer's purchasing system.
 
 You are given product names read off a supplier's quotation, and for each one, the single fact that could not be determined from the document. Search for the manufacturer's own datasheet or product page and answer from it.
 
@@ -125,7 +127,7 @@ RULES.
 Reply with JSON only: { "findings": [{ "subject": "...", "field": "...", "value": "...", "summary": "...", "source": "domain.com", "confidence": 0.9 }] }`;
 
 /** What to ask about each open question, with the values that would be accepted. */
-function buildResearchMessage(gaps) {
+export function buildResearchMessage(gaps) {
   const allowed = {
     materialClass: MATERIAL_CLASSES.map((c) => c.canonical),
     chemistry: CHEMISTRIES.map((c) => c.canonical),

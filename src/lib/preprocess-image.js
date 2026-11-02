@@ -199,8 +199,8 @@ export async function preprocessToBuffer(url, { greyscale = false, enhance = tru
 }
 
 /**
- * Preprocess an image and return a base64 data URI suitable for OpenAI
- * `image_url` message content. Runs the full enhancement pipeline.
+ * Preprocess an image and return a base64 data URI for the vision model
+ * (lib/claude.js `mediaBlock`). Runs the full enhancement pipeline.
  *
  * @param {string} url
  * @param {{ greyscale?: boolean }} [opts]

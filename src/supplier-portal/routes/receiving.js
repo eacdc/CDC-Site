@@ -27,6 +27,7 @@ import { chargeLedgers, warehouses, supplierLedgers, employeeLedgers, purchaseLe
 import { identifyInvoiceSupplier } from '../services/supplier-identify.js';
 import { grnLinesWithIssues } from '../services/grn-issues.js';
 import { listGrns, loadGrn } from '../services/grn-register.js';
+import { purchaseInvoiceForPrint } from '../services/pi-print.js';
 import { editGrn, deleteGrn, canEditGrns } from '../services/erp-grn-edit.js';
 import { query } from '../db/mssql.js';
 import { COMPANY_ID } from '../config/constants.js';
@@ -889,6 +890,15 @@ router.get('/grns', async (req, res, next) => {
         documentSetId: made.get(g.transactionId) ?? null,
       })),
     });
+  } catch (err) { return next(err); }
+});
+
+/** A posted purchase invoice, laid out as the ERP prints it. Read-only. */
+router.get('/purchase-invoices/:voucherNo/print', async (req, res, next) => {
+  try {
+    const invoice = await purchaseInvoiceForPrint(req.sp.site, req.params.voucherNo);
+    if (!invoice) return res.status(404).json({ error: `No purchase invoice ${req.params.voucherNo} - it may have been deleted.` });
+    return res.json(invoice);
   } catch (err) { return next(err); }
 });
 

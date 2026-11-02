@@ -31,7 +31,8 @@ a placeholder (`[image]`, `[voice message]`) rather than empty text, because
 every consumer drops empty text and the message would otherwise disappear from
 classification, summaries and the thread view.
 
-Voice notes are transcribed when `TRANSCRIBE_VOICE=true`, and the transcript
+Voice notes are transcribed when `TRANSCRIBE_VOICE=true` - by OpenAI Whisper
+whatever `LLM_PROVIDER` is, because Claude does not take audio - and the transcript
 becomes the message text so everything downstream works unchanged. The model
 **must be `whisper-1`** - WhatsApp sends Ogg/Opus and the gpt-4o transcribe
 models reject it outright, so switching to one silently stops every voice note
@@ -47,7 +48,7 @@ a native-script transcript is the one input the classifier was never tuned on.
 One extra fast-model call per voice note, `ROMANISE_TRANSCRIPTS=false` to turn
 it off. If it fails the raw transcript is kept: a message in the wrong script
 beats no message. **This sends
-staff voice recordings to OpenAI** - a step beyond sending their typed text, so
+staff voice recordings to OpenAI** (Whisper) - a step beyond sending their typed text, so
 tell the groups before switching it on. Transcripts live in `messages` and
 expire with the same TTL. A failed transcription is stamped and not retried; the
 message keeps its placeholder. `transcribeVoice: false` on a group document
@@ -113,7 +114,7 @@ the file is in git permanently.
 
 ### The smoke test
 
-`whatsapp:smoke` runs the whole pipeline once — Maytapi, Mongo, OpenAI and a
+`whatsapp:smoke` runs the whole pipeline once — Maytapi, Mongo, the LLM and a
 real WhatsApp DM — and prints PASS/FAIL per stage: fetch, normalise, ingest,
 idempotence, TTL, classify, alert, ACK, escalation, summaries, dashboard API.
 Every stage calls the function the poller calls, so a pass means the production
@@ -581,10 +582,16 @@ quietly loosen the other.
 
 ## Swapping the LLM
 
-`llm/` is the only place a vendor SDK is imported. `LLM_PROVIDER` picks the
-implementation, `LLM_MODEL_FAST`/`LLM_MODEL_STRONG` the models. A new provider
-is one file implementing `classify()` plus a case in `llm/index.js` — no change
-to the detector.
+`llm/` is the only part of this module that reaches a model. `LLM_PROVIDER`
+picks the implementation - `anthropic` (Claude, the default: `llm/anthropic.js`,
+through the backend's shared `src/lib/claude.js`) or `openai` (`llm/openai.js`,
+kept as a rollback) - and `LLM_MODEL_FAST`/`LLM_MODEL_STRONG` the models, which
+default to claude-haiku-5-5 / claude-sonnet-5-5 or gpt-5-mini / gpt-5 to match.
+The Claude implementation constrains every reply to a JSON schema
+(`llm/prompts.js`), so the parsers only ever see well-formed JSON. Voice
+transcription (`llm/whisper.js`) is OpenAI Whisper under either provider. A new
+provider is one file implementing `classify()` plus a case in `llm/index.js` -
+no change to the detector.
 
 ## Maytapi response shape
 

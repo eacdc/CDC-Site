@@ -1,5 +1,6 @@
 /**
- * The OpenAI adapter for the paper interpreter.
+ * The OpenAI adapter for the paper interpreter. Used only with
+ * EXTRACTION_PROVIDER=openai; Claude (claude-send.js) is the default.
  *
  * Deliberately thin. The interpreter takes `send` as an argument so its control
  * flow — which exit fires, what the model is told when it errs, which answers

@@ -5,16 +5,12 @@
  */
 import { Router } from 'express';
 import multer from 'multer';
-import OpenAI from 'openai';
 import { PDFParse } from 'pdf-parse';
 import { getPool, sql } from './db.js';
 import { assertReadOnlySelect } from './sql-guard.js';
+import { askJson, askText, mediaBlock, envModel, MODELS } from './lib/claude.js';
 
 const router = Router();
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -31,9 +27,9 @@ const upload = multer({
   }
 });
 
-const HINTS_MODEL = process.env.PO_MATCH_HINTS_MODEL || 'gpt-4o-mini';
-const OCR_MODEL = process.env.PO_MATCH_OCR_MODEL || 'gpt-4o-mini';
-const SCORE_MODEL = process.env.PO_MATCH_SCORE_MODEL || 'gpt-4o';
+const HINTS_MODEL = envModel('PO_MATCH_HINTS_MODEL', MODELS.fast);
+const OCR_MODEL = envModel('PO_MATCH_OCR_MODEL', MODELS.fast);
+const SCORE_MODEL = envModel('PO_MATCH_SCORE_MODEL', MODELS.standard);
 const DEFAULT_TOP_N = 80;
 const MAX_TOP_N = 150;
 const MAX_KEYWORDS = 10;
@@ -54,10 +50,6 @@ function isLikelyPdf(file) {
   return type === 'application/pdf' || (file?.originalname || '').toLowerCase().endsWith('.pdf');
 }
 
-function bufferToDataUrl(file) {
-  const mime = (file?.mimetype || 'image/png').toLowerCase();
-  return `data:${mime};base64,${file.buffer.toString('base64')}`;
-}
 
 function dedupeStrings(values, max = MAX_KEYWORDS) {
   const out = [];
@@ -263,69 +255,48 @@ ORDER BY pm.ModifiedDate DESC, pm.CreatedDate DESC;`.trim();
 }
 
 async function extractImageTextWithVision(file) {
-  const imageDataUrl = bufferToDataUrl(file);
-  const completion = await openai.chat.completions.create({
+  const { text } = await askText({
+    feature: 'po-match-ocr',
     model: OCR_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: 'You extract text from client purchase orders. Return plain text only and preserve line structure.'
-      },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Extract all visible PO text with key labels and values. Return plain text only.' },
-          { type: 'image_url', image_url: { url: imageDataUrl, detail: 'high' } }
-        ]
-      }
-    ],
-    temperature: 0
+    effort: 'low',
+    system: 'You extract text from client purchase orders. Return plain text only and preserve line structure.',
+    content: [
+      await mediaBlock(file.buffer, file.mimetype),
+      { type: 'text', text: 'Extract all visible PO text with key labels and values. Return plain text only.' }
+    ]
   });
 
-  return normalizeText(completion?.choices?.[0]?.message?.content);
+  return normalizeText(text);
 }
+
+const HINTS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    jobNameKeywords: { type: 'array', items: { type: 'string' } },
+    codeCandidates: { type: 'array', items: { type: 'string' } },
+    clientNameTokens: { type: 'array', items: { type: 'string' } },
+    salespersonName: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+  },
+  required: ['jobNameKeywords', 'codeCandidates', 'clientNameTokens', 'salespersonName']
+};
 
 async function extractHints(poText) {
   try {
-    const completion = await openai.chat.completions.create({
+    const { data: parsed } = await askJson({
+      feature: 'po-match-hints',
       model: HINTS_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            'Extract concise search hints from a client PO.',
-            'Return strict JSON only.',
-            'jobNameKeywords: important words/phrases that can appear in ProductMaster.JobName.',
-            'codeCandidates: values likely to be ProductMasterCode/ProductCode/RefProductMasterCode.',
-            'clientNameTokens: client name fragments.',
-            'salespersonName: optional sales rep name if present.'
-          ].join(' ')
-        },
-        { role: 'user', content: poText }
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'po_search_hints',
-          strict: true,
-          schema: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              jobNameKeywords: { type: 'array', items: { type: 'string' } },
-              codeCandidates: { type: 'array', items: { type: 'string' } },
-              clientNameTokens: { type: 'array', items: { type: 'string' } },
-              salespersonName: { anyOf: [{ type: 'string' }, { type: 'null' }] }
-            },
-            required: ['jobNameKeywords', 'codeCandidates', 'clientNameTokens', 'salespersonName']
-          }
-        }
-      },
-      temperature: 0
+      effort: 'low',
+      schema: HINTS_SCHEMA,
+      system: [
+        'Extract concise search hints from a client PO.',
+        'jobNameKeywords: important words/phrases that can appear in ProductMaster.JobName.',
+        'codeCandidates: values likely to be ProductMasterCode/ProductCode/RefProductMasterCode.',
+        'clientNameTokens: client name fragments.',
+        'salespersonName: optional sales rep name if present.'
+      ].join(' '),
+      content: poText
     });
-
-    const raw = completion?.choices?.[0]?.message?.content || '{}';
-    const parsed = JSON.parse(raw);
     return {
       jobNameKeywords: dedupeStrings(parsed.jobNameKeywords, MAX_KEYWORDS),
       codeCandidates: dedupeStrings(parsed.codeCandidates, MAX_KEYWORDS),
@@ -440,59 +411,44 @@ function normalizeRowForScoring(row) {
   };
 }
 
-async function scoreBatch(poText, batch) {
-  const completion = await openai.chat.completions.create({
-    model: SCORE_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: [
-          'You score match quality between current PO text and historical product records.',
-          'Return strict JSON only.',
-          'For each candidate record, return matchPercent from 0 to 100.',
-          'Do not skip any candidate in the batch.'
-        ].join(' ')
-      },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          poText,
-          candidates: batch
-        })
+const SCORES_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    scores: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          productMasterId: { type: 'string' },
+          matchPercent: { type: 'number' },
+          reason: { type: 'string' }
+        },
+        required: ['productMasterId', 'matchPercent', 'reason']
       }
-    ],
-    response_format: {
-      type: 'json_schema',
-      json_schema: {
-        name: 'po_product_match_scores',
-        strict: true,
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            scores: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  productMasterId: { type: 'string' },
-                  matchPercent: { type: 'number' },
-                  reason: { type: 'string' }
-                },
-                required: ['productMasterId', 'matchPercent', 'reason']
-              }
-            }
-          },
-          required: ['scores']
-        }
-      }
-    },
-    temperature: 0
-  });
+    }
+  },
+  required: ['scores']
+};
 
-  const raw = completion?.choices?.[0]?.message?.content || '{"scores":[]}';
-  return JSON.parse(raw);
+async function scoreBatch(poText, batch) {
+  const { data } = await askJson({
+    feature: 'po-match-score',
+    model: SCORE_MODEL,
+    effort: 'medium',
+    schema: SCORES_SCHEMA,
+    system: [
+      'You score match quality between current PO text and historical product records.',
+      'For each candidate record, return matchPercent from 0 to 100.',
+      'Do not skip any candidate in the batch.'
+    ].join(' '),
+    content: JSON.stringify({
+      poText,
+      candidates: batch
+    })
+  });
+  return data;
 }
 
 async function scoreCandidates(poText, rows) {

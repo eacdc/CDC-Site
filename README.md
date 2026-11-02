@@ -19,17 +19,22 @@ DB_SERVER=localhost\\SQLEXPRESS
 MONGODB_URI=mongodb://localhost:27017/contractor-po-system
 MONGODB_URI_VT=mongodb://localhost:27017/voice-tool
 
-# OpenAI Configuration (Required for Voice Note Tool AI analysis)
+# Claude (all AI features) and OpenAI (speech-to-text only)
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
 
 # JWT Secret
 JWT_SECRET=your_jwt_secret_here
 ```
 
-**Note:** To use the Voice Note Tool's AI analysis feature, you need to:
-1. Sign up for an OpenAI API account at https://platform.openai.com/
-2. Create an API key from your OpenAI dashboard
-3. Add the API key to your `.env` file as `OPENAI_API_KEY`
+**AI keys.** Every feature that reads a document or a conversation calls
+Claude through `src/lib/claude.js`; create an API key at
+https://console.anthropic.com/ and set it as `ANTHROPIC_API_KEY`. OpenAI is
+still needed for audio: the Voice Note Tool and WhatsApp voice notes are
+transcribed by Whisper, because Claude does not take audio. Model tiers and
+per-feature overrides are listed in `.env.example`. Each Claude call logs one
+`[claude] feature=... model=... in=... out=...` line, which is how to see
+what each feature costs.
 
 3. Start the server
 

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test src/sql-guard.test.js src/routes-fg-qc.test.js src/routes-pending-dashboard.test.js \"src/supplier-portal/tests/*.test.js\" src/issue-tool/issue-tool.test.js scripts/sign-assets.test.js",
+    "test": "node --test src/lib/claude.test.js src/sql-guard.test.js src/routes-fg-qc.test.js src/routes-pending-dashboard.test.js \"src/supplier-portal/tests/*.test.js\" src/issue-tool/issue-tool.test.js scripts/sign-assets.test.js",
     "test:issue-tool": "node --test src/issue-tool/issue-tool.test.js",
     "issue-tool:discover": "node scripts/issue-tool-discover.js",
     "issue-tool:acceptance": "node scripts/issue-tool-acceptance.js",

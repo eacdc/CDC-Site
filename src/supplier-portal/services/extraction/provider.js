@@ -1,7 +1,7 @@
 /**
  * Extraction provider interface.
  *
- * The spec calls for GPT-4o vision or Claude behind a single interface so
+ * Claude (the default) and GPT-4o vision sit behind a single interface so
  * either can be swapped in. Everything downstream — review screen, matching,
  * rate history — consumes the shape defined here and never the provider's own
  * response.
@@ -361,13 +361,8 @@ export function ensureBuiltInProviders() {
   if (!builtInsPromise) {
     builtInsPromise = (async () => {
       await import('./openai-provider.js');
-      // Anthropic registers only when a key is configured — a
-      // registered-but-keyless provider fails once per request instead of
-      // being absent, which is harder to diagnose, not easier.
-      if (process.env.ANTHROPIC_API_KEY) {
-        const { registerAnthropicProvider } = await import('./anthropic-provider.js');
-        registerAnthropicProvider();
-      }
+      const { registerAnthropicProvider } = await import('./anthropic-provider.js');
+      registerAnthropicProvider();
     })();
     builtInsPromise.catch(() => { builtInsPromise = null; });
   }
@@ -375,21 +370,24 @@ export function ensureBuiltInProviders() {
 }
 
 /**
- * The configured provider. `EXTRACTION_PROVIDER` selects it; OpenAI is the
- * default because CDC already holds programmatic keys for it.
+ * The configured provider. `EXTRACTION_PROVIDER` selects it; Claude
+ * (`anthropic`) is the default, and `openai` is kept as a rollback.
+ *
+ * A missing key is reported here, by name, rather than as an opaque failure
+ * halfway through the first extraction.
  */
-export async function getProvider(name = process.env.EXTRACTION_PROVIDER || 'openai') {
+export async function getProvider(name = process.env.EXTRACTION_PROVIDER || 'anthropic') {
   await ensureBuiltInProviders();
 
   const provider = providers.get(name);
   if (!provider) {
     const available = [...providers.keys()];
     throw new Error(
-      `Extraction provider "${name}" is not registered. Available: ${available.join(', ') || 'none'}.`
-      + (name === 'anthropic' && !process.env.ANTHROPIC_API_KEY
-        ? ' ANTHROPIC_API_KEY is not set on the server.'
-        : ''),
+      `Extraction provider "${name}" is not registered. Available: ${available.join(', ') || 'none'}.`,
     );
+  }
+  if (name === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
+    throw new Error('ANTHROPIC_API_KEY is not set on the server; the "anthropic" extraction provider needs it.');
   }
   return provider;
 }

@@ -16,29 +16,50 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getProvider, listProviders } from '../services/extraction/provider.js';
 
+/** Runs `fn` with the given env vars set (or deleted, for undefined), then restores them. */
+async function withEnv(vars, fn) {
+  const before = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(before)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 test('the default provider is registered without anyone importing it', async () => {
-  const provider = await getProvider();
-  assert.equal(provider.name, 'openai');
+  await withEnv({ EXTRACTION_PROVIDER: undefined, ANTHROPIC_API_KEY: 'test-key' }, async () => {
+    const provider = await getProvider();
+    assert.equal(provider.name, 'anthropic');
+  });
 });
 
 test('a provider registers whether or not its key is configured', async () => {
   // Registration and credentials are separate concerns. A provider that only
   // appears once a key is present turns a missing key into "provider not
   // registered", which points at the wrong thing entirely.
-  const before = process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_API_KEY;
-  try {
-    assert.ok((await listProviders()).includes('openai'));
-  } finally {
-    if (before !== undefined) process.env.OPENAI_API_KEY = before;
-  }
+  await withEnv({ OPENAI_API_KEY: undefined, ANTHROPIC_API_KEY: undefined }, async () => {
+    const names = await listProviders();
+    assert.ok(names.includes('openai'));
+    assert.ok(names.includes('anthropic'));
+  });
 });
 
-test('the provider honours the interface the rest of the app calls', async () => {
-  const provider = await getProvider('openai');
-  for (const method of ['extractQuote', 'extractInvoice', 'adjudicate']) {
-    assert.equal(typeof provider[method], 'function', `${method} is missing`);
-  }
+test('every provider honours the interface the rest of the app calls', async () => {
+  await withEnv({ ANTHROPIC_API_KEY: 'test-key' }, async () => {
+    for (const name of ['anthropic', 'openai']) {
+      const provider = await getProvider(name);
+      for (const method of ['extractQuote', 'extractInvoice', 'adjudicate', 'detectOrientation']) {
+        assert.equal(typeof provider[method], 'function', `${name}.${method} is missing`);
+      }
+    }
+  });
 });
 
 test('an unknown provider names what is actually available', async () => {
