@@ -14,8 +14,9 @@
  *
  * The rules (agreed with CDC, 22 Oct 2026):
  *  - Header fields may always change.
- *  - A GRN with a live purchase invoice keeps its quantities and lines, and
- *    cannot be deleted, until that invoice is deleted in the ERP.
+ *  - A GRN with a live purchase invoice keeps its quantities and lines.
+ *    Deleting the GRN deletes that invoice first (CDC, 2 Nov 2026), unless
+ *    the invoice also covers another GRN.
  *  - A line stock has been issued from cannot be removed, its stock quantity
  *    cannot drop below what was issued, and its warehouse cannot change.
  *  - A GRN any of whose lines has been issued from cannot be deleted.
@@ -34,6 +35,7 @@ import { withTransaction, txQuery, query, sql, assertSite } from '../db/mssql.js
 import { COMPANY_ID, TOLERANCES } from '../config/constants.js';
 import { erpWritesEnabled, refreshStock, repairItemStock } from './erp-receiving.js';
 import { loadGrn } from './grn-register.js';
+import { erpNow } from '../lib/erp-time.js';
 import { purchaseQtyFromStock, stockQtyFromPurchase } from './receipt-units.js';
 
 const HEADER_FIELDS = ['deliveryNoteNo', 'deliveryNoteDate', 'gateEntryNo', 'gateEntryDate', 'eWayBillNo', 'eWayBillDate', 'vehicleNo', 'receivedBy'];
@@ -226,7 +228,7 @@ export async function editGrn(site, { transactionId, edit, userId, expectedModif
     const plan = planGrnEdit(grn, edit);
     if (plan.errors.length) throw Object.assign(fail(plan.errors.join(' '), 409), { plan });
     const notes = await closedPoWarnings((t, p) => txQuery(tx, t, p), grn, plan);
-    const now = new Date();
+    const now = erpNow();
     const who = { type: sql.Int, value: Number(userId) };
     const tid = { type: sql.Int, value: Number(transactionId) };
     const companyId = { type: sql.Int, value: COMPANY_ID };
@@ -266,7 +268,7 @@ export async function editGrn(site, { transactionId, edit, userId, expectedModif
     for (const h of plan.header) {
       const [column, type] = COLUMN[h.field];
       set.push(`${column} = @h_${h.field}`);
-      params[`h_${h.field}`] = { type, value: DATE_FIELDS.has(h.field) ? (h.after ? new Date(`${h.after}T00:00:00`) : null) : h.after };
+      params[`h_${h.field}`] = { type, value: DATE_FIELDS.has(h.field) ? (h.after ? new Date(`${h.after}T00:00:00Z`) : null) : h.after };
     }
     await txQuery(tx, `
       UPDATE ItemTransactionMain SET ${set.join(', ')}
@@ -282,7 +284,16 @@ export async function editGrn(site, { transactionId, edit, userId, expectedModif
   return { dryRun: false, ...result };
 }
 
-/** Delete a posted GRN - only one with no live purchase invoice and nothing issued. */
+/**
+ * Delete a posted GRN, and its purchase invoice first if it has one. Refused
+ * when stock has been issued from it, or the invoice also covers another GRN.
+ *
+ * The invoice goes as the ERP's own delete does it (PI04725_26_27 and 46
+ * more in 2026-27, and the GRN history trigger): IsDeletedTransaction = 1
+ * with DeletedBy/DeletedDate on its header, lines and tax rows - nothing else
+ * on them changes - then the GRN's IsPurchaseInvoiceCreated back to 0. One
+ * already posted in Tally is deleted too; the page warns that Tally keeps it.
+ */
 export async function deleteGrn(site, { transactionId, userId, expectedModifiedDate, dryRun = false }) {
   assertSite(site);
   if (!dryRun && !erpWritesEnabled()) throw fail('ERP writes are disabled. Set SP_ENABLE_ERP_WRITES=true once this has been verified. Use the dry run to see what would change.', 403);
@@ -293,13 +304,14 @@ export async function deleteGrn(site, { transactionId, userId, expectedModifiedD
     const plan = { header: [], lines: [], removals: grn.lines.map((l) => ({ transactionDetailId: l.transactionDetailId, lineNo: l.lineNo, itemId: l.itemId })) };
     return { plan, notes: await closedPoWarnings(q, grn, plan) };
   };
+  const invoicesOf = (grn) => grn.purchaseInvoices.map((p) => ({ voucherNo: p.voucherNo, postedInTally: p.postedInTally }));
 
   if (dryRun) {
     const q = (t, p) => query(site, t, p);
     const grn = await loadGrn(q, transactionId);
     if (!grn) throw fail('That GRN no longer exists - it may have been deleted.', 404);
     const { plan, notes } = await check(q, grn);
-    return { dryRun: true, voucherNo: grn.voucherNo, lines: plan.removals.length, notes };
+    return { dryRun: true, voucherNo: grn.voucherNo, lines: plan.removals.length, invoices: invoicesOf(grn), notes };
   }
 
   const result = await withTransaction(site, async (tx) => {
@@ -307,8 +319,34 @@ export async function deleteGrn(site, { transactionId, userId, expectedModifiedD
     const { plan, notes } = await check((t, p) => txQuery(tx, t, p), grn);
     const params = {
       tid: { type: sql.Int, value: Number(transactionId) }, companyId: { type: sql.Int, value: COMPANY_ID },
-      who: { type: sql.Int, value: Number(userId) }, now: { type: sql.DateTime, value: new Date() },
+      who: { type: sql.Int, value: Number(userId) }, now: { type: sql.DateTime, value: erpNow() },
     };
+
+    // The purchase invoice first, in the ERP's order: header, lines, taxes.
+    for (const pi of grn.purchaseInvoices) {
+      const piParams = { ...params, pi: { type: sql.Int, value: pi.transactionId } };
+      const [header] = await txQuery(tx, `
+        UPDATE ItemPurchaseInvoiceMain SET IsDeletedTransaction = 1, DeletedBy = @who, DeletedDate = @now
+        WHERE TransactionID = @pi AND CompanyID = @companyId AND ISNULL(IsDeletedTransaction,0) = 0;
+        SELECT @@ROWCOUNT AS N;
+      `, piParams);
+      if (Number(header?.N) !== 1) throw fail(`${pi.voucherNo} changed while it was being deleted. Nothing has been deleted; open ${grn.voucherNo} again.`, 409);
+      await txQuery(tx, `
+        UPDATE ItemPurchaseInvoiceDetail SET IsDeletedTransaction = 1, DeletedBy = @who, DeletedDate = @now
+        WHERE TransactionID = @pi AND CompanyID = @companyId AND ISNULL(IsDeletedTransaction,0) = 0
+      `, piParams);
+      await txQuery(tx, `
+        UPDATE ItemPurchaseInvoiceTaxes SET IsDeletedTransaction = 1, DeletedBy = @who, DeletedDate = @now
+        WHERE TransactionID = @pi AND CompanyID = @companyId AND ISNULL(IsDeletedTransaction,0) = 0
+      `, piParams);
+    }
+    if (grn.purchaseInvoices.length) {
+      await txQuery(tx, `
+        UPDATE ItemTransactionMain SET IsPurchaseInvoiceCreated = 0
+        WHERE TransactionID = @tid AND CompanyID = @companyId
+      `, params);
+    }
+
     await txQuery(tx, `
       UPDATE ItemTransactionDetail SET IsDeletedTransaction = 1, DeletedBy = @who, DeletedDate = @now
       WHERE TransactionID = @tid AND CompanyID = @companyId AND ISNULL(IsDeletedTransaction,0) = 0
@@ -317,7 +355,13 @@ export async function deleteGrn(site, { transactionId, userId, expectedModifiedD
       UPDATE ItemTransactionMain SET IsDeletedTransaction = 1, DeletedBy = @who, DeletedDate = @now
       WHERE TransactionID = @tid AND CompanyID = @companyId AND ISNULL(IsDeletedTransaction,0) = 0
     `, params);
-    return { voucherNo: grn.voucherNo, lines: plan.removals.length, itemIds: [...new Set(plan.removals.map((r) => r.itemId))], notes };
+    return {
+      voucherNo: grn.voucherNo,
+      lines: plan.removals.length,
+      invoices: invoicesOf(grn),
+      itemIds: [...new Set(plan.removals.map((r) => r.itemId))],
+      notes,
+    };
   });
 
   for (const itemId of result.itemIds) await repairItemStock(site, itemId).catch(() => null);

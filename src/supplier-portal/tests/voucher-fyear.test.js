@@ -76,3 +76,14 @@ test('a voucher number read back as a bigint string is still allocated', async (
   assert.equal(got.maxVoucherNo, 4811);
   assert.equal(got.voucherNo, 'REC04811_26_27');
 });
+
+test('voucher dates and times are India time, as the ERP writes them', async () => {
+  const { erpNow, erpToday } = await import('../lib/erp-time.js');
+  // 16:13 in Kolkata on 28 Oct is 10:43 UTC; the ERP stores 16:13.
+  assert.equal(erpNow(new Date('2026-10-28T10:43:08Z')).toISOString(), '2026-10-28T16:13:08.000Z');
+  // 01:00 in Kolkata on 1 April is still 31 March in UTC: the voucher is
+  // dated 1 April, and numbered in the new year.
+  const early = new Date('2027-03-31T19:30:00Z');
+  assert.equal(erpToday(early).toISOString(), '2027-04-01T00:00:00.000Z');
+  assert.deepEqual(financialYearFor(erpToday(early)), { fYear: '2027-2028', suffix: '_27_28' });
+});

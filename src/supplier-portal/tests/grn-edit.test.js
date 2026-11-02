@@ -43,10 +43,18 @@ test('a GRN issued from cannot be deleted, and says which issues hold it', () =>
   assert.match(g.deleteLocked, /IS18087_26_27/);
 });
 
-test('a GRN with a purchase invoice cannot be deleted, issued or not', () => {
-  const free = shapeGrn(HEADER, LINES, [], PI);
-  assert.match(free.deleteLocked, /PI04500_26_27.*Delete it in the ERP first/);
-  assert.equal(shapeGrn(HEADER, LINES, [], []).deleteLocked, null);
+test('a GRN with a purchase invoice can be deleted - the invoice goes first', () => {
+  const g = shapeGrn(HEADER, LINES, [], [{ ...PI[0], IsPostedInTally: true, Grns: 1 }]);
+  assert.equal(g.deleteLocked, null);
+  assert.deepEqual(g.purchaseInvoices.map((p) => [p.voucherNo, p.postedInTally, p.otherGrns]), [['PI04500_26_27', true, 0]]);
+  // Its quantities still stay as they are while the invoice lives.
+  assert.match(g.lines[0].qtyLocked, /PI04500_26_27/);
+});
+
+test('not when the invoice also covers another GRN, or stock was issued', () => {
+  const shared = shapeGrn(HEADER, LINES, [], [{ ...PI[0], Grns: 2 }]);
+  assert.match(shared.deleteLocked, /PI04500_26_27 also covers 1 other GRN.*Delete it in the ERP first/);
+  assert.match(grn(PI).deleteLocked, /issued/);
 });
 
 test('header fields change; unchanged ones are not written', () => {

@@ -192,7 +192,10 @@ export async function loadGrn(q, transactionId) {
       ORDER BY IM.VoucherDate
     `, { companyId: COMPANY_ID, issue: VOUCHER.ITEM_ISSUE, tid });
   const invoices = await q(`
-      SELECT DISTINCT PM.TransactionID, PM.VoucherNo, PM.VoucherDate
+      SELECT DISTINCT PM.TransactionID, PM.VoucherNo, PM.VoucherDate, PM.IsPostedInTally,
+             (SELECT COUNT(DISTINCT P2.ParentTransactionID) FROM ItemPurchaseInvoiceDetail P2
+              WHERE P2.TransactionID = PM.TransactionID AND P2.CompanyID = PM.CompanyID
+                AND ISNULL(P2.IsDeletedTransaction,0) = 0) AS Grns
       FROM ItemPurchaseInvoiceDetail PD
       JOIN ItemPurchaseInvoiceMain PM ON PM.TransactionID = PD.TransactionID AND PM.CompanyID = PD.CompanyID
       WHERE PD.CompanyID = @companyId AND PD.ParentTransactionID = @tid
@@ -212,7 +215,11 @@ export function shapeGrn(header, lines = [], issues = [], invoices = []) {
   }
   const purchaseInvoices = invoices.map((p) => ({
     transactionId: Number(p.TransactionID), voucherNo: p.VoucherNo, voucherDate: p.VoucherDate,
+    postedInTally: Boolean(p.IsPostedInTally),
+    // An invoice made from this GRN and others (2 of 4,841 in 2026-27).
+    otherGrns: Math.max(0, (toNum(p.Grns) ?? 1) - 1),
   }));
+  const shared = purchaseInvoices.filter((p) => p.otherGrns > 0);
   const hasPi = purchaseInvoices.length > 0;
   const piNames = purchaseInvoices.map((p) => p.voucherNo).join(', ');
 
@@ -251,11 +258,13 @@ export function shapeGrn(header, lines = [], issues = [], invoices = []) {
   });
 
   const issuedLines = shaped.filter((l) => l.issuedQty > 0);
-  const deleteLocked = hasPi
-    ? `Purchase invoice ${piNames} is made from this GRN. Delete it in the ERP first.`
-    : issuedLines.length
-      ? `Stock has been issued from line ${issuedLines.map((l) => l.lineNo).join(', ')} `
-        + `(${[...new Set(issuedLines.flatMap((l) => l.issues.map((i) => i.issueNo)))].join(', ')}). Delete those issue lines first.`
+  // A purchase invoice no longer blocks the delete: it is deleted first, with
+  // the GRN (erp-grn-edit.js) - unless it also covers another GRN.
+  const deleteLocked = issuedLines.length
+    ? `Stock has been issued from line ${issuedLines.map((l) => l.lineNo).join(', ')} `
+      + `(${[...new Set(issuedLines.flatMap((l) => l.issues.map((i) => i.issueNo)))].join(', ')}). Delete those issue lines first.`
+    : shared.length
+      ? `Purchase invoice ${shared.map((p) => p.voucherNo).join(', ')} also covers ${shared.reduce((s, p) => s + p.otherGrns, 0)} other GRN(s). Delete it in the ERP first.`
       : null;
 
   return {

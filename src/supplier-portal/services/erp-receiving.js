@@ -22,6 +22,7 @@
 import { withTransaction, txQuery, sql, assertSite, hasWriteLogin, db } from '../db/mssql.js';
 import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX, TOLERANCES, STOCK_REFRESH_PROC } from '../config/constants.js';
 import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
+import { erpNow, erpToday } from '../lib/erp-time.js';
 import {
   apportionFreight, invoiceTotals, round, storedGstPercentages, storedRate, piQty, discountedLines,
 } from '../lib/invoice-math.js';
@@ -56,7 +57,8 @@ export async function postDocumentSet({ site, header, lines, context, dryRun = f
     );
   }
 
-  const voucherDate = new Date();
+  // India's date, at midnight, as the ERP dates its own vouchers.
+  const voucherDate = erpToday();
   // Two forms, deliberately destructured apart: `fYear` is the column value
   // ('2026-2027'), `suffix` is the voucher-number tail ('_26_27').
   const { fYear, suffix } = financialYearFor(voucherDate);
@@ -116,7 +118,7 @@ export async function postPurchaseInvoiceForGrn({ site, grnTransactionId, header
   }
   if (!dryRun && !Number.isFinite(context?.userId)) throw new Error('No ERP user on this session.');
 
-  const voucherDate = new Date();
+  const voucherDate = erpToday();
   const { fYear, suffix } = financialYearFor(voucherDate);
   const priced = priceLines({ header, lines });
   // Fails here, before anything is written, if the freight rows do not add up.
@@ -228,7 +230,7 @@ async function writeGrn({ tx, header, lines, context, voucherDate, fYear, suffix
     branchId: { type: sql.Int, value: context.branchId ?? 0 },
     userId: { type: sql.Int, value: context.userId },
     fYear,
-    now: { type: sql.DateTime, value: new Date() },
+    now: { type: sql.DateTime, value: erpNow() },
   });
 
   // A bigint: the driver returns it as a string.
@@ -310,7 +312,7 @@ async function writeGrnLine({ tx, transactionId, line, index, context, fYear, po
     poTransactionId: { type: sql.Int, value: line.poTransactionId },
     productHsnId: { type: sql.Int, value: 0 },
     userId: { type: sql.Int, value: context.userId },
-    now: { type: sql.DateTime, value: new Date() },
+    now: { type: sql.DateTime, value: erpNow() },
     batchNoPlaceholder: '',
     companyId: { type: sql.Int, value: COMPANY_ID },
     branchId: { type: sql.Int, value: context.branchId ?? 0 },
@@ -412,7 +414,7 @@ async function writePurchaseInvoice({
     branchId: { type: sql.Int, value: context.branchId ?? 0 },
     userId: { type: sql.Int, value: context.userId },
     fYear,
-    now: { type: sql.DateTime, value: new Date() },
+    now: { type: sql.DateTime, value: erpNow() },
   });
 
   // A bigint: the driver returns it as a string.
@@ -485,7 +487,7 @@ async function writePurchaseInvoice({
       branchId: { type: sql.Int, value: context.branchId ?? 0 },
       userId: { type: sql.Int, value: context.userId },
       fYear,
-      now: { type: sql.DateTime, value: new Date() },
+      now: { type: sql.DateTime, value: erpNow() },
     });
   }
 
@@ -551,7 +553,7 @@ async function writeTaxRows({ tx, transactionId, totals, context, fYear }) {
       branchId: { type: sql.Int, value: context.branchId ?? 0 },
       userId: { type: sql.Int, value: context.userId },
       fYear,
-      now: { type: sql.DateTime, value: new Date() },
+      now: { type: sql.DateTime, value: erpNow() },
     });
   }
 
@@ -614,7 +616,7 @@ async function closePoLines({ tx, lines, context }) {
       detailId: { type: sql.Int, value: line.poTransactionDetailId },
       // CompletedBy is a UserID, not an employee ledger.
       userId: { type: sql.Int, value: context.userId },
-      now: { type: sql.DateTime, value: new Date() },
+      now: { type: sql.DateTime, value: erpNow() },
       companyId: { type: sql.Int, value: COMPANY_ID },
     });
     closed.push(line.poTransactionDetailId);

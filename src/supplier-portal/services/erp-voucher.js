@@ -27,6 +27,7 @@ import { txQuery, sql } from '../db/mssql.js';
 import {
   COMPANY_ID, formatVoucherNo, FYEAR_COLUMN_PATTERN, VOUCHER_SUFFIX_PATTERN,
 } from '../config/constants.js';
+import { erpToday } from '../lib/erp-time.js';
 
 /**
  * Allocate the next voucher number for a type, inside an open transaction.
@@ -94,10 +95,12 @@ export async function allocateVoucherNo(tx, { voucherId, fYear, suffix, table = 
  *
  * @returns {{fYear: string, suffix: string}}
  */
-export function financialYearFor(date = new Date()) {
+export function financialYearFor(date = erpToday()) {
   const d = new Date(date);
   if (Number.isNaN(d.getTime())) throw new Error('financialYearFor needs a valid date.');
-  const startYear = d.getMonth() >= 3 ? d.getFullYear() : d.getFullYear() - 1;
+  // Read in UTC: a voucher date is India's date at UTC midnight (erpToday),
+  // whatever time zone this server runs in.
+  const startYear = d.getUTCMonth() >= 3 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
   const yy = (n) => String(n).slice(-2);
   return {
     fYear: `${startYear}-${startYear + 1}`,

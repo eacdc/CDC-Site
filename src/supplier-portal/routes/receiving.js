@@ -1162,7 +1162,10 @@ router.post('/grns/:transactionId/edit', requireRole('STORE', 'BUYER', 'APPROVER
   } catch (err) { return next(err); }
 });
 
-/** Delete a posted GRN. ?dryRun=true says whether it could be. Body: {expectedModifiedDate}. */
+/**
+ * Delete a posted GRN, and its purchase invoice first if it has one.
+ * ?dryRun=true says whether it could be, and which invoices would go. Body: {expectedModifiedDate}.
+ */
 router.post('/grns/:transactionId/delete', requireRole('STORE', 'BUYER', 'APPROVER'), async (req, res, next) => {
   try {
     await ensureSupplierPortalReady();
@@ -1183,7 +1186,8 @@ router.post('/grns/:transactionId/delete', requireRole('STORE', 'BUYER', 'APPROV
       );
       await AuditLog.create({
         action: 'GRN_DELETED', entity: 'erpGrn', entityId: String(tid),
-        site: req.sp.site, actor: req.sp.actor, after: { voucherNo: result.voucherNo, lines: result.lines },
+        site: req.sp.site, actor: req.sp.actor,
+        after: { voucherNo: result.voucherNo, lines: result.lines, purchaseInvoices: result.invoices },
       });
     }
     return res.json({ ...result, writesEnabled: erpWritesEnabled() });
