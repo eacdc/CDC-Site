@@ -41,7 +41,7 @@ const sqlConfig = {
 	requestTimeout: 120000  // 2 minutes - artwork pending/completed procs can be slow
 };
 
-/** Used by heavy report endpoints (e.g. rpt_job_gp_per_impression_v11). */
+/** Used by heavy report endpoints (e.g. rpt_job_gp_per_impression_v12). */
 export const LONG_REQUEST_TIMEOUT_MS = Number(process.env.DB_LONG_REQUEST_TIMEOUT_MS) || 600_000;
 
 // Store multiple pools for different databases

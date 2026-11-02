@@ -1,7 +1,7 @@
 /**
  * CDC Job Wise Profitability
  * GET /job-wise-profitability?database=KOL|AHM&fromDate=YYYY-MM-DD&toDate=YYYY-MM-DD&clientIds=1,2,3
- * — dbo.rpt_job_gp_per_impression_v11 (@FromDate, @ToDate, @ClientIDs TVP) + computed GP %
+ * — dbo.rpt_job_gp_per_impression_v12 (@FromDate, @ToDate, @ClientIDs TVP) + computed GP %
  * GET /job-wise-profitability/clients?database=KOL|AHM
  * — client dropdown (LedgerID + LedgerName from JobBookingJobCard)
  */
@@ -296,7 +296,7 @@ router.get('/job-wise-profitability', async (req, res) => {
 			.input('FromDate', sql.Date, safeFromDate)
 			.input('ToDate', sql.Date, safeToDate)
 			.input('ClientIDs', tvp)
-			.execute('dbo.rpt_job_gp_per_impression_v11');
+			.execute('dbo.rpt_job_gp_per_impression_v12');
 
 		const rawRows = result.recordset || [];
 		const baseColumns = orderColumnsFromRows(rawRows);

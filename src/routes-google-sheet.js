@@ -316,7 +316,7 @@ function resolveGpReportDateRangeFromQuery(req) {
 }
 
 /**
- * Runs rpt_job_gp_per_impression_v11, enriches with Mongo contractor cost, builds sheet rows.
+ * Runs rpt_job_gp_per_impression_v12, enriches with Mongo contractor cost, builds sheet rows.
  * @param {string} db
  * @param {string} startDateStr
  * @param {string} endDateStr
@@ -329,7 +329,7 @@ async function executeGpReportWithContractorCost(db, startDateStr, endDateStr, o
     .request()
     .input('StartDate', sql.VarChar(10), startDateStr)
     .input('EndDate', sql.VarChar(10), endDateStr)
-    .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+    .query('EXEC rpt_job_gp_per_impression_v12 @StartDate, @EndDate');
 
   const recordset = result.recordset ?? [];
   const jobNumbers = recordset.map(r => String(r.JobCardNo ?? '').trim());
@@ -468,7 +468,7 @@ router.get('/google-sheet/process-otif2', async (req, res) => {
 
 /**
  * GET /api/google-sheet/job-gp-per-impression?database=KOL
- * Runs rpt_job_gp_per_impression_v11 with StartDate = 6 months ago, EndDate = yesterday.
+ * Runs rpt_job_gp_per_impression_v12 with StartDate = 6 months ago, EndDate = yesterday.
  * Returns 2D array (headers + rows) for Google Sheets.
  */
 router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
@@ -493,7 +493,7 @@ router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
       .request()
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
-      .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+      .query('EXEC rpt_job_gp_per_impression_v12 @StartDate, @EndDate');
 
     const elapsedMs = Date.now() - startedAt;
     const recordset = result.recordset ?? [];
@@ -517,7 +517,7 @@ router.get('/google-sheet/job-gp-per-impression', async (req, res) => {
  * Replicates the Apps Script `getmachineschedule()` function that used to run
  * inside the "Master" Google Sheet via JDBC:
  *  - Date range = last Monday -> last Sunday (the previous full week), IST.
- *  - Runs rpt_job_gp_per_impression_v11(@StartDate, @EndDate).
+ *  - Runs rpt_job_gp_per_impression_v12(@StartDate, @EndDate).
  *  - Quantity columns rounded to whole numbers; rate/cost columns to 2 decimals.
  *  - Appends a "GP %" column computed as (Total Bill Value - Total Cost) / Total Bill Value.
  *  - Enriches Notional-ContCost from MongoDB Bills and recomputes Total Cost / GP / GP/Imp.
@@ -549,7 +549,7 @@ router.get('/google-sheet/job-gp-per-impression-weekly', async (req, res) => {
       .request()
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
-      .query('EXEC rpt_job_gp_per_impression_v11 @StartDate, @EndDate');
+      .query('EXEC rpt_job_gp_per_impression_v12 @StartDate, @EndDate');
 
     const recordset = result.recordset ?? [];
     const jobNumbers = recordset.map(r => String(r.JobCardNo ?? '').trim());
