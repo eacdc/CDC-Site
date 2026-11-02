@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { findDuplicate } from './detector/concerns.js';
 import { parseConcerns, MalformedLlmOutput } from './llm/parse.js';
 import { resolveRouting } from './router/resolve.js';
-import { promptForKind } from './llm/openai.js';
+import { promptForKind } from './llm/prompts.js';
 import { isLive } from './concerns-live.js';
 
 const NOW = new Date('2026-09-11T12:00:00Z');

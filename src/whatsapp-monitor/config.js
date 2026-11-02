@@ -26,6 +26,13 @@ function num(name, fallback) {
   return n;
 }
 
+const LLM_PROVIDER = opt('LLM_PROVIDER', 'anthropic');
+
+const DEFAULT_MODELS = {
+  anthropic: { fast: 'claude-haiku-5-5', strong: 'claude-sonnet-5-5' },
+  openai: { fast: 'gpt-5-mini', strong: 'gpt-5' },
+};
+
 /**
  * All WhatsApp-monitor configuration in one place. Nothing here is read
  * anywhere else in the module, and no phone number, group id or model name is
@@ -61,9 +68,14 @@ export const config = {
   },
 
   llm: {
-    provider: opt('LLM_PROVIDER', 'openai'),
-    fastModel: opt('LLM_MODEL_FAST', 'gpt-5-mini'),
-    strongModel: opt('LLM_MODEL_STRONG', 'gpt-5'),
+    /**
+     * anthropic (Claude) by default; openai is kept as an instant rollback.
+     * The model defaults follow the provider, so switching it is one variable.
+     * Transcription stays on OpenAI Whisper either way - see transcribeModel.
+     */
+    provider: LLM_PROVIDER,
+    fastModel: opt('LLM_MODEL_FAST', DEFAULT_MODELS[LLM_PROVIDER]?.fast),
+    strongModel: opt('LLM_MODEL_STRONG', DEFAULT_MODELS[LLM_PROVIDER]?.strong),
     /**
      * whisper-1, and not one of the newer gpt-4o transcription models, because
      * they cannot read a WhatsApp voice note at all:

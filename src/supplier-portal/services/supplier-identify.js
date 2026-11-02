@@ -20,7 +20,7 @@
  */
 
 import { query, assertSite } from '../db/mssql.js';
-import { COMPANY_ID, VOUCHER, SUPPLIER_LEDGER_TYPES, CDC_IDENTITY } from '../config/constants.js';
+import { COMPANY_ID, VOUCHER, SUPPLIER_LEDGER_TYPES, isCdcGstin } from '../config/constants.js';
 import { supplierLedgers } from './erp-ledgers.js';
 import { normaliseName } from '../lib/text.js';
 import { cleanGstin, isValidGstin, nearestGstins } from '../lib/gstin.js';
@@ -80,13 +80,14 @@ const NAME_MARGIN = 0.15;
 export function identifySupplierLedger({ ledgers = [], gstin, name, lastPoDate = new Map() }) {
   const suppliers = ledgers.filter(isSupplierType);
   const read = normaliseGstin(gstin);
-  const cdc = normaliseGstin(CDC_IDENTITY.gstin);
+  // Kolkata's or Ahmedabad's: either is CDC's own.
+  const isCdc = read && isCdcGstin(read);
   const notes = [];
 
   // A model can read CDC's own GSTIN - the buyer's - as the supplier's.
-  if (read && read === cdc) notes.push(`the GSTIN read (${read}) is CDC's own, so it was not used`);
+  if (isCdc) notes.push(`the GSTIN read (${read}) is CDC's own, so it was not used`);
 
-  if (read && read !== cdc) {
+  if (read && !isCdc) {
     const byGstin = suppliers.filter((l) => normaliseGstin(l.GSTNo) === read);
     if (byGstin.length) {
       const [best] = rank(byGstin, { name, lastPoDate });
@@ -109,7 +110,7 @@ export function identifySupplierLedger({ ledgers = [], gstin, name, lastPoDate =
    * away or the name agrees.
    */
   const raw = cleanGstin(gstin);
-  if (raw && raw !== cdc && raw.length >= 13 && !isValidGstin(raw)) {
+  if (raw && !isCdcGstin(raw) && raw.length >= 13 && !isValidGstin(raw)) {
     const valid = suppliers.filter((l) => isValidGstin(l.GSTNo));
     const near = nearestGstins(raw, valid.map((l) => l.GSTNo), 2);
     if (near.gstins.length === 1) {

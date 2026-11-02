@@ -454,7 +454,7 @@ async function checkInputs(set) {
 /** Run every check over the lines, store both, and build the reply. */
 async function checkAndSave(set, lines, { alreadyPosted }) {
   const checks = runInvoiceChecks({
-    header: set.extractedHeader, lines, alreadyPosted, context: set.context,
+    header: set.extractedHeader, lines, alreadyPosted, context: set.context, site: set.site,
   });
   set.extractedLines = lines;
   set.poCandidates = [...new Set(lines.map((l) => l.matchedPoTransactionId).filter(Boolean))];

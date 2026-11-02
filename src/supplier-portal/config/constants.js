@@ -220,6 +220,22 @@ export const CDC_IDENTITY = {
   stateCode: '19',
 };
 
+/**
+ * CDC's GSTIN in each site's ERP (CompanyMaster.GSTIN, checked November 2026).
+ * Same PAN, one registration per state: an Ahmedabad bill is made out to the
+ * Gujarat one.
+ */
+export const CDC_GSTIN_BY_SITE = {
+  KOL: '19AABCC2946B1ZZ',
+  AHM: '24AABCC2946B1Z8',
+};
+
+/** The GSTIN a bill received at this site should be made out to. */
+export const cdcGstinFor = (site) => CDC_GSTIN_BY_SITE[site] ?? CDC_IDENTITY.gstin;
+
+/** Any of CDC's own registrations, whichever state: they all carry CDC's PAN. */
+export const isCdcGstin = (gstin) => String(gstin ?? '').slice(2, 12) === CDC_IDENTITY.pan;
+
 /** House rules confirmed by CDC, August 2026 (§23). */
 export const TOLERANCES = {
   /** Over-receipt beyond this fraction of PO pending qty is a hard block. */

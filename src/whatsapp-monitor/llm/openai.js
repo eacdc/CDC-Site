@@ -1,83 +1,25 @@
-import OpenAI, { toFile } from 'openai';
-import { readFileSync } from 'node:fs';
+import OpenAI from 'openai';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 import { parseConcerns, parseResolution, MalformedLlmOutput } from './parse.js';
 import { parseSummary, MalformedSummary } from '../summariser/parse.js';
+import {
+  promptForKind,
+  SUMMARY_PROMPT,
+  ROMANISE_PROMPT,
+  RESOLUTION_PROMPT,
+  buildSummaryPrompt,
+  buildUserPrompt,
+  buildResolutionPrompt,
+} from './prompts.js';
+import { transcribe } from './whisper.js';
+
+export { promptForKind };
 
 /**
- * One prompt per kind of group. An internal group asks "has something gone
- * wrong on the floor"; a client group asks "has the customer said something we
- * must answer", which is a much lower bar - an unanswered question is itself
- * the problem when a customer is reading the thread.
- *
- * Unknown or missing kind falls back to internal, because the client prompt
- * raises far more and applying it to a plant group by accident would bury
- * someone in alerts.
+ * The OpenAI implementation, kept so LLM_PROVIDER=openai is an instant
+ * rollback. Claude (anthropic.js) is the default.
  */
-const DETECTOR_PROMPTS = {
-  internal: readFileSync(new URL('../detector/prompt.md', import.meta.url), 'utf8'),
-  client: readFileSync(new URL('../detector/client-prompt.md', import.meta.url), 'utf8'),
-};
-
-export const promptForKind = (kind) => DETECTOR_PROMPTS[kind] ?? DETECTOR_PROMPTS.internal;
-const SUMMARY_PROMPT = readFileSync(new URL('../summariser/prompt.md', import.meta.url), 'utf8');
-const ROMANISE_PROMPT = readFileSync(new URL('../media/romanise-prompt.md', import.meta.url), 'utf8');
-const RESOLUTION_PROMPT = readFileSync(
-  new URL('../detector/resolution-prompt.md', import.meta.url),
-  'utf8',
-);
-
-function renderMessages(label, msgs) {
-  if (msgs.length === 0) return '';
-  // The reply link is what separates a follow-up from a second, unrelated
-  // problem reported minutes later, so the model has to be able to see it.
-  const lines = msgs.map((m) => {
-    const reply = m.replyTo ? ` (reply to [${m.replyTo}])` : '';
-    return `[${m.msgId}] ${m.senderName ?? 'unknown'}${reply}: ${m.text.replace(/\n/g, ' ')}`;
-  });
-  return `${label}\n${lines.join('\n')}\n`;
-}
-
-function renderPrevious(previous) {
-  if (!previous) return '';
-  const section = (label, items) =>
-    items?.length ? `${label}\n${items.map((b) => `- ${b}`).join('\n')}\n` : '';
-  const body =
-    section('Decisions:', previous.decisions) +
-    section('Open issues:', previous.openIssues) +
-    section('Blocked:', previous.blocked) +
-    section('Notable:', previous.notable);
-  return body ? `PREVIOUS SUMMARY (carry forward what is still true):\n${body}\n` : '';
-}
-
-function buildSummaryPrompt(input) {
-  const lines = input.messages.map(
-    (m) => `${m.senderName ?? 'unknown'}: ${m.text.replace(/\n/g, ' ')}`,
-  );
-  return [
-    `Group: ${input.groupName}`,
-    `Window: ${input.periodStart.toISOString()} to ${input.periodEnd.toISOString()}`,
-    '',
-    renderPrevious(input.previous),
-    `MESSAGES (${input.messages.length}):`,
-    lines.join('\n'),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-function buildUserPrompt(input) {
-  return [
-    `Group: ${input.groupName}`,
-    '',
-    renderMessages('EARLIER MESSAGES (context only — do not raise concerns for these):', input.contextMessages),
-    renderMessages('NEW MESSAGES (judge only these):', input.newMessages),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
 export class OpenAiLlm {
   constructor() {
     const apiKey = process.env.OPENAI_API_KEY;
@@ -155,23 +97,8 @@ export class OpenAiLlm {
     return { bullets: parseSummary(await this.chat(strong, SUMMARY_PROMPT, user)), model: strong };
   }
 
-  /**
-   * Transcribes a voice note.
-   *
-   * `audio` is the raw bytes and `filename` carries the extension, which is how
-   * the API knows the format - WhatsApp sends .oga (audio/ogg, opus), which it
-   * accepts directly, so nothing is transcoded.
-   *
-   * No fallback model: a failed transcription leaves the message reading
-   * "[voice message]", which is the same as before this existed.
-   */
-  async transcribe(audio, filename) {
-    const model = config.llm.transcribeModel;
-    const res = await this.client.audio.transcriptions.create({
-      model,
-      file: await toFile(audio, filename),
-    });
-    return { text: typeof res?.text === 'string' ? res.text.trim() : '', model };
+  transcribe(audio, filename) {
+    return transcribe(audio, filename);
   }
 
   /**
@@ -203,13 +130,10 @@ export class OpenAiLlm {
   async checkResolved(input) {
     const known = new Set(input.messages.map((m) => m.msgId));
     const model = config.llm.fastModel;
-    const user = [
-      `Concern: ${input.summary}`,
-      '',
-      renderMessages(`THREAD (${input.messages.length} messages, oldest first):`, input.messages),
-    ].join('\n');
-
-    const verdict = parseResolution(await this.chat(model, RESOLUTION_PROMPT, user), known);
+    const verdict = parseResolution(
+      await this.chat(model, RESOLUTION_PROMPT, buildResolutionPrompt(input)),
+      known,
+    );
     return { ...verdict, model };
   }
 }

@@ -12,12 +12,9 @@
 import { Router } from 'express';
 import { getPool } from './db.js';
 import sql from 'mssql';
-import OpenAI from 'openai';
+import { askText, MODELS } from './lib/claude.js';
 
 const router = Router();
-const openai = new OpenAI({
-	apiKey: process.env.OPENAI_API_KEY,
-});
 
 const TOP_FILTERS = new Set(['top50', 'top100', 'all6months']);
 const BASIS_VALUES = new Set(['O', 'D']);
@@ -188,8 +185,8 @@ router.post('/previousitemsbyclient/search', async (req, res) => {
  */
 router.post('/previousitemsbyclient/analyze', async (req, res) => {
 	try {
-		if (!process.env.OPENAI_API_KEY) {
-			return res.status(500).json({ status: false, error: 'OPENAI_API_KEY is not configured on server' });
+		if (!process.env.ANTHROPIC_API_KEY) {
+			return res.status(500).json({ status: false, error: 'ANTHROPIC_API_KEY is not configured on server' });
 		}
 
 		const db = normalizeDb(req.body || {});
@@ -236,28 +233,20 @@ router.post('/previousitemsbyclient/analyze', async (req, res) => {
 			productCategoryWiseConsumptionTable: rightTable,
 		};
 
-		const completion = await openai.chat.completions.create({
-			model: 'gpt-4o-mini',
-			temperature: 0.2,
-			messages: [
-				{
-					role: 'system',
-					content:
-						'You are a packaging demand planning analyst for a printing/manufacturing business. ' +
-						'Analyze SKU-wise and product-category-wise client consumption data to project future stock consumption and surface key business highlights. ' +
-						'Respond in concise markdown with these sections exactly: ' +
-						'1) Projection Summary, 2) Demand Drivers, 3) Risk Alerts, 4) Recommended Stock Actions, 5) Key Highlights. ' +
-						'Use specific numbers and trends from provided data where possible. Include a short 30-day and 60-day outlook. ' +
-						'If confidence is limited due to data shape, explicitly mention assumptions.',
-				},
-				{
-					role: 'user',
-					content: JSON.stringify(userPayload),
-				},
-			],
+		const { text: analysis } = await askText({
+			feature: 'previous-items-analyze',
+			model: MODELS.fast,
+			maxTokens: 8000,
+			system:
+				'You are a packaging demand planning analyst for a printing/manufacturing business. ' +
+				'Analyze SKU-wise and product-category-wise client consumption data to project future stock consumption and surface key business highlights. ' +
+				'Respond in concise markdown with these sections exactly: ' +
+				'1) Projection Summary, 2) Demand Drivers, 3) Risk Alerts, 4) Recommended Stock Actions, 5) Key Highlights. ' +
+				'Use specific numbers and trends from provided data where possible. Include a short 30-day and 60-day outlook. ' +
+				'If confidence is limited due to data shape, explicitly mention assumptions.',
+			content: JSON.stringify(userPayload),
 		});
 
-		const analysis = completion.choices?.[0]?.message?.content || 'No analysis returned.';
 		return res.json({ status: true, analysis });
 	} catch (err) {
 		console.error('[previousitemsbyclient] analyze error:', err);

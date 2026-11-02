@@ -77,6 +77,15 @@ test('INV013 blocks an invoice billed to someone other than CDC', () => {
   assert.equal(find(checks, 'INV013')[0].passed, false);
 });
 
+test("INV013 wants the receiving site's own GSTIN", () => {
+  // An Ahmedabad bill is made out to CDC's Gujarat registration.
+  const ahm = (buyerGstin) => find(runInvoiceChecks({ ...goodInvoice({ header: { buyerGstin } }), site: 'AHM' }), 'INV013')[0];
+  assert.equal(ahm('24AABCC2946B1Z8').passed, true);
+  assert.equal(ahm('19AABCC2946B1ZZ').passed, false);
+  assert.match(ahm('19AABCC2946B1ZZ').message, /Ahmedabad's 24AABCC2946B1Z8/);
+  assert.equal(find(runInvoiceChecks(goodInvoice({ header: { buyerGstin: '24AABCC2946B1Z8' } })), 'INV013')[0].passed, false);
+});
+
 test('INV003 blocks over-receipt beyond 10% and allows 10%', () => {
   const over = runInvoiceChecks(goodInvoice({ line1: { qty: 331, poPendingQty: 300 } }));
   assert.equal(find(over, 'INV003')[0].passed, false, '331 against 300 is over the tolerance');

@@ -53,6 +53,9 @@ test("CDC's own GSTIN, read by mistake as the supplier's, is not used", () => {
   assert.equal(r.ledgerId, 8535);
   assert.equal(r.matchedBy, 'NAME');
   assert.match(r.evidence, /CDC's own/);
+  // Ahmedabad's registration is CDC's own too.
+  const ahm = identifySupplierLedger({ ledgers: [...PRANAY, ...OTHERS], gstin: '24AABCC2946B1Z8', name: 'Pranay Udyog' });
+  assert.match(ahm.evidence, /CDC's own/);
 });
 
 test('with no GSTIN, the name decides - ignoring M/s, Pvt and Ltd', () => {

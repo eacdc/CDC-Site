@@ -268,8 +268,9 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
 
 If the image is unreadable, return "lines": [] rather than inventing rows.`;
 
-export const INVOICE_PROMPT = `You are reading a supplier's tax invoice sent to CDC Printers Pvt Ltd
-(GSTIN 19AABCC2946B1ZZ), a printing company in West Bengal, India.
+export const INVOICE_PROMPT = `You are reading a supplier's tax invoice sent to CDC Printers Pvt Ltd,
+a printing company in India (GSTIN 19AABCC2946B1ZZ in West Bengal,
+24AABCC2946B1Z8 in Gujarat).
 
 Return JSON only, matching this shape:
 {

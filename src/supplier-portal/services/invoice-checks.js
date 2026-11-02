@@ -13,7 +13,7 @@
  */
 
 import { check } from '../config/validations.js';
-import { CDC_IDENTITY, TOLERANCES } from '../config/constants.js';
+import { cdcGstinFor, TOLERANCES } from '../config/constants.js';
 import {
   expectedTaxType, reconcileSheetKg, round, piQty, lineMoney, headerDiscount, discountedLines, goodsValue,
 } from '../lib/invoice-math.js';
@@ -27,9 +27,11 @@ import {
  *                                   PO line where possible
  * @param {Object} [input.alreadyPosted]  a prior GRN with this invoice number
  * @param {Object} [input.context]   selected ledgers and warehouse
+ * @param {'KOL'|'AHM'} [input.site] where the goods are received; decides
+ *                                   which of CDC's GSTINs the bill must carry
  * @returns {Array} check results
  */
-export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null, context = {} } = {}) {
+export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null, context = {}, site = 'KOL' } = {}) {
   const results = [];
   const tol = TOLERANCES.invoiceAmount;
 
@@ -43,12 +45,13 @@ export function runInvoiceChecks({ header = {}, lines = [], alreadyPosted = null
   }));
 
   const buyerGstin = normaliseGstin(header.buyerGstin);
-  results.push(check('INV013', !buyerGstin || buyerGstin === CDC_IDENTITY.gstin, {
-    message: buyerGstin && buyerGstin !== CDC_IDENTITY.gstin
-      ? `Buyer GSTIN on the invoice is ${buyerGstin}, not CDC's ${CDC_IDENTITY.gstin}`
+  const cdcGstin = cdcGstinFor(site);
+  results.push(check('INV013', !buyerGstin || buyerGstin === cdcGstin, {
+    message: buyerGstin && buyerGstin !== cdcGstin
+      ? `Buyer GSTIN on the invoice is ${buyerGstin}, not CDC ${site === 'AHM' ? 'Ahmedabad' : 'Kolkata'}'s ${cdcGstin}`
       : undefined,
     actualValue: buyerGstin,
-    expectedValue: CDC_IDENTITY.gstin,
+    expectedValue: cdcGstin,
   }));
 
   // ── Dates ────────────────────────────────────────────────────────────────

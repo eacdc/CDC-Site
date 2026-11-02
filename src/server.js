@@ -25,6 +25,7 @@ import jobProductImageRoutes from './routes-job-product-image.js';
 import jobWiseProfitabilityRoutes from './routes-job-wise-profitability.js';
 import fgQcRoutes from './routes-fg-qc.js';
 import pendingDashboardRoutes from './routes-pending-dashboard.js';
+import packingSlipRoutes from './routes-packing-slip.js';
 import purchaseBillsRoutes from './routes-purchase-bills.js';
 import cdcBillsAuthRoutes from './routes-cdc-bills-auth.js';
 import supplierPortalRoutes from './supplier-portal/routes/index.js';
@@ -151,6 +152,12 @@ app.use('/fg-qc', express.static(fgQcDir));
 
 const pendingDashboardDir = join(__dirname, '..', '..', 'Pending Dashboard');
 app.use('/pending-dashboard', express.static(pendingDashboardDir));
+
+// Packing Slip Barcode - carton labels (replaces the VB6 generator). Writes are
+// a dry run until PACKING_SLIP_ALLOW_WRITES=true.
+app.use('/api/packing-slip', packingSlipRoutes);
+const packingSlipDir = join(__dirname, '..', '..', 'Packing Slip Barcode');
+app.use('/packing-slip', express.static(packingSlipDir));
 
 // GRN Creator - supplier invoice to a GRN + purchase invoice. Static only; it
 // drives the supplier portal's own /receiving endpoints and holds no logic of

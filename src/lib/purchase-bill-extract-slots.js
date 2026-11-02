@@ -2,7 +2,7 @@
  * Run OpenAI vision extraction for every page in a bill slots payload.
  * Used on POST /api/purchase-bills so the client only uploads images first.
  */
-import { extractFromImage } from './openai-vision.js';
+import { extractFromImage } from './bill-vision.js';
 import { preprocessForAI } from './preprocess-image.js';
 import { resolveViewUrl } from './media-url.js';
 

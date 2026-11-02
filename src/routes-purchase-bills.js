@@ -26,7 +26,7 @@ import { ZipArchive } from 'archiver';
 import * as XLSX from 'xlsx';
 import { v2 as cloudinary } from 'cloudinary';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
-import { extractFromImage } from './lib/openai-vision.js';
+import { extractFromImage } from './lib/bill-vision.js';
 import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
 import { buildBillDedupKey, listDedupKeys } from './lib/purchase-bill-dedup.js';
 import { stripEmptyUniqueKeys, uniqueConflictInfo } from './lib/purchase-bill-unique-keys.js';

@@ -13,6 +13,7 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
+import { askText, MODELS } from './lib/claude.js';
 import {
     generateDispatchNotePdf,
     normalizeDispatchHeader,
@@ -40,7 +41,8 @@ import * as XLSX from 'xlsx';
 
 const router = Router();
 
-// Initialize OpenAI client
+// OpenAI is used for speech-to-text only (Claude does not take audio);
+// everything that reads text goes to Claude via lib/claude.js.
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
@@ -13223,7 +13225,7 @@ router.delete('/voice-note-tool/audio/:recordingId', async (req, res) => {
 	}
 });
 
-// Analyze audio with OpenAI (transcription + summary)
+// Analyze audio: OpenAI transcribes, Claude summarises
 router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 	try {
 		const { audioBlob, audioMimeType, toDepartment } = req.body;
@@ -13257,14 +13259,14 @@ router.post('/voice-note-tool/analyze-audio', async (req, res) => {
 
 			console.log('📝 Transcription:', transcription.text);
 
-			// Step 2: Analyze with GPT-4 for summary and department alignment
-			console.log('🤖 Analyzing with GPT-4...');
-			const completion = await openai.chat.completions.create({
-				model: 'gpt-4',
-				messages: [
-					{
-						role: 'system',
-						content: `You are an assistant that analyzes voice notes for a manufacturing company.
+			// Step 2: Analyze with Claude for summary and department alignment
+			console.log('🤖 Analyzing with Claude...');
+			const { text: analysis } = await askText({
+				feature: 'voice-note-analyze',
+				model: MODELS.standard,
+				effort: 'low',
+				maxTokens: 4000,
+				system: `You are an assistant that analyzes voice notes for a manufacturing company.
 
 Your task:
 1. Detect the language of the transcription
@@ -13304,21 +13306,14 @@ Summary:
 Actionable Items:
 • [actionable task 1 in Romanized form of detected language]
 • [actionable task 2 in Romanized form of detected language]
-• [actionable task 3 in Romanized form of detected language]`
-					},
-					{
-						role: 'user',
-						content: `The transcription of the voice note is: "${transcription.text}"
+• [actionable task 3 in Romanized form of detected language]`,
+				content: `The transcription of the voice note is: "${transcription.text}"
 
 The selected department is: ${toDepartment}
 
 Please analyze this transcription, detect its language, and provide the summary and actionable items in the Romanized form of the detected language (if the language uses a non-Latin script, write it using English alphabets).`
-					}
-				],
-				temperature: 0.7
 			});
 
-			const analysis = completion.choices[0].message.content;
 			console.log('✅ Analysis complete:', analysis);
 
 			// Clean up temp file

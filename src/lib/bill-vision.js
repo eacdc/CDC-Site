@@ -1,30 +1,16 @@
 /**
- * OpenAI Vision adapter for purchase bill extraction.
+ * Claude vision adapter for purchase bill extraction.
  *
- * Each slot has its own extraction prompt with a strict JSON schema.
- * We call GPT-4o with `response_format: json_object` and temperature 0,
- * then run the response through a slot-specific Zod schema. If validation
- * fails we retry once (the LLM sometimes returns dates as `null` strings
- * or numbers as strings — the schemas coerce where reasonable).
+ * Each slot has its own extraction prompt describing its JSON shape. Claude
+ * is told to reply with that JSON only, and the response is run through a
+ * slot-specific Zod schema. If validation fails we retry once (the model
+ * sometimes returns dates as `null` strings or numbers as strings — the
+ * schemas coerce where reasonable).
  */
-import OpenAI from 'openai';
 import { z } from 'zod';
+import { askJson, mediaBlock, envModel, MODELS } from './claude.js';
 
-// Lazy-init so a missing OPENAI_API_KEY doesn't crash imports at module
-// load time (the server boots with multiple unrelated route modules; we
-// only fail when /extract is actually called).
-let _openai = null;
-function getOpenAI() {
-  if (!_openai) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is not set on the server.');
-    }
-    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
-  return _openai;
-}
-
-const MODEL = 'gpt-4o';
+const MODEL = envModel('BILL_EXTRACTION_MODEL', MODELS.standard);
 
 // ---------- Zod helpers ----------
 // Many fields in our schemas may be missing on a given image. Rather than
@@ -382,27 +368,17 @@ const CLASSIFIER_KEY = {
 };
 
 /**
- * Call OpenAI vision once with the given prompt + image URL. Returns the
- * raw parsed JSON object (or throws).
+ * Call Claude once with the given prompt + image (a data: URL or a signed
+ * http(s) URL). Returns the raw parsed JSON object (or throws).
  */
-async function callOpenAI(imageUrl, prompt) {
-  const response = await getOpenAI().chat.completions.create({
+async function callClaude(imageUrl, prompt) {
+  const { data, model } = await askJson({
+    feature: 'purchase-bill-extract',
     model: MODEL,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: prompt },
-          { type: 'image_url', image_url: { url: imageUrl } },
-        ],
-      },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0,
+    effort: 'medium',
+    content: [await mediaBlock(imageUrl), { type: 'text', text: prompt }],
   });
-  const content = response.choices?.[0]?.message?.content;
-  if (!content) throw new Error('Empty response from OpenAI');
-  return { raw: JSON.parse(content), model: MODEL };
+  return { raw: data, model };
 }
 
 /**
@@ -420,7 +396,7 @@ export async function extractFromImage(imageUrl, slotType) {
   let lastError;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const { raw, model } = await callOpenAI(imageUrl, prompt);
+      const { raw, model } = await callClaude(imageUrl, prompt);
       const parsed = schema.safeParse(raw);
       if (parsed.success) {
         const fields = parsed.data;
