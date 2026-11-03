@@ -1743,6 +1743,10 @@ router.post('/qr/process-base64', async (req, res) => {
 });
 
 // Complete production endpoint
+// Completing with 0 qty still flips the process to Complete in the ERP, which
+// hides it from the pending list with nothing recorded as produced.
+const ZERO_QTY_COMPLETE_ERROR = 'Production Qty must be more than 0. If nothing was produced, cancel the process instead of completing it.';
+
 router.post('/processes/complete', async (req, res) => {
     try {
         //console.log('[COMPLETE] /api/processes/complete called with body:', req.body);
@@ -1765,6 +1769,9 @@ router.post('/processes/complete', async (req, res) => {
         }
         if (!Number.isInteger(productionQtyNum)) {
             return res.status(400).json({ status: false, error: 'ProductionQty must be an integer' });
+        }
+        if (productionQtyNum <= 0) {
+            return res.status(400).json({ status: false, error: ZERO_QTY_COMPLETE_ERROR });
         }
         if (!Number.isInteger(wastageQtyNum)) {
             return res.status(400).json({ status: false, error: 'WastageQty must be an integer' });
@@ -2239,9 +2246,12 @@ router.post('/processes/complete-async', async (req, res) => {
         !Number.isInteger(Number(ProductionQty)) || !Number.isInteger(Number(WastageQty))) {
       return res.status(400).json({ status: false, error: 'Missing or invalid required fields' });
     }
+    if (Number(ProductionQty) <= 0) {
+      return res.status(400).json({ status: false, error: ZERO_QTY_COMPLETE_ERROR });
+    }
 
     const jobId = generateJobId();
-    
+
     console.log(`[JOB ${jobId}] Creating complete job with params:`, {
       UserID: Number(UserID),
       ProductionID: Number(ProductionID),
@@ -2491,6 +2501,28 @@ router.get('/admin/env-check', (req, res) => {
     }
 });
 
+// Mixed-box barcodes (sql/packing-slip/003_mixed_box.sql): the newer procs write
+// one row per job on a barcode. Use them once deployed, the older ones until then.
+const BARCODE_PROCS = {
+    saveDeliveryNote: ['dbo.SaveDeliveryNoteByBarcode_Manu_v3', 'dbo.SaveDeliveryNoteByBarcode_Manu_v2'],
+    deleteDeliveryNote: ['dbo.DeleteDeliveryNoteByBarcode_Manu_v2', 'dbo.DeleteDeliveryNoteByBarcode_Manu'],
+    saveFinishGoods: ['dbo.SaveFinishGoodsByBarcode_Manu_v4', 'dbo.SaveFinishGoodsByBarcode_Manu_v3'],
+    deleteFinishGoods: ['dbo.DeleteFinishGoodsByBarcode_Manu_v2', 'dbo.DeleteFinishGoodsByBarcode_Manu']
+};
+const barcodeProcFound = new Set();
+
+async function barcodeProc(pool, database, key) {
+    const [preferred, fallback] = BARCODE_PROCS[key];
+    const cacheKey = `${database}:${preferred}`;
+    if (barcodeProcFound.has(cacheKey)) return preferred;
+    const r = await pool.request()
+        .input('name', sql.NVarChar(256), preferred)
+        .query("SELECT OBJECT_ID(@name, 'P') AS id;");
+    if (r.recordset[0]?.id == null) return fallback;
+    barcodeProcFound.add(cacheKey);
+    return preferred;
+}
+
 // GRN: Initiate Challan by Barcode
 router.post('/grn/initiate', async (req, res) => {
     try {
@@ -2516,7 +2548,7 @@ router.post('/grn/initiate', async (req, res) => {
             .input('BarcodeNo', sql.BigInt, barcodeNum)
             .input('Status', sql.NVarChar(50), 'new-check')
             .input('UserID', sql.Int, userIdNum)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
+            .execute(await barcodeProc(pool, selectedDatabase, 'saveDeliveryNote'));
 
         // Normalize response
         const rows = result.recordset || [];
@@ -2601,7 +2633,7 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             .input('VehicleNo', sql.NVarChar(255), vehicleNumber)
             .input('ContainerNo', sql.NVarChar(255), containerNumber)
             .input('SealNo', sql.NVarChar(255), sealNumber)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
+            .execute(await barcodeProc(pool, selectedDatabase, 'saveDeliveryNote'));
         const spMs = Date.now() - spStart;
         mark(`SP SaveDeliveryNoteByBarcode_Manu_v2 END (${spMs}ms)`);
 
@@ -2703,7 +2735,7 @@ router.post('/grn/update-delivery-note', async (req, res) => {
             .input('Status', sql.NVarChar(50), 'update')
             .input('UserID', sql.Int, userIdNum)
             .input('FGTransactionID', sql.Int, fgIdNum)
-            .execute('dbo.SaveDeliveryNoteByBarcode_Manu_v2');
+            .execute(await barcodeProc(pool, selectedDatabase, 'saveDeliveryNote'));
         const spMs = Date.now() - spStart;
         mark(`SP SaveDeliveryNoteByBarcode_Manu_v2 END (${spMs}ms)`);
 
@@ -2795,7 +2827,7 @@ router.post('/grn/delete-delivery-note', async (req, res) => {
             .input('UserID', sql.Int, userIdNum)
             .input('CompanyID', sql.Int, companyIdNum)
             .input('BranchID', sql.Int, branchIdNum)
-            .execute('dbo.DeleteDeliveryNoteByBarcode_Manu');
+            .execute(await barcodeProc(pool, selectedDatabase, 'deleteDeliveryNote'));
         const spMs = Date.now() - spStart;
         mark(`SP DeleteDeliveryNoteByBarcode_Manu END (${spMs}ms)`);
 
@@ -5117,7 +5149,7 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
             request.input('FGTransactionID', sql.Int, Number(fgTransactionId));
         }
 
-        const result = await request.execute('dbo.SaveFinishGoodsByBarcode_Manu_v3');
+        const result = await request.execute(await barcodeProc(pool, selectedDatabase, 'saveFinishGoods'));
 
         const rows = result.recordset || [];
         console.log(`[GPN] Stored procedure executed. Rows returned: ${rows.length}`);
@@ -5208,7 +5240,7 @@ router.post('/gpn/delete-finish-goods', async (req, res) => {
             .input('UserID', sql.Int, userIdNum)
             .input('CompanyID', sql.Int, companyIdNum)
             .input('BranchID', sql.Int, branchIdNum)
-            .execute('dbo.DeleteFinishGoodsByBarcode_Manu');
+            .execute(await barcodeProc(pool, selectedDatabase, 'deleteFinishGoods'));
 
         const rows = result.recordset || [];
         const first = rows[0] || {};

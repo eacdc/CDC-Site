@@ -21,6 +21,7 @@
  *   GET  /api/packing-slip/jobs?database=KOL&q=0882
  *   GET  /api/packing-slip/jobs/:jobBookingId?database=KOL
  *   POST /api/packing-slip/generate
+ *   POST /api/packing-slip/generate-mixed
  *   GET  /api/packing-slip/barcodes?database=KOL&from=1297970&to=1297981
  *   GET  /api/packing-slip/ranges?database=KOL&from=2026-11-01&to=2026-11-02
  */
@@ -301,6 +302,105 @@ router.post('/generate', async (req, res) => {
 	}
 });
 
+/*
+ * Mixed box: one barcode for several PWOs of the same client, one row per PWO
+ * (InsertPackingSlipBarcodeMixed_Manu, sql/packing-slip/003_mixed_box.sql).
+ * weightMode 'box' stores the box weight on the first PWO's row and 0 on the
+ * rest, so weight totals count the box once; 'job' stores each PWO's own.
+ */
+router.post('/generate-mixed', async (req, res) => {
+	try {
+		const db = dbFrom(req);
+		const copies = positiveInt(req.body?.copies);
+		const perJobWeight = req.body?.weightMode === 'job';
+		const boxNetWt = nonNegative(req.body?.boxNetWt);
+		const boxGrossWt = nonNegative(req.body?.boxGrossWt);
+		const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+
+		if (!copies || copies > MAX_COPIES) {
+			return res.status(400).json({ ok: false, error: `Number of labels must be between 1 and ${MAX_COPIES}.` });
+		}
+		if (rawItems.length < 2) return res.status(400).json({ ok: false, error: 'Add at least two PWOs to a mixed box.' });
+
+		const items = rawItems.map((it) => ({
+			jobBookingId: positiveInt(it?.jobBookingId),
+			qty: positiveInt(it?.qty),
+			netWt: nonNegative(it?.netWt),
+			grossWt: nonNegative(it?.grossWt)
+		}));
+		if (items.some((it) => !it.jobBookingId)) return res.status(400).json({ ok: false, error: 'A PWO in the box is not valid.' });
+		if (items.some((it) => !it.qty)) return res.status(400).json({ ok: false, error: 'Enter the quantity for every PWO.' });
+		if (new Set(items.map((it) => it.jobBookingId)).size !== items.length) {
+			return res.status(400).json({ ok: false, error: 'The same PWO is in the box twice.' });
+		}
+		if (perJobWeight ? items.some((it) => it.netWt == null || it.grossWt == null) : (boxNetWt == null || boxGrossWt == null)) {
+			return res.status(400).json({ ok: false, error: 'Weights must be numbers, zero or more.' });
+		}
+
+		const pool = await getPool(db);
+		const jobs = [];
+		for (const it of items) {
+			const job = await loadActiveJob(pool, it.jobBookingId);
+			if (!job) return res.status(404).json({ ok: false, error: 'A PWO in the box is not found, released, or is closed or cancelled.' });
+			jobs.push(job);
+		}
+		if (new Set(jobs.map((j) => j.ledgerId)).size > 1) {
+			return res.status(400).json({ ok: false, error: 'All PWOs in one box must be for the same client.' });
+		}
+
+		// Saved and printed in PWO order, so a reprint shows the same label.
+		const lines = items
+			.map((it, i) => ({ ...it, job: jobs[i] }))
+			.sort((a, b) => a.jobBookingId - b.jobBookingId)
+			.map((it, i) => ({
+				jobBookingId: it.jobBookingId,
+				qty: it.qty,
+				netWt: perJobWeight ? it.netWt : (i === 0 ? boxNetWt : 0),
+				grossWt: perJobWeight ? it.grossWt : (i === 0 ? boxGrossWt : 0),
+				job: it.job
+			}));
+		const shapedLines = lines.map((l) => ({ ...l.job, qtyPerBox: l.qty }));
+
+		if (!writesAllowed()) {
+			const preview = await pool.request()
+				.query('SELECT ISNULL(MAX(BarcodeNo), 100000) + 1 AS NextNo FROM dbo.PackingSlipBarcodeEntry;');
+			const next = Number(preview.recordset[0].NextNo);
+			return res.json({
+				ok: true,
+				dryRun: true,
+				lines: shapedLines,
+				packedAt: new Date().toISOString(),
+				barcodes: Array.from({ length: copies }, (_, i) => next + i)
+			});
+		}
+
+		const deployed = await pool.request()
+			.query("SELECT OBJECT_ID('dbo.InsertPackingSlipBarcodeMixed_Manu', 'P') AS id;");
+		if (deployed.recordset[0]?.id == null) {
+			return res.status(409).json({
+				ok: false,
+				error: 'Mixed boxes are not set up in this plant yet: run sql/packing-slip/003_mixed_box.sql first.'
+			});
+		}
+
+		const result = await pool.request()
+			.input('Items', sql.NVarChar(sql.MAX), JSON.stringify(lines.map(({ job, ...rest }) => rest)))
+			.input('Copies', sql.Int, copies)
+			.execute('dbo.InsertPackingSlipBarcodeMixed_Manu');
+		const barcodes = result.recordset.map((r) => Number(r.BarcodeNo)).sort((a, b) => a - b);
+
+		res.json({
+			ok: true,
+			dryRun: false,
+			lines: shapedLines,
+			packedAt: new Date().toISOString(),
+			barcodes
+		});
+	} catch (err) {
+		sendError(res, err, 'generate mixed');
+	}
+});
+
 /* Reprint: labels already in the table, by number or number range. */
 router.get('/barcodes', async (req, res) => {
 	try {
@@ -323,7 +423,7 @@ router.get('/barcodes', async (req, res) => {
 				INNER JOIN dbo.JobBookingJobCard J ON J.JobBookingID = P.JobBookingID
 				INNER JOIN dbo.LedgerMaster LM ON LM.LedgerID = J.LedgerID
 				WHERE P.BarcodeNo BETWEEN @From AND @To
-				ORDER BY P.BarcodeNo;
+				ORDER BY P.BarcodeNo, P.JobBookingID;
 			`);
 		res.json({
 			ok: true,
