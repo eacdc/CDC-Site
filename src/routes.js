@@ -2523,6 +2523,77 @@ async function barcodeProc(pool, database, key) {
     return preferred;
 }
 
+/*
+ * One row per PWO for a mixed-box barcode, so the scan tables can show each PWO
+ * instead of the procs' combined row (names and numbers comma-joined, quantities
+ * summed). Read only: what the scan saved is not touched. Returns null for a
+ * one-PWO barcode, which keeps the procs' row as it is.
+ *   thisQty / thisCartons: the PWO on this voucher (GPN receipt or DN issue)
+ *   gpnQty / gpnCartons:   the PWO on all GPNs;  deliveredQty: on all DNs
+ */
+async function barcodeJobRows(pool, barcodeNum, fgTransactionId) {
+    const r = await pool.request()
+        .input('BarcodeNo', sql.BigInt, barcodeNum)
+        .input('FGTransactionID', sql.Int, Number(fgTransactionId) || 0)
+        .query(`
+            SELECT ps.JobBookingID, j.JobBookingNo, j.JobName,
+                   ISNULL(TRY_CONVERT(INT, j.OrderQuantity), 0) AS OrderQty,
+                   ISNULL(TRY_CONVERT(INT, ps.QuantityPerBox), 0) AS QtyPerBox,
+                   ps.BatchNo,
+                   ISNULL(v.ThisQty, 0) AS ThisQty, ISNULL(v.ThisCartons, 0) AS ThisCartons,
+                   ISNULL(t.GpnQty, 0) AS GpnQty, ISNULL(t.GpnCartons, 0) AS GpnCartons,
+                   ISNULL(t.DeliveredQty, 0) AS DeliveredQty
+            FROM dbo.PackingSlipBarcodeEntry ps
+            JOIN dbo.JobBookingJobCard j ON j.JobBookingID = ps.JobBookingID
+            OUTER APPLY (
+                SELECT CAST(SUM(d.ReceiptQuantity + d.IssueQuantity) AS INT) AS ThisQty,
+                       COUNT(DISTINCT d.Barcode) AS ThisCartons
+                FROM dbo.FinishGoodsTransactionDetail d
+                WHERE d.FGTransactionID = @FGTransactionID
+                  AND d.JobBookingID = ps.JobBookingID
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+            ) v
+            OUTER APPLY (
+                SELECT CAST(SUM(CASE WHEN m.VoucherID = -50 THEN d.ReceiptQuantity END) AS INT) AS GpnQty,
+                       COUNT(DISTINCT CASE WHEN m.VoucherID = -50 THEN d.Barcode END) AS GpnCartons,
+                       CAST(SUM(CASE WHEN m.VoucherID = -51 THEN d.IssueQuantity END) AS INT) AS DeliveredQty
+                FROM dbo.FinishGoodsTransactionDetail d
+                JOIN dbo.FinishGoodsTransactionMain m ON m.FGTransactionID = d.FGTransactionID
+                WHERE d.JobBookingID = ps.JobBookingID
+                  AND m.VoucherID IN (-50, -51)
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                  AND ISNULL(m.IsDeletedTransaction, 0) = 0
+            ) t
+            WHERE ps.BarcodeNo = @BarcodeNo
+            ORDER BY ps.JobBookingID;
+        `);
+    const rows = r.recordset || [];
+    if (rows.length < 2) return null;
+    return rows.map((x) => ({
+        jobBookingId: Number(x.JobBookingID),
+        jobBookingNo: x.JobBookingNo,
+        jobName: x.JobName,
+        orderQty: Number(x.OrderQty || 0),
+        qtyPerBox: Number(x.QtyPerBox || 0),
+        batchNo: x.BatchNo || null,
+        thisQty: Number(x.ThisQty || 0),
+        thisCartons: Number(x.ThisCartons || 0),
+        gpnQty: Number(x.GpnQty || 0),
+        gpnCartons: Number(x.GpnCartons || 0),
+        deliveredQty: Number(x.DeliveredQty || 0)
+    }));
+}
+
+/* barcodeJobRows, but a failed lookup only loses the per-PWO view, never the scan's reply. */
+async function barcodeJobRowsSafe(pool, barcodeNum, fgTransactionId, where) {
+    try {
+        return await barcodeJobRows(pool, barcodeNum, fgTransactionId);
+    } catch (err) {
+        console.error(`[${where}] per-PWO rows for ${barcodeNum} failed:`, err?.message || err);
+        return null;
+    }
+}
+
 // GRN: Initiate Challan by Barcode
 router.post('/grn/initiate', async (req, res) => {
     try {
@@ -2665,6 +2736,7 @@ router.post('/grn/save-delivery-note', async (req, res) => {
             return res.json({ status: false, error: msg, sp: normalized, timing });
         }
 
+        normalized.jobs = await barcodeJobRowsSafe(pool, barcodeNum, normalized.transactionId, 'DN SAVE');
         mark(`SUCCESS response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms fgId=${normalized.transactionId} voucher=${normalized.voucherNo}`);
         return res.json({
             status: true,
@@ -2763,6 +2835,7 @@ router.post('/grn/update-delivery-note', async (req, res) => {
             return res.json({ status: false, error: normalized.statusText || 'Operation failed', sp: normalized, timing });
         }
 
+        normalized.jobs = await barcodeJobRowsSafe(pool, barcodeNum, normalized.transactionId || fgIdNum, 'DN UPDATE');
         mark(`SUCCESS response total=${totalMs}ms pool=${poolMs}ms sp=${spMs}ms status=${normalized.statusText}`);
         return res.json({ status: true, sp: normalized, timing });
     } catch (err) {
@@ -5184,10 +5257,12 @@ router.post('/gpn/save-finish-goods', async (req, res) => {
         }
 
         console.log(`[GPN] Success response being sent to client`);
+        const fgIdForJobs = first.FGTransactionID || first.fgtransactionid || first.FGTransactionId || fgTransactionId;
         return res.json({
             status: true,
             message: 'Finish goods saved successfully',
-            data: first
+            data: first,
+            jobs: await barcodeJobRowsSafe(pool, barcodeNum, fgIdForJobs, 'GPN')
         });
     } catch (err) {
         console.error('[GPN] Error saving finish goods:', err);
