@@ -848,12 +848,27 @@ router.get('/document-sets/:id/po-lines', async (req, res, next) => {
 
 const DAY = 86400000;
 
-/** Which GRNs GRN Creator posted, by TransactionID -> the document set. */
+/**
+ * Which GRNs GRN Creator posted, by TransactionID -> the document set and how
+ * its lines were entered. Sets from before manual entry have no entryMode:
+ * they were all read off an invoice.
+ */
 async function madeHere(site, transactionIds) {
   if (!transactionIds.length) return new Map();
   const sets = await DocumentSet.find({ site, 'posted.grnTransactionId': { $in: transactionIds } })
-    .select('_id posted.grnTransactionId').lean();
-  return new Map(sets.map((x) => [Number(x.posted.grnTransactionId), String(x._id)]));
+    .select('_id posted.grnTransactionId entryMode').lean();
+  return new Map(sets.map((x) => [Number(x.posted.grnTransactionId), {
+    documentSetId: String(x._id),
+    entry: x.entryMode === 'MANUAL' ? 'Manual' : 'AI',
+  }]));
+}
+
+/** Where a GRN was made and how: one made in the ERP was entered by hand. */
+function provenance(made, transactionId) {
+  const set = made.get(transactionId);
+  return set
+    ? { madeIn: 'GRN Creator', entry: set.entry, documentSetId: set.documentSetId }
+    : { madeIn: 'ERP', entry: 'Manual', documentSetId: null };
 }
 
 function sendError(res, err) {
@@ -886,8 +901,7 @@ router.get('/grns', async (req, res, next) => {
       truncated: grns.length >= LIMIT,
       grns: grns.map((g) => ({
         ...g,
-        madeIn: made.has(g.transactionId) ? 'GRN Creator' : 'ERP',
-        documentSetId: made.get(g.transactionId) ?? null,
+        ...provenance(made, g.transactionId),
       })),
     });
   } catch (err) { return next(err); }
@@ -911,7 +925,7 @@ router.get('/grns/:transactionId', async (req, res, next) => {
     const made = await madeHere(req.sp.site, [grn.transactionId]);
     return res.json({
       ...grn,
-      madeIn: made.has(grn.transactionId) ? 'GRN Creator' : 'ERP',
+      ...provenance(made, grn.transactionId),
       canEdit: canEditGrns(req.sp.user),
       writesEnabled: erpWritesEnabled(),
     });

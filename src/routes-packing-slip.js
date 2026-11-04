@@ -129,6 +129,48 @@ async function batchProcDeployed(pool) {
 	return result.recordset[0]?.id != null;
 }
 
+/*
+ * Whether the save procs take a batch (sql/packing-slip/006_save_batch_no.sql).
+ * Both procs change in that one script, so the batch proc's @BatchNo stands for both.
+ */
+async function batchSaveDeployed(pool) {
+	const result = await pool.request()
+		.input('name', sql.NVarChar(256), BATCH_PROC)
+		.query("SELECT COUNT(*) AS n FROM sys.parameters WHERE object_id = OBJECT_ID(@name, 'P') AND name = '@BatchNo';");
+	return result.recordset[0]?.n > 0;
+}
+
+function batchText(value) {
+	return String(value == null ? '' : value).trim().slice(0, 100);
+}
+
+/*
+ * The job's ERP batch matching the typed text, as the save procs pick it: the
+ * ERP's own text, first entered first. Only used for the dry-run preview.
+ */
+async function matchErpBatch(pool, jobBookingId, typed) {
+	if (!typed) return null;
+	const result = await pool.request()
+		.input('JobBookingID', sql.BigInt, jobBookingId)
+		.input('CompanyID', sql.Int, COMPANY_ID)
+		.input('BatchNo', sql.NVarChar(100), typed)
+		.query(`
+			SELECT TOP (1) LTRIM(RTRIM(BatchNo)) AS BatchNo
+			FROM dbo.JobBookingJobCardBatch
+			WHERE JobBookingID = @JobBookingID AND CompanyID = @CompanyID
+			  AND LTRIM(RTRIM(BatchNo)) = @BatchNo
+			ORDER BY JobBookingJobCardBatchID;
+		`);
+	return result.recordset[0]?.BatchNo || null;
+}
+
+/* What the proc saved for each job (its second result set), by JobBookingID. */
+function savedBatches(result) {
+	const map = {};
+	(result.recordsets?.[1] || []).forEach((r) => { map[Number(r.JobBookingID)] = r.BatchNo || null; });
+	return map;
+}
+
 router.get('/config', (req, res) => {
 	res.json({ ok: true, writesAllowed: writesAllowed(), maxCopies: MAX_COPIES });
 });
@@ -187,8 +229,9 @@ router.get('/jobs/:jobBookingId', async (req, res) => {
 				ORDER BY MIN(BarcodeNo) DESC;
 			`);
 
-		// Batches entered for the job in the ERP. Only suggestions for the label's
-		// Batch No: like the old exe, the batch is printed, not saved.
+		// Batches entered for the job in the ERP: the label's Batch No choices. A
+		// label made with one of them saves it, as the ERP's packing slip does
+		// (the GPN and delivery-note scans show it); other text is printed only.
 		const batches = await pool.request()
 			.input('JobBookingID', sql.BigInt, jobBookingId)
 			.input('CompanyID', sql.Int, COMPANY_ID)
@@ -225,6 +268,7 @@ router.post('/generate', async (req, res) => {
 		const copies = positiveInt(req.body?.copies);
 		const netWt = nonNegative(req.body?.netWt);
 		const grossWt = nonNegative(req.body?.grossWt);
+		const typedBatch = batchText(req.body?.batchNo);
 
 		if (!jobBookingId) return res.status(400).json({ ok: false, error: 'Select a PWO first.' });
 		if (!qtyPerBox) return res.status(400).json({ ok: false, error: 'Enter the quantity per box.' });
@@ -240,6 +284,8 @@ router.post('/generate', async (req, res) => {
 		if (!job) return res.status(404).json({ ok: false, error: 'Job not found, not released, closed or cancelled.' });
 
 		const useBatch = await batchProcDeployed(pool);
+		// The batch is saved only by the 006 procs, and only when it is one of the job's ERP batches.
+		const saveBatch = useBatch && await batchSaveDeployed(pool);
 
 		if (!writesAllowed()) {
 			// Preview only: the numbers the next insert would take. Nothing is saved.
@@ -254,22 +300,31 @@ router.post('/generate', async (req, res) => {
 				dryRun: true,
 				method: useBatch ? 'batch' : 'legacy',
 				job,
+				batchSaveDeployed: saveBatch,
+				savedBatchNo: saveBatch ? await matchErpBatch(pool, jobBookingId, typedBatch) : null,
 				packedAt: new Date().toISOString(),
 				barcodes: Array.from({ length: copies }, (_, i) => next + i)
 			});
 		}
 
 		let barcodes;
+		let savedBatchNo = null;
 		if (useBatch) {
-			const result = await pool.request()
+			const request = pool.request()
 				.input('JobBookingID', sql.Int, jobBookingId)
 				.input('LedgerID', sql.Int, job.ledgerId)
 				.input('Qty', sql.Decimal(18, 2), qtyPerBox)
 				.input('NetWt', sql.Decimal(18, 2), netWt)
 				.input('GrossWt', sql.Decimal(18, 2), grossWt)
-				.input('Copies', sql.Int, copies)
-				.execute(BATCH_PROC);
+				.input('Copies', sql.Int, copies);
+			if (saveBatch) {
+				request
+					.input('BatchNo', sql.NVarChar(100), typedBatch || null)
+					.input('CompanyID', sql.Int, COMPANY_ID);
+			}
+			const result = await request.execute(BATCH_PROC);
 			barcodes = result.recordset.map((r) => Number(r.BarcodeNo)).sort((a, b) => a - b);
+			savedBatchNo = savedBatches(result)[jobBookingId] || null;
 		} else {
 			// One label per call, as the exe does. A failure part-way keeps the
 			// numbers already made: they are in the table and can be reprinted.
@@ -308,6 +363,8 @@ router.post('/generate', async (req, res) => {
 			dryRun: false,
 			method: useBatch ? 'batch' : 'legacy',
 			job,
+			batchSaveDeployed: saveBatch,
+			savedBatchNo,
 			packedAt: new Date().toISOString(),
 			barcodes
 		});
@@ -340,7 +397,8 @@ router.post('/generate-mixed', async (req, res) => {
 			jobBookingId: positiveInt(it?.jobBookingId),
 			qty: positiveInt(it?.qty),
 			netWt: nonNegative(it?.netWt),
-			grossWt: nonNegative(it?.grossWt)
+			grossWt: nonNegative(it?.grossWt),
+			batchNo: batchText(it?.batchNo)
 		}));
 		if (items.some((it) => !it.jobBookingId)) return res.status(400).json({ ok: false, error: 'A PWO in the box is not valid.' });
 		if (items.some((it) => !it.qty)) return res.status(400).json({ ok: false, error: 'Enter the quantity for every PWO.' });
@@ -371,18 +429,25 @@ router.post('/generate-mixed', async (req, res) => {
 				qty: it.qty,
 				netWt: perJobWeight ? it.netWt : (i === 0 ? boxNetWt : 0),
 				grossWt: perJobWeight ? it.grossWt : (i === 0 ? boxGrossWt : 0),
+				batchNo: it.batchNo || null,
 				job: it.job
 			}));
 		const shapedLines = lines.map((l) => ({ ...l.job, qtyPerBox: l.qty }));
+		const saveBatch = await batchSaveDeployed(pool);
 
 		if (!writesAllowed()) {
 			const preview = await pool.request()
 				.query('SELECT ISNULL(MAX(BarcodeNo), 100000) + 1 AS NextNo FROM dbo.PackingSlipBarcodeEntry;');
 			const next = Number(preview.recordset[0].NextNo);
+			const saved = {};
+			if (saveBatch) {
+				for (const l of lines) saved[l.jobBookingId] = await matchErpBatch(pool, l.jobBookingId, l.batchNo);
+			}
 			return res.json({
 				ok: true,
 				dryRun: true,
-				lines: shapedLines,
+				lines: shapedLines.map((l) => ({ ...l, savedBatchNo: saved[l.jobBookingId] || null })),
+				batchSaveDeployed: saveBatch,
 				packedAt: new Date().toISOString(),
 				barcodes: Array.from({ length: copies }, (_, i) => next + i)
 			});
@@ -397,16 +462,20 @@ router.post('/generate-mixed', async (req, res) => {
 			});
 		}
 
-		const result = await pool.request()
+		// The proc before 006 ignores "batchNo" in the items, so the batch is then not saved.
+		const request = pool.request()
 			.input('Items', sql.NVarChar(sql.MAX), JSON.stringify(lines.map(({ job, ...rest }) => rest)))
-			.input('Copies', sql.Int, copies)
-			.execute('dbo.InsertPackingSlipBarcodeMixed_Manu');
+			.input('Copies', sql.Int, copies);
+		if (saveBatch) request.input('CompanyID', sql.Int, COMPANY_ID);
+		const result = await request.execute('dbo.InsertPackingSlipBarcodeMixed_Manu');
 		const barcodes = result.recordset.map((r) => Number(r.BarcodeNo)).sort((a, b) => a - b);
+		const saved = savedBatches(result);
 
 		res.json({
 			ok: true,
 			dryRun: false,
-			lines: shapedLines,
+			lines: shapedLines.map((l) => ({ ...l, savedBatchNo: saved[l.jobBookingId] || null })),
+			batchSaveDeployed: saveBatch,
 			packedAt: new Date().toISOString(),
 			barcodes
 		});
