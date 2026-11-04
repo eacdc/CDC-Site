@@ -187,9 +187,23 @@ router.get('/jobs/:jobBookingId', async (req, res) => {
 				ORDER BY MIN(BarcodeNo) DESC;
 			`);
 
+		// Batches entered for the job in the ERP. Only suggestions for the label's
+		// Batch No: like the old exe, the batch is printed, not saved.
+		const batches = await pool.request()
+			.input('JobBookingID', sql.BigInt, jobBookingId)
+			.input('CompanyID', sql.Int, COMPANY_ID)
+			.query(`
+				SELECT BatchNo
+				FROM dbo.JobBookingJobCardBatch
+				WHERE JobBookingID = @JobBookingID AND CompanyID = @CompanyID
+				  AND LTRIM(RTRIM(ISNULL(BatchNo, N''))) <> N''
+				ORDER BY JobBookingJobCardBatchID;
+			`);
+
 		res.json({
 			ok: true,
 			job,
+			batches: [...new Set(batches.recordset.map((b) => b.BatchNo.trim()))],
 			ranges: ranges.recordset.map((r) => ({
 				start: Number(r.StartBarcode),
 				end: Number(r.EndBarcode),
