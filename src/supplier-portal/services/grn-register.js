@@ -1,6 +1,7 @@
 /**
  * The GRN register: every live GRN on a site, whoever made it, with whether
- * stock has been issued from it and whether its purchase invoice exists.
+ * stock has been issued from it and whether its purchase invoice exists (or
+ * was made and deleted).
  * Read-only. Edits and deletes are in erp-grn-edit.js and go through the
  * rules here first.
  *
@@ -88,6 +89,16 @@ export async function listGrns(site, { from, to, ledgerIds = null, search = null
       WHERE PD.CompanyID = @companyId
         AND ISNULL(PD.IsDeletedTransaction,0) = 0 AND ISNULL(PM.IsDeletedTransaction,0) = 0
       GROUP BY PD.ParentTransactionID
+    ),
+    D AS (
+      SELECT TransactionID, VoucherNo, DeletedBy, DeletedDate FROM (
+        SELECT PD.ParentTransactionID AS TransactionID, PM.VoucherNo, PM.DeletedBy, PM.DeletedDate,
+               ROW_NUMBER() OVER (PARTITION BY PD.ParentTransactionID ORDER BY PM.DeletedDate DESC, PM.TransactionID DESC) AS N
+        FROM ItemPurchaseInvoiceDetail PD
+        JOIN G ON G.TransactionID = PD.ParentTransactionID
+        JOIN ItemPurchaseInvoiceMain PM ON PM.TransactionID = PD.TransactionID AND PM.CompanyID = PD.CompanyID
+        WHERE PD.CompanyID = @companyId AND ISNULL(PM.IsDeletedTransaction,0) = 1
+      ) X WHERE N = 1
     )
     SELECT G.TransactionID, G.VoucherNo, G.VoucherDate, G.LedgerID, S.LedgerName AS SupplierName,
            G.DeliveryNoteNo, G.DeliveryNoteDate, G.GateEntryNo, G.GateEntryDate,
@@ -96,7 +107,8 @@ export async function listGrns(site, { from, to, ledgerIds = null, search = null
            ISNULL(L.Lines,0) AS Lines, ISNULL(L.StockQty,0) AS StockQty,
            CASE WHEN L.MinUnit = L.MaxUnit THEN L.MinUnit END AS StockUnit,
            ISNULL(I.IssuedQty,0) AS IssuedQty, ISNULL(I.Issues,0) AS Issues, ISNULL(I.LinesIssued,0) AS LinesIssued,
-           P.PiVoucherNo, ISNULL(P.PIs,0) AS PIs
+           P.PiVoucherNo, ISNULL(P.PIs,0) AS PIs,
+           D.VoucherNo AS DeletedPiVoucherNo, DU.UserName AS DeletedPiBy, D.DeletedDate AS DeletedPiDate
     FROM G
     LEFT JOIN L ON L.TransactionID = G.TransactionID
     LEFT JOIN I ON I.TransactionID = G.TransactionID
@@ -104,6 +116,8 @@ export async function listGrns(site, { from, to, ledgerIds = null, search = null
     LEFT JOIN LedgerMaster S ON S.LedgerID = G.LedgerID AND S.CompanyID = @companyId
     LEFT JOIN LedgerMaster E ON E.LedgerID = G.ReceivedBy AND E.CompanyID = @companyId
     LEFT JOIN UserMaster U ON U.UserID = G.CreatedBy
+    LEFT JOIN D ON D.TransactionID = G.TransactionID
+    LEFT JOIN UserMaster DU ON DU.UserID = D.DeletedBy
     ORDER BY G.VoucherDate DESC, G.TransactionID DESC
   `, {
     companyId: COMPANY_ID, grn: VOUCHER.GRN, issue: VOUCHER.ITEM_ISSUE,
@@ -134,6 +148,11 @@ export async function listGrns(site, { from, to, ledgerIds = null, search = null
     issued: issueState(r.StockQty, r.IssuedQty),
     piVoucherNo: r.PiVoucherNo ?? null,
     purchaseInvoices: Number(r.PIs),
+    // With no live invoice, the last one deleted, so "not made" is not
+    // mistaken for never made. DeletedDate is the ERP's India wall clock.
+    piDeleted: !r.PiVoucherNo && r.DeletedPiVoucherNo
+      ? { voucherNo: r.DeletedPiVoucherNo, deletedBy: r.DeletedPiBy ?? null, deletedDate: r.DeletedPiDate }
+      : null,
   }));
 }
 

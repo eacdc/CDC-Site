@@ -299,7 +299,7 @@ router.get('/pending-po', async (req, res) => {
 		req,
 		res,
 		kind: 'po',
-		procName: 'GetPendingPOWithValue',
+		procName: 'GetPendingPOWithValue_v2',
 		params,
 		dateCols: PO_DATE_COLS,
 		numCols: PO_NUM_COLS,
