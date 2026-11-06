@@ -183,6 +183,8 @@ router.get('/jobs', async (req, res) => {
 
 		// No slip totals here: PackingSlipBarcodeEntry has no index led by
 		// JobBookingID, so counting for 50 jobs took ~5 s. The selected job shows them.
+		// Job number matches go first: digits also match ISBNs in job names, which
+		// otherwise push the job being looked for down the list or past the 50.
 		const pool = await getPool(db);
 		const result = await pool.request()
 			.input('q', sql.NVarChar(100), `%${q}%`)
@@ -193,7 +195,7 @@ router.get('/jobs', async (req, res) => {
 				INNER JOIN dbo.LedgerMaster LM ON LM.LedgerID = J.LedgerID
 				WHERE ${ACTIVE_JOB_SQL}
 				  AND (J.JobBookingNo LIKE @q OR J.JobName LIKE @q OR LM.LedgerName LIKE @q)
-				ORDER BY J.JobBookingID DESC;
+				ORDER BY CASE WHEN J.JobBookingNo LIKE @q THEN 0 ELSE 1 END, J.JobBookingID DESC;
 			`);
 		res.json({ ok: true, jobs: result.recordset.map(shapeJob) });
 	} catch (err) {
