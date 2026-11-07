@@ -4218,6 +4218,69 @@ router.get('/inventory-summary/group', async (req, res) => {
     }
 });
 
+// Inventory Summary Tool: item-wise closing stock per date (max 30 days)
+router.get('/inventory-summary/closing-by-date', async (req, res) => {
+    try {
+        const { database, fromDate, toDate } = req.query || {};
+        const selectedDatabase = String(database || '').trim().toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        const safeFromDate = String(fromDate || '').trim();
+        const safeToDate = String(toDate || '').trim();
+        if (!dateRegex.test(safeFromDate) || !dateRegex.test(safeToDate)) {
+            return res.status(400).json({ status: false, error: 'Invalid fromDate/toDate. Expected YYYY-MM-DD.' });
+        }
+        if (safeFromDate > safeToDate) {
+            return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        const fromMs = Date.parse(`${safeFromDate}T00:00:00Z`);
+        const dayCount = Math.round((Date.parse(`${safeToDate}T00:00:00Z`) - fromMs) / 86400000) + 1;
+        if (!(dayCount <= 30)) {
+            return res.status(400).json({ status: false, error: 'Date range cannot exceed 30 days' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, safeFromDate)
+            .input('ToDate', sql.Date, safeToDate)
+            .execute('dbo.GetItemClosingByDate_Manu');
+
+        const dates = Array.from({ length: dayCount }, (_, i) =>
+            new Date(fromMs + i * 86400000).toISOString().slice(0, 10)
+        );
+        const dateIndex = new Map(dates.map((d, i) => [d, i]));
+
+        // One row per item; closing[] lines up with dates[]
+        const byItem = new Map();
+        (result.recordset || []).forEach((row) => {
+            let item = byItem.get(row.ItemID);
+            if (!item) {
+                item = {
+                    itemId: row.ItemID,
+                    itemCode: row.ItemCode ?? '',
+                    itemName: row.ItemName ?? '',
+                    closing: new Array(dayCount).fill(0)
+                };
+                byItem.set(row.ItemID, item);
+            }
+            const closingDate = row.ClosingDate instanceof Date
+                ? row.ClosingDate.toISOString().slice(0, 10)
+                : String(row.ClosingDate || '').slice(0, 10);
+            const idx = dateIndex.get(closingDate);
+            if (idx !== undefined) item.closing[idx] = Number(row.Closing_KG) || 0;
+        });
+
+        return res.json({ status: true, dates, records: Array.from(byItem.values()) });
+    } catch (err) {
+        console.error('Inventory summary closing-by-date error:', err);
+        return res.status(500).json({ status: false, error: 'Failed to fetch daily closing' });
+    }
+});
+
 // Inventory Summary Tool: categorywise issued (stock out by business category)
 router.get('/inventory-summary/categorywise-issued', async (req, res) => {
     try {
@@ -4875,6 +4938,7 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
             supplier: pick(row, 'Supplier'),
             clientRef: pick(row, 'ClientRef'),
             itemId: Number(pick(row, 'ItemID', 'ItemId') || 0) || null,
+            itemCode: pick(row, 'ItemCode'),
             item: pick(row, 'Item'),
             uom: pick(row, 'UOM'),
             vendorInvNum: pick(row, 'Vendor Inv Num', 'VendorInvNum'),
