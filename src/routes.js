@@ -4959,6 +4959,7 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
             gsm: pick(row, 'GSM'),
             wt: Number(pick(row, 'WT') || 0),
             wtKg: Number(pick(row, 'WT_KG') || 0),
+            grnWtKg: row.GRN_WT_KG == null ? null : Number(row.GRN_WT_KG),
             rate: Number(pick(row, 'Rate') || 0),
             value: Number(pick(row, 'Value') || 0),
             taxableValue: Number(pick(row, 'Taxable Value', 'TaxableValue') || 0),
