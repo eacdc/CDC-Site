@@ -4880,7 +4880,7 @@ router.post('/inventory-summary/po-noclient-update-client', async (req, res) => 
 // CDC Invoice Wise Inventory: purchase invoice register (dbo.GetPurchaseInvoiceRegister_Manu)
 router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
     try {
-        const { database, fromDate, toDate, supplierLedgerId, invoiceTransactionId } = req.query || {};
+        const { database, fromDate, toDate, supplierLedgerId, invoiceTransactionId, dateBasis } = req.query || {};
         const selectedDatabase = String(database || '').trim().toUpperCase();
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
             return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
@@ -4894,6 +4894,12 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
         }
         if (safeFromDate > safeToDate) {
             return res.status(400).json({ status: false, error: 'fromDate cannot be after toDate' });
+        }
+
+        // Date range applies to vendor invoice date (default) or GRN date
+        const safeDateBasis = String(dateBasis || 'INVOICE').trim().toUpperCase();
+        if (safeDateBasis !== 'INVOICE' && safeDateBasis !== 'GRN') {
+            return res.status(400).json({ status: false, error: 'Invalid dateBasis (must be INVOICE or GRN)' });
         }
 
         let supplierLedgerIdNum = null;
@@ -4915,12 +4921,14 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
         }
 
         const pool = await getPool(selectedDatabase);
-        const result = await pool.request()
+        const request = pool.request()
             .input('FromDate', sql.Date, safeFromDate)
             .input('ToDate', sql.Date, safeToDate)
             .input('SupplierLedgerID', sql.Int, supplierLedgerIdNum)
-            .input('InvoiceTransactionID', sql.Int, invoiceTransactionIdNum)
-            .execute('dbo.GetPurchaseInvoiceRegister_Manu');
+            .input('InvoiceTransactionID', sql.Int, invoiceTransactionIdNum);
+        // Only sent for GRN, so invoice-date loads keep working on a proc without @DateBasis
+        if (safeDateBasis === 'GRN') request.input('DateBasis', sql.VarChar(10), safeDateBasis);
+        const result = await request.execute('dbo.GetPurchaseInvoiceRegister_Manu');
 
         const pick = (row, ...keys) => {
             for (const key of keys) {
@@ -4965,12 +4973,19 @@ router.get('/invoice-wise-inventory/purchase-register', async (req, res) => {
             database: selectedDatabase,
             fromDate: safeFromDate,
             toDate: safeToDate,
+            dateBasis: safeDateBasis,
             count: records.length,
             records
         });
     } catch (err) {
         console.error('Invoice wise inventory purchase register error:', err);
         const msg = err?.message || String(err);
+        if (/@DateBasis/i.test(msg) || msg.toLowerCase().includes('too many arguments')) {
+            return res.status(502).json({
+                status: false,
+                error: 'GRN date filter needs the updated dbo.GetPurchaseInvoiceRegister_Manu on this database.'
+            });
+        }
         if (msg.toLowerCase().includes('could not find stored procedure')) {
             return res.status(502).json({
                 status: false,
