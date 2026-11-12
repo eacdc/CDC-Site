@@ -14,6 +14,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
 import { askText, MODELS } from './lib/claude.js';
+import { isQcNotOk, qcRemarkToEnglish, transcribeQcRemark } from './lib/qc-remarks.js';
 import {
     generateDispatchNotePdf,
     normalizeDispatchHeader,
@@ -5660,6 +5661,40 @@ router.post('/qc/inspection-template', async (req, res) => {
     }
 });
 
+// POST /qc/remarks/transcribe — { audioBlob (base64), audioMimeType } → { transcription, english }
+router.post('/qc/remarks/transcribe', async (req, res) => {
+    try {
+        const { audioBlob, audioMimeType } = req.body || {};
+        if (!audioBlob || !audioMimeType) {
+            return res.status(400).json({ status: false, error: 'Missing audioBlob or audioMimeType' });
+        }
+        const { spoken, english } = await transcribeQcRemark(Buffer.from(audioBlob, 'base64'), audioMimeType);
+        if (!spoken) {
+            return res.status(422).json({ status: false, error: 'Could not hear anything in the recording. Please try again.' });
+        }
+        console.log(`[QC-REMARK] Transcribed "${spoken}" → "${english}"`);
+        return res.json({ status: true, transcription: spoken, english });
+    } catch (error) {
+        console.error('[QC-REMARK] Transcription failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to transcribe remark: ' + error.message });
+    }
+});
+
+// POST /qc/remarks/translate — { text } → { english }
+router.post('/qc/remarks/translate', async (req, res) => {
+    try {
+        const text = String(req.body?.text ?? '').trim();
+        if (!text) {
+            return res.status(400).json({ status: false, error: 'Missing text' });
+        }
+        const english = await qcRemarkToEnglish(text);
+        return res.json({ status: true, english });
+    } catch (error) {
+        console.error('[QC-REMARK] Translation failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to translate remark: ' + error.message });
+    }
+});
+
 // Save Process Inspection (QC Audit)
 router.post('/qc/save-inspection', async (req, res) => {
     try {
@@ -5680,7 +5715,17 @@ router.post('/qc/save-inspection', async (req, res) => {
                 error: 'Missing required fields: userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items'
             });
         }
-        
+
+        const missingRemarks = (Array.isArray(items) ? items : [])
+            .filter(item => isQcNotOk(item?.result) && !String(item?.remarks ?? '').trim())
+            .map(item => item?.parameter);
+        if (missingRemarks.length > 0) {
+            return res.status(400).json({
+                status: false,
+                error: 'Remarks are required for parameters marked Not OK: ' + missingRemarks.join(', ')
+            });
+        }
+
         // Build the inspection JSON
         const inspectionJson = {
             voucherPrefix: "QC",
@@ -5701,7 +5746,7 @@ router.post('/qc/save-inspection', async (req, res) => {
             .input('ProductionID', sql.Int, productionId)
             .input('ProcessID', sql.Int, processId)
             .input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspectionJson))
-            .execute('SaveProcessInspection');
+            .execute('SaveProcessInspection_v2'); // v2 also saves items[].remarks (sql/qc/001_inspection_remarks.sql)
         
         // Check SP return value: 0 = success, non-zero = failure (common SQL convention)
         const returnVal = result.returnValue;
