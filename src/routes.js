@@ -14,7 +14,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
 import { askText, MODELS } from './lib/claude.js';
-import { isQcNotOk, qcRemarkToEnglish, transcribeQcRemark } from './lib/qc-remarks.js';
+import { isQcNotOk, qcRemarkToEnglish, transcribeQcRemark, QC_SAMPLE_SIZES } from './lib/qc-remarks.js';
 import {
     generateDispatchNotePdf,
     normalizeDispatchHeader,
@@ -5698,7 +5698,7 @@ router.post('/qc/remarks/translate', async (req, res) => {
 // Save Process Inspection (QC Audit)
 router.post('/qc/save-inspection', async (req, res) => {
     try {
-        const { userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items, database } = req.body || {};
+        const { userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items, database, sampleSize } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -5726,12 +5726,22 @@ router.post('/qc/save-inspection', async (req, res) => {
             });
         }
 
+        // The QC Tool makes Sample Size compulsory; an older cached page may still send none.
+        const hasSampleSize = sampleSize != null && sampleSize !== '';
+        if (hasSampleSize && !QC_SAMPLE_SIZES.includes(Number(sampleSize))) {
+            return res.status(400).json({
+                status: false,
+                error: 'Sample size must be one of: ' + QC_SAMPLE_SIZES.join(', ')
+            });
+        }
+
         // Build the inspection JSON
         const inspectionJson = {
             voucherPrefix: "QC",
             companyID: 2,
             jobBookingJobCardContentsID: jobBookingJobCardContentsId,
             jobBookingID: jobBookingId, // Use actual JobBookingID from GetLatestMachineStatusPerMachine
+            ...(hasSampleSize && { sampleSize: Number(sampleSize) }),
             items: items
         };
         
@@ -5746,7 +5756,7 @@ router.post('/qc/save-inspection', async (req, res) => {
             .input('ProductionID', sql.Int, productionId)
             .input('ProcessID', sql.Int, processId)
             .input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspectionJson))
-            .execute('SaveProcessInspection_v2'); // v2 also saves items[].remarks (sql/qc/001_inspection_remarks.sql)
+            .execute('SaveProcessInspection_v2'); // v2 also saves items[].remarks and sampleSize (sql/qc/002_inspection_sample_size.sql)
         
         // Check SP return value: 0 = success, non-zero = failure (common SQL convention)
         const returnVal = result.returnValue;
@@ -5947,6 +5957,80 @@ router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
             status: false,
             error: 'Failed to fetch audit detail'
         });
+    }
+});
+
+// QC compliance reports (sql/qc/003_qc_compliance_reports.sql):
+//   machine-coverage     → rpt_QC_MachineProcessCoverage (1 check per hour per running machine + process)
+//   operator-performance → rpt_QC_OperatorPerformance    (2 checks per hour per QC operator shift)
+// Body: { database, startDate, endDate, mode?: 'SUMMARY'|'DETAIL', machineId?, processId?, userId? }
+const QC_COMPLIANCE_REPORTS = {
+    'machine-coverage': 'rpt_QC_MachineProcessCoverage',
+    'operator-performance': 'rpt_QC_OperatorPerformance',
+};
+const QC_REPORT_DATE_COLUMNS = new Set(['ReportDate', 'ShiftDate']);
+
+// Times are stored as IST wall clock and mssql reads them as UTC, so the ISO string is the wall clock.
+function formatQcReportRow(row) {
+    const out = {};
+    for (const [key, value] of Object.entries(row)) {
+        out[key] = value instanceof Date
+            ? (QC_REPORT_DATE_COLUMNS.has(key) ? value.toISOString().slice(0, 10) : value.toISOString().slice(0, 16).replace('T', ' '))
+            : value;
+    }
+    return out;
+}
+
+function optionalId(value) {
+    if (value == null || value === '') return null;
+    const n = parseInt(value, 10);
+    return Number.isInteger(n) && n > 0 ? n : NaN;
+}
+
+router.post('/reports/qc-compliance/:report', async (req, res) => {
+    const procedure = QC_COMPLIANCE_REPORTS[req.params.report];
+    if (!procedure) {
+        return res.status(404).json({ status: false, error: 'Unknown QC report: ' + req.params.report });
+    }
+    try {
+        const { startDate, endDate, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
+            return res.status(400).json({ status: false, error: 'Start date and end date are required (YYYY-MM-DD)' });
+        }
+        if (startDate > endDate) {
+            return res.status(400).json({ status: false, error: 'Start date cannot be after end date' });
+        }
+        const mode = String(req.body.mode || 'SUMMARY').toUpperCase();
+        if (mode !== 'SUMMARY' && mode !== 'DETAIL') {
+            return res.status(400).json({ status: false, error: 'Mode must be SUMMARY or DETAIL' });
+        }
+        const machineId = optionalId(req.body.machineId);
+        const processId = optionalId(req.body.processId);
+        const userId = optionalId(req.body.userId);
+        if ([machineId, processId, userId].some(Number.isNaN)) {
+            return res.status(400).json({ status: false, error: 'machineId, processId and userId must be positive integers' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, new Date(startDate))
+            .input('ToDate', sql.Date, new Date(endDate))
+            .input('MachineID', sql.Int, machineId)
+            .input('ProcessID', sql.Int, processId)
+            .input('UserID', sql.Int, userId)
+            .input('Mode', sql.VarChar(10), mode)
+            .execute(procedure);
+
+        const rows = (result.recordset || []).map(formatQcReportRow);
+        console.log(`[QC-REPORT] ${procedure} ${mode} ${selectedDatabase} ${startDate}..${endDate}: ${rows.length} rows`);
+        return res.json({ status: true, data: rows });
+    } catch (error) {
+        console.error(`[QC-REPORT] ${procedure} failed:`, error);
+        return res.status(500).json({ status: false, error: 'Failed to load QC report: ' + error.message });
     }
 });
 

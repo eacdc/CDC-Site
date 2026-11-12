@@ -10,6 +10,9 @@
      plus it reads items[].remarks and stores it in that column.
      SaveProcessInspection itself is left untouched.
 
+  NOTE: 002_inspection_sample_size.sql re-creates SaveProcessInspection_v2
+  with sample size. Do not re-run this file after 002; run 002 instead.
+
   Idempotent. Run on BOTH databases, before deploying the backend that calls
   SaveProcessInspection_v2:
       USE IndusEnterprise;   -- Kolkata

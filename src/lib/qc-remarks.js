@@ -13,6 +13,9 @@ import { askText, MODELS } from './claude.js';
 /** ProductionEntryProcessInspectionDetail.Remarks is NVARCHAR(1000). */
 export const QC_REMARKS_MAX = 1000;
 
+/** Pieces checked per inspection (ProductionEntryProcessInspectionMain.SampleSize). */
+export const QC_SAMPLE_SIZES = [1, 5, 10, 20];
+
 // Templates spell the negative many ways ("NOT OK", "Not Ok", "NOTOK", "NOK", "Fail").
 const NOT_OK_RESULTS = new Set(['NOTOK', 'NOK', 'NOT', 'FAIL']);
 
