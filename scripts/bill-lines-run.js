@@ -12,7 +12,8 @@
  * run     reads each bill's invoice with Claude and saves PurchaseBillLines.
  *         Bills already done at this extractor version are skipped unless
  *         --force, so an interrupted run resumes where it stopped.
- *         --dry-run prints instead of saving.
+ *         --dry-run prints instead of saving; --out-file <f.jsonl> writes each
+ *         document to a file instead of saving (a trial of another model).
  * rematch pairs saved lines again with the current matching rules, without
  *         reading anything again (no AI cost).
  * report  sums up what has been saved.
@@ -21,7 +22,7 @@
  * PurchaseBillLineRuns. Never writes to Indus.
  */
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
 import { connectBillLines, closeBillLines, purchaseBills, BillLineSet, BillLineRun } from '../src/bill-lines/db.js';
@@ -170,7 +171,10 @@ async function run(opts) {
   if (opts.limit) ids = ids.slice(0, Number(opts.limit));
 
   const concurrency = Number(opts.concurrency || 3);
-  const dryRun = Boolean(opts['dry-run']);
+  // A trial (another model, say) writes its documents to a file and leaves the saved ones alone.
+  const outFile = opts['out-file'] ? String(opts['out-file']) : null;
+  const dryRun = Boolean(opts['dry-run']) || Boolean(outFile);
+  if (outFile) await writeFile(outFile, '');
   const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
 
   if (!opts.force && !dryRun) {
@@ -212,8 +216,9 @@ async function run(opts) {
       + `lines=${goods.length} confident=${sure} $${(doc.usage?.costUsd ?? 0).toFixed(3)} ${doc.seconds}s`
       + `${doc.error ? ` error: ${doc.error}` : ''}${doc.reviewReasons.length ? ` | ${doc.reviewReasons.join('; ')}` : ''}`);
 
+    if (outFile) await appendFile(outFile, `${JSON.stringify(doc)}\n`);
     if (dryRun) {
-      if (ids.length === 1) console.log(JSON.stringify(doc, null, 2));
+      if (ids.length === 1 && !outFile) console.log(JSON.stringify(doc, null, 2));
       return;
     }
     await BillLineSet.replaceOne({ billId: doc.billId }, doc, { upsert: true });
@@ -235,7 +240,7 @@ async function rematchSaved(opts) {
     moved[`${before}->${doc.status}`] = (moved[`${before}->${doc.status}`] || 0) + 1;
     await BillLineSet.updateOne(
       { _id: doc._id },
-      { $set: { lines: doc.lines, reviewReasons: doc.reviewReasons, status: doc.status } },
+      { $set: { lines: doc.lines, checks: doc.checks, reviewReasons: doc.reviewReasons, status: doc.status } },
     );
   }
   console.log(JSON.stringify({ rematched: docs.length, moved }, null, 2));

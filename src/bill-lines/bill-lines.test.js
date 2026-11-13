@@ -8,7 +8,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { suggestPiLines, totalsCheck, normaliseInvoiceNo, lineNumbers } from './line-match.js';
 import { decideLink } from './erp-link.js';
-import { reviewReasons } from './extract-bill.js';
+import { reviewReasons, billTotals } from './extract-bill.js';
+
+test('a subtotal printed before discount does not fail the totals when the taxable value agrees', () => {
+  // Sonafine: subtotal 5,800 before 20% off; lines and PI 5,220... taxable 5,370 with 150 freight.
+  const t = billTotals(
+    [line(1, 'ART CARD', '100', '58', '5800', { discountAmount: '580' })],
+    { subTotal: '5,800.00', taxable: '5,370.00', freight: '150.00' },
+    [{ gross: 5220 }],
+  );
+  assert.equal(t.bill.ok, true);
+  assert.equal(t.bill.target, 5220);
+  assert.equal(t.pi.ok, true);
+});
 
 const PI = [
   { detailId: 1, itemId: 6035, itemGroupId: 14, itemName: 'Grey Back, 350 GSM, Dev Priya, NONE, 585 X 525 MM', qty: 1736, challanQty: 16128, rate: 49.25, gross: 85498 },

@@ -147,13 +147,8 @@ export async function processBill(bill, provider, { linked = null } = {}) {
       reason: suggestions[i].reason,
     }));
 
-    const freight = toNumber(read.freight) || 0;
-    const billGoods = toNumber(read.subTotal) ?? (toNumber(read.taxable) !== null ? toNumber(read.taxable) - freight : null);
-    const piGross = erpLines.some((l) => l.gross !== null)
-      ? Math.round(erpLines.reduce((s, l) => s + (l.gross || 0), 0) * 100) / 100
-      : null;
     doc.checks = {
-      totals: totalsCheck(read.lines || [], { billGoodsValue: billGoods, piGross }),
+      totals: billTotals(doc.lines, doc.extracted, erpLines),
       invoiceNoAgrees: normaliseInvoiceNo(read.invoiceNo) === normaliseInvoiceNo(summary.invoiceNo),
       gstinAgrees: String(read.supplierGstin || '').toUpperCase() === String(summary.supplierGstin || '').toUpperCase(),
       readerProblems: invoiceProblems(read),
@@ -171,10 +166,28 @@ export async function processBill(bill, provider, { linked = null } = {}) {
 }
 
 /**
+ * Do the lines add up to the bill and to the PI? The bill's goods value is
+ * its subtotal, or its taxable value less freight - whichever the lines agree
+ * with. Sonafine prints the subtotal before a 20% discount that its lines and
+ * taxable value already take off, so the subtotal alone would fail every one.
+ */
+export function billTotals(lines, extracted, erpLines) {
+  const freight = toNumber(extracted?.freight) || 0;
+  const taxable = toNumber(extracted?.taxable);
+  const options = [toNumber(extracted?.subTotal), taxable !== null ? taxable - freight : null].filter((v) => v !== null);
+  const piGross = erpLines.some((l) => l.gross !== null)
+    ? Math.round(erpLines.reduce((s, l) => s + (l.gross || 0), 0) * 100) / 100
+    : null;
+  const tries = (options.length ? options : [null]).map((billGoodsValue) => totalsCheck(lines, { billGoodsValue, piGross }));
+  return tries.find((t) => t.bill?.ok) || tries[0];
+}
+
+/**
  * Pair a saved bill's lines again, with no new reading and no AI cost - for
  * when the matching rules improve. Changes `doc` in place.
  */
 export function rematch(doc) {
+  if (doc.checks && doc.extracted) doc.checks.totals = billTotals(doc.lines, doc.extracted, doc.link?.erpLines || []);
   const suggestions = suggestPiLines(doc.lines, doc.link?.erpLines || []);
   doc.lines = doc.lines.map((l, i) => ({
     ...l,
