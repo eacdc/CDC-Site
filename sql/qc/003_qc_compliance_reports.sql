@@ -50,7 +50,11 @@ GO
     than 30 minutes is not checked for, nor is the slot still in progress on
     a machine running now.
   - A slot counts on the date it starts, so a run across midnight keeps one
-    slot clock. Run Start/End/Hours are those of that date's slots.
+    slot clock. Run Start/End are the run's real start and end (they can be
+    on another date); Run Hours and the hour counts are that date's slots.
+  - Long Entries names production entries of 12 hours or more touching the
+    date: usually a job left open in the ERP overnight, so the run time and
+    any missed hours in it should be checked before blaming QC.
   - Longest gap: the longest stretch of a run with no check (run start to the
     first check, between checks, last check to run end) that touches the date.
   - @UserID counts only that QC operator's checks.
@@ -70,6 +74,7 @@ BEGIN
     DECLARE @MergeGapSec    INT = 300,
             @SlotSec        INT = 3600,
             @MinLastSlotSec INT = 1800,
+            @LongEntrySec   INT = 43200,
             @Now            DATETIME = GETDATE(),
             -- Load a week before so a run already going on @FromDate starts its
             -- slot clock at its real start, and two days after so the last
@@ -300,6 +305,29 @@ BEGIN
         AND g.GapEnd > d.DayStart
     GROUP BY d.RunID, d.SlotDate;
 
+    -- 8. Entries of 12 hours or more touching the date (usually left open)
+    SELECT
+        d.SlotDate,
+        r.MachineID,
+        r.ProcessID,
+        LongEntries = STRING_AGG(CONCAT(
+                          ISNULL(jc.JobBookingNo, CONCAT(N'Entry ', e.ProductionID)), N': ',
+                          FORMAT(e.FromTime, N'dd MMM HH:mm'), N' to ', FORMAT(e.EndTime, N'dd MMM HH:mm'),
+                          N' (', CAST(DATEDIFF(SECOND, e.FromTime, e.EndTime) / 3600.0 AS DECIMAL(9, 1)), N' h)'), N', ')
+                      WITHIN GROUP (ORDER BY e.FromTime)
+    INTO #LongEntries
+    FROM #RunDays d
+    JOIN #Runs r ON r.RunID = d.RunID
+    JOIN #EntryRuns e
+        ON  e.MachineID = r.MachineID
+        AND e.ProcessID = r.ProcessID
+        AND e.RunNo     = r.RunNo
+    LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = e.JobBookingID
+    WHERE DATEDIFF(SECOND, e.FromTime, e.EndTime) >= @LongEntrySec
+      AND e.FromTime < d.DayEnd
+      AND e.EndTime  > d.DayStart
+    GROUP BY d.SlotDate, r.MachineID, r.ProcessID;
+
     SELECT
         Plant          = @Plant,
         ReportDate     = d.SlotDate,
@@ -307,18 +335,23 @@ BEGIN
         MachineName    = mm.MachineName,
         ProcessID      = r.ProcessID,
         ProcessName    = pm.ProcessName,
-        RunStart       = MIN(d.DayStart),
-        RunEnd         = MAX(d.DayEnd),
+        RunStart       = MIN(r.RunStart),
+        RunEnd         = MAX(r.RunEnd),
         RunHours       = CAST(SUM(DATEDIFF(SECOND, d.DayStart, d.DayEnd)) / 3600.0 AS DECIMAL(9, 2)),
         ChecksDone     = SUM(d.Checks),
         HoursChecked   = SUM(d.CheckedSlots),
         HoursUnchecked = SUM(d.Slots - d.CheckedSlots),
         CoveragePct    = CAST(100.0 * SUM(d.CheckedSlots) / NULLIF(SUM(d.Slots), 0) AS DECIMAL(5, 1)),
         LongestGapMin  = MAX(dg.LongestGapMin),
-        Status         = CASE WHEN SUM(d.Slots - d.CheckedSlots) > 0 THEN 'Missed' ELSE 'OK' END
+        Status         = CASE WHEN SUM(d.Slots - d.CheckedSlots) > 0 THEN 'Missed' ELSE 'OK' END,
+        LongEntries    = MAX(le.LongEntries)
     FROM #RunDays d
     JOIN #Runs r ON r.RunID = d.RunID
     LEFT JOIN #DayGaps dg ON dg.RunID = d.RunID AND dg.SlotDate = d.SlotDate
+    LEFT JOIN #LongEntries le
+        ON  le.SlotDate  = d.SlotDate
+        AND le.MachineID = r.MachineID
+        AND le.ProcessID = r.ProcessID
     LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = r.MachineID
     LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = r.ProcessID
     GROUP BY d.SlotDate, r.MachineID, mm.MachineName, r.ProcessID, pm.ProcessName
