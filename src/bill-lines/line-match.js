@@ -96,13 +96,20 @@ const STOP_WORDS = new Set(['mm', 'mtr', 'mtrs', 'kg', 'kgs', 'gsm', 'roll', 'ro
  * sizes in mm, GSM, and its other words. A supplier line's sizes come from
  * the mm figures and the reader's size field only - "28 x 100 = 2800 Sheet"
  * is a pack count, not a size. An Indus name is regular, so "510 X 642" there
- * is a size.
+ * is a size. A quotation's product name is regular enough too ("CAPRI 576 X
+ * 889"), but a pack can hide in it ("4 x 5 ltr"), so `sizePairs` takes only
+ * pairs where neither number is a whole number under 10.
  */
-function nameFeatures(text, { gsm = null, size = null, indus = false } = {}) {
+export function nameFeatures(text, { gsm = null, size = null, indus = false, sizePairs = false } = {}) {
   const t = String(text || '').toLowerCase();
   const words = t.split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
   const dims = new Set([...t.matchAll(/(\d+(?:\.\d+)?)\s*mm\b/g)].map((m) => Number(m[1])));
-  if (indus) for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)/g)) { dims.add(Number(m[1])); dims.add(Number(m[2])); }
+  // Kapoor writes a blanket's gripper side as "889Gx595": one letter may sit before the x.
+  for (const m of (indus || sizePairs) ? t.matchAll(/(\d+(?:\.\d+)?)\s*[a-z]?\s*[x×*]\s*(\d+(?:\.\d+)?)/g) : []) {
+    // "0.4x1.4" is a matrix's size; "4 x 5" a pack of whole tins.
+    if (sizePairs && !indus && [m[1], m[2]].some((v) => Number(v) < 10 && !v.includes('.'))) continue;
+    dims.add(Number(m[1])); dims.add(Number(m[2]));
+  }
   // The reader copies sizes as printed: "56X77" is cm, "23X36" inches. Each may be any of the three.
   for (const m of String(size || '').matchAll(/\d+(?:\.\d+)?/g)) {
     const v = Number(m[0]);
@@ -121,9 +128,13 @@ const sharedDims = (a, b) => [...b].filter((y) => [...a].some((x) => Math.abs(x 
  * Does an Indus name contradict the supplier line? Different colours, no size
  * in common, or a different GSM - each only when both sides state one.
  */
-function contradicts(line, pi) {
+export function contradicts(line, pi, { allSizes = false } = {}) {
   if (line.colours.size && pi.colours.size && (line.colours.size !== pi.colours.size || shared(line.colours, pi.colours) !== line.colours.size)) return 'colour';
   if (line.dims.size && pi.dims.size && !sharedDims(line.dims, pi.dims)) return 'size';
+  // A quotation prints the whole size, so one side in common is not enough:
+  // a blanket 889 x 595 is not the 889 x 612 one. (A bill's sizes are noisier
+  // - one figure read three ways - and keep the looser test.)
+  if (allSizes && line.dims.size >= 2 && pi.dims.size >= 2 && sharedDims(line.dims, pi.dims) < Math.min(line.dims.size, pi.dims.size)) return 'size';
   if (line.gsms.size && pi.gsms.size && !shared(line.gsms, pi.gsms)) return 'GSM';
   return null;
 }

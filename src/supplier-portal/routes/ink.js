@@ -16,6 +16,7 @@ import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import { ensureSupplierPortalReady, QuoteDocument, InkTermRule } from '../db/mongo.js';
 import { viewUrl } from '../../lib/r2-storage.js';
 import { pdfPageTexts, looksLikePdf } from '../services/extraction/pdf-text.js';
+import { docxTextLayer, looksLikeWord } from '../services/extraction/docx-text.js';
 import { pdfPageImages } from '../services/extraction/pdf-render.js';
 import { runInkInterpretation, knownTermsFor } from '../services/ink/ink-quotes.js';
 import {
@@ -114,6 +115,12 @@ router.post('/:id/interpret', requireSite, requireRole('BUYER', 'APPROVER'), asy
           error: 'This PDF could not be read — it has no text layer and its pages '
             + 'could not be rendered. Upload the pages as images instead.',
         });
+      }
+    } else if (looksLikeWord(doc)) {
+      // A Word file is its text, exactly; there is nothing to render.
+      textLayer = docxTextLayer(await downloadKey(doc.storageKey));
+      if (!textLayer) {
+        return res.status(422).json({ error: 'This Word file could not be opened. Save it as PDF and upload that instead.' });
       }
     } else {
       pages = await Promise.all(keys.map(async (key, i) => ({

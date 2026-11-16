@@ -22,6 +22,7 @@ import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
 import { getProvider } from './extraction/provider.js';
 import { extractWorkbook } from './extraction/xlsx-extract.js';
 import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
+import { docxTextLayer, looksLikeWord } from './extraction/docx-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { planPlantSplit, groupLinesByPlant } from './quote-split.js';
@@ -182,7 +183,7 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
 
     // Read once for the whole file. Supplier, validity, terms and strength are
     // properties of the document, not of a plant, so both halves share them.
-    const identified = await identifyQuote({ site, extracted: result.extracted || {} });
+    const identified = await identifyQuote({ site, extracted: result.extracted || {}, filename: doc.originalFilename });
 
     const finished = await finaliseDocument({
       doc, lines: myLines, result, identified, plant: myPlant,
@@ -301,7 +302,8 @@ async function extractFromImages(doc, pages, hints, buffer) {
     the image for which column a character is in. Rendering costs a few seconds
     per document; a silently mis-read price table costs a purchase decision.
   */
-  if (!visionPages.length) {
+  // A Word file has no pages to render: its text is all there is, and exact.
+  if (!visionPages.length && !looksLikeWord(doc)) {
     const rendered = await renderPdfPages(doc, pages, buffer);
 
     if (!rendered && !textLayer) {
@@ -443,6 +445,12 @@ async function renderPdfPages(doc, pages, buffer) {
  * exactly as it did before this existed.
  */
 async function readTextLayer(doc, pages, buffer) {
+  if (looksLikeWord(doc)) {
+    const bytes = buffer || await fetchPage(pages?.[0]?.url);
+    const layer = bytes ? docxTextLayer(bytes) : null;
+    if (!layer) throw new Error('This Word file could not be opened. Save it as PDF and upload that instead.');
+    return layer;
+  }
   if (!looksLikePdf(doc)) return null;
 
   try {
@@ -477,7 +485,7 @@ async function fetchPage(url) {
  * quietly into `supplierGroupId` is exactly the failure this replaces.
  */
 export async function proposeIdentification({ doc, site, extracted, fixedPlant = null }) {
-  const identified = await identifyQuote({ site, extracted });
+  const identified = await identifyQuote({ site, extracted, filename: doc?.originalFilename });
   return { ...buildIdentification({ identified, doc, fixedPlant }), identified };
 }
 

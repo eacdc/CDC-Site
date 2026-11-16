@@ -22,6 +22,14 @@ import * as XLSX from 'xlsx';
 const PRICE_HEADER = /\b(price|rate|amount|mrp|cost)\b/i;
 /** Header cells that identify the product. */
 const NAME_HEADER = /\b(product|item|description|material|particular|name)\b/i;
+/**
+ * A name column that names someone else. Siegwerk's sheet opens with
+ * "Customer Name" (CDC PRINTERS PVT. LTD on every row) before "Product
+ * Description", and taking the first name column filed 82 products under CDC.
+ */
+const PARTY_HEADER = /\b(customer|supplier|party|vendor|buyer|consignee)\b/i;
+/** Headers that say outright they hold the product, preferred over a bare "name". */
+const PRODUCT_HEADER = /\b(product|item|description|particular|quality)\b/i;
 const CODE_HEADER = /\b(code|sku|article|material\s*no|part)\b/i;
 const UOM_HEADER = /\b(uom|unit|per|pack)\b/i;
 const GSM_FROM_HEADER = /gsm\s*(from|min)|from\s*gsm/i;
@@ -141,7 +149,11 @@ function mapColumns(headers, grid = [], headerRowIndex = 0) {
     if (GSM_TO_HEADER.test(header)) { gsmTo = i; return; }
     if (PRICE_HEADER.test(header)) { price.push(i); return; }
     if (code === null && CODE_HEADER.test(header)) { code = i; return; }
-    if (name === null && NAME_HEADER.test(header)) { name = i; return; }
+    if (NAME_HEADER.test(header) && !PARTY_HEADER.test(header)
+      && (name === null || (PRODUCT_HEADER.test(header) && !PRODUCT_HEADER.test(headers[name])))) {
+      name = i;
+      return;
+    }
     if (uom === null && UOM_HEADER.test(header)) { uom = i; return; }
     if (form === null && FORM_HEADER.test(header)) { form = i; return; }
     unclassified.push(i);

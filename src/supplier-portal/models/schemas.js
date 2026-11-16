@@ -620,7 +620,7 @@ export const itemMappingSchema = new Schema({
   confidence: Number,
   method: {
     type: String,
-    enum: ['PRODUCT_CODE', 'RATE_ANCHOR', 'SPEC_TUPLE', 'NAME_SIMILARITY', 'LLM', 'HUMAN'],
+    enum: ['PRODUCT_CODE', 'BILL_HISTORY', 'RATE_ANCHOR', 'SPEC_TUPLE', 'NAME_SIMILARITY', 'LLM', 'HUMAN'],
     required: true,
   },
   evidence: {
