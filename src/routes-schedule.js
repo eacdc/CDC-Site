@@ -152,6 +152,29 @@ router.post('/schedule/reorder', async (req, res) => {
   const orderedJson = JSON.stringify(ids.map((id, idx) => ({ id, pos: idx + 1 })));
   try {
     const pool = await getPool(db);
+    // Refuse an order that mostly belongs to another machine (e.g. table loaded for one
+    // machine, dropdown switched to another before saving) — the save replaces this
+    // machine's whole order.
+    const check = await pool
+      .request()
+      .input('MachineID', sql.Int, mid)
+      .input('OrderedJobsJSON', sql.NVarChar(sql.MAX), orderedJson)
+      .query(`
+        SELECT COUNT(*) AS total, COUNT(r.hit) AS onMachine
+        FROM OPENJSON(@OrderedJobsJSON) WITH (id BIGINT '$.id') j
+        OUTER APPLY (
+          SELECT TOP 1 1 AS hit FROM dbo.JobScheduleRelease jsr
+          WHERE jsr.JobBookingJobCardContentsID = j.id AND jsr.MachineID = @MachineID
+            AND ISNULL(jsr.IsDeletedTransaction, 0) = 0
+        ) r
+      `);
+    const { total, onMachine } = check.recordset[0];
+    console.log('[schedule] reorder', { database: db, machineId: mid, total, onMachine, ip: req.ip, at: new Date().toISOString() });
+    if (onMachine * 2 < total) {
+      return res.status(409).json({
+        error: `Only ${onMachine} of these ${total} jobs are on this machine. Reload the machine's schedule and try again.`,
+      });
+    }
     await pool
       .request()
       .input('MachineID', sql.Int, mid)
