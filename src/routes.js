@@ -15,6 +15,7 @@ import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
 import { askText, MODELS } from './lib/claude.js';
 import { isQcNotOk, qcRemarkToEnglish, transcribeQcRemark, QC_SAMPLE_SIZES } from './lib/qc-remarks.js';
+import { uploadQcPhoto, isQcPhotoKey, qcPhotoUrls, QC_PHOTOS_MAX } from './lib/qc-photos.js';
 import {
     generateDispatchNotePdf,
     normalizeDispatchHeader,
@@ -5695,6 +5696,69 @@ router.post('/qc/remarks/translate', async (req, res) => {
     }
 });
 
+// POST /qc/photos/upload — { database, image (base64 JPEG) } → { key, url }
+// The key goes into items[].images on save; url is a short-lived preview.
+router.post('/qc/photos/upload', async (req, res) => {
+    try {
+        const { image, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        if (!image) {
+            return res.status(400).json({ status: false, error: 'Missing image' });
+        }
+        let key;
+        try {
+            key = await uploadQcPhoto(Buffer.from(String(image), 'base64'), selectedDatabase);
+        } catch (rejected) {
+            return res.status(400).json({ status: false, error: rejected.message });
+        }
+        const [url] = await qcPhotoUrls(JSON.stringify([key]));
+        return res.json({ status: true, key, url });
+    } catch (error) {
+        console.error('[QC-PHOTO] Upload failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to upload photo: ' + error.message });
+    }
+});
+
+// POST /reports/qc-check-detail — { database, transactionId } → each parameter of one QC check
+// with its result, remark and signed photo URLs (sql/qc/004_inspection_photos.sql).
+router.post('/reports/qc-check-detail', async (req, res) => {
+    try {
+        const { database, transactionId } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        const id = parseInt(transactionId, 10);
+        if (!Number.isInteger(id) || id <= 0) {
+            return res.status(400).json({ status: false, error: 'Valid transactionId is required' });
+        }
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('TransactionID', sql.Int, id)
+            .query(`
+                SELECT d.ParameterName, d.Result, d.Remarks, d.ImageKeys
+                FROM dbo.ProductionEntryProcessInspectionDetail d
+                WHERE d.TransactionID = @TransactionID
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                ORDER BY d.TransactionDetailID;
+            `);
+        const rows = await Promise.all((result.recordset || []).map(async (row) => ({
+            ParameterName: row.ParameterName,
+            Result: row.Result,
+            Remarks: row.Remarks,
+            NotOk: isQcNotOk(row.Result),
+            photos: await qcPhotoUrls(row.ImageKeys),
+        })));
+        return res.json({ status: true, data: rows });
+    } catch (error) {
+        console.error('[QC-REPORT] Check detail error:', error);
+        return res.status(500).json({ status: false, error: 'Failed to fetch check detail' });
+    }
+});
+
 // Save Process Inspection (QC Audit)
 router.post('/qc/save-inspection', async (req, res) => {
     try {
@@ -5723,6 +5787,17 @@ router.post('/qc/save-inspection', async (req, res) => {
             return res.status(400).json({
                 status: false,
                 error: 'Remarks are required for parameters marked Not OK: ' + missingRemarks.join(', ')
+            });
+        }
+
+        const badPhotos = (Array.isArray(items) ? items : [])
+            .filter(item => item?.images != null && (!Array.isArray(item.images) || item.images.length > QC_PHOTOS_MAX
+                || !item.images.every(key => isQcPhotoKey(key, selectedDatabase))))
+            .map(item => item?.parameter);
+        if (badPhotos.length > 0) {
+            return res.status(400).json({
+                status: false,
+                error: `Photos must be uploaded through the QC Tool, at most ${QC_PHOTOS_MAX} per parameter: ` + badPhotos.join(', ')
             });
         }
 

@@ -29,8 +29,8 @@
   - Only processes with a QC checklist (ProcessInspectionParameters) are
     expected to be checked.
 
-  Run 002_inspection_sample_size.sql first (OperatorPerformance reads
-  SampleSize). Idempotent. Run on BOTH databases:
+  Run 004_inspection_photos.sql first (OperatorPerformance reads SampleSize
+  and ImageKeys). Idempotent. Run on BOTH databases:
       USE IndusEnterprise;   -- Kolkata
       USE IndusEnterprise2;  -- Ahmedabad
 ================================================================================
@@ -362,7 +362,8 @@ GO
 /*------------------------------------------------------------------------------
   Report 2: QC operator performance
   SUMMARY: one row per QC operator and shift session.
-  DETAIL:  one row per check in those sessions.
+  DETAIL:  one row per check in those sessions, with how many parameters
+           were Not OK and how many photos were attached.
 
   - An operator's checks in time order; a gap of more than 4 hours starts a
     new session, so a night shift across midnight stays one row. Shift Date
@@ -488,13 +489,26 @@ BEGIN
             JobNo            = jc.JobBookingNo,
             VoucherNo        = c.VoucherNo,
             SampleSize       = c.SampleSize,
-            MinutesSincePrev = CAST(DATEDIFF(SECOND, c.PrevTime, c.CheckTime) / 60.0 AS DECIMAL(9, 1))
+            MinutesSincePrev = CAST(DATEDIFF(SECOND, c.PrevTime, c.CheckTime) / 60.0 AS DECIMAL(9, 1)),
+            TransactionID    = c.TransactionID,
+            NotOkCount       = ISNULL(dt.NotOkCount, 0),
+            PhotoCount       = ISNULL(dt.PhotoCount, 0)
         FROM #Sessions s
         JOIN #SessionChecks c ON c.UserID = s.UserID AND c.SessionNo = s.SessionNo
         LEFT JOIN dbo.UserMaster um ON um.UserID = s.UserID
         LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = c.MachineID
         LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = c.ProcessID
         LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = c.JobBookingID
+        -- Same spellings of Not OK as the QC Tool ("NOT OK", "Not Ok", "NOK", "Fail")
+        OUTER APPLY (
+            SELECT NotOkCount = SUM(CASE WHEN UPPER(REPLACE(REPLACE(REPLACE(d.Result, N' ', N''), N'.', N''), N'-', N''))
+                                              IN (N'NOTOK', N'NOK', N'NOT', N'FAIL') THEN 1 ELSE 0 END),
+                   PhotoCount = SUM(ph.Photos)
+            FROM dbo.ProductionEntryProcessInspectionDetail d
+            CROSS APPLY (SELECT Photos = COUNT(*) FROM OPENJSON(d.ImageKeys)) ph
+            WHERE d.TransactionID = c.TransactionID
+              AND ISNULL(d.IsDeletedTransaction, 0) = 0
+        ) dt
         ORDER BY um.UserName, c.CheckTime, c.TransactionID;
         RETURN;
     END
