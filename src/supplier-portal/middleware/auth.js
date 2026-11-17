@@ -23,13 +23,27 @@ import { erpUserByName } from '../services/erp-ledgers.js';
 const SESSION_DAYS = Number(process.env.SP_SESSION_DAYS) || 7;
 
 /**
- * Roles an ERP-authenticated account is given on first sign-in. Receiving
- * needs STORE; anything wider should be granted deliberately on the account.
+ * Roles every ERP-authenticated account holds. Receiving needs STORE; CDC
+ * chose, for now, to let everyone who signs in with their ERP name approve
+ * quote mappings too. `SP_ERP_LOGIN_ROLES` (comma-separated) replaces the
+ * default, e.g. `STORE` to take approving away again.
  */
 function erpLoginRoles() {
   const configured = (process.env.SP_ERP_LOGIN_ROLES || '').split(',')
     .map((r) => r.trim().toUpperCase()).filter(Boolean);
-  return configured.length ? configured : ['STORE'];
+  return configured.length ? configured : ['STORE', 'APPROVER'];
+}
+
+/**
+ * The roles a user acts with. An ERP account holds the ERP login roles on
+ * top of whatever was granted on it - applied on each request rather than
+ * saved, so accounts created before a change get it too, and changing the
+ * env var takes it back from everyone at once.
+ */
+export function effectiveRoles(user) {
+  const stored = user?.roles || [];
+  if (user?.authSource !== 'ERP') return stored;
+  return [...new Set([...stored, ...erpLoginRoles()])];
 }
 
 /**
@@ -183,7 +197,7 @@ export async function loginErpUser({
       // would ever get here.
       passwordHash: crypto.randomBytes(32).toString('hex'),
       displayName: erpUser.UserName,
-      roles: erpLoginRoles(),
+      roles: ['VIEWER'], // the ERP login roles come on top, per request: effectiveRoles
       defaultSite: chosenSite,
       allowedSites: [chosenSite],
       erpUserId: erpUser.UserID,
@@ -236,7 +250,7 @@ export async function loginErpUser({
       id: user._id,
       email: user.email,
       displayName: user.displayName,
-      roles: user.roles,
+      roles: effectiveRoles(user),
       allowedSites: user.allowedSites,
       authSource: 'ERP',
       erpUserName: erpUser.UserName,
@@ -325,7 +339,7 @@ export async function requireAuth(req, res, next) {
     }
 
     req.sp = {
-      user,
+      user: { ...user, roles: effectiveRoles(user) },
       session,
       context: { ...session.context, site: requestedSite || session.context?.site },
       actor: user.email,
