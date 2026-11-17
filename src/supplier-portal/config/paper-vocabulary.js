@@ -140,6 +140,14 @@ export const PAPER_TYPES = [
     synonyms: ['NEWSPRINT', 'NEWS PRINT'],
   },
   {
+    canonical: 'POSTER',
+    label: 'Poster paper',
+    // A quality of its own in the item master ("Poster"), and what CDC's bills
+    // post BAHL MG POSTER to. SKM's list prices sixteen rows of it under three
+    // names - "DLX POSTER", "POSTER WT", "COLOUR POSTER" - none typed before.
+    synonyms: ['POSTER', 'POSTER PAPER', 'MG POSTER'],
+  },
+  {
     canonical: 'BIBLE_PAPER',
     label: 'Bible paper',
     synonyms: ['BIBLE PAPER', 'BIBLE'],

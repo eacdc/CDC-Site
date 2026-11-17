@@ -408,3 +408,20 @@ export async function hashPassword(plain) {
   }
   return bcrypt.hash(String(plain), 10);
 }
+
+/**
+ * The scheduled run's key: `X-SP-Automation-Key`, matched against
+ * `SP_AUTOMATION_KEY`. It opens the automation routes and nothing else - it is
+ * not a session, carries no role, and cannot decide a proposal.
+ */
+export function requireAutomationKey(req, res, next) {
+  const expected = String(process.env.SP_AUTOMATION_KEY || '').trim();
+  if (expected.length < 32) return res.status(503).json({ error: 'Automation is not configured on this server.' });
+  const given = Buffer.from(String(req.get('X-SP-Automation-Key') || ''));
+  const want = Buffer.from(expected);
+  if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) {
+    return res.status(401).json({ error: 'Automation key is missing or wrong.' });
+  }
+  req.sp = { automation: true, actor: 'scheduled-run' };
+  return next();
+}

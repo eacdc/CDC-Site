@@ -66,25 +66,99 @@ export function historyEntries(docs = []) {
 }
 
 const SUPPLIER_STOP = new Set(['PVT', 'LTD', 'LIMITED', 'PRIVATE', 'LLP', 'AND', 'THE', 'CO', 'COMPANY',
-  'INDUSTRIES', 'TRADING', 'TRADERS', 'ENTERPRISE', 'ENTERPRISES', 'INTERNATIONAL', 'INDIA', 'M', 'S', 'MS']);
-const supplierTokens = (s) => normaliseName(s).split(' ').filter((t) => t.length > 2 && !SUPPLIER_STOP.has(t));
+  'INDUSTRIES', 'TRADING', 'TRADERS', 'ENTERPRISE', 'ENTERPRISES', 'INTERNATIONAL', 'INDIA', 'MS']);
+/**
+ * Words that describe the trade rather than the firm. They count when both
+ * names share them, but cannot carry a match alone: "SKM PAPER AND PACK" was
+ * taken as "A.K. TRADING (PAPER)" because PAPER was the only word left of the
+ * second name, and SKM's quote was judged against AKT's bills.
+ */
+const TRADE_WORDS = new Set(['PAPER', 'PAPERS', 'PACK', 'PACKS', 'PACKAGING', 'PACKAGERS', 'BOARD', 'BOARDS',
+  'INK', 'INKS', 'CHEMICAL', 'CHEMICALS', 'POLY', 'PLAST', 'PLASTICS', 'SALES', 'MILLS', 'PRODUCTS',
+  'AGENCY', 'AGENCIES', 'CORPORATION', 'CORP', 'IMPEX', 'SOLUTIONS', 'OVERSEAS', 'GRAPHICS', 'PRINT']);
+
+/**
+ * A name's words, with runs of initials joined: "N.R. AGARWAL" and "NR
+ * AGARWAL" are one spelling, and "H K TRADING" keeps its "HK" instead of
+ * losing two one-letter words to the length filter.
+ */
+function nameWords(s) {
+  const out = [];
+  // "M/S" is a courtesy, and joined to the initials after it would make "MSAK".
+  for (const t of normaliseName(s).replace(/^M S /, '').split(' ').filter(Boolean)) {
+    const last = out[out.length - 1];
+    if (t.length === 1 && last?.initials) last.text += t;
+    else out.push({ text: t, initials: t.length === 1 });
+  }
+  return out.map((w) => w.text);
+}
+const supplierTokens = (s) => nameWords(s).filter((t) => t.length > 1 && !SUPPLIER_STOP.has(t));
+
+/** "HK" for "HARE KRISHNA": initials of consecutive words in the other name. */
+function initialsOf(token, words) {
+  if (token.length < 2 || token.length > 4) return false;
+  for (let i = 0; i + token.length <= words.length; i += 1) {
+    if (words.slice(i, i + token.length).map((w) => w[0]).join('') === token) return true;
+  }
+  return false;
+}
+
+/** Does `a` name the same firm as `b`, by name alone? */
+function sameName(a, b) {
+  const [aw, bw] = [supplierTokens(a), supplierTokens(b)];
+  if (!aw.length || !bw.length) return false;
+  const [short, longWords] = aw.length <= bw.length ? [aw, bw] : [bw, aw];
+  const long = new Set(longWords);
+  // A name made only of trade words ("PRINT SALES") is still a name, but
+  // then it has to be the whole of the other one.
+  if (!short.some((t) => !TRADE_WORDS.has(t))) return long.size === short.length && short.every((t) => long.has(t));
+  let byInitials = false;
+  for (const t of short) {
+    if (long.has(t)) continue;
+    if (!initialsOf(t, longWords)) return false;
+    byInitials = true;
+  }
+  // Initials alone are thin - "SK" is half the trade - so the full names must
+  // share some other word as well: "Hk Trading" and "Hare krishna Trading".
+  if (!byInitials) return true;
+  const full = new Set(nameWords(a).filter((t) => t.length > 1));
+  return nameWords(b).some((t) => t.length > 2 && full.has(t) && !['PVT', 'LTD', 'LIMITED', 'PRIVATE'].includes(t));
+}
 
 /**
  * Is a bill from this supplier? By GSTIN when both sides have one - a GSTIN is
  * an identifier - and otherwise by the name: every distinctive word of the
- * shorter name present in the longer, at least one of them.
+ * shorter name present in the longer, or standing as its initials.
  */
 export function sameSupplier(entry, { gstins = [], names = [] } = {}) {
   const ids = gstins.map((g) => String(g || '').toUpperCase()).filter(Boolean);
   if (entry.gstin && ids.length) return ids.includes(entry.gstin);
-  const theirs = supplierTokens(entry.supplierName);
-  if (!theirs.length) return false;
-  return names.some((n) => {
-    const ours = supplierTokens(n);
-    if (!ours.length) return false;
-    const [short, long] = ours.length <= theirs.length ? [ours, new Set(theirs)] : [theirs, new Set(ours)];
-    return short.every((t) => long.has(t));
-  });
+  return names.some((n) => sameName(entry.supplierName, n));
+}
+
+/**
+ * How this supplier's own bills described each of these Indus items: up to
+ * `perItem` distinct descriptions per item, newest first.
+ *
+ * Evidence for judging a line, not a match. Unic's bills post "LLDP Straech
+ * Film 18Inch*23Mic" to Carton Wrapping Roll; the misspelling keeps it under
+ * HISTORY_ACCEPT, and without it the pairing was doubted only
+ * because "the name does not say stretch or LLDP".
+ *
+ * @returns {Map<number, string[]>}
+ */
+export function billedDescriptions(entries, { site, supplier, itemIds = [], perItem = 3 }) {
+  const wanted = new Set(itemIds.map(Number));
+  const out = new Map();
+  const newestFirst = entries
+    .filter((e) => wanted.has(e.itemId) && (!site || !e.site || e.site === site) && sameSupplier(e, supplier))
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  for (const e of newestFirst) {
+    const list = out.get(e.itemId) || [];
+    if (list.length < perItem && e.description && !list.includes(e.description)) list.push(e.description);
+    out.set(e.itemId, list);
+  }
+  return out;
 }
 
 /**

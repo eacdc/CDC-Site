@@ -173,6 +173,8 @@ app.use('/api/purchase-bills', purchaseBillsRoutes);
 // Self-contained under its own prefix, with its own Mongo connection
 // (MONGODB_URI_SupplierPortal) and its own site-scoped MSSQL access.
 app.use('/api/supplier-portal', supplierPortalRoutes);
+// Reviewing the scheduled run's mapping proposals. Static; it calls /proposals.
+app.use('/supplier-portal/review', express.static(join(__dirname, 'supplier-portal', 'review')));
 app.use('/api/whatsapp-monitor', whatsappMonitorRoutes);
 
 // CDC Stock Issue Tool — issues paper and other stock to jobs (-19 vouchers).

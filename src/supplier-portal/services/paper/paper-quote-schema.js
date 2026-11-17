@@ -38,7 +38,8 @@ import { PAPER_TYPES, unconfirmedTokens } from '../../config/paper-vocabulary.js
 const PAPER_TYPE_VALUES = PAPER_TYPES.map((t) => t.canonical);
 
 /** How a paper type came to be on a line. Provenance, not decoration. */
-export const TYPE_BASIS = ['STATED', 'BRAND', 'TAUGHT', 'ASKED'];
+/** BILLED: CDC's own bills posted this name to that quality (billed-types.js). */
+export const TYPE_BASIS = ['STATED', 'BRAND', 'TAUGHT', 'ASKED', 'BILLED'];
 
 /**
  * A number the agent read off the page.
@@ -105,6 +106,8 @@ export const PaperLineSchema = z.object({
 
   paperType: z.enum(PAPER_TYPE_VALUES).nullable().default(null),
   paperTypeBasis: z.enum(TYPE_BASIS).nullable().default(null),
+  // The words the bills settled it on, so a reviewer can see why.
+  paperTypeBilledAs: text(),
 
   gsmText: text(),
   gsmFrom: num(),

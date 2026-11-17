@@ -218,16 +218,14 @@ async function uploadQuoteFile(req, res, next) {
       checks: dedup.checks,
     });
 
-    const result = await extractDocument(doc._id, {
-      site: req.sp.site,
-      buffer: req.file.buffer,
-      // Images still need a URL the vision provider can fetch. A PDF does not:
-      // its text is read from the buffer above.
-      pages: [{ url: await viewUrl(storageKey), pageNo: 1, mimeType: req.file.mimetype }],
-      hints: { priceColumn: req.body.priceColumn, sheetName: req.body.sheetName },
+    // Stored, not read: the portal makes no model calls. The scheduled run
+    // picks this up from /automation/portal-uploads within the hour, and its
+    // proposals appear on the review page.
+    return res.status(202).json({
+      documentId: doc._id,
+      queued: true,
+      message: 'Uploaded. The scheduled run will read it within the hour; its proposals will appear on the review page.',
     });
-
-    return res.status(201).json({ documentId: doc._id, ...result });
   } catch (err) { return next(err); }
 }
 
@@ -621,7 +619,6 @@ router.post('/:id/match', requireSite, requireRole('BUYER', 'APPROVER'), async (
       documentId: doc._id,
       group,
       actor: req.sp.actor,
-      allowLlm: req.body?.allowLlm !== false,
     });
 
     // The magnitude guard runs after matching, because it compares against the

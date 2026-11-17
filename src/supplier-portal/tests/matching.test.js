@@ -328,6 +328,20 @@ test('a supplier without a GSTIN on file is known by every distinctive word', ()
   assert.equal(sameSupplier({ supplierName: 'SALES CORPORATION', gstin: null }, { names: ['Print Sales'] }), false);
 });
 
+test('a word of the trade does not make two firms one', () => {
+  const akt = { supplierName: 'A.K.TRADING (PAPER) PRIVATE LIMITED', gstin: null };
+  assert.equal(sameSupplier(akt, { names: ['SKM PAPER AND PACK LLP'] }), false);
+  assert.equal(sameSupplier(akt, { names: ['AK Trading'] }), true);
+});
+
+test('initials stand for the words they abbreviate', () => {
+  const hare = { supplierName: 'Hare Krishna Trading', gstin: null };
+  assert.equal(sameSupplier(hare, { names: ['Hk Trading'] }), true);
+  assert.equal(sameSupplier(hare, { names: ['H.K. TRADING'] }), true);
+  // Two letters and nothing else in common is a coincidence, not a firm.
+  assert.equal(sameSupplier(hare, { names: ['HK Paper Mart'] }), false);
+});
+
 test('matchLine takes the bills before the rate', async () => {
   const candidates = [{ ItemID: 7000, ItemName: 'Servo Greese MP3', LastPaidRate: 300 }];
   const line = { raw: { productName: 'Technomelt Q 970N' }, normalised: { rate: 300 } };

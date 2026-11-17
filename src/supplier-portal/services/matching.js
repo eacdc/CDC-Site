@@ -10,7 +10,13 @@
  *   Tier 3  Rate anchor               free, only when the name agrees too
  *   Tier 4  Spec tuple                free, for attribute-generated names
  *   Tier 5  Name similarity           free, weakest signal
- *   Tier 6  LLM adjudication          costs money, needs context to work
+
+ * Ahead of all of them, reviewers' decisions on the scheduled run's
+ * proposals (proposal-evidence.js): this supplier's approved mapping for the
+ * same wording is the answer, and an item a reviewer rejected for it is never
+ * offered again. There is no model tier. A line the rules cannot settle comes
+ * back with its evidence - the bills' wording for each candidate, and similar
+ * approved and unapproved proposals - for the scheduled run to judge.
  *
  * Tier 2 is the supplier's own word: Supplier Portal v2 read their GRN bills
  * and paired every line with the Indus item it was posted as.
@@ -40,8 +46,8 @@ import { matchingCandidates, annualSpend } from './erp-items.js';
 import { ledgerIdsForSite } from './supplier-groups.js';
 import { normaliseName, nameSimilarity, letterOverlap, differentModelNumber } from '../lib/text.js';
 import { itemSpecTuple, quoteSpecTuple, compareSpecTuples } from '../lib/spec.js';
-import { getProvider } from './extraction/provider.js';
-import { billHistoryMatch, loadBillHistory } from './bill-history.js';
+import { proposalEvidence } from './proposal-evidence.js';
+import { billHistoryMatch, billedDescriptions, loadBillHistory } from './bill-history.js';
 import { nameFeatures, contradicts } from '../../bill-lines/line-match.js';
 
 /** Letter overlap, or name similarity, a rate match needs before it counts. */
@@ -59,11 +65,11 @@ const RATE_NAME_SIMILARITY = 0.5;
  * @param {Array}  input.candidates      from `loadCandidates()`
  * @param {Array}  [input.alreadyMapped] this supplier's existing mappings
  * @param {Array}  [input.billHistory]   from `loadBillHistory()`
- * @param {boolean} [input.allowLlm]
+ * @param {Array}  [input.proposals]     earlier proposals and their decisions (/automation/proposals)
  * @returns {Promise<MatchResult>}
  *
  * @typedef {Object} MatchResult
- * @property {'PRODUCT_CODE'|'BILL_HISTORY'|'RATE_ANCHOR'|'SPEC_TUPLE'|'NAME_SIMILARITY'|'LLM'|null} method
+ * @property {'APPROVED_MAPPING'|'PRODUCT_CODE'|'BILL_HISTORY'|'RATE_ANCHOR'|'SPEC_TUPLE'|'NAME_SIMILARITY'|null} method
  * @property {number|null} itemId
  * @property {number} confidence
  * @property {string} rationale
@@ -71,9 +77,45 @@ const RATE_NAME_SIMILARITY = 0.5;
  * @property {string|null} queueReason
  */
 export async function matchLine({
-  site, line, supplierItem, group, candidates, alreadyMapped = [], billHistory = [], allowLlm = true,
+  site, line, supplierItem, group, candidates, alreadyMapped = [], billHistory = [], proposals = [],
 }) {
   assertSite(site);
+  const supplier = group
+    ? { gstins: group.gstins || [], names: [group.name, ...(group.aliases || [])].filter(Boolean) }
+    : null;
+  const evidence = proposals.length && supplier
+    ? proposalEvidence(proposals, { site, supplier, line: line.raw || {} })
+    : null;
+
+  // ── Approved first: a reviewer has already said what this line is ──────
+  if (evidence?.bind) {
+    const p = evidence.bind.proposal;
+    return result({
+      method: 'APPROVED_MAPPING',
+      itemId: evidence.bind.itemId,
+      confidence: 0.99,
+      rationale: `Approved by ${p.decision?.by || 'a reviewer'}${p.decision?.at ? ` on ${formatDate(p.decision.at)}` : ''} for "${p.line?.productName}"`,
+      proposalEvidence: evidence,
+    });
+  }
+
+  const excluded = new Set(evidence?.excludeItemIds || []);
+  const allowed = excluded.size ? (candidates || []).filter((c) => !excluded.has(Number(c.ItemID))) : candidates;
+  const found = await matchByRules({ site, line, supplierItem, group, candidates: allowed, billHistory });
+  if (found.itemId && excluded.has(Number(found.itemId))) {
+    return result({
+      ...found, method: null, itemId: null, confidence: 0, queueReason: 'LOW_CONFIDENCE',
+      rationale: `${found.rationale}; but a reviewer rejected that item for this wording before`,
+      proposalEvidence: evidence,
+    });
+  }
+  return evidence ? { ...found, proposalEvidence: evidence } : found;
+}
+
+/** Tiers 1 to 5. */
+async function matchByRules({
+  site, line, supplierItem, group, candidates, billHistory = [],
+}) {
   /**
    * The quote is passed around as an object rather than a number so every
    * tier can see the pack size. CDC's master and the supplier frequently
@@ -186,37 +228,16 @@ export async function matchLine({
     }
   }
 
-  // ── Tier 6: LLM adjudication ─────────────────────────────────────────────
-  if (allowLlm) {
-    try {
-      const adjudication = await adjudicate({
-        line, productName, group, candidates: scored.slice(0, 8), alreadyMapped,
-      });
-
-      if (adjudication.cdcItemId && adjudication.confidence >= TOLERANCES.llmConfidenceAccept) {
-        return result({
-          method: 'LLM',
-          itemId: adjudication.cdcItemId,
-          confidence: adjudication.confidence,
-          rationale: adjudication.rationale,
-          rankedCandidates: scored.slice(0, 8),
-        });
-      }
-
-      return result({
-        method: null, itemId: null, confidence: adjudication.confidence,
-        rationale: adjudication.rationale,
-        rankedCandidates: scored.slice(0, 8),
-        // The model answering "none of these" is a different situation from it
-        // being unsure, and the queue reason says which.
-        queueReason: adjudication.cdcItemId ? 'LOW_CONFIDENCE' : 'NO_CANDIDATE',
-      });
-    } catch (err) {
-      // An adjudication failure must not lose the line. It falls through to
-      // the queue with whatever the cheaper tiers found.
-      console.warn('[SP][matching] LLM adjudication failed:', err.message);
-    }
-  }
+  // Nothing settled it. What the supplier's own bills called each of the top
+  // candidates goes back with the line, for the scheduled run to judge.
+  const shortlist = scored.slice(0, 8);
+  const billedAs = billHistory.length && group
+    ? Object.fromEntries(billedDescriptions(billHistory, {
+      site,
+      supplier: { gstins: group.gstins || [], names: [group.name, ...(group.aliases || [])].filter(Boolean) },
+      itemIds: shortlist.map((c) => c.itemId),
+    }))
+    : {};
 
   // Several well-named items at the quoted rate, none clearly the one: often
   // CDC duplicate master rows for one product. A person decides, with the rate
@@ -226,6 +247,7 @@ export async function matchLine({
       method: null, itemId: null, confidence: 0,
       rationale: `${anchored.length} items at this last-paid rate share the name — likely duplicate master rows`,
       rankedCandidates: anchored.map(toCandidateRow).slice(0, 8),
+      billedAs,
       queueReason: 'AMBIGUOUS',
     });
   }
@@ -236,7 +258,8 @@ export async function matchLine({
     rationale: best
       ? `Best name similarity was ${best.score}, below the ${TOLERANCES.nameSimilarityAccept} threshold`
       : 'No candidate scored above zero',
-    rankedCandidates: scored.slice(0, 8),
+    rankedCandidates: shortlist,
+    billedAs,
     queueReason: 'LOW_CONFIDENCE',
   });
 }
@@ -498,47 +521,6 @@ function subGroupHint(line, candidate) {
   return subGroup.split(' ').some((token) => token.length > 3 && hint.includes(token));
 }
 
-// ── Tier 5: LLM adjudication ────────────────────────────────────────────────
-
-/**
- * Ask the model, with the context that makes the answer worth having.
- *
- * A coordinator does not string-match. They know this supplier only sells
- * inks, that there is an open PO for exactly this, and that ₹1,850 is not
- * plausible for something last bought at ₹285. The candidates are therefore
- * sent with their last-paid rate, last supplier, purchase count and sub-group,
- * along with what this supplier is already mapped to. Without that context the
- * model confidently invents mappings.
- */
-async function adjudicate({ line, productName, group, candidates, alreadyMapped }) {
-  const provider = await getProvider();
-  return provider.adjudicate({
-    line: {
-      supplier: group?.name || null,
-      productName,
-      productCode: line.raw?.productCode || null,
-      packSize: line.raw?.packSize || null,
-      quotedRate: line.normalised?.rate ?? null,
-      quotedUom: line.normalised?.uom ?? null,
-      ratePerBaseUom: line.normalised?.ratePerBaseUom ?? null,
-      rawText: line.raw?.text || null,
-    },
-    candidates: candidates.map((c) => ({
-      cdcItemId: c.itemId,
-      itemName: c.itemName,
-      subGroup: c.subGroupName,
-      lastPaidRate: c.lastPaidRate,
-      lastSupplier: c.lastSupplier,
-      purchaseCount: c.purchaseCount,
-    })),
-    mapped: alreadyMapped.map((m) => ({
-      supplierProduct: m.supplierProductName,
-      cdcItemId: m.itemRef?.itemId,
-      cdcItemName: m.itemName,
-    })),
-  });
-}
-
 // ── Persistence ─────────────────────────────────────────────────────────────
 
 /** Existing active mapping for a supplier item at a site. */
@@ -691,7 +673,7 @@ export async function resolveQueueEntry({ queueId, itemId, status, actor, note, 
  * line: the candidate query is the expensive part, and it is identical for
  * every line of one supplier's quote.
  */
-export async function matchDocument({ site, documentId, group, actor = 'system', allowLlm = true }) {
+export async function matchDocument({ site, documentId, group, actor = 'system' }) {
   await ensureSupplierPortalReady();
   assertSite(site);
   const { QuoteLine } = await import('../db/mongo.js');
@@ -719,7 +701,7 @@ export async function matchDocument({ site, documentId, group, actor = 'system',
     if (!supplierItem) { skipped += 1; continue; }
 
     const match = await matchLine({
-      site, line, supplierItem, group, candidates, alreadyMapped, billHistory, allowLlm,
+      site, line, supplierItem, group, candidates, alreadyMapped, billHistory,
     });
 
     const outcome = await persistMatch({

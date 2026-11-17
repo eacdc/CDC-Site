@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quote Mapping Review</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5d6778; --line: #dfe3ea;
+    --accent: #2457c5; --ok: #1f7a4d; --warn: #9a6200; --bad: #b3261e; --chip: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12161d; --panel: #1a2029; --ink: #e6e9ef; --muted: #9aa4b5; --line: #2c3441;
+      --accent: #7aa2ff; --ok: #5ccf94; --warn: #f0b35a; --bad: #ff8a80; --chip: #232b37; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 auto 0 0; }
+  main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+  button, select, input { font: inherit; color: inherit; }
+  button { border: 1px solid var(--line); background: var(--chip); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ok { border-color: var(--ok); color: var(--ok); }
+  button.bad { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 5px 8px; }
+  .quote { padding: 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+  .quote:hover { background: var(--chip); }
+  .quote.active { border-color: var(--accent); }
+  .quote small, .muted { color: var(--muted); }
+  .chip { display: inline-block; padding: 1px 7px; border-radius: 10px; background: var(--chip); font-size: 12px; }
+  .chip.APPROVED { color: var(--ok); } .chip.REJECTED { color: var(--bad); } .chip.UNAPPROVED { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+  details summary { cursor: pointer; color: var(--accent); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .question { border-left: 3px solid var(--warn); padding: 4px 8px; margin: 4px 0; }
+  .err { color: var(--bad); }
+  .picker { margin-top: 6px; display: grid; gap: 4px; }
+  .picker div { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+  .picker div:hover { background: var(--chip); }
+  #login { max-width: 360px; margin: 60px auto; display: grid; gap: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quote mapping review</h1>
+  <label>Site <select id="site"><option value="KOL">Kolkata</option><option value="AHM">Ahmedabad</option></select></label>
+  <label><input type="checkbox" id="showAll"> Show decided quotes</label>
+  <span id="who" class="muted"></span>
+  <button id="logout" hidden>Sign out</button>
+</header>
+
+<section id="login" class="panel" hidden>
+  <strong>Sign in</strong>
+  <div id="pwForm" style="display:grid;gap:8px">
+    <input id="email" type="email" placeholder="Email" autocomplete="username">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="primary" id="pwLogin">Sign in</button>
+  </div>
+  <div id="erpForm" style="display:grid;gap:8px" hidden>
+    <span class="muted">Or with your ERP user name</span>
+    <input id="erpUser" placeholder="ERP user name">
+    <button id="erpLogin">Sign in with ERP name</button>
+  </div>
+  <span id="loginErr" class="err"></span>
+</section>
+
+<main id="app" hidden>
+  <section class="panel">
+    <strong>Quotes</strong>
+    <div id="quotes" class="muted">Loading…</div>
+  </section>
+  <section class="panel" id="detail"><span class="muted">Choose a quote.</span></section>
+</main>
+
+<script>
+const API = '/api/supplier-portal';
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (v) => (v == null || v === '' ? '—' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch { /* private window */ } },
+};
+let user = null;
+let current = null;
+
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(API + path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-SP-Site': $('site').value,
+      ...(store.get('spToken') ? { Authorization: `Bearer ${store.get('spToken')}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { signedOut(); throw new Error('Please sign in again.'); }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+function signedOut() {
+  store.set('spToken', null); user = null;
+  $('app').hidden = true; $('login').hidden = false; $('logout').hidden = true; $('who').textContent = '';
+}
+
+async function signedIn(result) {
+  store.set('spToken', result.token);
+  user = result.user;
+  $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false;
+  $('who').textContent = `${user.displayName || user.email || ''}${user.roles?.includes('APPROVER') || user.roles?.includes('ADMIN') ? '' : ' (view only: approving needs the APPROVER role)'}`;
+  loadQuotes();
+}
+
+async function login(path, body) {
+  $('loginErr').textContent = '';
+  try { await signedIn(await api(path, { method: 'POST', body: { ...body, site: $('site').value } })); }
+  catch (e) { $('loginErr').textContent = e.message; }
+}
+
+$('pwLogin').onclick = () => login('/auth/login', { email: $('email').value, password: $('password').value });
+$('erpLogin').onclick = () => login('/auth/erp-login', { username: $('erpUser').value });
+$('logout').onclick = async () => { try { await api('/auth/logout', { method: 'POST' }); } catch { /* already out */ } signedOut(); };
+$('site').onchange = () => { store.set('spSite', $('site').value); if (user) { current = null; $('detail').innerHTML = '<span class="muted">Choose a quote.</span>'; loadQuotes(); } };
+$('showAll').onchange = () => user && loadQuotes();
+
+async function loadQuotes() {
+  $('quotes').textContent = 'Loading…';
+  try {
+    const { quotes } = await api(`/proposals/quotes?site=${$('site').value}${$('showAll').checked ? '&all=1' : ''}`);
+    if (!quotes.length) { $('quotes').innerHTML = '<p class="muted">Nothing waiting for review.</p>'; return; }
+    $('quotes').innerHTML = quotes.map((q) => `
+      <div class="quote${current === q._id ? ' active' : ''}" data-id="${esc(q._id)}">
+        <div><strong>${esc(q.supplier?.name || 'Unknown supplier')}</strong></div>
+        <small>${esc(q.fileName)} · ${new Date(q.createdAt).toLocaleString('en-IN')}</small><br>
+        <span class="chip UNAPPROVED">${q.unapproved} waiting</span> <small>of ${q.total} lines</small>
+        ${q.questions?.length ? `<span class="chip">${q.questions.length} question(s)</span>` : ''}
+      </div>`).join('');
+    document.querySelectorAll('.quote').forEach((el) => { el.onclick = () => openQuote(el.dataset.id); });
+  } catch (e) { $('quotes').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function openQuote(id) {
+  current = id;
+  document.querySelectorAll('.quote').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
+  $('detail').innerHTML = '<span class="muted">Loading…</span>';
+  try { renderQuote(await api(`/proposals/quotes/${id}`)); }
+  catch (e) { $('detail').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+function renderQuote({ quote, proposals }) {
+  const canDecide = user?.roles?.includes('APPROVER') || user?.roles?.includes('ADMIN');
+  $('detail').innerHTML = `
+    <div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap">
+      <h2 style="margin:0;font-size:17px">${esc(quote.supplier?.name || 'Unknown supplier')}</h2>
+      <span class="muted">${esc(quote.supplier?.gstin || '')}</span>
+      <a href="${esc(quote.fileUrl)}" target="_blank" rel="noopener">Open the quote file</a>
+    </div>
+    <p class="muted">${esc(quote.fileName)} · dated ${esc(quote.documentDate || '—')} · effective ${esc(quote.effectiveFrom || '—')} · ${esc(quote.materialClass || '')} · read by rules ${esc(quote.rulesVersion)}</p>
+    ${(quote.questions || []).map((q) => `<div class="question"><strong>${esc(q.kind)}</strong> ${esc(q.text)}${q.lineNos?.length ? ` <small class="muted">(lines ${q.lineNos.join(', ')})</small>` : ''}</div>`).join('')}
+    <div class="scroll"><table>
+      <thead><tr><th>#</th><th>Quote line</th><th>Rate</th><th>Proposed Indus item</th><th>Status</th></tr></thead>
+      <tbody>${proposals.map((p) => row(p, canDecide)).join('')}</tbody>
+    </table></div>`;
+  document.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.id, b.dataset.act, b); });
+  document.querySelectorAll('[data-change]').forEach((b) => { b.onclick = () => openPicker(b.dataset.change); });
+  document.querySelectorAll('[data-compare]').forEach((b) => { b.onclick = () => compare(b.dataset.compare, b); });
+}
+
+function row(p, canDecide) {
+  const l = p.line || {}; const r = p.rate || {}; const pr = p.proposal || {};
+  const spec = [l.brand, l.grade, l.gsmFrom ? `${l.gsmFrom}${l.gsmTo && l.gsmTo !== l.gsmFrom ? `–${l.gsmTo}` : ''} GSM` : null, l.sizeText, l.packSize].filter(Boolean).join(' · ');
+  const decided = p.status !== 'UNAPPROVED';
+  const item = decided && p.decision?.itemId
+    ? `<strong>${esc(p.decision.itemId)}</strong> ${esc(p.decision.itemName || '')}`
+    : (pr.itemId ? `<strong>${esc(pr.itemId)}</strong> ${esc(pr.itemName || '')}` : '<span class="muted">No item proposed</span>');
+  return `<tr>
+    <td>${esc(p.lineNo ?? '')}</td>
+    <td><strong>${esc(l.productName)}</strong>${l.productCode ? ` <small class="muted">${esc(l.productCode)}</small>` : ''}<br><small class="muted">${esc(spec)}</small></td>
+    <td>${money(r.rate)}${r.uom ? `/${esc(r.uom)}` : ''}${r.ratePerBaseUom != null && r.ratePerBaseUom !== r.rate ? `<br><small class="muted">= ${money(r.ratePerBaseUom)} per base unit</small>` : ''}
+      ${r.flags?.length ? `<br><small class="muted">${esc(r.flags.join(', '))}</small>` : ''}</td>
+    <td>${item}
+      <br><small class="muted">${esc(pr.method || '')}${pr.confidence != null ? ` · ${Math.round(pr.confidence * 100)}%` : ''}</small>
+      ${pr.question ? `<div class="question">${esc(pr.question)}</div>` : ''}
+      ${pr.rationale || pr.evidence?.length || pr.alternatives?.length ? `<details><summary>Why</summary>
+        <p>${esc(pr.rationale || '')}</p>
+        ${(pr.evidence || []).map((e) => `<div><span class="chip">${esc(e.kind)}</span> ${esc(e.text)}</div>`).join('')}
+        ${pr.alternatives?.length ? `<p class="muted">Other candidates:</p>${pr.alternatives.map((a) => `<div>${esc(a.itemId)} ${esc(a.itemName || '')} <small class="muted">last paid ${money(a.lastPaidRate)}</small></div>`).join('')}` : ''}
+      </details>` : ''}
+      ${!decided && canDecide ? `<div class="actions">
+        <button class="ok" data-act="APPROVE" data-id="${esc(p._id)}" ${pr.itemId ? '' : 'disabled title="Nothing proposed: use Change item"'}>Approve</button>
+        <button data-change="${esc(p._id)}">Change item</button>
+        <button class="bad" data-act="REJECT" data-id="${esc(p._id)}">Reject</button>
+      </div><div id="pick-${esc(p._id)}"></div>` : ''}
+    </td>
+    <td><span class="chip ${esc(p.status)}">${esc(p.status)}</span>
+      ${decided ? `<br><small class="muted">${esc(p.decision?.action || '')} by ${esc(p.decision?.by || '')}<br>${p.decision?.at ? new Date(p.decision.at).toLocaleString('en-IN') : ''}</small>${p.decision?.note ? `<br><small>${esc(p.decision.note)}</small>` : ''}` : ''}
+      ${p.status === 'APPROVED' && p.decision?.itemId ? `<br><button data-compare="${esc(p.decision.itemId)}">Compare suppliers</button><div id="cmp-${esc(p.decision.itemId)}"></div>` : ''}
+    </td>
+  </tr>`;
+}
+
+async function act(id, action, button, itemId = null) {
+  const verb = { APPROVE: 'Approve', REJECT: 'Reject', CHANGE: `Map to item ${itemId}` }[action];
+  const note = action === 'APPROVE' ? null : prompt(`${verb}: add a note (optional)`) ;
+  if (note === null && action !== 'APPROVE') return;
+  if (!confirm(`${verb} this line? A decision cannot be changed afterwards.`)) return;
+  if (button) button.disabled = true;
+  try {
+    await api(`/proposals/${id}/decision`, { method: 'POST', body: { action, itemId, note: note || null } });
+    await openQuote(current); loadQuotes();
+  } catch (e) { alert(e.message); if (button) button.disabled = false; }
+}
+
+function openPicker(id) {
+  const box = $(`pick-${id}`);
+  box.innerHTML = `<div class="picker"><input placeholder="Search Indus items by name, code or ID" autofocus><div class="results muted">Type at least 2 characters.</div></div>`;
+  const input = box.querySelector('input'); const out = box.querySelector('.results');
+  let timer = null;
+  input.oninput = () => {
+    clearTimeout(timer);
+    if (input.value.trim().length < 2) { out.textContent = 'Type at least 2 characters.'; return; }
+    timer = setTimeout(async () => {
+      try {
+        const { results } = await api(`/items/search?q=${encodeURIComponent(input.value.trim())}&limit=15`);
+        out.innerHTML = results.length ? results.map((it) => `<div data-item="${esc(it.ItemID ?? it.itemId)}">${esc(it.ItemID ?? it.itemId)} ${esc(it.ItemName ?? it.itemName)} <small class="muted">${esc(it.StockUnit || '')}</small></div>`).join('') : 'No items found.';
+        out.querySelectorAll('[data-item]').forEach((d) => { d.onclick = () => act(id, 'CHANGE', null, Number(d.dataset.item)); });
+      } catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    }, 250);
+  };
+  input.focus();
+}
+
+async function compare(itemId, button) {
+  const box = $(`cmp-${itemId}`);
+  button.disabled = true;
+  try {
+    const { offers } = await api(`/proposals/compare/${itemId}`);
+    box.innerHTML = offers.length ? offers.map((o, i) => `<div>${i === 0 ? '<strong>Cheapest:</strong> ' : ''}${esc(o.supplier?.name || '')} ${money(o.rate?.ratePerBaseUom ?? o.rate?.rate)} <small class="muted">${new Date(o.createdAt).toLocaleDateString('en-IN')}</small></div>`).join('') : '<small class="muted">No other approved prices yet.</small>';
+  } catch (e) { box.innerHTML = `<small class="err">${esc(e.message)}</small>`; }
+  button.disabled = false;
+}
+
+(async function start() {
+  const site = store.get('spSite'); if (site) $('site').value = site;
+  try { const m = await fetch(`${API}/auth/methods`).then((r) => r.json()); $('erpForm').hidden = !m.erp; } catch { /* password only */ }
+  if (!store.get('spToken')) return signedOut();
+  try { const me = await api('/auth/me'); await signedIn({ token: store.get('spToken'), user: me.user || me }); }
+  catch { signedOut(); }
+}());
+</script>
+</body>
+</html>

@@ -65,7 +65,8 @@ export async function getItems(site, itemIds = []) {
 /** One item, or null. */
 export async function getItem(site, itemId) {
   const map = await getItems(site, [itemId]);
-  return map.get(Number(itemId)) || null;
+  // The driver returns ItemID as text, so the map is keyed by strings.
+  return map.get(Number(itemId)) || map.get(String(itemId)) || null;
 }
 
 /**
