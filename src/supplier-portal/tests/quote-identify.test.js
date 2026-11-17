@@ -227,3 +227,13 @@ test('the identification blocks cannot be overridden with a reason', () => {
   assert.equal(warningsNeedingReason(checks).length, 0);
   assert.ok(checks.every((c) => c.severity === 'BLOCK'));
 });
+
+test('the file name is the last, unconfirmed, word on the plant', () => {
+  const plant = identifyPlant({ addressedTo: null, plantMentions: null }, { filename: 'SAKATA - AHM.pdf' });
+  assert.deepEqual(plant.value, [PLANTS.AHM]);
+  assert.ok(plant.confidence < AUTO_ACCEPT, 'a file name is a proposal, not an answer');
+  assert.deepEqual(identifyPlant({ addressedTo: null }, { filename: 'Technova AHM.pdf' }).value, [PLANTS.AHM]);
+  assert.deepEqual(identifyPlant({ addressedTo: null }, { filename: 'Kodak.pdf' }).value, []);
+  // A plant the document states beats the file's name.
+  assert.deepEqual(identifyPlant({ addressedTo: { address: 'Panchla, Howrah' } }, { filename: 'x AHM.pdf' }).value, [PLANTS.KOL]);
+});

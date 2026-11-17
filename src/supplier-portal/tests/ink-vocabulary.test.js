@@ -357,6 +357,13 @@ test('the rate unit is read from a section header or a row override', () => {
   assert.equal(resolveRateUom('(470.00/m²)'), 'M2');
 });
 
+test('a heading that names several units settles none of them', () => {
+  // TechNova's rate column: the reader left the paste rows' unit blank on
+  // purpose, and the heading must not fill it in as litres.
+  assert.equal(resolveRateUom('w.e.f.11.08.2026 Before GST/kgs/liters/nos'), null);
+  assert.equal(resolveRateUom('RATE PER KG / LTR'), null);
+});
+
 test('the pack size is not the rate unit', () => {
   /*
     ECNO WASH KR (20 LTR) at 220 under "RATE PER LTR." is Rs 220 a litre and

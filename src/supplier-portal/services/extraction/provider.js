@@ -2,7 +2,10 @@
  * Extraction provider interface.
  *
  * Claude (the default) and GPT-4o vision sit behind a single interface so
- * either can be swapped in. Everything downstream — review screen, matching,
+ * either can be swapped in. They read SUPPLIER INVOICES only, for receiving
+ * (GRN Creator). Quotes are read by the scheduled run and the portal makes no
+ * model call for them: `getProvider` hands out the invoice methods and
+ * refuses `extractQuote` and `adjudicate`. Everything downstream — review screen, matching,
  * rate history — consumes the shape defined here and never the provider's own
  * response.
  *
@@ -333,6 +336,32 @@ export const AdjudicationSchema = z.object({
  * check it is gone.
  */
 
+/**
+ * Quote reading and line matching are the scheduled run's: a Claude session on
+ * CDC's PC that reads the quotes folder and portal uploads every hour and
+ * posts to /automation. No model is called for a quote from this server.
+ */
+export const MODEL_CALLS_REMOVED = 'The supplier portal no longer reads quotes itself: the scheduled run reads them within the hour and its proposals appear on the review page.';
+
+export function modelCallsRemoved() {
+  const err = new Error(MODEL_CALLS_REMOVED);
+  err.status = 410;
+  err.code = 'MODEL_CALLS_REMOVED';
+  return err;
+}
+
+/** What a caller may use: invoices for receiving, and nothing for quotes. */
+function invoicesOnly(provider) {
+  const refuse = async () => { throw modelCallsRemoved(); };
+  return Object.freeze({
+    name: provider.name,
+    extractInvoice: provider.extractInvoice.bind(provider),
+    detectOrientation: provider.detectOrientation.bind(provider),
+    extractQuote: refuse,
+    adjudicate: refuse,
+  });
+}
+
 const providers = new Map();
 
 export function registerProvider(provider) {
@@ -389,7 +418,7 @@ export async function getProvider(name = process.env.EXTRACTION_PROVIDER || 'ant
   if (name === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY is not set on the server; the "anthropic" extraction provider needs it.');
   }
-  return provider;
+  return invoicesOnly(provider);
 }
 
 /** Registered provider names. Async because the built-ins load on demand. */

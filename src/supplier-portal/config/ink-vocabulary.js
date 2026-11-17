@@ -676,9 +676,20 @@ export function resolveBaseNumber(text) {
   return match ? match[1] : null;
 }
 
-/** KG, LTR, PC, M2, UNIT, or null. */
+/**
+ * KG, LTR, PC, M2, UNIT, or null.
+ *
+ * Null when the text names more than one unit. TechNova heads its whole rate
+ * column "Before GST/kgs/liters/nos": that says the rows are priced in one of
+ * three units, not which, and taking the first hit filed a 250 g paste tub at
+ * Rs 1,120 a litre.
+ */
 export function resolveRateUom(text) {
-  return resolve(RATE_UOM_LOOKUP, text);
+  const haystack = tokenised(text);
+  const units = new Set(RATE_UOM_LOOKUP
+    .filter((e) => haystack.includes(` ${e.needle} `))
+    .map((e) => e.value));
+  return units.size === 1 ? [...units][0] : null;
 }
 
 /**

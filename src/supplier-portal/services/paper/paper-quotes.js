@@ -14,8 +14,8 @@ import {
 } from '../../db/mongo.js';
 import { paperTypeLabel } from '../../config/paper-vocabulary.js';
 import { interpretPaperQuote, rulesFromAnswers, summarisePreviousQuote } from './interpreter.js';
-import { sendToOpenAI } from './openai-send.js';
-import { sendToClaude } from './claude-send.js';
+import { modelCallsRemoved } from '../extraction/provider.js';
+import { loadBillHistory } from '../bill-history.js';
 import { BRAND_TYPES } from '../../config/paper-vocabulary.js';
 
 /**
@@ -87,8 +87,8 @@ async function supplierNameFor(supplierGroupId) {
  */
 export async function runInterpretation({
   documentId, pages = [], textLayer = null, answers = [], actor = null,
-  // Claude unless EXTRACTION_PROVIDER=openai, the same switch as extraction.
-  send = process.env.EXTRACTION_PROVIDER === 'openai' ? sendToOpenAI : sendToClaude,
+  // No model calls from the portal: the scheduled run reads paper quotes.
+  send = async () => { throw modelCallsRemoved(); },
 } = {}) {
   await ensureSupplierPortalReady();
 
@@ -103,10 +103,12 @@ export async function runInterpretation({
   });
 
   try {
-    const [knownBrands, previousSummary, supplierName] = await Promise.all([
+    const [knownBrands, previousSummary, supplierName, billHistory] = await Promise.all([
       knownBrandsFor(doc.supplierGroupId),
       previousInterpretation(doc.supplierGroupId, doc._id),
       supplierNameFor(doc.supplierGroupId),
+      // Evidence, not a dependency: a reading without it only asks more.
+      loadBillHistory().catch(() => []),
     ]);
 
     const result = await interpretPaperQuote({
@@ -137,6 +139,7 @@ export async function runInterpretation({
       // Terms CDC has already ruled on, including the ones ruled "not a paper
       // type". Both kinds have to stop being asked.
       settledTokens: knownBrands.map((b) => b.brand),
+      billHistory,
       send,
     });
 
@@ -282,6 +285,7 @@ export function paperLineToQuoteLine(documentId, line, index = 0) {
     extractionConfidence: line.confidence ?? null,
     flags: [
       ...(line.paperTypeBasis === 'TAUGHT' ? ['type taught'] : []),
+      ...(line.paperTypeBasis === 'BILLED' ? [`type from bills ("${line.paperTypeBilledAs}")`] : []),
       ...(line.derivation ? ['derived rate'] : []),
       ...(line.gsmFrom == null && line.gsmTo == null ? ['no gsm band'] : []),
     ],

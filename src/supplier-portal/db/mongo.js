@@ -13,8 +13,13 @@
  */
 
 import mongoose from 'mongoose';
-import { SCHEMAS } from '../models/schemas.js';
+import { SCHEMAS as BASE_SCHEMAS } from '../models/schemas.js';
+import { autoQuoteSchema, mappingProposalSchema, lockModel } from '../models/proposals.js';
 import { UOM_SEED, AMBIGUOUS_UOMS } from '../config/uom-seed.js';
+
+/** Append-only: insert, and a reviewer's decision, and nothing else (models/proposals.js). */
+const APPEND_ONLY = { SpAutoQuote: autoQuoteSchema, SpMappingProposal: mappingProposalSchema };
+const SCHEMAS = { ...BASE_SCHEMAS, ...APPEND_ONLY };
 
 let connection = null;
 let connecting = null;
@@ -37,13 +42,15 @@ export let ItemClassification = null;
 export let DeliveryDateSnapshot = null;
 export let PaperBrandRule = null;
 export let InkTermRule = null;
+export let AutoQuote = null;
+export let MappingProposal = null;
 
 const BINDINGS = [
   'SpSupplierGroup', 'SpQuoteDocument', 'SpQuoteLine', 'SpSupplierItem',
   'SpItemMapping', 'SpRateHistory', 'SpMappingQueue', 'SpDocumentSet',
   'SpUomNormalisation', 'SpAuditLog', 'SpUser', 'SpSupplierUser',
   'SpSession', 'SpItemClassification', 'SpDeliveryDateSnapshot',
-  'SpPaperBrandRule', 'SpInkTermRule',
+  'SpPaperBrandRule', 'SpInkTermRule', 'SpAutoQuote', 'SpMappingProposal',
 ];
 
 function assign(models) {
@@ -65,6 +72,8 @@ function assign(models) {
     SpDeliveryDateSnapshot: DeliveryDateSnapshot,
     SpPaperBrandRule: PaperBrandRule,
     SpInkTermRule: InkTermRule,
+    SpAutoQuote: AutoQuote,
+    SpMappingProposal: MappingProposal,
   } = models);
 }
 
@@ -93,6 +102,7 @@ export async function ensureSupplierPortalReady() {
       const models = {};
       for (const [name, schema] of Object.entries(SCHEMAS)) {
         models[name] = conn.model(name, schema);
+        if (APPEND_ONLY[name]) lockModel(models[name]);
       }
       await conn.asPromise();
       connection = conn;

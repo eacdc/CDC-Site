@@ -53,6 +53,7 @@ export const PAPER_PAYLOAD_SHAPE = `PAYLOAD SHAPE
     "paperType": one of the canonical types, or null,
     "paperTypeBasis": "STATED"|"BRAND"|"TAUGHT"|null,
     "gsmText": string|null, "gsmFrom": number|null, "gsmTo": number|null,
+    "plant": "KOLKATA"|"AHMEDABAD"|null,
     "form": "SHEET"|"REEL"|null,
     "shade": "NATURAL"|null,
     "bulk": "HIGH"|null,
@@ -139,9 +140,17 @@ export const PAPER_RULES = `RULES
     priced. Leave bf null on every other paper.
 
 11. TWO PLANTS. CDC has plants at Kolkata and Ahmedabad. If a document prices
-    only one, set "plant". If it prices both, still set the plant per line is not
-    available — instead say so clearly in "understanding" and leave plant null,
-    and the caller will split the document.
+    only one, set the top-level "plant" and leave every line's plant null. If it
+    prices both — two rate columns, or two sections headed by plant — leave the
+    top-level plant null and set "plant" on EVERY line to the plant whose column
+    or section its rate came from:
+
+      FOR KOLKATA - REEL     FOR AHMEDABAD - REEL
+      54-55  72336           54-55  68336
+
+    is two lines, one "KOLKATA" at 72336 and one "AHMEDABAD" at 68336. The
+    document is split by this field; a line left null goes to both plants, so a
+    two-plant line without its plant puts one plant's rate on the other.
 
 12. COPY, DO NOT TIDY. productName is the product exactly as printed. It is what
     a person recognises, what a learned rule is keyed on, and what next month's

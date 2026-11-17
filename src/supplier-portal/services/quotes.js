@@ -19,9 +19,10 @@ import {
 } from '../lib/uom.js';
 import { normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
 import { quoteSpecTuple, buildSpecKey, specKeyString } from '../lib/spec.js';
-import { getProvider } from './extraction/provider.js';
+import { getProvider, modelCallsRemoved } from './extraction/provider.js';
 import { extractWorkbook } from './extraction/xlsx-extract.js';
 import { pdfPageTexts, looksLikePdf } from './extraction/pdf-text.js';
+import { docxTextLayer, looksLikeWord } from './extraction/docx-text.js';
 import { pdfPageImages } from './extraction/pdf-render.js';
 import { identifyQuote, AUTO_ACCEPT } from './quote-identify.js';
 import { planPlantSplit, groupLinesByPlant } from './quote-split.js';
@@ -135,6 +136,13 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
   const doc = await QuoteDocument.findById(documentId);
   if (!doc) throw new Error(`Quote document ${documentId} not found`);
 
+  // A worksheet is parsed here with no model. Anything else is read by the
+  // scheduled run, and refusing before the status changes leaves it queued.
+  const worksheet = doc.docType === 'WORKSHEET' || /spreadsheet|excel|\.xlsx?$/i.test(
+    `${doc.mimeType || ''} ${doc.originalFilename || ''}`,
+  );
+  if (!worksheet) throw modelCallsRemoved();
+
   await QuoteDocument.updateOne({ _id: doc._id }, {
     $set: { status: 'EXTRACTING', 'extraction.startedAt': new Date() },
   });
@@ -182,7 +190,7 @@ export async function extractDocument(documentId, { site, pages, buffer, hints =
 
     // Read once for the whole file. Supplier, validity, terms and strength are
     // properties of the document, not of a plant, so both halves share them.
-    const identified = await identifyQuote({ site, extracted: result.extracted || {} });
+    const identified = await identifyQuote({ site, extracted: result.extracted || {}, filename: doc.originalFilename });
 
     const finished = await finaliseDocument({
       doc, lines: myLines, result, identified, plant: myPlant,
@@ -301,7 +309,8 @@ async function extractFromImages(doc, pages, hints, buffer) {
     the image for which column a character is in. Rendering costs a few seconds
     per document; a silently mis-read price table costs a purchase decision.
   */
-  if (!visionPages.length) {
+  // A Word file has no pages to render: its text is all there is, and exact.
+  if (!visionPages.length && !looksLikeWord(doc)) {
     const rendered = await renderPdfPages(doc, pages, buffer);
 
     if (!rendered && !textLayer) {
@@ -443,6 +452,12 @@ async function renderPdfPages(doc, pages, buffer) {
  * exactly as it did before this existed.
  */
 async function readTextLayer(doc, pages, buffer) {
+  if (looksLikeWord(doc)) {
+    const bytes = buffer || await fetchPage(pages?.[0]?.url);
+    const layer = bytes ? docxTextLayer(bytes) : null;
+    if (!layer) throw new Error('This Word file could not be opened. Save it as PDF and upload that instead.');
+    return layer;
+  }
   if (!looksLikePdf(doc)) return null;
 
   try {
@@ -477,7 +492,7 @@ async function fetchPage(url) {
  * quietly into `supplierGroupId` is exactly the failure this replaces.
  */
 export async function proposeIdentification({ doc, site, extracted, fixedPlant = null }) {
-  const identified = await identifyQuote({ site, extracted });
+  const identified = await identifyQuote({ site, extracted, filename: doc?.originalFilename });
   return { ...buildIdentification({ identified, doc, fixedPlant }), identified };
 }
 
@@ -1112,11 +1127,26 @@ export function normaliseLine(raw, overrides, { documentUom = null } = {}) {
     document default can never overwrite something the supplier printed.
   */
   const uomSource = fromCell.uom ? 'RATE_CELL' : (raw.uom ? 'LINE_UOM' : 'DOCUMENT');
-  const uom = fromCell.uom || raw.uom || documentUom;
+  let uom = fromCell.uom || raw.uom || documentUom;
 
-  const pack = parsePackSize([raw.productName, raw.packSize].filter(Boolean).join(' '));
+  let pack = parsePackSize([raw.productName, raw.packSize].filter(Boolean).join(' '));
   if (pack) flags.push('PACK_SIZE_IN_NAME');
   if (pack?.assumedUom) flags.push('PACK_UOM_ASSUMED');
+
+  /*
+    A pack counted in pieces, on a line that names no unit: the figure is the
+    pack's. HK Trading's "yellow | 10 pcs(1 box) | 2400" is Rs 240 a tape -
+    exactly what CDC pays for it - and compared as 2400 it matched nothing.
+    Only the pack column is read: a count inside the product name is as often
+    part of what the thing is ("12 Tooth") as how it is sold.
+  */
+  const counted = !pack && (!uom || normaliseUom(uom).canonical === 'BOX') && countPack(raw.packSize);
+  if (counted) {
+    pack = { packQty: counted, packUom: 'PCS' };
+    if (!uom) flags.push('PACK_UOM_ASSUMED');
+    uom = 'BOX';
+    flags.push('PACK_SIZE_IN_NAME');
+  }
 
   /**
    * Whether the quoted figure prices a whole pack or one base unit cannot be
@@ -1125,8 +1155,13 @@ export function normaliseLine(raw, overrides, { documentUom = null } = {}) {
    * (₹149/kg for a 15 kg spool); if the quoted unit is a count — NOS, PCS,
    * SET, BOX — while the pack is measured in mass or volume, the figure
    * prices the pack.
+   *
+   * A length is not a pack. "BOPP TAPE 48 mm X 42 Mic X 65 mtr" at 34.50 a
+   * roll is one roll of a 65 m tape, and Indus buys it per roll: dividing gave
+   * Rs 0.53 "a roll", 98% below the last-paid rate.
    */
-  const perPack = Boolean(pack) && isCountUnit(uom) && !isCountUnit(pack.packUom);
+  const perPack = Boolean(counted) || (Boolean(pack) && isCountUnit(uom) && !isCountUnit(pack.packUom)
+    && pack.packUom !== 'MTR');
   if (perPack) flags.push('RATE_TREATED_AS_PER_PACK');
 
   const result = normaliseRate({
@@ -1162,6 +1197,13 @@ export function normaliseLine(raw, overrides, { documentUom = null } = {}) {
 
 function isCountUnit(uom) {
   return ['NOS', 'PCS', 'SET', 'BOX', 'ROLL', 'SHEET'].includes(String(uom ?? '').toUpperCase());
+}
+
+/** "10 pcs(1 box)", "5mm(70 Strips)": how many pieces a pack holds, or null. */
+function countPack(packSize) {
+  const m = String(packSize ?? '').match(/(\d+)\s*(?:PCS?|NOS?|PIECES?|STRIPS?|SHEETS?|ROLLS?)\b/i);
+  const qty = m ? Number(m[1]) : null;
+  return qty > 1 ? qty : null;
 }
 
 // ── Magnitude guard against last-paid ───────────────────────────────────────

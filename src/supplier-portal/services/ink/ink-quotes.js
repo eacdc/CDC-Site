@@ -17,11 +17,11 @@ import {
 } from '../../db/mongo.js';
 import { inkLabel, comparisonKey, FAMILY_CHEMISTRY } from '../../config/ink-vocabulary.js';
 import { interpretInkQuote, summariseInkQuote, NOT_MEANINGFUL } from './interpreter.js';
-import { sendToOpenAI, researchWithOpenAI } from './openai-send.js';
-import { sendToClaude, researchWithClaude } from './claude-send.js';
+import { modelCallsRemoved } from '../extraction/provider.js';
 
-// Claude unless EXTRACTION_PROVIDER=openai, the same switch as extraction.
-const useOpenAI = () => process.env.EXTRACTION_PROVIDER === 'openai';
+// No model calls from the portal: the scheduled run reads ink quotes. The
+// interpreter's rules and schema stay, and a caller may still inject a sender.
+const refuse = async () => { throw modelCallsRemoved(); };
 
 /**
  * Terms already settled for this supplier.
@@ -89,8 +89,8 @@ async function supplierNameFor(supplierGroupId) {
  */
 export async function runInkInterpretation({
   documentId, pages = [], textLayer = null, answers = [], actor = null,
-  send = useOpenAI() ? sendToOpenAI : sendToClaude,
-  research = useOpenAI() ? researchWithOpenAI : researchWithClaude,
+  send = refuse,
+  research = null,
 } = {}) {
   await ensureSupplierPortalReady();
 

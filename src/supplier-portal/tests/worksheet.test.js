@@ -105,3 +105,16 @@ test('an unreadable sheet returns no lines rather than inventing them', () => {
   const result = extractWorkbook(workbook(junk));
   assert.deepEqual(result.lines, []);
 });
+
+test('a customer-name column is not the product', () => {
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['S.No.', 'Customer Name', 'Product Code', 'Product Description', 'Current Price Rs./Kg'],
+    [1, 'CDC PRINTERS PVT. LTD', '71-110051-1.2690', 'SICURA PLAST 770HS REFLEX BLUE', 1503],
+    [2, 'CDC PRINTERS PVT. LTD', '70-110031-5.2690', 'SICURA PLAST 770HS PROCESS CYAN', 810],
+  ]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ark1');
+  const r = extractWorkbook(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }), { priceColumn: 'Current Price Rs./Kg' });
+  assert.equal(r.lines[0].productName, 'SICURA PLAST 770HS REFLEX BLUE');
+  assert.equal(r.lines[0].rate, '1503');
+});

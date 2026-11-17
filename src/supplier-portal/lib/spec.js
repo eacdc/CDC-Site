@@ -174,21 +174,37 @@ export function itemSpecTuple(item = {}) {
   };
 }
 
+/** Words that say a line is paper or board, so a bare number on it may be a GSM. */
+const PAPER_HINT = /\b(GSM|PAPER|BOARD|MAPLITHO|ART|FBB|SBS|CBB|DUPLEX|KRAFT|CARD|BRISTOL|CHROMO|CROMO|NEWSPRINT|GREY BACK|WHITE BACK)\b/i;
+
+/** Numbers that are a rate, a pack or a dimension, never a GSM. */
+const NOT_GSM = /\d+(?:\.\d+)?\s*(?:\/-|MM\b|CM\b|MTRS?\b|METERS?\b|KGS?\b|LTRS?\b|ML\b|INCH(?:ES)?\b|MIC(?:RONS?)?\b|PCS\b|NOS\b)/gi;
+
 /** Parse a supplier quote line into the same shape. */
 export function quoteSpecTuple(line = {}) {
   const raw = line.raw || line;
   const text = [raw.productName, raw.text, raw.notes].filter(Boolean).join(' ');
+  const micron = numberOr(raw.micron) ?? parseMicron(text);
+  const filmType = parseFilmType(text);
+  /*
+    A band read off the text is any number in it, so it is read only off a line
+    that looks like paper. Unic's strapping roll at "90/-" became a 90 GSM paper
+    band, and its 48 mm tape a GSM 48 that the spec match then "agreed" on.
+  */
+  const textBand = !micron && !filmType && PAPER_HINT.test(text)
+    ? parseGsmBand(text.replace(NOT_GSM, ' '))
+    : null;
   const band = raw.gsmFrom || raw.gsmTo
     ? { gsmFrom: numberOr(raw.gsmFrom), gsmTo: numberOr(raw.gsmTo) }
-    : parseGsmBand(text);
+    : textBand;
   return {
     quality: null,
     gsm: parseGsm(text),
     gsmFrom: band?.gsmFrom ?? null,
     gsmTo: band?.gsmTo ?? null,
-    micron: numberOr(raw.micron) ?? parseMicron(text),
+    micron,
     widthMm: numberOr(raw.width) ?? parseWidthMm(text),
-    filmType: parseFilmType(text),
+    filmType,
     foilGrade: parseFoilGrade(text),
     form: parseForm(raw.productForm || text),
   };
