@@ -1449,7 +1449,7 @@ router.get('/processes/pending', async (req, res) => {
 							.input('UserID', sql.Int, userIdNum)
 							.input('MachineID', sql.Int, machineIdNum)
 							.input('JobCardContentNo', sql.NVarChar(255), jobCardNumber.toString())
-							.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+							.execute('dbo.GetPendingProcesses_ForMachineAndContent_v3');
 						console.log('[PENDING2] processResult:', JSON.stringify(processResult.recordset));
             console.log('[PENDING2] machineIdNum, jobCardNumber:', machineIdNum, jobCardNumber);
 						// Add processes from this job card to our collection
@@ -1471,7 +1471,7 @@ router.get('/processes/pending', async (req, res) => {
 				.input('UserID', sql.Int, userIdNum)
 				.input('MachineID', sql.Int, machineIdNum)
 				.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
-				.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+				.execute('dbo.GetPendingProcesses_ForMachineAndContent_v3');
         console.log('[PENDING3] result:', JSON.stringify(result.recordset));
 
 		}
@@ -1961,10 +1961,13 @@ router.get('/production/search-by-machine', async (req, res) => {
 });
 
 // Job diagnostics: every component, form and process of a job card, plus the
-// three conditions GetPendingProcesses_ForMachineAndContent applies, so a
+// three conditions GetPendingProcesses_ForMachineAndContent_v3 applies, so a
 // process that never shows up on a machine can be explained without opening
 // SSMS. ShowsInApp is that procedure's filter expressed as a flag — when it is
-// 0, the row tells you which of the three conditions failed.
+// 0, the row tells you which of the three conditions failed. An online
+// printing row shows only on presses that print one side per run (and not
+// once the form has had a printing run on a two-sided press), so for those
+// rows Machines lists just those presses.
 router.get('/jobs/diagnostics', async (req, res) => {
 	try {
 		const { jobNumber, database } = req.query || {};
@@ -1982,6 +1985,16 @@ router.get('/jobs/diagnostics', async (req, res) => {
 		const result = await pool.request()
 			.input('Search', sql.NVarChar(120), `%${search}%`)
 			.query(`
+				-- presses the ERP plans printing online on: both sides in one run
+				DECLARE @TwoSidedPresses TABLE (MachineID INT PRIMARY KEY);
+				INSERT INTO @TwoSidedPresses (MachineID)
+				SELECT DISTINCT MachineID
+				FROM dbo.JobScheduleRelease
+				WHERE ProcessID IN (10337, 279)
+				  AND ISNULL(IsOnlineProcess, 0) = 1
+				  AND ISNULL(IsDeletedTransaction, 0) = 0
+				  AND MachineID IS NOT NULL;
+
 				SELECT
 					c.JobCardContentNo,
 					c.PlanContName                                   AS ComponentName,
@@ -1995,13 +2008,13 @@ router.get('/jobs/diagnostics', async (req, res) => {
 					jsr.Status,
 					CAST(ISNULL(jsr.IsOnlineProcess, 0) AS INT)      AS IsOnlineProcess,
 					CAST(ISNULL(jsr.IsDeletedTransaction, 0) AS INT) AS IsDeleted,
-					(
+					CASE WHEN sep.Machines IS NOT NULL THEN sep.Machines ELSE (
 						SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName)
 						FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
 						JOIN dbo.MachineMaster mm
 						     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
 						    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
-					)                                                AS Machines,
+					) END                                            AS Machines,
 					ISNULL((
 						SELECT SUM(ISNULL(pe.ProductionQuantity, 0))
 						FROM dbo.ProductionEntry pe
@@ -2010,7 +2023,7 @@ router.get('/jobs/diagnostics', async (req, res) => {
 						  AND ISNULL(pe.JobCardFormNo, N'') = ISNULL(jsr.JobCardFormNo, N'')
 					), 0)                                            AS ProducedQty,
 					CASE WHEN jsr.Status IN (N'In Queue', N'Part Complete', N'Running')
-					      AND ISNULL(jsr.IsOnlineProcess, 0) = 0
+					      AND (ISNULL(jsr.IsOnlineProcess, 0) = 0 OR sep.Machines IS NOT NULL)
 					      AND ISNULL(jsr.IsDeletedTransaction, 0) = 0
 					     THEN 1 ELSE 0 END                           AS ShowsInApp
 				FROM dbo.JobBookingJobCardContents c
@@ -2021,6 +2034,25 @@ router.get('/jobs/diagnostics', async (req, res) => {
 				LEFT JOIN dbo.ProcessMaster pm
 				     ON pm.ProcessID = jsr.ProcessID
 				    AND ISNULL(pm.isdeletedtransaction, 0) = 0
+				OUTER APPLY (
+					-- online printing: the allowed presses that print one side per run,
+					-- unless the form already had a printing run on a two-sided press
+					SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName) AS Machines
+					FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
+					JOIN dbo.MachineMaster mm
+					     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
+					    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
+					WHERE ISNULL(jsr.IsOnlineProcess, 0) = 1
+					  AND jsr.ProcessID IN (10337, 279)
+					  AND mm.MachineId NOT IN (SELECT MachineID FROM @TwoSidedPresses)
+					  AND NOT EXISTS (
+					        SELECT 1
+					        FROM dbo.ProductionEntry pe
+					        WHERE pe.JobBookingJobCardContentsID = jsr.JobBookingJobCardContentsID
+					          AND pe.JobCardFormNo = jsr.JobCardFormNo
+					          AND pe.ProcessID IN (10337, 279)
+					          AND pe.MachineID IN (SELECT MachineID FROM @TwoSidedPresses))
+				) sep
 				WHERE c.JobCardContentNo LIKE @Search
 				ORDER BY c.JobCardContentNo, pm.ProcessName,
 				         LEN(jsr.JobCardFormNo), jsr.JobCardFormNo
