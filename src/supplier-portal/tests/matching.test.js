@@ -9,7 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rateAnchor, specTupleMatch, rank, quoteReadings, corroborated, matchLine } from '../services/matching.js';
+import { rateAnchor, specTupleMatch, rank, quoteReadings, corroborated, withinStatedGsm, matchLine } from '../services/matching.js';
 import { billHistoryMatch, historyEntries, sameSupplier } from '../services/bill-history.js';
 import { nameSimilarity, tokenSetRatio, normaliseName, hasBrandOrCodeToken, letterOverlap } from '../lib/text.js';
 import { parseGsmBand, gsmInBand, parseFilmType, parseMicron, buildSpecKey, itemMatchesSpecKey } from '../lib/spec.js';
@@ -351,6 +351,25 @@ test('matchLine takes the bills before the rate', async () => {
   });
   assert.equal(r.method, 'BILL_HISTORY');
   assert.equal(r.itemId, 9931);
+});
+
+test('a rate match outside the quoted GSM band does not settle the line', async () => {
+  const candidates = [
+    { ItemID: 8101, ItemName: 'Devpriya PGB 390 GSM 700X1000', GSM: 390, LastPaidRate: 52 },
+    { ItemID: 8102, ItemName: 'Devpriya PGB 270 GSM 700X1000', GSM: 270, LastPaidRate: 61 },
+  ];
+  const band = { raw: { productName: 'Devpriya PGB', gsmFrom: 250, gsmTo: 284 }, normalised: { rate: 52 } };
+  assert.deepEqual(withinStatedGsm(candidates, band).map((c) => c.ItemID), [8102]);
+  const r = await matchLine({ site: 'KOL', line: band, supplierItem: null, group: null, candidates, allowLlm: false });
+  assert.notEqual(r.method, 'RATE_ANCHOR');
+  assert.notEqual(r.itemId, 8101);
+  // Inside the band the anchor still works.
+  const inBand = { raw: { productName: 'Devpriya PGB', gsmFrom: 250, gsmTo: 284 }, normalised: { rate: 61 } };
+  const ok = await matchLine({ site: 'KOL', line: inBand, supplierItem: null, group: null, candidates, allowLlm: false });
+  assert.equal(ok.method, 'RATE_ANCHOR');
+  assert.equal(ok.itemId, 8102);
+  // No GSM stated: nothing to check against.
+  assert.equal(withinStatedGsm(candidates, { raw: { productName: 'GUM POWDER' } }).length, 2);
 });
 
 test('a different model number or matrix size is not the same product', () => {
