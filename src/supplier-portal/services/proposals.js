@@ -17,7 +17,10 @@ import {
 import { decideProposal } from '../models/proposals.js';
 import { SITES } from '../config/constants.js';
 import { sha256Of } from './quotes.js';
-import { getItem } from './erp-items.js';
+import { getItem, paperItemsInGsmRange } from './erp-items.js';
+import {
+  PAPER_GROUP_IDS, cleanBand, itemInBand, bandLabel, bandChoices,
+} from './paper/band.js';
 import { uploadBuffer, viewUrl } from '../../lib/r2-storage.js';
 
 const str = () => z.string().trim().max(2000).nullish();
@@ -47,6 +50,16 @@ const LineSchema = z.object({
     evidence: z.array(EvidenceSchema).max(20).default([]),
     alternatives: z.array(z.object({ itemId: z.number().int(), itemName: str(), lastPaidRate: num() })).max(8).default([]),
     question: str(),
+    // Only ever a band a reviewer approved for this wording: the run proposes
+    // it again, it does not invent one (paper/band.js).
+    band: z.object({
+      quality: z.string().trim().min(1).max(200),
+      mills: z.array(z.string().trim().max(200)).max(50).default([]),
+      groupIds: z.array(z.number().int()).max(2).default([]),
+      gsmFrom: z.number().positive(),
+      gsmTo: z.number().positive(),
+      itemCount: z.number().int().nullish(),
+    }).nullish(),
   }),
 });
 
@@ -117,7 +130,7 @@ export async function recordRun({ file, payload }) {
     lineNo: l.lineNo ?? null,
     line: l.line,
     rate: l.rate,
-    proposal: { ...l.proposal, itemId: l.proposal.itemId ?? null },
+    proposal: { ...l.proposal, itemId: l.proposal.itemId ?? null, band: l.proposal.band ?? null },
     rulesVersion: data.rulesVersion,
     runId: data.runId,
     status: 'UNAPPROVED',
@@ -130,7 +143,7 @@ export async function recordRun({ file, payload }) {
 export async function proposalsForMatching({ sites = SITES } = {}) {
   await ensureSupplierPortalReady();
   return MappingProposal.find({ site: { $in: sites } })
-    .select('site supplier line rate proposal.itemId proposal.itemName status decision createdAt')
+    .select('site supplier line rate proposal.itemId proposal.itemName proposal.band status decision createdAt')
     .lean();
 }
 
@@ -175,13 +188,49 @@ export async function quoteForReview(id) {
   return { quote: { ...quote, fileUrl: await viewUrl(quote.fileKey, 3600) }, proposals };
 }
 
+/** The GSM range a paper line states, or the reviewer's own when it states none. */
+function gsmRange(line = {}, { gsmFrom, gsmTo } = {}) {
+  const from = Number(gsmFrom ?? line.gsmFrom ?? line.gsmTo);
+  const to = Number(gsmTo ?? line.gsmTo ?? from);
+  return Number.isFinite(from) && from > 0 ? { gsmFrom: from, gsmTo: Number.isFinite(to) && to >= from ? to : from } : null;
+}
+
+/**
+ * What a reviewer can approve a paper line as: the Indus qualities in its GSM
+ * range, their mills, and how many sheet and reel items each covers.
+ */
+export async function bandChoicesFor(id, override = {}) {
+  await ensureSupplierPortalReady();
+  const p = await MappingProposal.findById(id).select('site line').lean();
+  if (!p) throw fail(404, 'Proposal not found.');
+  const range = gsmRange(p.line, override);
+  if (!range) throw fail(400, 'This line states no GSM: give the range to look in.');
+  const items = await paperItemsInGsmRange(p.site, range);
+  return { ...range, site: p.site, choices: bandChoices(items) };
+}
+
+/** The Indus items a band covers right now, a few of them named, for the reviewer to check. */
+export async function previewBand(id, input) {
+  await ensureSupplierPortalReady();
+  const p = await MappingProposal.findById(id).select('site').lean();
+  if (!p) throw fail(404, 'Proposal not found.');
+  const band = cleanBand(input);
+  const items = (await paperItemsInGsmRange(p.site, { ...band, itemGroupIds: band.groupIds })).filter((it) => itemInBand(it, band));
+  return {
+    band, label: bandLabel(band), itemCount: items.length,
+    sample: items.slice(0, 12).map((it) => ({ itemId: Number(it.ItemID), itemName: it.ItemName, gsm: it.GSM, mill: it.Manufecturer })),
+  };
+}
+
 /**
  * A reviewer's decision. A changed item must exist in Indus at that site, so a
- * typo cannot become an approved mapping.
+ * typo cannot become an approved mapping; a band must cover at least one item,
+ * for the same reason.
  */
-export async function decide({ id, action, itemId, note, actor }) {
+export async function decide({ id, action, itemId, band = null, note, actor }) {
   await ensureSupplierPortalReady();
   let itemName = null;
+  let checkedBand = null;
   if (action === 'CHANGE') {
     const current = await MappingProposal.findById(id).select('site').lean();
     if (!current) throw fail(404, 'Proposal not found.');
@@ -189,19 +238,34 @@ export async function decide({ id, action, itemId, note, actor }) {
     if (!item) throw fail(400, `Item ${itemId} is not in ${current.site}'s item master.`);
     itemName = item.ItemName;
   }
-  const decided = await decideProposal(MappingProposal, { id, action, itemId, itemName, by: actor, note });
+  if (action === 'BAND') {
+    const preview = await previewBand(id, band || {});
+    if (!preview.itemCount) throw fail(400, `No Indus item is inside ${preview.label}.`);
+    checkedBand = { ...preview.band, itemCount: preview.itemCount };
+  }
+  const decided = await decideProposal(MappingProposal, {
+    id, action, itemId, itemName, band: checkedBand, by: actor, note,
+  });
   if (!decided) throw fail(409, 'This line has already been decided.');
   return decided;
 }
 
 /**
  * Approved prices for one Indus item, newest per supplier, cheapest first:
- * the comparison the portal exists for.
+ * the comparison the portal exists for. A paper item is priced by the bands
+ * approved over it as well as by lines approved as the item itself.
  */
 export async function compareItem({ site, itemId }) {
   await ensureSupplierPortalReady();
-  const rows = await MappingProposal.find({ site, status: 'APPROVED', 'decision.itemId': Number(itemId) })
-    .sort({ createdAt: -1 }).select('supplier line.productName rate decision createdAt autoQuoteId').lean();
+  const select = 'supplier line.productName rate decision createdAt autoQuoteId';
+  const direct = await MappingProposal.find({ site, status: 'APPROVED', 'decision.itemId': Number(itemId) })
+    .select(select).lean();
+  const item = await getItem(site, Number(itemId));
+  const banded = item && PAPER_GROUP_IDS.includes(Number(item.ItemGroupID))
+    ? (await MappingProposal.find({ site, status: 'APPROVED', 'decision.band.quality': { $ne: null } }).select(select).lean())
+      .filter((r) => itemInBand(item, r.decision.band))
+    : [];
+  const rows = [...direct, ...banded].sort((a, b) => b.createdAt - a.createdAt);
   const latest = new Map();
   for (const r of rows) {
     const key = (r.supplier?.gstin || r.supplier?.name || '').toUpperCase();

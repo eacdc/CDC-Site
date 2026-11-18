@@ -47,6 +47,7 @@ import { ledgerIdsForSite } from './supplier-groups.js';
 import { normaliseName, nameSimilarity, letterOverlap, differentModelNumber } from '../lib/text.js';
 import { itemSpecTuple, quoteSpecTuple, compareSpecTuples, gsmInBand } from '../lib/spec.js';
 import { proposalEvidence } from './proposal-evidence.js';
+import { bandLabel } from './paper/band.js';
 import { billHistoryMatch, billedDescriptions, loadBillHistory } from './bill-history.js';
 import { nameFeatures, contradicts } from '../../bill-lines/line-match.js';
 
@@ -71,6 +72,7 @@ const RATE_NAME_SIMILARITY = 0.5;
  * @typedef {Object} MatchResult
  * @property {'APPROVED_MAPPING'|'PRODUCT_CODE'|'BILL_HISTORY'|'RATE_ANCHOR'|'SPEC_TUPLE'|'NAME_SIMILARITY'|null} method
  * @property {number|null} itemId
+ * @property {Object|null} [band]      a paper band a reviewer approved this wording as (paper/band.js)
  * @property {number} confidence
  * @property {string} rationale
  * @property {Array} rankedCandidates  always populated, for the queue
@@ -93,8 +95,9 @@ export async function matchLine({
     return result({
       method: 'APPROVED_MAPPING',
       itemId: evidence.bind.itemId,
+      band: evidence.bind.band || null,
       confidence: 0.99,
-      rationale: `Approved by ${p.decision?.by || 'a reviewer'}${p.decision?.at ? ` on ${formatDate(p.decision.at)}` : ''} for "${p.line?.productName}"`,
+      rationale: `Approved${evidence.bind.band ? ` as the band ${bandLabel(evidence.bind.band)}` : ''} by ${p.decision?.by || 'a reviewer'}${p.decision?.at ? ` on ${formatDate(p.decision.at)}` : ''} for "${p.line?.productName}"`,
       proposalEvidence: evidence,
     });
   }

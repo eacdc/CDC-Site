@@ -44,6 +44,9 @@
   .picker { margin-top: 6px; display: grid; gap: 4px; }
   .picker div { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
   .picker div:hover { background: var(--chip); }
+  .band { margin-top: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 6px; }
+  .band .mills { display: flex; flex-wrap: wrap; gap: 4px 12px; max-height: 120px; overflow-y: auto; }
+  .band input[type=number] { width: 70px; }
   #login { max-width: 360px; margin: 60px auto; display: grid; gap: 10px; }
 </style>
 </head>
@@ -83,6 +86,13 @@
 const API = '/api/supplier-portal';
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Same wording as paper/band.js on the server. */
+const bandLabel = (b) => {
+  const groups = b.groupIds?.length ? b.groupIds : [2, 14];
+  const form = groups.length === 1 ? (groups[0] === 14 ? 'sheet' : 'reel') : 'sheet or reel';
+  const gsm = b.gsmTo && b.gsmTo !== b.gsmFrom ? `${b.gsmFrom}–${b.gsmTo}` : `${b.gsmFrom}`;
+  return [b.quality, b.mills?.length ? b.mills.join(' or ') : 'any mill', form, `${gsm} GSM`].join(', ');
+};
 const money = (v) => (v == null || v === '' ? '—' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
 const store = {
   get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -172,6 +182,7 @@ function renderQuote({ quote, proposals }) {
     </table></div>`;
   document.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.id, b.dataset.act, b); });
   document.querySelectorAll('[data-change]').forEach((b) => { b.onclick = () => openPicker(b.dataset.change); });
+  document.querySelectorAll('[data-band]').forEach((b) => { b.onclick = () => openBand(b.dataset.band); });
   document.querySelectorAll('[data-compare]').forEach((b) => { b.onclick = () => compare(b.dataset.compare, b); });
 }
 
@@ -179,9 +190,14 @@ function row(p, canDecide) {
   const l = p.line || {}; const r = p.rate || {}; const pr = p.proposal || {};
   const spec = [l.brand, l.grade, l.gsmFrom ? `${l.gsmFrom}${l.gsmTo && l.gsmTo !== l.gsmFrom ? `–${l.gsmTo}` : ''} GSM` : null, l.sizeText, l.packSize].filter(Boolean).join(' · ');
   const decided = p.status !== 'UNAPPROVED';
-  const item = decided && p.decision?.itemId
-    ? `<strong>${esc(p.decision.itemId)}</strong> ${esc(p.decision.itemName || '')}`
-    : (pr.itemId ? `<strong>${esc(pr.itemId)}</strong> ${esc(pr.itemName || '')}` : '<span class="muted">No item proposed</span>');
+  const paper = Boolean(l.gsmFrom || l.gsmTo || pr.band);
+  const band = (b) => `<strong>Band:</strong> ${esc(bandLabel(b))}${b.itemCount ? ` <small class="muted">(${esc(b.itemCount)} Indus items)</small>` : ''}`;
+  let item;
+  if (decided && p.decision?.band?.quality) item = band(p.decision.band);
+  else if (decided && p.decision?.itemId) item = `<strong>${esc(p.decision.itemId)}</strong> ${esc(p.decision.itemName || '')}`;
+  else if (pr.itemId) item = `<strong>${esc(pr.itemId)}</strong> ${esc(pr.itemName || '')}`;
+  else if (pr.band?.quality) item = band(pr.band);
+  else item = '<span class="muted">No item proposed</span>';
   return `<tr>
     <td>${esc(p.lineNo ?? '')}</td>
     <td><strong>${esc(l.productName)}</strong>${l.productCode ? ` <small class="muted">${esc(l.productCode)}</small>` : ''}<br><small class="muted">${esc(spec)}</small></td>
@@ -196,7 +212,8 @@ function row(p, canDecide) {
         ${pr.alternatives?.length ? `<p class="muted">Other candidates:</p>${pr.alternatives.map((a) => `<div>${esc(a.itemId)} ${esc(a.itemName || '')} <small class="muted">last paid ${money(a.lastPaidRate)}</small></div>`).join('')}` : ''}
       </details>` : ''}
       ${!decided && canDecide ? `<div class="actions">
-        <button class="ok" data-act="APPROVE" data-id="${esc(p._id)}" ${pr.itemId ? '' : 'disabled title="Nothing proposed: use Change item"'}>Approve</button>
+        <button class="ok" data-act="APPROVE" data-id="${esc(p._id)}" ${pr.itemId || pr.band?.quality ? '' : `disabled title="Nothing proposed: use ${paper ? 'Approve as paper band or ' : ''}Change item"`}>Approve</button>
+        ${paper ? `<button data-band="${esc(p._id)}" title="Approve for every Indus item of one quality in a GSM range">Approve as paper band</button>` : ''}
         <button data-change="${esc(p._id)}">Change item</button>
         <button class="bad" data-act="REJECT" data-id="${esc(p._id)}">Reject</button>
       </div><div id="pick-${esc(p._id)}"></div>` : ''}
@@ -208,14 +225,17 @@ function row(p, canDecide) {
   </tr>`;
 }
 
-async function act(id, action, button, itemId = null) {
-  const verb = { APPROVE: 'Approve', REJECT: 'Reject', CHANGE: `Map to item ${itemId}` }[action];
-  const note = action === 'APPROVE' ? null : prompt(`${verb}: add a note (optional)`) ;
-  if (note === null && action !== 'APPROVE') return;
+async function act(id, action, button, itemId = null, band = null) {
+  const verb = {
+    APPROVE: 'Approve', REJECT: 'Reject', CHANGE: `Map to item ${itemId}`, BAND: band && `Approve as the band "${bandLabel(band)}"`,
+  }[action];
+  const asked = action === 'REJECT' || action === 'CHANGE';
+  const note = asked ? prompt(`${verb}: add a note (optional)`) : null;
+  if (asked && note === null) return;
   if (!confirm(`${verb} this line? A decision cannot be changed afterwards.`)) return;
   if (button) button.disabled = true;
   try {
-    await api(`/proposals/${id}/decision`, { method: 'POST', body: { action, itemId, note: note || null } });
+    await api(`/proposals/${id}/decision`, { method: 'POST', body: { action, itemId, band, note: note || null } });
     await openQuote(current); loadQuotes();
   } catch (e) { alert(e.message); if (button) button.disabled = false; }
 }
@@ -237,6 +257,77 @@ function openPicker(id) {
     }, 250);
   };
   input.focus();
+}
+
+/**
+ * Approve a paper line as a band: one Indus quality, the mills it covers (none
+ * ticked means any), sheet and/or reel, over a GSM range. The count and a few
+ * item names update as the choice changes, so the reviewer sees what the
+ * line's rate will price before approving it.
+ */
+async function openBand(id, range = {}) {
+  const box = $(`pick-${id}`);
+  box.innerHTML = '<div class="band muted">Loading the Indus qualities in this GSM range…</div>';
+  let data;
+  try {
+    const q = range.gsmFrom ? `?gsmFrom=${encodeURIComponent(range.gsmFrom)}&gsmTo=${encodeURIComponent(range.gsmTo || range.gsmFrom)}` : '';
+    data = await api(`/proposals/${id}/band-choices${q}`);
+  } catch (e) {
+    box.innerHTML = `<div class="band"><span class="err">${esc(e.message)}</span>
+      <label>GSM <input type="number" data-f="from"> to <input type="number" data-f="to"> <button data-look>Look</button></label></div>`;
+    box.querySelector('[data-look]').onclick = () => openBand(id, { gsmFrom: box.querySelector('[data-f=from]').value, gsmTo: box.querySelector('[data-f=to]').value });
+    return;
+  }
+  if (!data.choices.length) {
+    box.innerHTML = `<div class="band muted">No paper or board item in Indus is ${esc(data.gsmFrom)}–${esc(data.gsmTo)} GSM.</div>`;
+    return;
+  }
+  const opt = (c, i) => `<option value="${i}">${esc(c.quality)} — ${c.byGroup[14] || 0} sheet, ${c.byGroup[2] || 0} reel</option>`;
+  box.innerHTML = `<div class="band">
+    <label>GSM <input type="number" data-f="from" value="${esc(data.gsmFrom)}"> to <input type="number" data-f="to" value="${esc(data.gsmTo)}"> <button data-look>Look again</button></label>
+    <label>Indus quality <select data-f="quality">${data.choices.map(opt).join('')}</select></label>
+    <div><span class="muted">Form:</span> <label><input type="checkbox" data-g="14"> Sheet</label> <label><input type="checkbox" data-g="2"> Reel</label></div>
+    <div><span class="muted">Mills (none ticked = any mill):</span><div class="mills" data-f="mills"></div></div>
+    <div data-f="preview" class="muted"></div>
+    <div><button class="ok" data-f="approve" disabled>Approve this band</button> <button data-f="cancel">Cancel</button></div>
+  </div>`;
+  const el = (f) => box.querySelector(`[data-f="${f}"]`);
+  const choice = () => data.choices[Number(el('quality').value)];
+  const band = () => ({
+    quality: choice().quality,
+    mills: [...box.querySelectorAll('[data-mill]:checked')].map((m) => m.dataset.mill),
+    groupIds: [...box.querySelectorAll('[data-g]:checked')].map((g) => Number(g.dataset.g)),
+    gsmFrom: Number(el('from').value), gsmTo: Number(el('to').value),
+  });
+  let seq = 0;
+  const preview = async () => {
+    const mine = ++seq;
+    el('approve').disabled = true;
+    const b = band();
+    if (!b.groupIds.length) { el('preview').textContent = 'Tick sheet, reel or both.'; return; }
+    el('preview').textContent = 'Counting…';
+    try {
+      const r = await api(`/proposals/${id}/band-preview`, { method: 'POST', body: { band: b } });
+      if (mine !== seq) return;
+      el('preview').innerHTML = r.itemCount
+        ? `<strong>${r.itemCount} Indus items</strong> will take this line's rate, for example:<br>${r.sample.map((s) => `${esc(s.itemId)} ${esc(s.itemName)} <small>(${esc(s.mill || '—')})</small>`).join('<br>')}${r.itemCount > r.sample.length ? '<br>…' : ''}`
+        : '<span class="err">No Indus item is inside this band.</span>';
+      el('approve').disabled = !r.itemCount;
+    } catch (e) { if (mine === seq) el('preview').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  };
+  const showQuality = () => {
+    const c = choice();
+    box.querySelectorAll('[data-g]').forEach((g) => { const n = c.byGroup[g.dataset.g] || 0; g.checked = n > 0; g.disabled = !n; });
+    el('mills').innerHTML = c.mills.map((m) => `<label><input type="checkbox" data-mill="${esc(m.mill)}"> ${esc(m.mill)} <small class="muted">${m.items}</small></label>`).join('') || '<span class="muted">No mill recorded</span>';
+    preview();
+  };
+  el('quality').onchange = showQuality;
+  box.querySelectorAll('[data-g]').forEach((g) => { g.onchange = preview; });
+  el('mills').onchange = preview;
+  box.querySelector('[data-look]').onclick = () => openBand(id, { gsmFrom: el('from').value, gsmTo: el('to').value });
+  el('cancel').onclick = () => { box.innerHTML = ''; };
+  el('approve').onclick = () => act(id, 'BAND', el('approve'), null, band());
+  showQuality();
 }
 
 async function compare(itemId, button) {

@@ -52,7 +52,9 @@ const { matchingCandidates } = await imp('supplier-portal/services/erp-items.js'
 const { loadBillHistory } = await imp('supplier-portal/services/bill-history.js');
 
 const { proposals } = await api('/proposals');
-const decided = proposals.filter((p) => p.status === 'APPROVED' || p.status === 'REJECTED');
+// A line approved as a paper band has no one item for the rules to find: the
+// band is reached only through the approval itself, which is left out here.
+const decided = proposals.filter((p) => (p.status === 'APPROVED' && !p.decision?.band?.quality) || p.status === 'REJECTED');
 const billHistory = await loadBillHistory().catch(() => []);
 const cache = new Map();
 const candidates = (site, paper) => {

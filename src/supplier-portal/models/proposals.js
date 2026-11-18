@@ -81,6 +81,16 @@ export function lockModel(model) {
   return model;
 }
 
+/** A paper band (services/paper/band.js): a quality, its mills, sheet or reel, and a GSM range. */
+const bandSchema = new Schema({
+  quality: String,
+  mills: [String], // none means any mill
+  groupIds: [Number], // 14 sheet, 2 reel
+  gsmFrom: Number,
+  gsmTo: Number,
+  itemCount: Number, // Indus items inside it when it was approved
+}, { _id: false });
+
 const evidenceSchema = new Schema({
   kind: String, // BILL, RATE, SPEC, NAME, APPROVED, UNAPPROVED, JUDGEMENT
   text: String,
@@ -141,15 +151,18 @@ export const mappingProposalSchema = new Schema({
     evidence: [evidenceSchema],
     alternatives: [{ itemId: Number, itemName: String, lastPaidRate: Number, _id: false }],
     question: String,
+    /** A paper line approved before as a band, proposed as that band again. */
+    band: { type: bandSchema, default: null },
   },
   rulesVersion: { type: String, required: true },
   runId: { type: String, required: true },
 
   status: { type: String, enum: ['UNAPPROVED', 'APPROVED', 'REJECTED'], default: 'UNAPPROVED', index: true },
   decision: {
-    action: { type: String, enum: ['APPROVE', 'CHANGE', 'REJECT'] },
+    action: { type: String, enum: ['APPROVE', 'CHANGE', 'BAND', 'REJECT'] },
     itemId: Number, // what it is, after the decision: the proposal's, or the reviewer's correction
     itemName: String,
+    band: { type: bandSchema, default: null }, // a paper line approved as a band: every item in it, no one itemId
     by: String,
     at: Date,
     note: String,
@@ -162,28 +175,40 @@ appendOnly(mappingProposalSchema, { decidable: true });
 /**
  * A reviewer's decision: the one change these collections accept.
  *
- * APPROVE keeps the proposed item; CHANGE names a different one; REJECT says
- * no item from this proposal is right. Refused when the proposal is already
- * decided, so two reviewers cannot overwrite each other.
+ * APPROVE keeps the proposed item, or the proposed band; CHANGE names a
+ * different item; BAND approves a paper line as a band of items, checked by
+ * the caller; REJECT says no item from this proposal is right. Refused when
+ * the proposal is already decided, so two reviewers cannot overwrite each
+ * other.
  *
  * @returns the decided proposal, or null when it was already decided
  */
-export async function decideProposal(Model, { id, action, itemId = null, itemName = null, by, note = null }) {
-  if (!['APPROVE', 'CHANGE', 'REJECT'].includes(action)) throw refuse(`Action ${action}`);
+export async function decideProposal(Model, {
+  id, action, itemId = null, itemName = null, band = null, by, note = null,
+}) {
+  if (!['APPROVE', 'CHANGE', 'BAND', 'REJECT'].includes(action)) throw refuse(`Action ${action}`);
   if (!by) throw refuse('A decision with no reviewer');
   const current = await Model.findById(id).lean();
   if (!current) return null;
+  const proposedBand = action === 'APPROVE' && !current.proposal?.itemId && current.proposal?.band?.quality
+    ? current.proposal.band : null;
+  const chosenBand = action === 'BAND' ? band : proposedBand;
   const chosen = action === 'CHANGE' ? Number(itemId) : (action === 'APPROVE' ? current.proposal?.itemId : null);
-  if (action !== 'REJECT' && !Number.isFinite(chosen)) {
-    const err = new Error(action === 'CHANGE' ? 'Changing needs the Indus ItemID.' : 'There is no proposed item to approve; choose one.');
+  if (action === 'BAND' ? !band?.quality : (action !== 'REJECT' && !chosenBand && !Number.isFinite(chosen))) {
+    const err = new Error({
+      BAND: 'Approving as a paper band needs the band.',
+      CHANGE: 'Changing needs the Indus ItemID.',
+    }[action] || 'There is no proposed item to approve; choose one.');
     err.status = 400;
     throw err;
   }
-  const decision = {
-    action, itemId: action === 'REJECT' ? null : chosen,
-    itemName: action === 'CHANGE' ? itemName : (action === 'APPROVE' ? current.proposal?.itemName : null),
-    by, at: new Date(), note,
-  };
+  const decision = chosenBand
+    ? { action, itemId: null, itemName: null, band: chosenBand, by, at: new Date(), note }
+    : {
+      action, itemId: action === 'REJECT' ? null : chosen,
+      itemName: action === 'CHANGE' ? itemName : (action === 'APPROVE' ? current.proposal?.itemName : null),
+      by, at: new Date(), note,
+    };
   // exec() inside the scope: a Query only runs when awaited, and awaited
   // outside it the guard would never see the decision.
   const res = await decisionScope.run(true, () => Model.updateOne(

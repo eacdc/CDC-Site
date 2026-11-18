@@ -115,6 +115,7 @@ for (const [i, l] of reading.lines.entries()) {
     proposal: {
       itemId: m.itemId ? Number(m.itemId) : null,
       itemName,
+      band: m.band || null,
       method: m.method || 'NONE',
       confidence: m.confidence ?? null,
       rationale: m.rationale || null,
@@ -123,7 +124,7 @@ for (const [i, l] of reading.lines.entries()) {
       question: null,
     },
   });
-  if (!m.itemId) {
+  if (!m.itemId && !m.band) {
     judge.push({
       index: lines.length - 1, lineNo: l.lineNo ?? i + 1, site, read: l, rate: lines.at(-1).rate,
       paperType: typed[i]?.paperType || null, rulesSaid: m.rationale, queueReason: m.queueReason,
@@ -150,7 +151,7 @@ const payload = {
 };
 writeFileSync(path.join(dir, 'payload.json'), JSON.stringify(payload, null, 2));
 writeFileSync(path.join(dir, 'judge.json'), JSON.stringify(judge, null, 2));
-const settled = lines.filter((l) => l.proposal.itemId).length;
+const settled = lines.filter((l) => l.proposal.itemId || l.proposal.band).length;
 console.log(`MATCHED ${settled}/${lines.length} by rules; ${judge.length} to judge -> ${path.join(dir, 'judge.json')}`);
-for (const l of lines) console.log(`  ${String(l.lineNo).padStart(3)} ${l.line.productName.slice(0, 45).padEnd(45)} ${l.proposal.method.padEnd(16)} ${l.proposal.itemId ?? '-'} ${l.proposal.itemName || ''}`);
+for (const l of lines) console.log(`  ${String(l.lineNo).padStart(3)} ${l.line.productName.slice(0, 45).padEnd(45)} ${l.proposal.method.padEnd(16)} ${l.proposal.itemId ?? (l.proposal.band ? 'band' : '-')} ${l.proposal.itemName || (l.proposal.band ? `${l.proposal.band.quality} ${l.proposal.band.gsmFrom}-${l.proposal.band.gsmTo} GSM` : '')}`);
 process.exit(0);

@@ -143,6 +143,13 @@ decisive (e.g. HK Trading = Hare krishna Trading's tapes at ₹240 each).
 - Duplex alone means grey back. A box "10 pcs (1 box)" is priced per box.
 - Never choose an item the rules excluded (a reviewer rejected it for this
   wording).
+- A paper line that prices a GSM band with no size is approved by a reviewer
+  as a **band** (an Indus quality, mills, sheet/reel, GSM range), not as one
+  item. Do not pick one item for it: leave it `NONE` and in the question
+  name the likely Indus quality and mill, so the reviewer's band is quick.
+  Once a band is approved, `match.mjs` proposes it again for the same
+  wording (`proposal.band`, method `APPROVED_MAPPING`); never write a band
+  yourself.
 
 Edit that line in `payload.json` (`lines[index]`):
 - If sure: `proposal.itemId`, `itemName`, `method: "JUDGEMENT"`,
