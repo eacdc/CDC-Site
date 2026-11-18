@@ -737,7 +737,8 @@ router.get('/google-sheet/delivery-otif', async (req, res) => {
 
 /**
  * GET /api/google-sheet/process?database=KOL
- * Runs GetCoordinatorChecklist with StartDate = 6 months ago, EndDate = today,
+ * Runs GetCoordinatorChecklist_v2 with StartDate = 6 months ago, EndDate = today,
+ * (v2 skips sale-order lines whose job card was deleted and not replaced)
  * then appends MongoDB ArtworkUnordered rows (same columns) for MIS reporting.
  * Returns 2D array (headers + rows) for Google Sheets.
  */
@@ -790,7 +791,7 @@ router.get('/google-sheet/process', async (req, res) => {
       .request()
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
-      .query('EXEC GetCoordinatorChecklist @StartDate, @EndDate');
+      .query('EXEC GetCoordinatorChecklist_v2 @StartDate, @EndDate');
 
     const recordset = result.recordset ?? [];
     const headers = recordset.length > 0
