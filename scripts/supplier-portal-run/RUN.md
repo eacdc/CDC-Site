@@ -86,7 +86,7 @@ page), `text.txt` (exact characters: trust it for digits and spelling),
   "terms": { "freight": "…", "gst": "…", "credit": "…" },
   "questions": [{ "kind": "PLANT|PAPER_TYPE|UNIT|OTHER", "text": "…", "lineNos": [3, 4] }],
   "lines": [{ "lineNo": 1, "site": "KOL", "productName": "…", "productCode": null,
-              "brand": null, "grade": null, "gsmFrom": null, "gsmTo": null,
+              "brand": null, "grade": null, "gsmFrom": 250, "gsmTo": 284,
               "sizeText": null, "packSize": null, "rate": "2400", "uom": null,
               "notes": "was 207" }]
 }
