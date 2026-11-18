@@ -45,7 +45,7 @@ import { assertSite } from '../db/mssql.js';
 import { matchingCandidates, annualSpend } from './erp-items.js';
 import { ledgerIdsForSite } from './supplier-groups.js';
 import { normaliseName, nameSimilarity, letterOverlap, differentModelNumber } from '../lib/text.js';
-import { itemSpecTuple, quoteSpecTuple, compareSpecTuples } from '../lib/spec.js';
+import { itemSpecTuple, quoteSpecTuple, compareSpecTuples, gsmInBand } from '../lib/spec.js';
 import { proposalEvidence } from './proposal-evidence.js';
 import { billHistoryMatch, billedDescriptions, loadBillHistory } from './bill-history.js';
 import { nameFeatures, contradicts } from '../../bill-lines/line-match.js';
@@ -174,7 +174,7 @@ async function matchByRules({
   }
 
   // ── Tier 3: rate anchor, when the name agrees ────────────────────────────
-  const anchored = corroborated(rateAnchor(candidates, quote).matches, productName);
+  const anchored = withinStatedGsm(corroborated(rateAnchor(candidates, quote).matches, productName), line);
   const anchorPick = anchored.length === 1 ? anchored[0] : clearNameWinner(anchored, productName);
   if (anchorPick) {
     const c = anchorPick;
@@ -217,7 +217,9 @@ async function matchByRules({
     // Two candidates both at 0.85 is a coin toss, and a coin toss belongs to a
     // human.
     const isClear = !runnerUp || best.score - runnerUp.score >= 0.05;
-    if (isClear) {
+    // A close name is no help when the GSM is outside the quoted band.
+    const bestItem = candidates.filter((c) => Number(c.ItemID) === Number(best.itemId));
+    if (isClear && withinStatedGsm(bestItem, line).length) {
       return result({
         method: 'NAME_SIMILARITY',
         itemId: best.itemId,
@@ -255,7 +257,9 @@ async function matchByRules({
   return result({
     method: null, itemId: null,
     confidence: best ? round(best.score, 3) : 0,
-    rationale: best
+    rationale: best && best.score >= TOLERANCES.nameSimilarityAccept
+      ? `Best name similarity was ${best.score} to "${best.itemName}", but not clear of the next or outside the quoted GSM`
+      : best
       ? `Best name similarity was ${best.score}, below the ${TOLERANCES.nameSimilarityAccept} threshold`
       : 'No candidate scored above zero',
     rankedCandidates: shortlist,
@@ -343,6 +347,26 @@ export function corroborated(matches, productName) {
     if (differentModelNumber(productName, c.ItemName)) return false;
     return letterOverlap(productName, name) >= RATE_NAME_LETTERS
       || nameSimilarity(productName, name) >= RATE_NAME_SIMILARITY;
+  });
+}
+
+/**
+ * The rate matches whose GSM sits inside the GSM the quote line states.
+ *
+ * A paper price list gives one price per GSM band, so many items share it and
+ * the rate alone says nothing about which GSM was quoted. Emami's 250-284 band
+ * was anchored to a 390 GSM item, SKM's coloured maplitho 65 to a 70 GSM one.
+ * An item whose GSM is unknown is left to the other checks.
+ */
+export function withinStatedGsm(matches, line) {
+  const t = quoteSpecTuple(line || {});
+  const band = Number.isFinite(t.gsmFrom) || Number.isFinite(t.gsmTo)
+    ? { gsmFrom: t.gsmFrom, gsmTo: t.gsmTo }
+    : Number.isFinite(t.gsm) ? { gsmFrom: t.gsm, gsmTo: t.gsm } : null;
+  if (!band) return matches;
+  return matches.filter((c) => {
+    const gsm = itemSpecTuple(c).gsm;
+    return !Number.isFinite(gsm) || gsmInBand(gsm, band);
   });
 }
 
