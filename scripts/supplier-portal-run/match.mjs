@@ -30,6 +30,17 @@ const { applyBilledTypes } = await imp('supplier-portal/services/paper/billed-ty
 const file = process.argv[2];
 if (!file) { console.error('usage: match.mjs <reading.json>'); process.exit(2); }
 const reading = readJson(file);
+
+/**
+ * GSM as a number. Readers copy what is printed, so "058" or "250 gsm" arrive
+ * as text, and the server takes numbers only: the first submit used to fail.
+ */
+const gsmNumber = (v) => {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : Number(String(v).match(/\d+(?:\.\d+)?/)?.[0]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+reading.lines = (reading.lines || []).map((l) => ({ ...l, gsmFrom: gsmNumber(l.gsmFrom), gsmTo: gsmNumber(l.gsmTo) }));
 const dir = path.dirname(file);
 
 const PAPER_GROUPS = [2, 14];

@@ -341,6 +341,7 @@ export function corroborated(matches, productName) {
     const name = `${c.ItemName || ''} ${c.ItemDescription || ''}`;
     if (contradicts(quoteFeatures, nameFeatures(c.ItemName, { indus: true }), { allSizes: true })) return false;
     if (differentModelNumber(productName, c.ItemName)) return false;
+    if (differentKind(productName, c.ItemName)) return false;
     return letterOverlap(productName, name) >= RATE_NAME_LETTERS
       || nameSimilarity(productName, name) >= RATE_NAME_SIMILARITY;
   });
@@ -356,6 +357,54 @@ function clearNameWinner(matches, productName) {
     .map((c) => ({ c, score: nameSimilarity(productName, `${c.ItemName || ''} ${c.ItemDescription || ''}`) }))
     .sort((a, b) => b.score - a.score);
   return scored[0].score - scored[1].score >= 0.1 ? scored[0].c : null;
+}
+
+/**
+ * Ink and coating chemistries. A UV coating and an aqueous one can share a
+ * price and most of a name ("texture matt"); they are not the same purchase.
+ * Indus writes aqueous as an "Aq," prefix.
+ */
+const CHEMISTRIES = [
+  ['UV', /\buv\b/],
+  ['AQUEOUS', /\b(aq|aqueous|water\s*based)\b/],
+  ['SOLVENT', /\bsolvent\b/],
+];
+
+/** Words that open a name without naming a product line. */
+const GENERIC_LEADS = new Set([
+  'ink', 'inks', 'uv', 'aq', 'process', 'offset', 'gloss', 'matt', 'matte', 'super', 'special', 'spl', 'new',
+  'the', 'pantone', 'texture', 'coating', 'varnish', 'paste', 'liquid', 'fast',
+]);
+const SERIES_COLOURS = new Set(['black', 'white', 'red', 'blue', 'green', 'yellow', 'cyan', 'magenta', 'violet',
+  'orange', 'gold', 'silver', 'rubine', 'reflex', 'warm', 'grey', 'gray', 'brown', 'pink', 'purple']);
+
+/**
+ * Do the two names say they are different kinds of the same thing?
+ *
+ * Either a different chemistry, when both state one, or a different series of
+ * the same brand: "VEGA PRIME ... PASTE" is Siegwerk's paste ink and "Vega pro
+ * rich HG" a press-ready one, and a rate match between them is a coincidence.
+ * The series is the word after a shared brand word that leads both names
+ * (Indus's "Group, " prefix set aside); only words that could be a series
+ * count, not colours, numbers or generic words.
+ */
+export function differentKind(quoteName, itemName) {
+  const q = String(quoteName || '').toLowerCase();
+  const i = String(itemName || '').toLowerCase();
+  const qChem = CHEMISTRIES.filter(([, re]) => re.test(q)).map(([k]) => k);
+  const iChem = CHEMISTRIES.filter(([, re]) => re.test(i)).map(([k]) => k);
+  if (qChem.length && iChem.length && !qChem.some((k) => iChem.includes(k))) return true;
+
+  const words = (s) => s.split(/[^a-z0-9]+/).filter(Boolean);
+  const qw = words(q);
+  const iw = words(i.replace(/^[^,]*,\s*/, ''));
+  if (qw.length < 2 || iw.length < 2 || qw[0] !== iw[0] || GENERIC_LEADS.has(qw[0])) return false;
+  const series = (w) => /^[a-z]{3,}$/.test(w) && !GENERIC_LEADS.has(w) && !SERIES_COLOURS.has(w);
+  const [a, b] = [qw[1], iw[1]];
+  // A spelling apart is the same word: "vitaliser" and "vitalizer".
+  let common = 0;
+  while (common < Math.min(a.length, b.length) && a[common] === b[common]) common += 1;
+  return series(a) && series(b) && common < Math.min(4, a.length, b.length);
 }
 
 /**
