@@ -13,6 +13,10 @@
  * accepts, and it may set the decision fields and nothing else. A proposal is
  * decided once; a second decision is refused, not applied over the first.
  *
+ * When the rules change, an undecided line is proposed again as a new record
+ * (`refreshOf`), not by changing the old one; `currentProposals` says which
+ * record stands.
+ *
  * This is a code-level guard on the Mongo user the server already has, as CDC
  * chose. It stops every path through Mongoose. The raw driver behind
  * `Model.collection` is not covered, which is why nothing in this module hands
@@ -156,6 +160,12 @@ export const mappingProposalSchema = new Schema({
   },
   rulesVersion: { type: String, required: true },
   runId: { type: String, required: true },
+  /**
+   * A refresh: the same quote line proposed again after the rules changed,
+   * as a new record. Always the first proposal's id, so a line's records
+   * share one key; see `currentProposals` for which of them stands.
+   */
+  refreshOf: { type: Schema.Types.ObjectId, default: null },
 
   status: { type: String, enum: ['UNAPPROVED', 'APPROVED', 'REJECTED'], default: 'UNAPPROVED', index: true },
   decision: {
@@ -171,6 +181,31 @@ export const mappingProposalSchema = new Schema({
 mappingProposalSchema.index({ site: 1, status: 1, 'decision.itemId': 1 });
 mappingProposalSchema.index({ 'supplier.gstin': 1, status: 1 });
 appendOnly(mappingProposalSchema, { decidable: true });
+
+/** The quote line a proposal is about: its first proposal's id. */
+export const lineKey = (p) => String(p.refreshOf || p._id);
+
+/**
+ * Which record stands for each quote line. A line is never edited: a refresh
+ * adds a record, so a line can have several. A decided one stands, since a
+ * decision is final; otherwise the newest. The rest are history.
+ *
+ * @returns the standing records, each with `refreshes`: how many records the
+ *   line had before it
+ */
+export function currentProposals(records = []) {
+  const byLine = new Map();
+  for (const p of records) {
+    const key = lineKey(p);
+    if (!byLine.has(key)) byLine.set(key, []);
+    byLine.get(key).push(p);
+  }
+  const newest = (a, b) => (new Date(b.createdAt) - new Date(a.createdAt)) || String(b._id).localeCompare(String(a._id));
+  return [...byLine.values()].map((line) => {
+    const standing = line.find((p) => p.status !== 'UNAPPROVED') || [...line].sort(newest)[0];
+    return { ...standing, refreshes: line.length - 1 };
+  });
+}
 
 /**
  * A reviewer's decision: the one change these collections accept.

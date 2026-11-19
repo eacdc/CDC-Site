@@ -205,6 +205,7 @@ function row(p, canDecide) {
       ${r.flags?.length ? `<br><small class="muted">${esc(r.flags.join(', '))}</small>` : ''}</td>
     <td>${item}
       <br><small class="muted">${esc(pr.method || '')}${pr.confidence != null ? ` · ${Math.round(pr.confidence * 100)}%` : ''}</small>
+      ${p.refreshes ? `<br><small class="muted" title="The rules changed after this line was first read, and found this">Refreshed ${new Date(p.createdAt).toLocaleString('en-IN')} by rules ${esc(p.rulesVersion)}</small>` : ''}
       ${pr.question ? `<div class="question">${esc(pr.question)}</div>` : ''}
       ${pr.rationale || pr.evidence?.length || pr.alternatives?.length ? `<details><summary>Why</summary>
         <p>${esc(pr.rationale || '')}</p>

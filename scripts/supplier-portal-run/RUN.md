@@ -60,6 +60,21 @@ pass, `gh pr merge <n> -R eacdc/CDC-Site --squash --delete-branch`. If any
 fail, comment the failure on the PR and leave it. A closed PR is a rejection:
 never reopen it. Then repeat step 0.
 
+### 1b. Refresh the unmapped lines when the logic changed
+
+```
+RUN refresh.mjs
+```
+Every run, before looking for new quotes. When the rules (the runner's
+commit) or reviewers' decisions changed since the last refresh, it re-matches
+every undecided line that has nothing proposed, and posts the ones the rules
+now settle on strong evidence (an approval, a product code, CDC's bills, the
+exact spec; never a rate or a name alone) as new proposals
+(`/automation/refresh`); the old record stays as
+it was, and the review page shows the new one. It prints `REFRESH UNCHANGED`
+when nothing changed. Rules only: do not judge these lines again. Put the
+`REFRESH …` and `REFRESHED …` lines in your report.
+
 ### 2. Find new quotes
 
 ```
@@ -67,7 +82,7 @@ RUN prepare.mjs
 ```
 It prints `NEW <sha8> <file> dir=…` for each new quote, or `NOTHING NEW`.
 Portal uploads are included. If nothing is new and step 1 merged nothing,
-stop here and report "nothing new".
+stop here and report "nothing new" (with step 1b's refresh line).
 
 ### 3. Read each quote
 
@@ -211,7 +226,8 @@ e. Do not use the change in this run. It applies after it is merged.
 ### 8. Report
 
 End with a short report: files read; per quote, lines settled by rules /
-judged / left as questions; PRs opened or merged; anything that failed.
+judged / left as questions; lines refreshed; PRs opened or merged; anything
+that failed.
 Plain words, no secrets.
 
 ## Learned rules
