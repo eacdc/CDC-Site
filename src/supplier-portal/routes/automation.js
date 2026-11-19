@@ -5,16 +5,19 @@
  *   GET  /automation/portal-uploads       quotes uploaded in the portal, unread
  *   GET  /automation/proposals            every proposal, for approved-first matching
  *   POST /automation/quotes               one file + its reading (multipart: file, payload)
+ *   GET  /automation/open-unmapped        undecided lines with nothing proposed, for a refresh
+ *   POST /automation/refresh              { rulesVersion, runId, refreshes: [{ proposalId, proposal }] }
  *
  * Add-only. Nothing here can change or remove a record, and nothing here can
- * approve one: that is a reviewer's, through /proposals.
+ * approve one: that is a reviewer's, through /proposals. A refresh adds a new
+ * record for the line; the one it replaces stays as it was.
  */
 
 import { Router } from 'express';
 import multer from 'multer';
 import { requireAutomationKey } from '../middleware/auth.js';
 import {
-  findBySha, recordRun, proposalsForMatching, pendingPortalUploads,
+  findBySha, recordRun, proposalsForMatching, pendingPortalUploads, openUnmapped, recordRefresh,
 } from '../services/proposals.js';
 
 const router = Router();
@@ -44,6 +47,19 @@ router.post('/quotes', upload.single('file'), async (req, res, next) => {
       return res.status(400).json({ error: 'payload must be JSON.' });
     }
     res.status(201).json(await recordRun({ file: req.file, payload }));
+  } catch (err) {
+    if (err?.name === 'ZodError') return res.status(400).json({ error: 'Invalid payload.', issues: err.issues?.slice(0, 20) });
+    next(err);
+  }
+});
+
+router.get('/open-unmapped', async (req, res, next) => {
+  try { res.json(await openUnmapped()); } catch (err) { next(err); }
+});
+
+router.post('/refresh', async (req, res, next) => {
+  try {
+    res.status(201).json(await recordRefresh(req.body || {}));
   } catch (err) {
     if (err?.name === 'ZodError') return res.status(400).json({ error: 'Invalid payload.', issues: err.issues?.slice(0, 20) });
     next(err);

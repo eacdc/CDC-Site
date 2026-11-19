@@ -14,7 +14,7 @@ import { z } from 'zod';
 import {
   ensureSupplierPortalReady, AutoQuote, MappingProposal, QuoteDocument,
 } from '../db/mongo.js';
-import { decideProposal } from '../models/proposals.js';
+import { decideProposal, currentProposals, lineKey } from '../models/proposals.js';
 import { SITES } from '../config/constants.js';
 import { sha256Of } from './quotes.js';
 import { getItem, paperItemsInGsmRange } from './erp-items.js';
@@ -28,6 +28,28 @@ const num = () => z.number().finite().nullish();
 
 const EvidenceSchema = z.object({ kind: z.string().max(40), text: z.string().max(2000) });
 
+const ProposalSchema = z.object({
+  itemId: z.number().int().positive().nullish(),
+  itemName: str(),
+  method: z.enum(['APPROVED_MAPPING', 'PRODUCT_CODE', 'BILL_HISTORY', 'RATE_ANCHOR', 'SPEC_TUPLE',
+    'NAME_SIMILARITY', 'JUDGEMENT', 'NONE']),
+  confidence: z.number().min(0).max(1).nullish(),
+  rationale: str(),
+  evidence: z.array(EvidenceSchema).max(20).default([]),
+  alternatives: z.array(z.object({ itemId: z.number().int(), itemName: str(), lastPaidRate: num() })).max(8).default([]),
+  question: str(),
+  // Only ever a band a reviewer approved for this wording: the run proposes
+  // it again, it does not invent one (paper/band.js).
+  band: z.object({
+    quality: z.string().trim().min(1).max(200),
+    mills: z.array(z.string().trim().max(200)).max(50).default([]),
+    groupIds: z.array(z.number().int()).max(2).default([]),
+    gsmFrom: z.number().positive(),
+    gsmTo: z.number().positive(),
+    itemCount: z.number().int().nullish(),
+  }).nullish(),
+});
+
 const LineSchema = z.object({
   lineNo: z.number().int().nullish(),
   site: z.enum(SITES).nullish(),
@@ -40,27 +62,21 @@ const LineSchema = z.object({
   rate: z.object({
     rate: num(), uom: str(), ratePerBaseUom: num(), flags: z.array(z.string().max(60)).max(30).default([]),
   }).default({}),
-  proposal: z.object({
-    itemId: z.number().int().positive().nullish(),
-    itemName: str(),
-    method: z.enum(['APPROVED_MAPPING', 'PRODUCT_CODE', 'BILL_HISTORY', 'RATE_ANCHOR', 'SPEC_TUPLE',
-      'NAME_SIMILARITY', 'JUDGEMENT', 'NONE']),
-    confidence: z.number().min(0).max(1).nullish(),
-    rationale: str(),
-    evidence: z.array(EvidenceSchema).max(20).default([]),
-    alternatives: z.array(z.object({ itemId: z.number().int(), itemName: str(), lastPaidRate: num() })).max(8).default([]),
-    question: str(),
-    // Only ever a band a reviewer approved for this wording: the run proposes
-    // it again, it does not invent one (paper/band.js).
-    band: z.object({
-      quality: z.string().trim().min(1).max(200),
-      mills: z.array(z.string().trim().max(200)).max(50).default([]),
-      groupIds: z.array(z.number().int()).max(2).default([]),
-      gsmFrom: z.number().positive(),
-      gsmTo: z.number().positive(),
-      itemCount: z.number().int().nullish(),
-    }).nullish(),
-  }),
+  proposal: ProposalSchema,
+});
+
+/**
+ * Undecided lines proposed again after the rules changed. Only the proposal:
+ * the line, its rate and its quote are copied from the record it refreshes,
+ * because what the quote says does not change with the rules.
+ */
+export const RefreshPayloadSchema = z.object({
+  rulesVersion: z.string().trim().min(1).max(100),
+  runId: z.string().trim().min(1).max(100),
+  refreshes: z.array(z.object({
+    proposalId: z.string().regex(/^[0-9a-f]{24}$/),
+    proposal: ProposalSchema,
+  })).max(1000),
 });
 
 /** What the run sends with a file. Anything else is dropped, including any status. */
@@ -139,12 +155,78 @@ export async function recordRun({ file, payload }) {
   return { autoQuoteId: quote._id, lines: proposals.length };
 }
 
-/** Every proposal for these sites, for the run's approved-first matching. */
+/** Is this record the one that stands for its line, and still undecided? */
+async function standingUndecided(p) {
+  const key = lineKey(p);
+  const line = await MappingProposal.find({ $or: [{ _id: key }, { refreshOf: key }] })
+    .select('_id refreshOf status createdAt').lean();
+  const [standing] = currentProposals(line);
+  return standing?.status === 'UNAPPROVED' && String(standing._id) === String(p._id);
+}
+
+/**
+ * Propose undecided lines again after the rules changed. Each refresh is a
+ * new record carrying the old record's line, rate and quote, and the new
+ * proposal; the old record is left as it was. Skipped, not refused, when the
+ * line was decided or refreshed in the meantime: a reviewer's decision wins.
+ */
+export async function recordRefresh(payload) {
+  await ensureSupplierPortalReady();
+  const data = RefreshPayloadSchema.parse(payload);
+  const added = [];
+  const skipped = [];
+  for (const r of data.refreshes) {
+    const old = await MappingProposal.findById(r.proposalId).lean();
+    if (!old) throw fail(404, `Proposal ${r.proposalId} not found.`);
+    if (!(await standingUndecided(old))) { skipped.push(r.proposalId); continue; }
+    const doc = await MappingProposal.create({
+      autoQuoteId: old.autoQuoteId,
+      site: old.site,
+      supplier: old.supplier,
+      lineNo: old.lineNo,
+      line: old.line,
+      rate: old.rate,
+      proposal: { ...r.proposal, itemId: r.proposal.itemId ?? null, band: r.proposal.band ?? null },
+      rulesVersion: data.rulesVersion,
+      runId: data.runId,
+      refreshOf: lineKey(old),
+      status: 'UNAPPROVED',
+    });
+    added.push({ proposalId: r.proposalId, refreshedAs: doc._id });
+  }
+  return { added, skipped };
+}
+
+/**
+ * The undecided lines with nothing proposed, as they stand, with their
+ * quote's material class: what a refresh looks at. `lastDecisionAt` is when a
+ * reviewer last decided anything, since a decision changes what the rules
+ * find too.
+ */
+export async function openUnmapped({ sites = SITES } = {}) {
+  await ensureSupplierPortalReady();
+  const all = await MappingProposal.find({ site: { $in: sites } })
+    .select('autoQuoteId site supplier lineNo line rate proposal rulesVersion refreshOf status decision.at createdAt').lean();
+  const lastDecisionAt = all.reduce((at, p) => (p.decision?.at && (!at || p.decision.at > at) ? p.decision.at : at), null);
+  const open = currentProposals(all).filter((p) => p.status === 'UNAPPROVED' && !p.proposal?.itemId && !p.proposal?.band?.quality);
+  const classes = new Map((await AutoQuote.find({ _id: { $in: [...new Set(open.map((p) => String(p.autoQuoteId)))] } })
+    .select('materialClass').lean()).map((q) => [String(q._id), q.materialClass || null]));
+  return {
+    lastDecisionAt,
+    lines: open.map((p) => ({ ...p, materialClass: classes.get(String(p.autoQuoteId)) ?? null })),
+  };
+}
+
+/**
+ * The proposals that stand for each line, for these sites, for the run's
+ * approved-first matching. Records a refresh replaced are left out, so an
+ * old guess does not count as evidence twice.
+ */
 export async function proposalsForMatching({ sites = SITES } = {}) {
   await ensureSupplierPortalReady();
-  return MappingProposal.find({ site: { $in: sites } })
-    .select('site supplier line rate proposal.itemId proposal.itemName proposal.band status decision createdAt')
-    .lean();
+  return currentProposals(await MappingProposal.find({ site: { $in: sites } })
+    .select('site supplier line rate proposal.itemId proposal.itemName proposal.band refreshOf status decision createdAt')
+    .lean());
 }
 
 /**
@@ -166,25 +248,31 @@ export async function pendingPortalUploads({ limit = 50 } = {}) {
 
 // ── For reviewers ──────────────────────────────────────────────────────────
 
-/** Quotes with how many of their lines are still waiting. */
+/** Quotes with how many of their lines are still waiting. A refreshed line counts once. */
 export async function listQuotes({ site = null, open = true, limit = 100 } = {}) {
   await ensureSupplierPortalReady();
-  const counts = await MappingProposal.aggregate([
-    ...(site ? [{ $match: { site } }] : []),
-    { $group: { _id: '$autoQuoteId', total: { $sum: 1 }, unapproved: { $sum: { $cond: [{ $eq: ['$status', 'UNAPPROVED'] }, 1, 0] } } } },
-  ]);
-  const byQuote = new Map(counts.map((c) => [String(c._id), c]));
+  const lines = currentProposals(await MappingProposal.find(site ? { site } : {})
+    .select('autoQuoteId refreshOf status createdAt').lean());
+  const byQuote = new Map();
+  for (const p of lines) {
+    const c = byQuote.get(String(p.autoQuoteId)) || { _id: p.autoQuoteId, total: 0, unapproved: 0 };
+    c.total += 1;
+    if (p.status === 'UNAPPROVED') c.unapproved += 1;
+    byQuote.set(String(p.autoQuoteId), c);
+  }
+  const counts = [...byQuote.values()];
   const quotes = await AutoQuote.find({ _id: { $in: counts.filter((c) => !open || c.unapproved > 0).map((c) => c._id) } })
     .sort({ createdAt: -1 }).limit(limit).lean();
   return quotes.map((q) => ({ ...q, total: byQuote.get(String(q._id))?.total || 0, unapproved: byQuote.get(String(q._id))?.unapproved || 0 }));
 }
 
-/** One quote, its file, and every line's proposal. */
+/** One quote, its file, and the proposal that stands for each line. */
 export async function quoteForReview(id) {
   await ensureSupplierPortalReady();
   const quote = await AutoQuote.findById(id).lean();
   if (!quote) throw fail(404, 'Quote not found.');
-  const proposals = await MappingProposal.find({ autoQuoteId: quote._id }).sort({ lineNo: 1, _id: 1 }).lean();
+  const proposals = currentProposals(await MappingProposal.find({ autoQuoteId: quote._id }).lean())
+    .sort((a, b) => ((a.lineNo ?? Infinity) - (b.lineNo ?? Infinity)) || lineKey(a).localeCompare(lineKey(b)));
   return { quote: { ...quote, fileUrl: await viewUrl(quote.fileKey, 3600) }, proposals };
 }
 
@@ -225,10 +313,16 @@ export async function previewBand(id, input) {
 /**
  * A reviewer's decision. A changed item must exist in Indus at that site, so a
  * typo cannot become an approved mapping; a band must cover at least one item,
- * for the same reason.
+ * for the same reason. Only the record that stands for its line can be
+ * decided, so a reviewer looking at an old page cannot decide a replaced guess.
  */
 export async function decide({ id, action, itemId, band = null, note, actor }) {
   await ensureSupplierPortalReady();
+  const target = await MappingProposal.findById(id).select('_id refreshOf status createdAt').lean();
+  if (!target) throw fail(404, 'Proposal not found.');
+  if (target.status === 'UNAPPROVED' && !(await standingUndecided(target))) {
+    throw fail(409, 'This line was proposed again after the rules changed: reload and decide the newer proposal.');
+  }
   let itemName = null;
   let checkedBand = null;
   if (action === 'CHANGE') {
