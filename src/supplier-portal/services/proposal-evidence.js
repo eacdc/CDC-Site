@@ -62,12 +62,16 @@ export function proposalEvidence(proposals = [], { site, supplier, line }) {
   }
   out.excludeItemIds = [...rejected];
 
-  // The newest approval wins: a later reviewer saw the earlier one.
-  const approved = own.filter((p) => p.status === 'APPROVED' && p.decision?.itemId && !rejected.has(Number(p.decision.itemId)))
+  // The newest approval wins: a later reviewer saw the earlier one. A paper
+  // line approved as a band binds to that band, not to an item.
+  const approved = own.filter((p) => p.status === 'APPROVED'
+    && (p.decision?.band?.quality || (p.decision?.itemId && !rejected.has(Number(p.decision.itemId)))))
     .sort((a, b) => String(b.decision?.at || b.createdAt).localeCompare(String(a.decision?.at || a.createdAt)));
   if (approved.length) {
     const p = approved[0];
-    out.bind = { itemId: Number(p.decision.itemId), itemName: p.decision.itemName || p.proposal?.itemName || null, proposal: p };
+    out.bind = p.decision.band?.quality
+      ? { itemId: null, itemName: null, band: p.decision.band, proposal: p }
+      : { itemId: Number(p.decision.itemId), itemName: p.decision.itemName || p.proposal?.itemName || null, proposal: p };
   } else {
     // This supplier's own still-unapproved readings are backup evidence too.
     out.unapproved.push(...own.filter((p) => p.status === 'UNAPPROVED' && p.proposal?.itemId));

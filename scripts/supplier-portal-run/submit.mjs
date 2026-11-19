@@ -26,7 +26,7 @@ for (const l of payload.lines) {
   if (l.proposal.method === 'JUDGEMENT' && !l.proposal.rationale) {
     throw new Error(`Line ${l.lineNo}: a judged line needs its reason in proposal.rationale.`);
   }
-  if (!l.proposal.itemId && l.proposal.method !== 'NONE') {
+  if (!l.proposal.itemId && !l.proposal.band && l.proposal.method !== 'NONE') {
     throw new Error(`Line ${l.lineNo}: method ${l.proposal.method} with no item; use NONE and a question.`);
   }
 }
