@@ -92,6 +92,8 @@ const bandSchema = new Schema({
   groupIds: [Number], // 14 sheet, 2 reel
   gsmFrom: Number,
   gsmTo: Number,
+  excludeItemIds: [Number], // items the rule covers that the reviewer unticked
+  includeItemIds: [Number], // items outside the rule the reviewer added
   itemCount: Number, // Indus items inside it when it was approved
 }, { _id: false });
 
@@ -225,8 +227,10 @@ export async function decideProposal(Model, {
   if (!by) throw refuse('A decision with no reviewer');
   const current = await Model.findById(id).lean();
   if (!current) return null;
+  // `band` on APPROVE is the proposed band as the caller checked it just now
+  // (its item count); the band itself is the proposal's.
   const proposedBand = action === 'APPROVE' && !current.proposal?.itemId && current.proposal?.band?.quality
-    ? current.proposal.band : null;
+    ? { ...current.proposal.band, ...(band?.itemCount != null ? { itemCount: band.itemCount } : {}) } : null;
   const chosenBand = action === 'BAND' ? band : proposedBand;
   const chosen = action === 'CHANGE' ? Number(itemId) : (action === 'APPROVE' ? current.proposal?.itemId : null);
   if (action === 'BAND' ? !band?.quality : (action !== 'REJECT' && !chosenBand && !Number.isFinite(chosen))) {

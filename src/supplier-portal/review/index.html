@@ -150,6 +150,20 @@
   .band select { width: 100%; }
   .band .mills { display: flex; flex-wrap: wrap; gap: 6px 14px; max-height: 140px; overflow-y: auto; padding: 2px; }
   .band .preview { padding: 8px 10px; background: var(--raised); border-radius: 8px; font-size: 13px; }
+  .link { border: 0; background: none; padding: 0; min-height: 0; color: var(--accent); font-weight: 600; text-decoration: underline; cursor: pointer; font-size: inherit; }
+  .bi-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .bi-head strong { margin-right: auto; }
+  .bi-add { display: grid; gap: 2px; max-height: 180px; overflow-y: auto; }
+  .bi-add button { justify-content: flex-start; text-align: left; white-space: normal; font-weight: 400; min-height: 36px; }
+  .bi-wrap { max-height: 380px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .bi { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .bi th { position: sticky; top: 0; background: var(--raised); text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; z-index: 1; }
+  .bi td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+  .bi td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bi tr.out td:not(:first-child) { color: var(--muted); text-decoration: line-through; }
+  .bi label { display: flex; padding: 2px; cursor: pointer; }
+  .bi .tag { font-size: 11px; color: var(--ok); font-weight: 600; }
+  .bi-foot { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
   /* Dialog and toast */
   dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(440px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0, 0, 0, .25); }
@@ -190,6 +204,7 @@
     .back { display: inline-flex; }
     .detail-head { padding: 12px; }
     .line { padding: 12px; }
+    .bi .wide { display: none; }
     .actions button { flex: 1 1 calc(50% - 6px); min-height: 42px; }
     .detail-head .seg { width: 100%; }
     .detail-head .seg button { flex: 1; }
@@ -258,7 +273,8 @@ const bandLabel = (b) => {
   const groups = b.groupIds?.length ? b.groupIds : [2, 14];
   const form = groups.length === 1 ? (groups[0] === 14 ? 'sheet' : 'reel') : 'sheet or reel';
   const gsm = b.gsmTo && b.gsmTo !== b.gsmFrom ? `${b.gsmFrom}–${b.gsmTo}` : `${b.gsmFrom}`;
-  return [b.quality, b.mills?.length ? b.mills.join(' or ') : 'any mill', form, `${gsm} GSM`].join(', ');
+  const edits = [b.excludeItemIds?.length && `${b.excludeItemIds.length} left out`, b.includeItemIds?.length && `${b.includeItemIds.length} added`].filter(Boolean);
+  return [b.quality, b.mills?.length ? b.mills.join(' or ') : 'any mill', form, `${gsm} GSM`].join(', ') + (edits.length ? ` (${edits.join(', ')})` : '');
 };
 const money = (v) => (v == null || v === '' ? '—' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
 const when = (d) => new Date(d).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -273,6 +289,7 @@ let current = null;
 let site = 'KOL';
 let quotes = [];
 let lineFilter = 'WAITING';
+let lines = new Map(); // proposal id -> proposal, for the quote on screen
 
 /* Theme: follows the device until the toggle is used, then keeps the choice. */
 const ICONS = {
@@ -430,6 +447,7 @@ async function openQuote(id, { keepScroll = false } = {}) {
 
 function renderQuote({ quote, proposals }) {
   const canDecide = user?.roles?.includes('APPROVER') || user?.roles?.includes('ADMIN');
+  lines = new Map(proposals.map((p) => [String(p._id), p]));
   const waiting = proposals.filter((p) => p.status === 'UNAPPROVED').length;
   if (!waiting && lineFilter === 'WAITING') lineFilter = 'ALL';
   const counts = { WAITING: waiting, ALL: proposals.length, DECIDED: proposals.length - waiting };
@@ -461,7 +479,12 @@ function renderQuote({ quote, proposals }) {
   document.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { lineFilter = b.dataset.filter; applyFilter(); }; });
   document.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.id, b.dataset.act, b); });
   document.querySelectorAll('[data-change]').forEach((b) => { b.onclick = () => openPicker(b.dataset.change); });
-  document.querySelectorAll('[data-band]').forEach((b) => { b.onclick = () => openBand(b.dataset.band); });
+  document.querySelectorAll('[data-band]').forEach((b) => { b.onclick = () => openBand(b.dataset.band, {}, lines.get(b.dataset.band)?.proposal?.band); });
+  document.querySelectorAll('[data-items]').forEach((b) => {
+    const p = lines.get(b.dataset.items);
+    const decidedBand = p.status !== 'UNAPPROVED' ? p.decision?.band : null;
+    b.onclick = () => openBandItems(p._id, decidedBand || p.proposal.band, { readOnly: Boolean(decidedBand) || !canDecide, proposed: !decidedBand });
+  });
   document.querySelectorAll('[data-compare]').forEach((b) => { b.onclick = () => compare(b.dataset.compare, b); });
   applyFilter();
 }
@@ -483,7 +506,7 @@ function row(p, canDecide) {
   const spec = [l.brand, l.grade, l.gsmFrom ? `${l.gsmFrom}${l.gsmTo && l.gsmTo !== l.gsmFrom ? `–${l.gsmTo}` : ''} GSM` : null, l.sizeText, l.packSize].filter(Boolean).join(' · ');
   const decided = p.status !== 'UNAPPROVED';
   const paper = Boolean(l.gsmFrom || l.gsmTo || pr.band);
-  const band = (b) => `<strong>Band:</strong> ${esc(bandLabel(b))}${b.itemCount ? ` <small>(${esc(b.itemCount)} Indus items)</small>` : ''}`;
+  const band = (b) => `<strong>Band:</strong> ${esc(bandLabel(b))}<div><button class="link" data-items="${esc(p._id)}" title="See every Indus item in this band${decided ? '' : ', untick or add items'}">${b.itemCount ? `${esc(b.itemCount)} Indus items` : 'Show the Indus items'}</button></div>`;
   let item;
   if (decided && p.decision?.band?.quality) item = band(p.decision.band);
   else if (decided && p.decision?.itemId) item = `<strong>${esc(p.decision.itemId)}</strong> ${esc(p.decision.itemName || '')}`;
@@ -513,10 +536,10 @@ function row(p, canDecide) {
       </div></details>` : ''}
       ${!decided && canDecide ? `<div class="actions">
         <button class="ok" data-act="APPROVE" data-id="${esc(p._id)}" ${pr.itemId || pr.band?.quality ? '' : `disabled title="Nothing proposed: use ${paper ? 'Approve as paper band or ' : ''}Change item"`}>✓ Approve</button>
-        ${paper ? `<button data-band="${esc(p._id)}" title="Approve for every Indus item of one quality in a GSM range">Approve as paper band</button>` : ''}
+        ${paper ? `<button data-band="${esc(p._id)}" title="Choose the quality, mills, form and GSM range of the band">${pr.band?.quality ? 'Change the band' : 'Approve as paper band'}</button>` : ''}
         <button data-change="${esc(p._id)}">Change item</button>
         <button class="bad" data-act="REJECT" data-id="${esc(p._id)}">Reject</button>
-      </div><div id="pick-${esc(p._id)}"></div>` : ''}
+      </div>` : ''}<div id="pick-${esc(p._id)}"></div>
     </div>
     <div class="cell-status status">
       <span class="chip ${esc(p.status)}">${esc(statusText)}</span>
@@ -570,11 +593,12 @@ function openPicker(id) {
  * item names update as the choice changes, so the reviewer sees what the
  * line's rate will price before approving it.
  */
-async function openBand(id, range = {}) {
+async function openBand(id, range = {}, preset = null) {
   const box = $(`pick-${id}`);
   box.innerHTML = '<div class="band muted">Loading the Indus qualities in this GSM range…</div>';
   const gsmRow = (from, to, label) => `<div class="field"><span>GSM range</span><div class="gsm"><input type="number" inputmode="numeric" data-f="from" value="${esc(from ?? '')}"> to <input type="number" inputmode="numeric" data-f="to" value="${esc(to ?? '')}"> <button data-look>${label}</button></div></div>`;
-  const lookAgain = () => { box.querySelector('[data-look]').onclick = () => openBand(id, { gsmFrom: box.querySelector('[data-f=from]').value, gsmTo: box.querySelector('[data-f=to]').value }); };
+  const lookAgain = () => { box.querySelector('[data-look]').onclick = () => openBand(id, { gsmFrom: box.querySelector('[data-f=from]').value, gsmTo: box.querySelector('[data-f=to]').value }, preset); };
+  if (preset?.quality && !range.gsmFrom) range = { gsmFrom: preset.gsmFrom, gsmTo: preset.gsmTo };
   let data;
   try {
     const q = range.gsmFrom ? `?gsmFrom=${encodeURIComponent(range.gsmFrom)}&gsmTo=${encodeURIComponent(range.gsmTo || range.gsmFrom)}` : '';
@@ -589,14 +613,15 @@ async function openBand(id, range = {}) {
     lookAgain();
     return;
   }
-  const opt = (c, i) => `<option value="${i}">${esc(c.quality)} — ${c.byGroup[14] || 0} sheet, ${c.byGroup[2] || 0} reel</option>`;
+  const presetAt = preset?.quality ? data.choices.findIndex((c) => c.quality.toLowerCase() === preset.quality.toLowerCase()) : -1;
+  const opt = (c, i) => `<option value="${i}"${i === presetAt ? ' selected' : ''}>${esc(c.quality)} — ${c.byGroup[14] || 0} sheet, ${c.byGroup[2] || 0} reel</option>`;
   box.innerHTML = `<div class="band">
     ${gsmRow(data.gsmFrom, data.gsmTo, 'Look again')}
     <div class="field"><span>Indus quality</span><select data-f="quality">${data.choices.map(opt).join('')}</select></div>
     <div class="field"><span>Form</span><div style="display:flex;gap:16px"><label><input type="checkbox" data-g="14"> Sheet</label><label><input type="checkbox" data-g="2"> Reel</label></div></div>
     <div class="field"><span>Mills (none ticked = any mill)</span><div class="mills" data-f="mills"></div></div>
     <div data-f="preview" class="preview muted"></div>
-    <div class="actions" style="margin-top:0"><button class="ok" data-f="approve" disabled>✓ Approve this band</button><button data-f="cancel">Cancel</button></div>
+    <div class="actions" style="margin-top:0"><button class="ok" data-f="approve" disabled>✓ Approve this band</button><button data-f="items" disabled>Check the items</button><button data-f="cancel">Cancel</button></div>
   </div>`;
   lookAgain();
   const el = (f) => box.querySelector(`[data-f="${f}"]`);
@@ -610,7 +635,7 @@ async function openBand(id, range = {}) {
   let seq = 0;
   const preview = async () => {
     const mine = ++seq;
-    el('approve').disabled = true;
+    el('approve').disabled = true; el('items').disabled = true;
     const b = band();
     if (!b.groupIds.length) { el('preview').textContent = 'Tick sheet, reel or both.'; return; }
     el('preview').textContent = 'Counting…';
@@ -618,15 +643,23 @@ async function openBand(id, range = {}) {
       const r = await api(`/proposals/${id}/band-preview`, { method: 'POST', body: { band: b } });
       if (mine !== seq) return;
       el('preview').innerHTML = r.itemCount
-        ? `<strong style="color:var(--ink)">${r.itemCount} Indus items</strong> will take this line's rate, for example:<br>${r.sample.map((s) => `${esc(s.itemId)} ${esc(s.itemName)} <small>(${esc(s.mill || '—')})</small>`).join('<br>')}${r.itemCount > r.sample.length ? '<br>…' : ''}`
+        ? `<button class="link" data-f="count">${r.itemCount} Indus items</button> will take this line's rate, for example:<br>${r.sample.map((s) => `${esc(s.itemId)} ${esc(s.itemName)} <small>(${esc(s.mill || '—')})</small>`).join('<br>')}${r.itemCount > r.sample.length ? '<br>…' : ''}`
         : '<span class="err">No Indus item is inside this band.</span>';
-      el('approve').disabled = !r.itemCount;
+      el('approve').disabled = !r.itemCount; el('items').disabled = !r.itemCount;
+      if (r.itemCount) el('count').onclick = () => openBandItems(id, b, { back: () => openBand(id, range, preset) });
     } catch (e) { if (mine === seq) el('preview').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   };
+  let first = presetAt >= 0;
   const showQuality = () => {
     const c = choice();
-    box.querySelectorAll('[data-g]').forEach((g) => { const n = c.byGroup[g.dataset.g] || 0; g.checked = n > 0; g.disabled = !n; });
-    el('mills').innerHTML = c.mills.map((m) => `<label><input type="checkbox" data-mill="${esc(m.mill)}"> ${esc(m.mill)} <small>${m.items}</small></label>`).join('') || '<span class="muted">No mill recorded</span>';
+    const usePreset = first; first = false;
+    box.querySelectorAll('[data-g]').forEach((g) => {
+      const n = c.byGroup[g.dataset.g] || 0;
+      g.checked = n > 0 && (!usePreset || !preset.groupIds?.length || preset.groupIds.includes(Number(g.dataset.g)));
+      g.disabled = !n;
+    });
+    const ticked = (m) => usePreset && preset.mills?.some((x) => x.toLowerCase() === m.toLowerCase());
+    el('mills').innerHTML = c.mills.map((m) => `<label><input type="checkbox" data-mill="${esc(m.mill)}"${ticked(m.mill) ? ' checked' : ''}> ${esc(m.mill)} <small>${m.items}</small></label>`).join('') || '<span class="muted">No mill recorded</span>';
     preview();
   };
   el('quality').onchange = showQuality;
@@ -634,7 +667,111 @@ async function openBand(id, range = {}) {
   el('mills').onchange = preview;
   el('cancel').onclick = () => { box.innerHTML = ''; };
   el('approve').onclick = () => act(id, 'BAND', el('approve'), null, band());
+  el('items').onclick = () => openBandItems(id, band(), { back: () => openBand(id, range, preset) });
   showQuality();
+}
+
+const sameIds = (a = [], b = []) => a.length === b.length && [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
+
+/**
+ * Every Indus item in a band, ticked unless left out, with a search on top
+ * that narrows the list and adds paper or board items from Indus. Unticking
+ * leaves an item out of the band; an added item is in it whatever its quality
+ * or GSM. A proposed band left as it is approves as proposed; a changed one
+ * approves as the reviewer's band.
+ */
+async function openBandItems(id, band, { readOnly = false, proposed = false, back = null } = {}) {
+  const host = $(`pick-${id}`);
+  host.innerHTML = '<div class="band muted">Loading the Indus items in this band…</div>';
+  let data;
+  try { data = await api(`/proposals/${id}/band-preview`, { method: 'POST', body: { band } }); }
+  catch (e) { host.innerHTML = `<div class="band"><span class="err">${esc(e.message)}</span></div>`; return; }
+  const rows = new Map(data.items.map((r) => [r.itemId, r]));
+  const form = (g) => ({ 14: 'Sheet', 2: 'Reel' }[g] || '');
+  const size = (r) => (Number(r.sizeW) ? `${r.sizeW}${Number(r.sizeL) ? ` × ${r.sizeL}` : ''}` : '');
+  host.innerHTML = `<div class="band">
+    <div class="bi-head"><strong>${esc(data.label)}</strong><span data-f="count" class="muted"></span></div>
+    ${readOnly ? '' : `<input type="search" data-f="q" placeholder="Search this list, or Indus to add an item" aria-label="Search or add items">
+    <div class="bi-add" data-f="add"></div>`}
+    <div class="bi-wrap"><table class="bi">
+      <thead><tr>${readOnly ? '' : '<th><input type="checkbox" data-f="all" aria-label="Tick all shown" title="Tick or untick every item shown"></th>'}<th>Item</th><th>GSM</th><th class="wide">Size</th><th>Mill</th><th class="wide">Form</th></tr></thead>
+      <tbody data-f="rows"></tbody>
+    </table></div>
+    ${readOnly ? `<div class="muted" style="font-size:12px">The items in Indus today${band.itemCount ? `; ${esc(band.itemCount)} when it was approved` : ''}.</div><div class="bi-foot"><button data-f="close">Close</button></div>`
+    : `<div class="bi-foot"><button class="ok" data-f="approve">✓ Approve band</button>${back ? '<button data-f="back">← Back to the band</button>' : ''}<button data-f="close">Cancel</button></div>`}
+  </div>`;
+  const el = (f) => host.querySelector(`[data-f="${f}"]`);
+  const shownRows = () => {
+    const q = readOnly ? '' : el('q').value.trim().toLowerCase();
+    return [...rows.values()].filter((r) => (!readOnly || r.inBand) && (!q || `${r.itemId} ${r.itemName} ${r.mill || ''}`.toLowerCase().includes(q)));
+  };
+  const count = () => {
+    const n = [...rows.values()].filter((r) => r.inBand).length;
+    el('count').textContent = readOnly ? `${n} Indus items` : `${n} of ${rows.size} items in the band`;
+    if (!readOnly) { el('approve').disabled = !n; el('approve').textContent = `✓ Approve band with ${n} item${n === 1 ? '' : 's'}`; }
+  };
+  const syncAll = () => {
+    const shown = shownRows();
+    el('all').checked = shown.length > 0 && shown.every((r) => r.inBand);
+    el('all').indeterminate = shown.some((r) => r.inBand) && !el('all').checked;
+  };
+  const draw = () => {
+    el('rows').innerHTML = shownRows().map((r) => `<tr class="${r.inBand ? '' : 'out'}">
+      ${readOnly ? '' : `<td><label><input type="checkbox" data-id="${esc(r.itemId)}"${r.inBand ? ' checked' : ''} aria-label="Keep ${esc(r.itemName)} in the band"></label></td>`}
+      <td><strong>${esc(r.itemId)}</strong> ${esc(r.itemName)}${r.added ? ' <span class="tag">added</span>' : ''}</td>
+      <td class="num">${esc(r.gsm ?? '')}</td><td class="num wide">${esc(size(r))}</td><td>${esc(r.mill || '—')}</td><td class="wide">${esc(form(r.groupId))}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted">${rows.size ? 'No item in the list matches.' : 'No item yet: search Indus above to add one.'}</td></tr>`;
+    if (!readOnly) {
+      el('rows').querySelectorAll('[data-id]').forEach((c) => {
+        c.onchange = () => { rows.get(Number(c.dataset.id)).inBand = c.checked; c.closest('tr').className = c.checked ? '' : 'out'; count(); syncAll(); };
+      });
+      syncAll();
+    }
+    count();
+  };
+  draw();
+  el('close').onclick = () => { host.innerHTML = ''; };
+  if (readOnly) return;
+  if (back) el('back').onclick = back;
+  el('all').onchange = () => { shownRows().forEach((r) => { r.inBand = el('all').checked; }); draw(); };
+  let timer = null; let seq = 0;
+  el('q').oninput = () => {
+    draw();
+    clearTimeout(timer);
+    const q = el('q').value.trim();
+    if (q.length < 2) { el('add').innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const mine = ++seq;
+      try {
+        const { results } = await api(`/items/search?q=${encodeURIComponent(q)}&groups=2,14&limit=15`);
+        if (mine !== seq) return;
+        const fresh = results.filter((it) => !rows.has(Number(it.ItemID ?? it.itemId)));
+        el('add').innerHTML = fresh.length ? `<span class="muted" style="font-size:12px">Add from Indus</span>${fresh.map((it, i) => `<button class="ghost" data-add="${i}"><span>+ <strong>${esc(it.ItemID ?? it.itemId)}</strong> ${esc(it.ItemName ?? it.itemName)} <small>${it.GSM ? `${esc(it.GSM)} GSM` : ''}${it.Manufecturer ? ` · ${esc(it.Manufecturer)}` : ''}</small></span></button>`).join('')}` : '';
+        el('add').querySelectorAll('[data-add]').forEach((b) => {
+          b.onclick = () => {
+            const it = fresh[Number(b.dataset.add)];
+            const r = {
+              itemId: Number(it.ItemID ?? it.itemId), itemName: it.ItemName ?? it.itemName, gsm: it.GSM, mill: it.Manufecturer,
+              groupId: Number(it.ItemGroupID), sizeW: it.SizeW, sizeL: it.SizeL, added: true, inBand: true,
+            };
+            rows.set(r.itemId, r);
+            el('q').value = ''; el('add').innerHTML = '';
+            draw(); toast(`Added ${r.itemId} to the band`);
+          };
+        });
+      } catch (e) { if (mine === seq) el('add').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    }, 250);
+  };
+  el('approve').onclick = () => {
+    const all = [...rows.values()];
+    const edited = {
+      quality: data.band.quality, mills: data.band.mills, groupIds: data.band.groupIds, gsmFrom: data.band.gsmFrom, gsmTo: data.band.gsmTo,
+      excludeItemIds: all.filter((r) => !r.added && !r.inBand).map((r) => r.itemId),
+      includeItemIds: all.filter((r) => r.added && r.inBand).map((r) => r.itemId),
+    };
+    const unchanged = proposed && sameIds(edited.excludeItemIds, data.band.excludeItemIds) && sameIds(edited.includeItemIds, data.band.includeItemIds);
+    act(id, unchanged ? 'APPROVE' : 'BAND', el('approve'), null, unchanged ? null : edited);
+  };
 }
 
 async function compare(itemId, button) {

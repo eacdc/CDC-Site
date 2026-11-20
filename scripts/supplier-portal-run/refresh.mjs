@@ -31,8 +31,12 @@ import {
   rulesContext, applyRules, billedTypes, supplierGroup, describe,
 } from './rules.mjs';
 
-/** A reviewer's approval, the supplier's own code, CDC's own bills, the exact spec. */
-const STRONG = new Set(['APPROVED_MAPPING', 'PRODUCT_CODE', 'BILL_HISTORY', 'SPEC_TUPLE']);
+/**
+ * A reviewer's approval, the supplier's own code, CDC's own bills, the exact
+ * spec, and a paper band read off the quote's type and GSM (a reviewer still
+ * checks every item in it before it prices anything).
+ */
+const STRONG = new Set(['APPROVED_MAPPING', 'PRODUCT_CODE', 'BILL_HISTORY', 'SPEC_TUPLE', 'PAPER_BAND']);
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
