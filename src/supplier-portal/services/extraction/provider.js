@@ -217,6 +217,7 @@ export const ExtractedQuoteSchema = z.object({
     insurance: printed(),
     gstNote: printed(),
     paymentTerms: printed(),
+    delivery: printed().optional(),
   }).nullable(),
   /**
    * Rules stated in prose rather than priced per line: "sheet price 1.00 extra

@@ -483,6 +483,7 @@ export function readTerms(extracted) {
       freightTerms: terms.freightTerms || null,
       insurance: terms.insurance || null,
       gstNote: terms.gstNote || null,
+      delivery: terms.delivery || null,
     },
     confidence: present.length ? 0.85 : 0,
     evidence: present.length

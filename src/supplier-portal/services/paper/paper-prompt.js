@@ -45,7 +45,8 @@ export const PAPER_PAYLOAD_SHAPE = `PAYLOAD SHAPE
   "isSoftQuote": boolean|null,
   "commercialTerms": {"creditDays":number|null,"freightTerms":string|null,
                       "insurance":string|null,"gstNote":string|null,
-                      "paymentTerms":string|null}|null,
+                      "paymentTerms":string|null,
+                      "delivery":string|null}|null,
   "statedRules": [{"kind":string,"text":string,"value":string|null}],
   "lines": [{
     "lineNo": number,

@@ -453,6 +453,7 @@ function renderQuote({ quote, proposals }) {
   const counts = { WAITING: waiting, ALL: proposals.length, DECIDED: proposals.length - waiting };
   const meta = [
     quote.documentDate && `Dated ${quote.documentDate}`, quote.effectiveFrom && `Effective ${quote.effectiveFrom}`,
+    `Delivery: ${quote.terms?.delivery || 'not stated'}`, quote.terms?.credit && `Credit ${quote.terms.credit}`,
     quote.materialClass, quote.rulesVersion && `Rules ${quote.rulesVersion}`,
   ].filter(Boolean);
   $('detail').innerHTML = `
@@ -774,12 +775,18 @@ async function openBandItems(id, band, { readOnly = false, proposed = false, bac
   };
 }
 
+/** When the rate took effect and how soon the goods come, beside each offer. */
+function offerTerms(o) {
+  const effective = o.quote?.effectiveFrom || new Date(o.createdAt).toLocaleDateString('en-IN');
+  return `effective ${effective} · delivery ${o.quote?.delivery || 'not stated'}`;
+}
+
 async function compare(itemId, button) {
   const box = $(`cmp-${itemId}`);
   button.disabled = true;
   try {
     const { offers } = await api(`/proposals/compare/${itemId}`);
-    box.innerHTML = offers.length ? offers.map((o, i) => `<div>${i === 0 ? '<strong>Cheapest:</strong> ' : ''}${esc(o.supplier?.name || '')} ${money(o.rate?.ratePerBaseUom ?? o.rate?.rate)} <small>${new Date(o.createdAt).toLocaleDateString('en-IN')}</small></div>`).join('') : '<small>No other approved prices yet.</small>';
+    box.innerHTML = offers.length ? offers.map((o, i) => `<div>${i === 0 ? '<strong>Cheapest:</strong> ' : ''}${esc(o.supplier?.name || '')} ${money(o.rate?.ratePerBaseUom ?? o.rate?.rate)} <small>${esc(offerTerms(o))}</small></div>`).join('') : '<small>No other approved prices yet.</small>';
   } catch (e) { box.innerHTML = `<small class="err">${esc(e.message)}</small>`; }
   button.disabled = false;
 }

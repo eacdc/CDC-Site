@@ -389,6 +389,7 @@ async function extractFromImages(doc, pages, hints, buffer) {
       insurance: extracted.commercialTerms.insurance,
       gstNote: extracted.commercialTerms.gstNote,
       paymentTerms: extracted.commercialTerms.paymentTerms,
+      delivery: extracted.commercialTerms.delivery || null,
     };
   }
   if (extracted.statedRules?.length) {

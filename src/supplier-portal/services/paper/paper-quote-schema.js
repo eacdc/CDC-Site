@@ -195,6 +195,7 @@ export const PaperQuoteSchema = z.object({
     insurance: text(),
     gstNote: text(),
     paymentTerms: text(),
+    delivery: text(),
   }).nullable().default(null),
 
   /** Rules stated in prose: "sheet price 1.00 extra", "reel cut Rs 1/kg extra". */

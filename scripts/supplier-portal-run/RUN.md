@@ -98,7 +98,7 @@ page), `text.txt` (exact characters: trust it for digits and spelling),
   "supplier": { "name": "…", "gstin": "…" },
   "documentDate": "…", "effectiveFrom": "…",
   "materialClass": "PAPER_BOARD|INK|FILM|ADHESIVE|PLATE|CHEMICAL|CONSUMABLE|OTHER",
-  "terms": { "freight": "…", "gst": "…", "credit": "…" },
+  "terms": { "freight": "…", "gst": "…", "credit": "…", "delivery": "…" },
   "questions": [{ "kind": "PLANT|PAPER_TYPE|UNIT|OTHER", "text": "…", "lineNos": [3, 4] }],
   "lines": [{ "lineNo": 1, "site": "KOL", "productName": "…", "productCode": null,
               "brand": null, "grade": null, "gsmFrom": 250, "gsmTo": 284,
@@ -120,6 +120,10 @@ is in the portal source and you must follow it:
   one from a heading that names several ("kgs/liters/nos").
 - `rate` is the text as printed. One line per price: per GSM band, per plant,
   per supply mode.
+- `terms.delivery` is the lead time exactly as printed ("7-10 days from PO",
+  "ready stock"), or null when the quote says nothing about delivery. A
+  "Mill order" / "Ex-stock" heading over the rows is supply mode, not a
+  delivery promise. Purchase compares it beside the rate when raising a PO.
 - **Site:** Kolkata = `KOL`, Ahmedabad = `AHM`. From the addressee, the plant
   column, or a portal upload's `plantScope`. If the document does not say,
   set `site` to null on the quote, add a `PLANT` question, and give each line

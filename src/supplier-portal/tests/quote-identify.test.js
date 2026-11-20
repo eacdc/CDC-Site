@@ -189,6 +189,12 @@ test('commercial terms are carried through, credit days as a number', () => {
   assert.equal(credit.value.creditDays, 45);
 });
 
+test('delivery is carried through as printed, and is null when the quote says nothing', () => {
+  assert.equal(readTerms(PRINT_SALES).value.delivery, null);
+  const stated = readTerms({ commercialTerms: { delivery: 'Within 7-10 days from PO' } });
+  assert.equal(stated.value.delivery, 'Within 7-10 days from PO');
+});
+
 test('a quote stating no terms scores zero rather than an empty pass', () => {
   assert.equal(readTerms({}).confidence, 0);
 });

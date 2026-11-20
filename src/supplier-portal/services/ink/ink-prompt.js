@@ -35,7 +35,7 @@ export const INK_PAYLOAD_SHAPE = `{
     "plant": "KOLKATA" | "AHMEDABAD" | null,
     "effectiveFrom": "YYYY-MM-DD or as printed",
     "effectiveTo": null,
-    "commercialTerms": { "creditDays": null, "freightTerms": null, "insurance": null, "gstNote": null, "paymentTerms": null },
+    "commercialTerms": { "creditDays": null, "freightTerms": null, "insurance": null, "gstNote": null, "paymentTerms": null, "delivery": null },
     "statedRules": [{ "kind": "GST", "text": "GST will be charged extra as applicable", "value": null }],
     "lines": [{
       "lineNo": 1,

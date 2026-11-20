@@ -235,6 +235,8 @@ export const quoteDocumentSchema = new Schema({
     insurance: String,
     gstNote: String,
     paymentTerms: String,
+    /** Lead time as printed: "7-10 days from PO", "ready stock". */
+    delivery: String,
   },
 
   /**

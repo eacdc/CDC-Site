@@ -31,7 +31,7 @@ Return JSON only, matching this shape:
   "softQuoteEvidence": string|null,
   "plantMentions": string[]|null,
   "entityScope": string|null,
-  "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null}|null,
+  "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null,"delivery":string|null}|null,
   "statedRules": [{"kind":string,"text":string,"value":string|null}]|null,
   "plantBlocks": [{"plant":string,"lineNos":number[]}]|null,
   "rateBasisNote": string|null,
@@ -255,6 +255,15 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
 
    That is documentDate "10-07-2026" and effectiveFrom "15-07-2026". Copy the
    whole subject line into "subjectLine" as well.
+
+   DELIVERY is a term, like credit. Copy any lead time or delivery promise
+   into commercialTerms.delivery exactly as printed: "Delivery within 7-10
+   days from PO", "Ready stock", "3-4 weeks from order". The buyer compares it
+   beside the rate, because the cheapest quote is no good if it arrives too
+   late for the job. Leave it null when the document says nothing about
+   delivery. Do not infer one from a "Mill order" or "Ex-stock" heading over
+   the price rows: that is the line's supplyMode, not a promise of time. When
+   different rows promise different times, put each row's in its "notes".
 
 9. MULTI-COLUMN WORKSHEETS. A price list may show several price columns
    (e.g. "Price Before Increase", "Current Price", "Proposed Increase").

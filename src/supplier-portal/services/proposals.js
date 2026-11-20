@@ -401,7 +401,54 @@ export async function compareItem({ site, itemId }) {
     const key = (r.supplier?.gstin || r.supplier?.name || '').toUpperCase();
     if (!latest.has(key)) latest.set(key, r);
   }
-  return [...latest.values()]
+  const offers = [...latest.values()]
     .filter((r) => Number.isFinite(r.rate?.ratePerBaseUom ?? r.rate?.rate))
     .sort((a, b) => (a.rate.ratePerBaseUom ?? a.rate.rate) - (b.rate.ratePerBaseUom ?? b.rate.rate));
+
+  // A rate means little without when it took effect and how soon the goods
+  // come: the cheapest offer is no good if it lands after the job runs.
+  const quotes = await AutoQuote.find({ _id: { $in: offers.map((o) => o.autoQuoteId) } })
+    .select('fileName documentDate effectiveFrom terms').lean();
+  const quoteById = new Map(quotes.map((q) => [String(q._id), q]));
+  return offers.map((o) => ({ ...o, quote: offerQuote(quoteById.get(String(o.autoQuoteId))) }));
+}
+
+/** The quote facts shown beside an offer's rate. */
+export function offerQuote(quote) {
+  if (!quote) return null;
+  const terms = quote.terms || {};
+  const delivery = termText(terms.delivery);
+  return {
+    fileName: quote.fileName || null,
+    documentDate: quote.documentDate || null,
+    effectiveFrom: quote.effectiveFrom || null,
+    delivery,
+    deliveryDays: deliveryDays(delivery),
+    credit: termText(terms.credit ?? terms.creditDays),
+  };
+}
+
+/** A term as text: the run sends what was printed, which may be a number. */
+function termText(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+/**
+ * Days a delivery promise allows, from the words as printed: the upper end of
+ * a range, a week as seven days, ready stock as none. Null when the words give
+ * no number, so "as per your schedule" stays a sentence rather than becoming 0.
+ */
+export function deliveryDays(text) {
+  const t = String(text ?? '').toLowerCase();
+  if (!t.trim()) return null;
+  const m = t.match(/(\d+(?:\.\d+)?)\s*(?:(?:-|–|to)\s*(\d+(?:\.\d+)?))?\s*(?:working\s+|business\s+)?(days?|weeks?|wks?|months?)\b/);
+  if (m) {
+    const n = Number(m[2] ?? m[1]);
+    const perUnit = m[3].startsWith('w') ? 7 : m[3].startsWith('m') ? 30 : 1;
+    return Math.round(n * perUnit);
+  }
+  if (/\b(ready|ex[\s-]?stock|immediate(ly)?|same day)\b/.test(t)) return 0;
+  return null;
 }
