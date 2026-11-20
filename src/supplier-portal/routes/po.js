@@ -1,9 +1,9 @@
 /**
  * Create PO: purchase orders from approved supplier prices.
  *
- *   GET  /po/reference                 delivery points, terms, company block
+ *   GET  /po/reference                 delivery points, terms, company block, next PO number
  *   GET  /po/requisitions              PREQ lines not yet fully on a PO
- *   GET  /po/suppliers                 suppliers with an approved price, as ERP ledgers
+ *   GET  /po/suppliers                 suppliers with an approved price or a recent PO, as ERP ledgers
  *   GET  /po/items?q=&supplierLedgerId=  items with an approved price
  *   GET  /po/items/:itemId/context?clientId=   prices, last paid and buffer stock for a line
  *   GET  /po/orders                    POs made with the tool

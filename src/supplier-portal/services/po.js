@@ -44,6 +44,26 @@ export const DELIVERY_ADDRESSES = {
 export const PAYMENT_TERMS = ['Advance', 'Immediate', 'Payment in 30 Days', 'Payment in 45 Days',
   'Payment in 60 Days', 'Payment in 75 Days', 'Payment in 90 Days', 'Payment in 120 Days'];
 
+/** What the ERP's PO screen starts with. Every PO this year carries COM and INR. */
+export const DEFAULT_PAYMENT_TERMS = 'Payment in 30 Days';
+export const PURCHASE_DIVISION = 'COM';
+export const CURRENCY_CODE = 'INR';
+
+/**
+ * The ERP's free-text terms ("Payment in45Days", "IMMIDIATE", "90 DAYS",
+ * "Payment in 90 Days\t") as one of PAYMENT_TERMS, or null.
+ */
+export function normalisePaymentTerms(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return null;
+  if (/advance/.test(t)) return 'Advance';
+  if (/imm?[ie]d/.test(t)) return 'Immediate';
+  const m = t.match(/(\d+)\s*day/);
+  if (!m) return null;
+  const label = `Payment in ${Number(m[1])} Days`;
+  return PAYMENT_TERMS.includes(label) ? label : null;
+}
+
 export const TRANSPORT_MODES = ['By Road', 'By Hand', 'Courier', 'By Air'];
 
 /** The standing terms printed on every PO, as on the ERP's own printout. */
@@ -57,16 +77,30 @@ export const PO_TERMS = [
 
 // ── reference ───────────────────────────────────────────────────────────────
 
-/** Dropdown lists and the company block for the printout, for one plant. */
-export async function poReference(site) {
+/** Dropdown lists, the company block for the printout and the next PO number, for one plant. */
+export async function poReference(site, { today = new Date() } = {}) {
   assertSite(site);
-  const rows = await query(site, `
-    SELECT TOP 1 CompanyName, Address, City, State, Pincode, GSTIN, CINNo, PAN, MobileNO, Email
-    FROM CompanyMaster
-    WHERE ISNULL(IsDeletedTransaction,0) = 0
-  `);
+  const fyYear = financialYearStart(today).getUTCFullYear();
+  const [rows, last] = await Promise.all([
+    query(site, `
+      SELECT TOP 1 CompanyName, Address, City, State, Pincode, GSTIN, CINNo, PAN, MobileNO, Email
+      FROM CompanyMaster
+      WHERE ISNULL(IsDeletedTransaction,0) = 0
+    `),
+    // Deleted POs count: the ERP never hands their numbers out again.
+    query(site, `
+      SELECT MAX(MaxVoucherNo) AS LastNo
+      FROM ItemTransactionMain
+      WHERE CompanyID = @companyId AND VoucherID = @po AND FYear = @fy
+    `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, fy: `${fyYear}-${fyYear + 1}` }),
+  ]);
   const c = rows[0] || {};
   return {
+    // A preview, as the ERP shows it. The number is fixed only when the PO is saved.
+    nextPoNo: poNumber((Number(last[0]?.LastNo) || 0) + 1, fyYear),
+    division: PURCHASE_DIVISION,
+    currency: CURRENCY_CODE,
+    defaultPaymentTerms: DEFAULT_PAYMENT_TERMS,
     deliveryAddresses: DELIVERY_ADDRESSES[site],
     company: {
       name: c.CompanyName || 'CDC Printers Pvt. Ltd.',
@@ -80,6 +114,12 @@ export async function poReference(site) {
     transportModes: TRANSPORT_MODES,
     terms: PO_TERMS,
   };
+}
+
+/** 3999 in the year starting April 2026 -> "PO03999_26_27", the ERP's own format. */
+export function poNumber(seq, fyStartYear) {
+  const yy = (y) => String(y % 100).padStart(2, '0');
+  return `PO${String(seq).padStart(5, '0')}_${yy(fyStartYear)}_${yy(fyStartYear + 1)}`;
 }
 
 // ── pending requisitions ──────────────────────────────────────────────────────
@@ -109,7 +149,7 @@ export async function pendingRequisitions(site, { today = new Date() } = {}) {
   const [reqs, ordered, jobs] = await Promise.all([
     query(site, `
       SELECT ITM.TransactionID, ITM.VoucherNo, ITM.VoucherDate, ITD.TransID, ITD.ItemID,
-             ITD.RequiredQuantity, ITD.StockUnit, ITD.RefJobCardContentNo,
+             ITD.RequiredQuantity, ITD.StockUnit, ITD.RefJobCardContentNo, ITD.ExpectedDeliveryDate,
              IM.ItemCode, IM.ItemName, G.ItemGroupName, U.UserName AS CreatedByName
       FROM ItemTransactionMain ITM
       JOIN ItemTransactionDetail ITD
@@ -170,6 +210,8 @@ export async function pendingRequisitions(site, { today = new Date() } = {}) {
         reqQty: r.RequiredQuantity,
         pendingQty: r.RequiredQuantity,
         unit: r.StockUnit,
+        // The date stores asked for; the ERP's PO screen starts the line with it.
+        expectedDate: r.ExpectedDeliveryDate || null,
         createdBy: r.CreatedByName || null,
       };
     });
@@ -287,22 +329,58 @@ async function itemsPricedBy(site, proposals) {
   return direct;
 }
 
-/** Suppliers with at least one approved price at this plant, resolved to an ERP ledger. */
-export async function poSuppliers(site) {
+/**
+ * The supplier dropdown: every supplier with an approved price at this plant,
+ * plus every supplier ordered from since the start of last financial year
+ * (about 150 in Kolkata), as the ERP lists them. A supplier without an
+ * approved price can be picked, but its lines stay blocked until a price is
+ * approved. Each carries the payment terms of its last PO, which the screen
+ * starts with.
+ */
+export async function poSuppliers(site, { today = new Date() } = {}) {
   assertSite(site);
-  const [proposals, resolve] = await Promise.all([approvedProposals(site), supplierResolver(site)]);
+  const since = financialYearStart(today);
+  since.setUTCFullYear(since.getUTCFullYear() - 1);
+  const [proposals, resolve, ledgers, lastPos] = await Promise.all([
+    approvedProposals(site),
+    supplierResolver(site),
+    supplierLedgers(site),
+    query(site, `
+      WITH P AS (
+        SELECT ITM.LedgerID, ITM.TermsOfPayment, ITM.VoucherDate,
+               ROW_NUMBER() OVER (PARTITION BY ITM.LedgerID ORDER BY ITM.VoucherDate DESC, ITM.TransactionID DESC) AS rn
+        FROM ItemTransactionMain ITM
+        WHERE ITM.CompanyID = @companyId
+          AND ITM.VoucherID = @po
+          AND ITM.VoucherDate >= @since
+          AND ISNULL(ITM.IsDeletedTransaction,0) = 0
+      )
+      SELECT LedgerID, TermsOfPayment, VoucherDate FROM P WHERE rn = 1
+    `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, since: { type: sql.Date, value: since } }),
+  ]);
   const priced = await itemsPricedBy(site, proposals);
-  const bySupplier = new Map();
+  const approvedItems = new Map(); // ledgerId -> Set(itemId)
   for (const [itemId, ps] of priced) {
     for (const p of ps) {
       const s = resolve(p.supplier);
       if (!s) continue;
-      if (!bySupplier.has(s.ledgerId)) bySupplier.set(s.ledgerId, { ...s, items: new Set() });
-      bySupplier.get(s.ledgerId).items.add(itemId);
+      if (!approvedItems.has(s.ledgerId)) approvedItems.set(s.ledgerId, new Set());
+      approvedItems.get(s.ledgerId).add(itemId);
     }
   }
-  return [...bySupplier.values()]
-    .map(({ items, ...s }) => ({ ...s, approvedItemCount: items.size }))
+  const lastPo = new Map(lastPos.map((r) => [Number(r.LedgerID), r]));
+  return ledgers
+    .filter((l) => approvedItems.has(Number(l.LedgerID)) || lastPo.has(Number(l.LedgerID)))
+    .map((l) => {
+      const id = Number(l.LedgerID);
+      const po = lastPo.get(id);
+      return {
+        ...toSupplier(l),
+        approvedItemCount: approvedItems.get(id)?.size || 0,
+        lastPoDate: po?.VoucherDate || null,
+        paymentTerms: normalisePaymentTerms(po?.TermsOfPayment),
+      };
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -377,17 +455,24 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
   const row = await getItem(site, id);
   if (!row) return null;
 
-  const [hsn, offers, resolve, paid] = await Promise.all([
+  const [hsn, offers, resolve, paid, master] = await Promise.all([
     hsnForItems(site, [id]),
     compareItem({ site, itemId: id }),
     supplierResolver(site),
     lastPaidRates(site, [id]),
+    // The ERP's PO screen starts the rate here. Few items have it updated
+    // (62 of 2,442 bought this year), so it is shown, never trusted as a price.
+    query(site, `
+      SELECT PurchaseRate FROM ItemMaster WHERE ItemID = @itemId AND CompanyID = @companyId
+    `, { itemId: { type: sql.BigInt, value: id }, companyId: COMPANY_ID }),
   ]);
   const item = toPoItem(row, hsn.get(row.ItemID) || hsn.get(String(row.ItemID)));
   const last = paid.get(row.ItemID) || paid.get(String(row.ItemID)) || null;
+  const masterRate = Number(master[0]?.PurchaseRate) > 0 ? Number(master[0].PurchaseRate) : null;
 
   return {
     item,
+    masterRate: masterRate != null ? { rate: masterRate, unit: item.purchaseUnit } : null,
     offers: offers.map((o) => {
       const s = resolve(o.supplier);
       return { ...o, proposalId: String(o._id), supplierLedgerId: s ? s.ledgerId : null, supplierLedgerName: s ? s.name : null };

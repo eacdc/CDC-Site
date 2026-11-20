@@ -5,7 +5,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   financialYearStart, firstJobNo, toPoItem, toStockRow, DELIVERY_ADDRESSES, PAYMENT_TERMS,
+  poNumber, normalisePaymentTerms,
 } from '../services/po.js';
+
+test('the next PO number is in the ERP\'s own format', () => {
+  assert.equal(poNumber(4000, 2026), 'PO04000_26_27');
+  assert.equal(poNumber(592, 2026), 'PO00592_26_27');
+  assert.equal(poNumber(1, 2099), 'PO00001_99_00');
+});
+
+test('the ERP\'s free-text payment terms become one of the fixed list', () => {
+  assert.equal(normalisePaymentTerms('Payment in 90 Days\t'), 'Payment in 90 Days');
+  assert.equal(normalisePaymentTerms('Payment in45Days'), 'Payment in 45 Days');
+  assert.equal(normalisePaymentTerms('90 DAYS'), 'Payment in 90 Days');
+  assert.equal(normalisePaymentTerms('Payment in 30 Days,Payment in 90 Days'), 'Payment in 30 Days');
+  assert.equal(normalisePaymentTerms('IMMIDIATE'), 'Immediate');
+  assert.equal(normalisePaymentTerms('advance\t'), 'Advance');
+  assert.equal(normalisePaymentTerms('Payment in 18 Days'), null, 'not on the list');
+  assert.equal(normalisePaymentTerms('URGENT'), null);
+  assert.equal(normalisePaymentTerms(''), null);
+});
 
 test('the financial year starts on 1 April', () => {
   assert.equal(financialYearStart(new Date('2026-11-20')).toISOString().slice(0, 10), '2026-04-01');
