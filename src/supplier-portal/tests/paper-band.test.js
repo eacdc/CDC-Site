@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanBand, itemInBand, bandLabel, bandChoices,
+  cleanBand, itemInBand, bandLabel, bandChoices, proposeBand,
 } from '../services/paper/band.js';
 import { decideProposal } from '../models/proposals.js';
 import { proposalEvidence } from '../services/proposal-evidence.js';
@@ -103,6 +103,41 @@ test('the run can send a band back, and only in its shape', () => {
     sha256: 'a'.repeat(64), fileName: 'q.pdf', site: 'KOL', rulesVersion: 'v', runId: 'r',
     lines: [{ line: { productName: 'NR Power Fold - FBB' }, proposal: { method: 'APPROVED_MAPPING', band: BAND } }],
   };
-  assert.deepEqual(RunPayloadSchema.parse(base).lines[0].proposal.band, BAND);
+  assert.deepEqual(RunPayloadSchema.parse(base).lines[0].proposal.band, { ...BAND, excludeItemIds: [], includeItemIds: [] });
   assert.throws(() => RunPayloadSchema.parse({ ...base, lines: [{ ...base.lines[0], proposal: { method: 'APPROVED_MAPPING', band: { gsmFrom: 250 } } }] }));
+});
+
+test('a reviewer can untick items the rule covers and add ones it does not', () => {
+  const band = cleanBand({
+    quality: 'FBB', gsmFrom: 250, gsmTo: 284, excludeItemIds: [2, '2'], includeItemIds: [4, 2],
+  });
+  assert.deepEqual(band.excludeItemIds, [2]);
+  assert.deepEqual(band.includeItemIds, [4], 'an item both unticked and added stays out');
+  assert.deepEqual(ITEMS.filter((it) => itemInBand(it, band)).map((it) => it.ItemID), [3, 4]);
+  assert.match(bandLabel(band), /\(1 left out, 1 added\)$/);
+  const later = item(9, 'FBB', 'Emami', 270);
+  assert.ok(itemInBand(later, band), 'an item created later that fits the rule joins the band');
+});
+
+test('the rules read the band off a paper line: quality, mill, form and GSM', () => {
+  const p = proposeBand({ productName: 'ITC FBB', gsmFrom: 250, gsmTo: 300 }, ITEMS);
+  assert.deepEqual(p.band, {
+    quality: 'FBB', mills: ['ITC'], groupIds: [2, 14], gsmFrom: 250, gsmTo: 300, excludeItemIds: [], includeItemIds: [],
+  });
+  assert.equal(p.itemCount, 2);
+  const sheets = proposeBand({ productName: 'FBB sheet', gsmFrom: 250, gsmTo: 300 }, ITEMS);
+  assert.deepEqual(sheets.band.groupIds, [14]);
+  assert.deepEqual(sheets.band.mills, [], 'no mill named means any mill');
+  assert.equal(sheets.itemCount, 2);
+  assert.equal(proposeBand({ productName: 'Duplex', gsmFrom: 250, gsmTo: 284 }, ITEMS).band.quality, 'Grey Back', 'duplex alone is grey back');
+});
+
+test('no band is proposed for a sized line, an unknown type or a quality Indus lacks', () => {
+  assert.equal(proposeBand({ productName: 'FBB', gsmFrom: 250, gsmTo: 300, sizeText: '63.5 x 91.4' }, ITEMS), null);
+  assert.equal(proposeBand({ productName: 'Sunshine special', gsmFrom: 250, gsmTo: 300 }, ITEMS), null);
+  assert.equal(proposeBand({ productName: 'Gloss art', gsmFrom: 250, gsmTo: 300 }, ITEMS), null);
+  assert.equal(proposeBand({ productName: 'FBB' }, ITEMS), null);
+  const mill = proposeBand({ productName: 'Emami FBB', gsmFrom: 290, gsmTo: 310 }, ITEMS);
+  assert.deepEqual(mill.band.mills, [], 'a mill Indus has no item of in the range becomes any mill');
+  assert.match(mill.rationale, /names EMAMI/);
 });

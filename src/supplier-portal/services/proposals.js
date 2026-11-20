@@ -17,9 +17,9 @@ import {
 import { decideProposal, currentProposals, lineKey } from '../models/proposals.js';
 import { SITES } from '../config/constants.js';
 import { sha256Of } from './quotes.js';
-import { getItem, paperItemsInGsmRange } from './erp-items.js';
+import { getItem, getItems, paperItemsInGsmRange } from './erp-items.js';
 import {
-  PAPER_GROUP_IDS, cleanBand, itemInBand, bandLabel, bandChoices,
+  PAPER_GROUP_IDS, cleanBand, itemInBand, itemInBandRule, bandLabel, bandChoices,
 } from './paper/band.js';
 import { uploadBuffer, viewUrl } from '../../lib/r2-storage.js';
 
@@ -32,20 +32,22 @@ const ProposalSchema = z.object({
   itemId: z.number().int().positive().nullish(),
   itemName: str(),
   method: z.enum(['APPROVED_MAPPING', 'PRODUCT_CODE', 'BILL_HISTORY', 'RATE_ANCHOR', 'SPEC_TUPLE',
-    'NAME_SIMILARITY', 'JUDGEMENT', 'NONE']),
+    'NAME_SIMILARITY', 'PAPER_BAND', 'JUDGEMENT', 'NONE']),
   confidence: z.number().min(0).max(1).nullish(),
   rationale: str(),
   evidence: z.array(EvidenceSchema).max(20).default([]),
   alternatives: z.array(z.object({ itemId: z.number().int(), itemName: str(), lastPaidRate: num() })).max(8).default([]),
   question: str(),
-  // Only ever a band a reviewer approved for this wording: the run proposes
-  // it again, it does not invent one (paper/band.js).
+  // A paper band (paper/band.js): one a reviewer approved for this wording,
+  // proposed again, or the one the rules read off the quote (PAPER_BAND).
   band: z.object({
     quality: z.string().trim().min(1).max(200),
     mills: z.array(z.string().trim().max(200)).max(50).default([]),
     groupIds: z.array(z.number().int()).max(2).default([]),
     gsmFrom: z.number().positive(),
     gsmTo: z.number().positive(),
+    excludeItemIds: z.array(z.number().int().positive()).max(5000).default([]),
+    includeItemIds: z.array(z.number().int().positive()).max(5000).default([]),
     itemCount: z.number().int().nullish(),
   }).nullish(),
 });
@@ -297,16 +299,41 @@ export async function bandChoicesFor(id, override = {}) {
   return { ...range, site: p.site, choices: bandChoices(items) };
 }
 
-/** The Indus items a band covers right now, a few of them named, for the reviewer to check. */
+const itemRow = (it) => ({
+  itemId: Number(it.ItemID), itemName: it.ItemName, gsm: it.GSM, mill: it.Manufecturer,
+  groupId: Number(it.ItemGroupID), sizeW: it.SizeW, sizeL: it.SizeL, unit: it.StockUnit,
+});
+
+/**
+ * The Indus items a band covers right now. `items` lists every item its rule
+ * covers (ticked unless the reviewer unticked it) and every item added to it,
+ * so the review page can show them all with a tick box each. An added item
+ * must be paper or board at this site, or the band is refused.
+ */
 export async function previewBand(id, input) {
   await ensureSupplierPortalReady();
   const p = await MappingProposal.findById(id).select('site').lean();
   if (!p) throw fail(404, 'Proposal not found.');
   const band = cleanBand(input);
-  const items = (await paperItemsInGsmRange(p.site, { ...band, itemGroupIds: band.groupIds })).filter((it) => itemInBand(it, band));
+  const ruled = (await paperItemsInGsmRange(p.site, { ...band, itemGroupIds: band.groupIds }))
+    .filter((it) => itemInBandRule(it, band));
+  const ruledIds = new Set(ruled.map((it) => Number(it.ItemID)));
+  const addIds = band.includeItemIds.filter((n) => !ruledIds.has(n));
+  const added = addIds.length ? [...(await getItems(p.site, addIds)).values()] : [];
+  const missing = addIds.filter((n) => !added.some((it) => Number(it.ItemID) === n && PAPER_GROUP_IDS.includes(Number(it.ItemGroupID))));
+  if (missing.length) throw fail(400, `Not a paper or board item at ${p.site}: ${missing.join(', ')}.`);
+  // Only what changes the band is kept: an unticked item the rule never
+  // covered, or an added one it already does, means nothing.
+  band.excludeItemIds = band.excludeItemIds.filter((n) => ruledIds.has(n));
+  band.includeItemIds = addIds;
+  const rows = [
+    ...ruled.map((it) => ({ ...itemRow(it), added: false, inBand: !band.excludeItemIds.includes(Number(it.ItemID)) })),
+    ...added.map((it) => ({ ...itemRow(it), added: true, inBand: true })),
+  ].sort((a, b) => (a.gsm - b.gsm) || String(a.itemName).localeCompare(String(b.itemName)));
+  const inside = rows.filter((r) => r.inBand);
   return {
-    band, label: bandLabel(band), itemCount: items.length,
-    sample: items.slice(0, 12).map((it) => ({ itemId: Number(it.ItemID), itemName: it.ItemName, gsm: it.GSM, mill: it.Manufecturer })),
+    band, label: bandLabel(band), itemCount: inside.length,
+    sample: inside.slice(0, 12), items: rows,
   };
 }
 
@@ -331,6 +358,15 @@ export async function decide({ id, action, itemId, band = null, note, actor }) {
     const item = await getItem(current.site, Number(itemId));
     if (!item) throw fail(400, `Item ${itemId} is not in ${current.site}'s item master.`);
     itemName = item.ItemName;
+  }
+  if (action === 'APPROVE') {
+    // A proposed band is checked as a reviewer's is: it must still cover an item.
+    const current = await MappingProposal.findById(id).select('proposal').lean();
+    if (!current?.proposal?.itemId && current?.proposal?.band?.quality) {
+      const preview = await previewBand(id, current.proposal.band);
+      if (!preview.itemCount) throw fail(400, `No Indus item is inside ${preview.label} any more: approve another band.`);
+      checkedBand = { itemCount: preview.itemCount };
+    }
   }
   if (action === 'BAND') {
     const preview = await previewBand(id, band || {});

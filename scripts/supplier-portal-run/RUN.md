@@ -158,13 +158,18 @@ decisive (e.g. HK Trading = Hare krishna Trading's tapes at ₹240 each).
 - Duplex alone means grey back. A box "10 pcs (1 box)" is priced per box.
 - Never choose an item the rules excluded (a reviewer rejected it for this
   wording).
-- A paper line that prices a GSM band with no size is approved by a reviewer
-  as a **band** (an Indus quality, mills, sheet/reel, GSM range), not as one
-  item. Do not pick one item for it: leave it `NONE` and in the question
-  name the likely Indus quality and mill, so the reviewer's band is quick.
-  Once a band is approved, `match.mjs` proposes it again for the same
-  wording (`proposal.band`, method `APPROVED_MAPPING`); never write a band
-  yourself.
+- A paper line that prices a GSM band with no size is approved as a
+  **band** (an Indus quality, mills, sheet/reel, GSM range), not as one
+  item. `match.mjs` proposes the band itself (method `PAPER_BAND`) when the
+  words name a paper type Indus files in that range: the quality, the mill
+  the quote names (any when none), sheet or reel when it says, and the GSM.
+  The reviewer sees every Indus item in it, unticks any that do not belong
+  and adds any missing. Do not pick one item for such a line, and do not
+  write or change a band yourself. When the rules proposed no band (the type
+  is unclear or has no Indus quality), leave it `NONE` and in the question
+  name the likely Indus quality and mill. Once a band is approved,
+  `match.mjs` proposes it again for the same wording, with the reviewer's
+  ticks (method `APPROVED_MAPPING`).
 
 Edit that line in `payload.json` (`lines[index]`):
 - If sure: `proposal.itemId`, `itemName`, `method: "JUDGEMENT"`,
