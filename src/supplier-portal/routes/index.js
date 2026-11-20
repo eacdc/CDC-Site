@@ -55,6 +55,7 @@
  *
  *   /automation/*   the scheduled run's add-only API (automation key)
  *   /proposals/*    reviewing and deciding its proposals (APPROVER)
+ *   /po/*           Create PO: purchase orders from approved prices (routes/po.js)
  */
 
 import { Router } from 'express';
@@ -72,6 +73,7 @@ import poCheckRoutes from './po-check.js';
 import receivingRoutes from './receiving.js';
 import automationRoutes from './automation.js';
 import proposalRoutes from './proposals.js';
+import poRoutes from './po.js';
 import { ensureSupplierPortalReady } from '../db/mongo.js';
 
 const router = Router();
@@ -109,6 +111,7 @@ router.use('/po-check', poCheckRoutes);
 router.use('/receiving', receivingRoutes);
 router.use('/automation', automationRoutes);
 router.use('/proposals', proposalRoutes);
+router.use('/po', poRoutes);
 
 /**
  * Error handler.
