@@ -3,6 +3,7 @@
  * Separated so routes and the background queue can share the same logic.
  */
 import { PurchaseBill } from '../db-purchase-bills.js';
+import { DEFAULT_LOCATION, parseLocation } from '../config/cdc.js';
 
 export function buildDbHelpers(excludeId) {
   const exclude = excludeId ? { _id: { $ne: excludeId } } : {};
@@ -16,9 +17,14 @@ export function buildDbHelpers(excludeId) {
       if (list.length === 0) return null;
       return PurchaseBill.findOne({ bill_dedup_key: { $in: list }, ...exclude }).lean();
     },
-    findByTallyVoucher: async (no) => {
+    // Voucher numbers repeat across locations, so only the bill's own location counts.
+    findByTallyVoucher: async (no, _excludeId, location) => {
       if (!no) return null;
-      return PurchaseBill.findOne({ tally_voucher_number: no, ...exclude }).lean();
+      return PurchaseBill.findOne({
+        tally_voucher_number: no,
+        location: parseLocation(location) || DEFAULT_LOCATION,
+        ...exclude,
+      }).lean();
     },
     findByImageHashCandidates: async () => {
       const oneYearAgo = new Date(Date.now() - 365 * 86400 * 1000);

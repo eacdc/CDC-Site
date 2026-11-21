@@ -958,6 +958,7 @@ router.get('/google-sheet/cdc-bills-mis', async (req, res) => {
       manually_reviewed_at: 1,
       manually_overridden: 1,
       review_comment: 1,
+      location: 1,
     };
 
     const bills = await PurchaseBill.find(query, projection)
@@ -1003,6 +1004,8 @@ router.get('/google-sheet/cdc-bills-mis', async (req, res) => {
       ['Manually Reviewed At',     b => b.manually_reviewed_at ? formatDateDDMMYYYY(b.manually_reviewed_at) : ''],
       ['Manually Overridden',      b => b.manually_overridden ? 'Yes' : 'No'],
       ['Review Comment',           b => b.review_comment || ''],
+      // Appended last so existing sheet column positions don't shift.
+      ['Location',                 b => b.location || 'KOL'],
     ];
 
     const headers = columns.map(c => c[0]);

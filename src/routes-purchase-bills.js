@@ -29,6 +29,8 @@ import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { extractFromImage } from './lib/bill-vision.js';
 import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
 import { buildBillDedupKey, listDedupKeys } from './lib/purchase-bill-dedup.js';
+import { buildDbHelpers } from './lib/purchase-bill-db-helpers.js';
+import { DEFAULT_LOCATION, LOCATIONS, parseLocation } from './config/cdc.js';
 import { stripEmptyUniqueKeys, uniqueConflictInfo } from './lib/purchase-bill-unique-keys.js';
 import { runVerificationChecks, computeVerificationStatus } from './lib/purchase-bill-verification.js';
 import { generatePhash, hammingDistance } from './lib/phash.js';
@@ -128,53 +130,6 @@ function cloudinaryFolder(slotType) {
 }
 
 /**
- * DB helpers injected into the verification engine for the async
- * duplicate checks. We define them once per request to capture the
- * "exclude this id" condition.
- */
-function buildDbHelpers(excludeId) {
-  const exclude = excludeId ? { _id: { $ne: excludeId } } : {};
-  return {
-    findExistingByDedupKey: async (key) => {
-      if (!key) return null;
-      return PurchaseBill.findOne({ bill_dedup_key: key, ...exclude }).lean();
-    },
-    findExistingByDedupKeys: async (keys) => {
-      const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
-      if (list.length === 0) return null;
-      return PurchaseBill.findOne({ bill_dedup_key: { $in: list }, ...exclude }).lean();
-    },
-    findByTallyVoucher: async (no) => {
-      if (!no) return null;
-      return PurchaseBill.findOne({ tally_voucher_number: no, ...exclude }).lean();
-    },
-    findByImageHashCandidates: async (ph) => {
-      if (!ph) return [];
-      // We narrow by exact phash prefix to keep the candidate set small,
-      // then let the caller do Hamming-distance comparison. For now we
-      // pull all bills with a non-null phash uploaded in the last year.
-      const oneYearAgo = new Date(Date.now() - 365 * 86400 * 1000);
-      return PurchaseBill.find({
-        invoice_image_phash: { $ne: null, $exists: true },
-        uploaded_at: { $gte: oneYearAgo },
-        ...exclude,
-      }, '_id invoice_number invoice_image_phash').lean();
-    },
-    findSimilarBills: async (gstin, date, amount, tolerance, daysBack) => {
-      if (!gstin || !date || amount == null) return [];
-      const d = date instanceof Date ? date : new Date(date);
-      const start = new Date(d.getTime() - daysBack * 86400 * 1000);
-      return PurchaseBill.find({
-        supplier_gstin: gstin,
-        invoice_date: { $gte: start, $lte: new Date(d.getTime() + 86400 * 1000) },
-        grand_total: { $gte: amount - tolerance, $lte: amount + tolerance },
-        ...exclude,
-      }, '_id invoice_number invoice_date grand_total supplier_name').lean();
-    },
-  };
-}
-
-/**
  * Run the verification engine for a (possibly unsaved) bill and update
  * the bill's status/check_results in-place.
  */
@@ -190,10 +145,11 @@ async function verifyAndStamp(bill) {
 }
 
 async function duplicateEditError(err, excludeId) {
-  const { field, value, label } = uniqueConflictInfo(err);
+  const { field, value, location, label } = uniqueConflictInfo(err);
   let existing = null;
   if (field && value != null && String(value).trim() !== '') {
-    existing = await PurchaseBill.findOne({ [field]: value, _id: { $ne: excludeId } })
+    const scope = field === 'tally_voucher_number' && location ? { location } : {};
+    existing = await PurchaseBill.findOne({ [field]: value, ...scope, _id: { $ne: excludeId } })
       .select('_id tally_voucher_number invoice_number supplier_name')
       .lean();
   }
@@ -359,7 +315,8 @@ router.post('/phash', requireCdcBillsAdmin, async (req, res) => {
 // ============================================================
 // POST /check-duplicate
 // Body: { supplier_gstin?, invoice_number?, tally_voucher_number?,
-//         grand_total?, invoice_date? }
+//         grand_total?, invoice_date?, location? }
+// The voucher lookup only looks at `location` (default KOL).
 // ============================================================
 router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
   try {
@@ -370,6 +327,7 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
     const tally_voucher_number = b.tally_voucher_number ? String(b.tally_voucher_number).trim() : null;
     const grand_total = b.grand_total != null ? Number(b.grand_total) : null;
     const invoice_date = b.invoice_date ? new Date(b.invoice_date) : null;
+    const location = parseLocation(b.location) || DEFAULT_LOCATION;
 
     let exact_duplicate = null;
     let voucher_duplicate = null;
@@ -391,7 +349,7 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
     }
 
     if (tally_voucher_number) {
-      const hit = await PurchaseBill.findOne({ tally_voucher_number })
+      const hit = await PurchaseBill.findOne({ tally_voucher_number, location })
         .select('_id uploaded_by uploaded_at tally_voucher_number invoice_number');
       if (hit) {
         voucher_duplicate = {
@@ -439,6 +397,7 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
 // POST / — create a new bill
 // Body: {
 //   set_type: "grn" | "non_grn",
+//   location: "KOL" | "AHM"   (older clients omit it; defaults to KOL),
 //   uploaded_by: string,
 //   slots: { tally_voucher: { pages: [...] }, supplier_invoice: {...}, ... }
 // }
@@ -452,6 +411,12 @@ router.post('/', requireCdcBillsAdmin, async (req, res) => {
     }
     if (!body.slots) {
       return res.status(400).json({ error: 'slots are required' });
+    }
+    const location = body.location == null || body.location === ''
+      ? DEFAULT_LOCATION
+      : parseLocation(body.location);
+    if (!location) {
+      return res.status(400).json({ error: `location must be one of ${Object.keys(LOCATIONS).join(', ')}` });
     }
 
     // ---------------------------------------------------------------
@@ -468,6 +433,7 @@ router.post('/', requireCdcBillsAdmin, async (req, res) => {
 
     const draft = {
       set_type: setType,
+      location,
       uploaded_by: req.cdcBillsUser?.displayName || body.uploaded_by || 'anonymous',
       uploaded_at: new Date(),
       slots: rawSlots,
@@ -478,7 +444,7 @@ router.post('/', requireCdcBillsAdmin, async (req, res) => {
       const saved = await PurchaseBill.create(draft);
       // Enqueue background extraction — returns immediately
       enqueue(saved._id);
-      logActivity({ req, action: 'upload_bill', billId: saved._id, details: { set_type: setType } });
+      logActivity({ req, action: 'upload_bill', billId: saved._id, details: { set_type: setType, location } });
       return res.status(201).json({ _id: saved._id, verification_status: 'pending_extraction' });
     } catch (err) {
       if (err && err.code === 11000) {
@@ -563,6 +529,8 @@ function buildSearchFilter(query = {}) {
   const filter = {};
   const and = [];
 
+  const location = parseLocation(query.location);
+  if (location) filter.location = location;
   if (set_type && ['grn', 'non_grn'].includes(set_type)) filter.set_type = set_type;
   if (status) filter.verification_status = status;
   if (supplier_gstin) filter.supplier_gstin = String(supplier_gstin).trim().toUpperCase();
@@ -695,7 +663,7 @@ async function findVoucherRangePage(range, filter, page, limit) {
 
 // ============================================================
 // GET /
-// Query: q, supplier_gstin, supplier_names, set_type, status, from, to,
+// Query: q, supplier_gstin, supplier_names, set_type, status, from, to, location,
 //        voucher_prefix, voucher_fy, voucher_from, voucher_to, page, limit
 // ============================================================
 router.get('/', async (req, res) => {
@@ -762,6 +730,7 @@ router.get('/export.xlsx', requireCdcBillsAdmin, async (req, res) => {
     const sheet = rows.map((b) => ({
       'Uploaded At': isoMinute(b.uploaded_at),
       'Uploaded By': b.uploaded_by || '',
+      'Location': LOCATIONS[b.location || DEFAULT_LOCATION]?.label || b.location,
       'Set Type': b.set_type === 'grn' ? 'GRN' : 'Non-GRN',
       'Status': b.verification_status || '',
       'Tally Voucher': b.tally_voucher_number || '',
@@ -788,7 +757,7 @@ router.get('/export.xlsx', requireCdcBillsAdmin, async (req, res) => {
     const ws = XLSX.utils.json_to_sheet(sheet);
     // Reasonable column widths so the file is usable without manual resizing
     ws['!cols'] = [
-      { wch: 18 }, { wch: 12 }, { wch: 10 }, { wch: 22 },
+      { wch: 18 }, { wch: 12 }, { wch: 11 }, { wch: 10 }, { wch: 22 },
       { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 12 },
       { wch: 32 }, { wch: 18 }, { wch: 16 }, { wch: 16 },
       { wch: 12 }, { wch: 24 }, { wch: 16 }, { wch: 14 },
@@ -816,7 +785,8 @@ router.get('/export.xlsx', requireCdcBillsAdmin, async (req, res) => {
 
 // ============================================================
 // GET /missing-vouchers
-// Query: fy (required, YY-YY), prefix (default "PUR"), from, to
+// Query: fy (required, YY-YY), prefix (default "PUR"), from, to,
+//        location (default KOL; each location's Tally has its own series)
 //
 // Returns the set of Tally voucher serial numbers in [from..to] for the
 // given FY that are NOT present in the database. Useful for catching
@@ -830,7 +800,9 @@ router.get('/missing-vouchers', async (req, res) => {
     const prefix = String(req.query.prefix || 'PUR').trim();
     const from = parseInt(req.query.from, 10);
     const to = parseInt(req.query.to, 10);
+    const location = req.query.location ? parseLocation(req.query.location) : DEFAULT_LOCATION;
 
+    if (!location) return res.status(400).json({ error: `location must be one of ${Object.keys(LOCATIONS).join(', ')}` });
     if (!fy) return res.status(400).json({ error: 'fy is required (e.g. 26-27)' });
     if (!/^\d{2}-\d{2}$/.test(fy)) {
       return res.status(400).json({ error: 'fy must be in YY-YY format (e.g. 26-27)' });
@@ -849,6 +821,7 @@ router.get('/missing-vouchers', async (req, res) => {
 
     const docs = await PurchaseBill.find({
       tally_voucher_number: { $regex: re },
+      location,
     })
       .select('_id tally_voucher_number is_cancelled_voucher')
       .lean();
@@ -879,6 +852,7 @@ router.get('/missing-vouchers', async (req, res) => {
     return res.json({
       fy,
       prefix,
+      location,
       from,
       to,
       total_in_range: to - from + 1,
@@ -897,7 +871,7 @@ router.get('/missing-vouchers', async (req, res) => {
 
 // ============================================================
 // POST /missing-vouchers/cancel — record missing serials as cancelled
-// Body: { fy, prefix?, serials: number[], note }
+// Body: { fy, prefix?, location?, serials: number[], note }
 //
 // Creates placeholder bills (no images) so the voucher shows up as
 // "Cancelled" in search and stops being reported as missing.
@@ -909,6 +883,11 @@ router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) =
     const prefix = String(body.prefix || 'PUR').trim() || 'PUR';
     const note = String(body.note || '').trim();
     const serials = Array.isArray(body.serials) ? body.serials : [];
+    const location = body.location ? parseLocation(body.location) : DEFAULT_LOCATION;
+
+    if (!location) {
+      return res.status(400).json({ error: `location must be one of ${Object.keys(LOCATIONS).join(', ')}` });
+    }
 
     if (!/^\d{2}-\d{2}$/.test(fy)) {
       return res.status(400).json({ error: 'fy must be in YY-YY format (e.g. 26-27)' });
@@ -932,7 +911,7 @@ router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) =
     }
 
     const re = voucherRangeRegex(prefix, fy);
-    const existing = await PurchaseBill.find({ tally_voucher_number: { $regex: re } })
+    const existing = await PurchaseBill.find({ tally_voucher_number: { $regex: re }, location })
       .select('_id tally_voucher_number')
       .lean();
     const existingSerials = new Set();
@@ -955,6 +934,7 @@ router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) =
       try {
         await PurchaseBill.create({
           set_type: 'non_grn',
+          location,
           uploaded_by: reviewer,
           uploaded_at: now,
           tally_voucher_number: voucherNumber,
@@ -980,12 +960,13 @@ router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) =
     logActivity({
       req,
       action: 'cancel_vouchers',
-      details: { fy, prefix, cancelled, skipped, note },
+      details: { fy, prefix, location, cancelled, skipped, note },
     });
 
     return res.json({
       fy,
       prefix,
+      location,
       note,
       cancelled_count: cancelled.length,
       skipped_count: skipped.length,
@@ -1000,6 +981,7 @@ router.post('/missing-vouchers/cancel', requireCdcBillsAdmin, async (req, res) =
 
 // ============================================================
 // GET /stats/dashboard
+// Query: location (optional; every location when omitted)
 // ============================================================
 router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
   try {
@@ -1013,29 +995,33 @@ router.get('/stats/dashboard', requireCdcBillsAdmin, async (req, res) => {
     const lastWeekSundayEnd = new Date(thisWeekMonday);
     lastWeekSundayEnd.setMilliseconds(-1);
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const location = parseLocation(req.query.location);
+    const scope = location ? { location } : {};
 
     const [today, lastWeek, thisMonth, byStatus, topByCount, topByValue, needsReview] = await Promise.all([
-      PurchaseBill.countDocuments({ uploaded_at: { $gte: startOfDay } }),
+      PurchaseBill.countDocuments({ ...scope, uploaded_at: { $gte: startOfDay } }),
       PurchaseBill.countDocuments({
+        ...scope,
         uploaded_at: { $gte: lastWeekMonday, $lte: lastWeekSundayEnd },
       }),
-      PurchaseBill.countDocuments({ uploaded_at: { $gte: startOfMonth } }),
+      PurchaseBill.countDocuments({ ...scope, uploaded_at: { $gte: startOfMonth } }),
       PurchaseBill.aggregate([
+        { $match: scope },
         { $group: { _id: '$verification_status', count: { $sum: 1 } } },
       ]),
       PurchaseBill.aggregate([
-        { $match: { supplier_name: { $ne: null } } },
+        { $match: { ...scope, supplier_name: { $ne: null } } },
         { $group: { _id: '$supplier_name', count: { $sum: 1 } } },
         { $sort: { count: -1 } },
         { $limit: 10 },
       ]),
       PurchaseBill.aggregate([
-        { $match: { supplier_name: { $ne: null }, grand_total: { $ne: null } } },
+        { $match: { ...scope, supplier_name: { $ne: null }, grand_total: { $ne: null } } },
         { $group: { _id: '$supplier_name', total: { $sum: '$grand_total' } } },
         { $sort: { total: -1 } },
         { $limit: 10 },
       ]),
-      PurchaseBill.countDocuments({ verification_status: 'needs_review' }),
+      PurchaseBill.countDocuments({ ...scope, verification_status: 'needs_review' }),
     ]);
 
     const statusCounts = { verified: 0, verified_with_warnings: 0, needs_review: 0, rejected: 0 };
@@ -1225,6 +1211,13 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
         bill.markModified('slots');
       }
       applyCanonicalFields(bill, buildCanonicalFields(bill.slots, { setType: bill.set_type }));
+    }
+    if (body.canonical && Object.prototype.hasOwnProperty.call(body.canonical, 'location')) {
+      const location = parseLocation(body.canonical.location);
+      if (!location) {
+        return res.status(400).json({ error: `location must be one of ${Object.keys(LOCATIONS).join(', ')}` });
+      }
+      bill.location = location;
     }
     if (body.canonical && typeof body.canonical === 'object') {
       // Allow direct overrides of canonical fields (manual correction)

@@ -6,7 +6,11 @@
  *
  * PUR/384/26-27 and PUR/O/384/26-27 are different voucher strings; they only
  * collided because extraction saved a null dedup key.
+ *
+ * Tally voucher numbers are unique per location (KOL and AHM each run their
+ * own Tally), so that index is { location, tally_voucher_number }.
  */
+import { DEFAULT_LOCATION } from '../config/cdc.js';
 
 export const UNIQUE_OPTIONAL_FIELDS = ['bill_dedup_key', 'tally_voucher_number'];
 
@@ -15,14 +19,27 @@ const UNIQUE_FIELD_LABEL = {
   bill_dedup_key: 'Supplier invoice (GSTIN/PAN + bill number)',
 };
 
+/**
+ * Unique fields from a duplicate-key error's keyValue. The voucher index also
+ * holds `location`, which is scope, not the conflicting value.
+ */
+function conflictKeyValue(err) {
+  const keyValue = err?.keyValue || {};
+  return Object.fromEntries(
+    Object.entries(keyValue).filter(([k]) => UNIQUE_OPTIONAL_FIELDS.includes(k)),
+  );
+}
+
 export function uniqueConflictInfo(err) {
   const keyValue = err?.keyValue || {};
   const keyPattern = err?.keyPattern || {};
-  const field = Object.keys(keyPattern)[0] || Object.keys(keyValue)[0] || null;
+  const keys = [...Object.keys(keyPattern), ...Object.keys(keyValue)];
+  const field = keys.find((k) => UNIQUE_OPTIONAL_FIELDS.includes(k)) || keys[0] || null;
   const value = field ? keyValue[field] : undefined;
   return {
     field,
     value,
+    location: keyValue.location ?? null,
     label: (field && UNIQUE_FIELD_LABEL[field]) || field || 'unique field',
   };
 }
@@ -61,7 +78,7 @@ export async function saveBillWithoutNullUniqueKeys(bill) {
   } catch (err) {
     if (err?.code !== 11000) throw err;
 
-    const keyValue = err.keyValue || {};
+    const keyValue = conflictKeyValue(err);
     const nullUnset = { ...unset };
     for (const [field, value] of Object.entries(keyValue)) {
       if (isEmptyUniqueValue(value)) nullUnset[field] = 1;
@@ -123,7 +140,7 @@ async function persistWithoutMongooseNull(bill, extraUnset = {}) {
 }
 
 export function formatDuplicateSaveError(err) {
-  const keyValue = err.keyValue || {};
+  const keyValue = conflictKeyValue(err);
   const parts = Object.entries(keyValue)
     .filter(([, v]) => !isEmptyUniqueValue(v))
     .map(([k, v]) => `${k}=${v}`);
@@ -139,31 +156,55 @@ function isPartialStringUnique(index, field) {
   return Boolean(index?.unique && (type === 'string' || type === 2));
 }
 
+function sameKey(a = {}, b = {}) {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k, i) => k === kb[i] && a[k] === b[k]);
+}
+
 /**
- * Drop unique indexes that still index null, unset stored nulls, then create
- * partial unique indexes that only apply to real strings.
+ * Backfill `location` on rows that predate it, drop unique indexes that still
+ * index null (or the retired global voucher index), unset stored nulls, then
+ * create partial unique indexes that only apply to real strings.
  */
 export async function repairPurchaseBillUniqueIndexes(Model) {
   const coll = Model.collection;
   console.log('[purchase-bills] repairing unique indexes…');
 
+  // `field` is the optional value the partial filter is on.
   const specs = [
     { name: 'bill_dedup_key_1', key: { bill_dedup_key: 1 }, field: 'bill_dedup_key' },
-    { name: 'tally_voucher_number_1', key: { tally_voucher_number: 1 }, field: 'tally_voucher_number' },
+    {
+      name: 'location_1_tally_voucher_number_1',
+      key: { location: 1, tally_voucher_number: 1 },
+      field: 'tally_voucher_number',
+    },
   ];
+  // Voucher numbers were globally unique before AHM bills; that blocks AHM
+  // PUR/70/26-27 whenever KOL has the same number.
+  const retired = [{ tally_voucher_number: 1 }];
 
   try {
+    const backfill = await coll.updateMany(
+      { $or: [{ location: { $exists: false } }, { location: null }] },
+      { $set: { location: DEFAULT_LOCATION } },
+    );
+    if (backfill.modifiedCount) {
+      console.log(`[purchase-bills] set location=${DEFAULT_LOCATION} on ${backfill.modifiedCount} older bills`);
+    }
+
     const indexes = await coll.indexes();
-    for (const spec of specs) {
-      const matches = indexes.filter((idx) => {
-        const keys = Object.keys(idx.key || {});
-        return keys.length === 1 && keys[0] === spec.field && idx.unique;
-      });
-      for (const idx of matches) {
-        if (isPartialStringUnique(idx, spec.field)) continue;
+    for (const idx of indexes) {
+      if (!idx.unique) continue;
+      if (retired.some((key) => sameKey(idx.key, key))) {
         await coll.dropIndex(idx.name);
-        console.log(`[purchase-bills] dropped unique index ${idx.name} (sparse=${Boolean(idx.sparse)} partial=${JSON.stringify(idx.partialFilterExpression || null)})`);
+        console.log(`[purchase-bills] dropped retired unique index ${idx.name}`);
+        continue;
       }
+      const spec = specs.find((sp) => sameKey(idx.key, sp.key));
+      if (!spec || isPartialStringUnique(idx, spec.field)) continue;
+      await coll.dropIndex(idx.name);
+      console.log(`[purchase-bills] dropped unique index ${idx.name} (sparse=${Boolean(idx.sparse)} partial=${JSON.stringify(idx.partialFilterExpression || null)})`);
     }
 
     const unsetDedup = await coll.updateMany(
@@ -181,7 +222,7 @@ export async function repairPurchaseBillUniqueIndexes(Model) {
     const afterDrop = await coll.indexes();
     for (const spec of specs) {
       const existing = afterDrop.find((idx) => idx.name === spec.name || (
-        Object.keys(idx.key || {}).length === 1 && idx.key?.[spec.field] === 1 && idx.unique
+        sameKey(idx.key, spec.key) && idx.unique
       ));
       if (existing && isPartialStringUnique(existing, spec.field)) {
         console.log(`[purchase-bills] unique index ${existing.name} already partial`);
