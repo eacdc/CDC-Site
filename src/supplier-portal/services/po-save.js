@@ -1,6 +1,10 @@
 /**
  * Create PO: checking a PO again on the server, and writing it to the ERP.
  *
+ * A line may only use a price a person approved in the supplier portal - or,
+ * while those approvals catch up, at most the last rate paid to the same
+ * supplier for the item (po.js LAST_PAID_FALLBACK_DAYS; Manu, 23 Nov 2026).
+ *
  * The screen applies every rule as the buyer types (Create-PO po-math.js);
  * nothing it sends is trusted. `preparePo` works the whole PO out again from
  * the ERP and the supplier portal - the supplier's ledger, each item, the
@@ -37,7 +41,7 @@ import { supplierLedgers } from './erp-ledgers.js';
 import { normaliseGstin } from './supplier-groups.js';
 import {
   DELIVERY_ADDRESSES, PAYMENT_TERMS, TRANSPORT_MODES, PURCHASE_DIVISION, CURRENCY_CODE,
-  supplierResolver, bufferStock, toPoItem, firstJobNo,
+  supplierResolver, bufferStock, toPoItem, firstJobNo, supplierLastPaid,
 } from './po.js';
 
 const M = PoMath;
@@ -150,15 +154,40 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
     const approvedRate = mine ? M.offerRate(mine, item.purchaseUnit) : null;
     const rate = Number(l.rate);
     const rateKept = Boolean(kept) && Math.abs(rate - kept.rate) < 0.00005;
-    if (!rateKept && mine && approvedRate == null) {
-      lineProblems.push(`${label}: the approved price is per ${mine.rate?.uom || '?'} and cannot be turned into a price per ${item.purchaseUnit}.`);
+
+    // No usable approved price: the last rate paid to this supplier for the
+    // item, while the portal's approvals catch up (LAST_PAID_FALLBACK_DAYS).
+    let fallback = null;
+    if (!rateKept && approvedRate == null) {
+      const paid = (await supplierLastPaid(site, id)).find((p) => p.ledgerId === supplier.ledgerId);
+      const paidRate = paid ? M.convertRate(paid.rate, paid.unit, item.purchaseUnit) : null;
+      if (paidRate != null) fallback = { ...paid, rateInPurchaseUnit: paidRate };
     }
-    for (const c of M.rateChecks({ rate, approvedRate: mine ? approvedRate : null, unit: item.purchaseUnit })) {
-      if (c.severity !== 'BLOCK') continue;
-      if (rateKept && c.code !== 'NO_RATE') continue;
-      if (c.code === 'NO_APPROVED_PRICE' && mine) continue; // the unit problem above says it better
-      lineProblems.push(`${label}: ${c.message}`);
+
+    if (rateKept) {
+      if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
+    } else if (fallback) {
+      if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
+      else if (rate > fallback.rateInPurchaseUnit + 0.00001) {
+        lineProblems.push(`${label}: there is no approved price, and the rate is above the last one paid to this supplier `
+          + `(${fallback.rateInPurchaseUnit}/${item.purchaseUnit} on ${fallback.poNo}).`);
+      }
+    } else {
+      if (mine && approvedRate == null) {
+        lineProblems.push(`${label}: the approved price is per ${mine.rate?.uom || '?'} and cannot be turned into a price per ${item.purchaseUnit}.`);
+      }
+      for (const c of M.rateChecks({ rate, approvedRate: mine ? approvedRate : null, unit: item.purchaseUnit })) {
+        if (c.severity !== 'BLOCK') continue;
+        if (c.code === 'NO_APPROVED_PRICE' && mine) continue; // the unit problem above says it better
+        lineProblems.push(`${label}: ${c.code === 'NO_APPROVED_PRICE'
+          ? 'this supplier has no approved price for this item, and nothing was bought from it in the last year to go by.'
+          : c.message}`);
+      }
     }
+    // What the rate rests on, kept on the tool's record of the PO.
+    const priceBasis = rateKept ? { kind: 'KEPT' }
+      : fallback ? { kind: 'LAST_PAID', rate: fallback.rateInPurchaseUnit, poNo: fallback.poNo, poDate: fallback.poDate }
+        : { kind: 'APPROVED', proposalId: mine ? String(mine._id) : null, rate: approvedRate };
 
     // Requisition lines: each must be this item's, still open, and not on
     // another tool PO waiting for approval.
@@ -214,6 +243,7 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
       rate,
       approvedRate,
       proposalId: mine ? String(mine._id) : null,
+      priceBasis,
       amount: q.amount,
       gstPct: item.gstPct,
       cgstPct: tax.cgstPct,

@@ -385,35 +385,74 @@ export async function poSuppliers(site, { today = new Date() } = {}) {
 }
 
 /**
- * Items with an approved price - from one supplier when `supplierLedgerId` is
- * given - for the "Add item" search. Only these can go on a PO.
+ * Items that can go on a PO - from one supplier when `supplierLedgerId` is
+ * given - for the "Add item" search: those with an approved price, and,
+ * while the fallback is on, those bought (from that supplier) within
+ * LAST_PAID_FALLBACK_DAYS. Approved ones come first.
  */
 export async function poItems(site, { q = '', supplierLedgerId = null, limit = 100 } = {}) {
   assertSite(site);
-  const [proposals, resolve] = await Promise.all([approvedProposals(site), supplierResolver(site)]);
-  const priced = await itemsPricedBy(site, proposals);
+  const term = String(q || '').trim().toLowerCase();
   const wanted = supplierLedgerId != null ? Number(supplierLedgerId) : null;
+  const [proposals, resolve, bought] = await Promise.all([
+    approvedProposals(site),
+    supplierResolver(site),
+    LAST_PAID_FALLBACK_DAYS > 0 ? query(site, `
+      WITH L AS (
+        SELECT ITD.ItemID, ITD.PurchaseRate, ITD.PurchaseUnit,
+               ROW_NUMBER() OVER (PARTITION BY ITD.ItemID ORDER BY ITM.VoucherDate DESC, ITD.TransactionDetailID DESC) AS rn
+        FROM ItemTransactionDetail ITD
+        JOIN ItemTransactionMain ITM ON ITM.TransactionID = ITD.TransactionID AND ITM.VoucherID = @po
+        JOIN ItemMaster IM ON IM.ItemID = ITD.ItemID AND IM.CompanyID = ITD.CompanyID
+        WHERE ITD.CompanyID = @companyId AND ITD.PurchaseRate > 0
+          AND ITM.VoucherDate >= DATEADD(DAY, -@days, GETDATE())
+          AND ISNULL(ITM.IsDeletedTransaction,0) = 0
+          AND ISNULL(ITD.IsDeletedTransaction,0) = 0
+          AND ISNULL(ITD.IsCancelled,0) = 0
+          ${wanted != null ? 'AND ITM.LedgerID = @ledgerId' : ''}
+          ${term ? 'AND (IM.ItemName LIKE @like OR IM.ItemCode LIKE @like)' : ''}
+      )
+      SELECT TOP 300 ItemID, PurchaseRate, PurchaseUnit FROM L WHERE rn = 1
+    `, {
+      po: VOUCHER.PURCHASE_ORDER,
+      companyId: COMPANY_ID,
+      days: { type: sql.Int, value: LAST_PAID_FALLBACK_DAYS },
+      ledgerId: { type: sql.BigInt, value: wanted },
+      like: `%${term}%`,
+    }) : [],
+  ]);
+  const priced = await itemsPricedBy(site, proposals);
 
-  const ids = [...priced.keys()].filter((id) => wanted == null
+  const approvedIds = [...priced.keys()].filter((id) => wanted == null
     || priced.get(id).some((p) => resolve(p.supplier)?.ledgerId === wanted));
+  const lastPaid = new Map(bought.map((r) => [Number(r.ItemID), r]));
+  const ids = [...new Set([...approvedIds, ...lastPaid.keys()])];
   if (!ids.length) return [];
 
   const [items, hsn] = await Promise.all([getItems(site, ids), hsnForItems(site, ids)]);
-  const term = String(q || '').trim().toLowerCase();
   const out = [];
   for (const id of ids) {
     const row = items.get(id) || items.get(String(id));
     if (!row) continue;
     const item = toPoItem(row, hsn.get(row.ItemID) || hsn.get(String(row.ItemID)));
     if (term && !`${item.itemName} ${item.itemCode}`.toLowerCase().includes(term)) continue;
-    const ps = priced.get(id);
+    const ps = approvedIds.includes(id) ? priced.get(id) : [];
     const suppliers = new Set(ps.map((p) => (p.supplier?.gstin || p.supplier?.name || '').toUpperCase()));
     const mine = wanted == null ? null
       : ps.filter((p) => resolve(p.supplier)?.ledgerId === wanted)
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
-    out.push({ ...item, supplierCount: suppliers.size, approvedRate: mine ? mine.rate : null });
+    const paid = wanted != null ? lastPaid.get(id) : null;
+    out.push({
+      ...item,
+      supplierCount: suppliers.size,
+      approvedRate: mine ? mine.rate : null,
+      // From this supplier, for the fallback; only when a supplier was given.
+      lastPaidRate: paid ? { rate: Math.round(Number(paid.PurchaseRate) * 10000) / 10000, unit: String(paid.PurchaseUnit || '').trim() } : null,
+    });
   }
-  return out.sort((a, b) => a.itemName.localeCompare(b.itemName)).slice(0, limit);
+  return out
+    .sort((a, b) => (Number(b.supplierCount > 0) - Number(a.supplierCount > 0)) || a.itemName.localeCompare(b.itemName))
+    .slice(0, limit);
 }
 
 // ── one line: item, prices, last paid, stock ────────────────────────────────
@@ -455,7 +494,7 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
   const row = await getItem(site, id);
   if (!row) return null;
 
-  const [hsn, offers, resolve, paid, master] = await Promise.all([
+  const [hsn, offers, resolve, paid, master, bySupplier] = await Promise.all([
     hsnForItems(site, [id]),
     compareItem({ site, itemId: id }),
     supplierResolver(site),
@@ -465,6 +504,7 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
     query(site, `
       SELECT PurchaseRate FROM ItemMaster WHERE ItemID = @itemId AND CompanyID = @companyId
     `, { itemId: { type: sql.BigInt, value: id }, companyId: COMPANY_ID }),
+    supplierLastPaid(site, id),
   ]);
   const item = toPoItem(row, hsn.get(row.ItemID) || hsn.get(String(row.ItemID)));
   const last = paid.get(row.ItemID) || paid.get(String(row.ItemID)) || null;
@@ -473,6 +513,8 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
   return {
     item,
     masterRate: masterRate != null ? { rate: masterRate, unit: item.purchaseUnit } : null,
+    // The fallback while approvals catch up: the last rate paid to each supplier.
+    lastPaidBySupplier: bySupplier,
     offers: offers.map((o) => {
       const s = resolve(o.supplier);
       return { ...o, proposalId: String(o._id), supplierLedgerId: s ? s.ledgerId : null, supplierLedgerName: s ? s.name : null };
@@ -482,6 +524,56 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
     } : null,
     stock: PAPER_GROUP_IDS.includes(item.groupId) ? await bufferStock(site, row, { clientId }) : [],
   };
+}
+
+/**
+ * Until the supplier portal's approvals catch up (none were approved on 23
+ * Nov 2026), a line with no approved price from its supplier may be ordered
+ * at or below the last rate paid to that same supplier for the item within
+ * this many days (Manu, 23 Nov 2026). Set to 0 to require approved prices only.
+ */
+export const LAST_PAID_FALLBACK_DAYS = 365;
+
+/**
+ * The last rate paid to each supplier for one item, within the fallback
+ * window: what a line with no approved price may be ordered at.
+ *
+ * @returns {Promise<Array<{ledgerId, supplierName, rate, unit, poNo, poDate}>>}
+ */
+export async function supplierLastPaid(site, itemId, { days = LAST_PAID_FALLBACK_DAYS } = {}) {
+  assertSite(site);
+  if (!(days > 0)) return [];
+  const rows = await query(site, `
+    WITH L AS (
+      SELECT ITM.LedgerID, ITD.PurchaseRate, ITD.PurchaseUnit, ITM.VoucherNo, ITM.VoucherDate,
+             ROW_NUMBER() OVER (PARTITION BY ITM.LedgerID ORDER BY ITM.VoucherDate DESC, ITD.TransactionDetailID DESC) AS rn
+      FROM ItemTransactionDetail ITD
+      JOIN ItemTransactionMain ITM ON ITM.TransactionID = ITD.TransactionID AND ITM.VoucherID = @po
+      WHERE ITD.ItemID = @itemId AND ITD.CompanyID = @companyId AND ITD.PurchaseRate > 0
+        AND ITM.VoucherDate >= DATEADD(DAY, -@days, GETDATE())
+        AND ISNULL(ITM.IsDeletedTransaction,0) = 0
+        AND ISNULL(ITD.IsDeletedTransaction,0) = 0
+        AND ISNULL(ITD.IsCancelled,0) = 0
+    )
+    SELECT L.LedgerID, LM.LedgerName, L.PurchaseRate, L.PurchaseUnit, L.VoucherNo, L.VoucherDate
+    FROM L
+    LEFT JOIN LedgerMaster LM ON LM.LedgerID = L.LedgerID AND LM.CompanyID = @companyId
+    WHERE L.rn = 1
+  `, {
+    itemId: { type: sql.BigInt, value: Number(itemId) },
+    companyId: COMPANY_ID,
+    po: VOUCHER.PURCHASE_ORDER,
+    days: { type: sql.Int, value: days },
+  });
+  return rows.map((r) => ({
+    ledgerId: Number(r.LedgerID),
+    supplierName: r.LedgerName || null,
+    // PurchaseRate is a `real`: 16.32 comes back as 16.31999969482422.
+    rate: Math.round(Number(r.PurchaseRate) * 10000) / 10000,
+    unit: String(r.PurchaseUnit || '').trim(),
+    poNo: r.VoucherNo,
+    poDate: r.VoucherDate,
+  }));
 }
 
 /**
