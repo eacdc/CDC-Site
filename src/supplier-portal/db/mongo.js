@@ -17,13 +17,14 @@ import { SCHEMAS as BASE_SCHEMAS } from '../models/schemas.js';
 import {
   autoQuoteSchema, mappingProposalSchema, supplierCorrectionSchema, lockModel, applyCorrections,
 } from '../models/proposals.js';
+import { poOrderSchema } from '../models/po-orders.js';
 import { UOM_SEED, AMBIGUOUS_UOMS } from '../config/uom-seed.js';
 
 /** Append-only: insert, and a reviewer's decision, and nothing else (models/proposals.js). */
 const APPEND_ONLY = {
   SpAutoQuote: autoQuoteSchema, SpMappingProposal: mappingProposalSchema, SpSupplierCorrection: supplierCorrectionSchema,
 };
-const SCHEMAS = { ...BASE_SCHEMAS, ...APPEND_ONLY };
+const SCHEMAS = { ...BASE_SCHEMAS, ...APPEND_ONLY, SpPoOrder: poOrderSchema };
 
 let connection = null;
 let connecting = null;
@@ -49,6 +50,7 @@ export let InkTermRule = null;
 export let AutoQuote = null;
 export let MappingProposal = null;
 export let SupplierCorrection = null;
+export let PoOrder = null;
 
 const BINDINGS = [
   'SpSupplierGroup', 'SpQuoteDocument', 'SpQuoteLine', 'SpSupplierItem',
@@ -56,6 +58,7 @@ const BINDINGS = [
   'SpUomNormalisation', 'SpAuditLog', 'SpUser', 'SpSupplierUser',
   'SpSession', 'SpItemClassification', 'SpDeliveryDateSnapshot',
   'SpPaperBrandRule', 'SpInkTermRule', 'SpAutoQuote', 'SpMappingProposal', 'SpSupplierCorrection',
+  'SpPoOrder',
 ];
 
 function assign(models) {
@@ -80,6 +83,7 @@ function assign(models) {
     SpAutoQuote: AutoQuote,
     SpMappingProposal: MappingProposal,
     SpSupplierCorrection: SupplierCorrection,
+    SpPoOrder: PoOrder,
   } = models);
 }
 
