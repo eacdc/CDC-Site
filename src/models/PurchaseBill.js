@@ -134,6 +134,9 @@ export const purchaseBillSchema = new Schema({
   // Uniqueness is a partial index in repairPurchaseBillUniqueIndexes —
   // never store null (Mongo unique indexes treat null as a real value).
   bill_dedup_key: { type: String },
+  // Supplier + invoice without the year (purchase-bill-dedup.js). Not unique:
+  // finds the same invoice in other years, and every year when a date is unknown.
+  bill_dedup_base: { type: String, index: true },
   invoice_image_phash: String,
 }, {
   collection: 'PurchaseBills',

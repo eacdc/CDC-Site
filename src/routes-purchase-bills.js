@@ -28,10 +28,10 @@ import { v2 as cloudinary } from 'cloudinary';
 import { ensurePurchaseBillsReady, PurchaseBill } from './db-purchase-bills.js';
 import { extractFromImage } from './lib/bill-vision.js';
 import { aggregateAllSlots, applyCanonicalFields, buildCanonicalFields } from './lib/purchase-bill-aggregation.js';
-import { buildBillDedupKey, listDedupKeys } from './lib/purchase-bill-dedup.js';
+import { buildBillDedupBase, buildBillDedupKey } from './lib/purchase-bill-dedup.js';
 import { buildDbHelpers } from './lib/purchase-bill-db-helpers.js';
 import { DEFAULT_LOCATION, LOCATIONS, parseLocation } from './config/cdc.js';
-import { stripEmptyUniqueKeys, uniqueConflictInfo } from './lib/purchase-bill-unique-keys.js';
+import { releaseDedupKeyIfDuplicate, stripEmptyUniqueKeys, uniqueConflictInfo } from './lib/purchase-bill-unique-keys.js';
 import { runVerificationChecks, computeVerificationStatus } from './lib/purchase-bill-verification.js';
 import { generatePhash, hammingDistance } from './lib/phash.js';
 import {
@@ -141,6 +141,7 @@ async function verifyAndStamp(bill) {
   bill.verification_status = status;
   bill.blocking_failures_count = blocking;
   bill.warning_failures_count = warning;
+  releaseDedupKeyIfDuplicate(bill);
   return bill;
 }
 
@@ -333,10 +334,11 @@ router.post('/check-duplicate', requireCdcBillsAdmin, async (req, res) => {
     let voucher_duplicate = null;
     let similar_matches = [];
 
-    const dedupKeys = listDedupKeys({ supplier_gstin, supplier_pan, invoice_number });
-    if (dedupKeys.length) {
-      const hit = await PurchaseBill.findOne({ bill_dedup_key: { $in: dedupKeys } })
-        .select('_id uploaded_by uploaded_at tally_voucher_number invoice_number');
+    // Same supplier + invoice number + financial year (any year without a date).
+    {
+      const hit = await buildDbHelpers().findDuplicateOriginal({
+        supplier_gstin, supplier_pan, invoice_number, invoice_date,
+      });
       if (hit) {
         exact_duplicate = {
           bill_id: String(hit._id),
@@ -1237,12 +1239,15 @@ router.patch('/:id', requireCdcBillsModify, async (req, res) => {
           bill[k] = body.canonical[k];
         }
       }
-      // Re-compute dedup key when supplier identity or invoice number change.
-      bill.bill_dedup_key = buildBillDedupKey({
+      // Re-compute dedup key when supplier identity, invoice number or date change.
+      const dedupFields = {
         supplier_gstin: bill.supplier_gstin,
         supplier_pan: bill.supplier_pan,
         invoice_number: bill.invoice_number,
-      });
+        invoice_date: bill.invoice_date,
+      };
+      bill.bill_dedup_key = buildBillDedupKey(dedupFields);
+      bill.bill_dedup_base = buildBillDedupBase(dedupFields);
       if (!bill.bill_dedup_key) {
         bill.set('bill_dedup_key', undefined);
         if (bill._doc) delete bill._doc.bill_dedup_key;

@@ -11,6 +11,7 @@
  * own Tally), so that index is { location, tally_voucher_number }.
  */
 import { DEFAULT_LOCATION } from '../config/cdc.js';
+import { buildBillDedupBase, buildBillDedupKey, financialYear } from './purchase-bill-dedup.js';
 
 export const UNIQUE_OPTIONAL_FIELDS = ['bill_dedup_key', 'tally_voucher_number'];
 
@@ -46,6 +47,22 @@ export function uniqueConflictInfo(err) {
 
 function isEmptyUniqueValue(v) {
   return v == null || (typeof v === 'string' && !v.trim());
+}
+
+/**
+ * A bill flagged as a duplicate supplier invoice gives up its unique key (it
+ * keeps `bill_dedup_base`), so the original keeps the key and is never itself
+ * flagged as a duplicate of the copy. Call after verification, before saving.
+ */
+export function releaseDedupKeyIfDuplicate(bill) {
+  const dup = (bill.check_results || []).some(
+    (r) => r.check_id === 'DUPLICATE_BILL_NUMBER' && r.status === 'fail' && r.actual?.existing_bill_id,
+  );
+  if (dup) {
+    bill.set?.('bill_dedup_key', undefined);
+    if (!bill.set) bill.bill_dedup_key = undefined;
+  }
+  return dup;
 }
 
 export function stripEmptyUniqueKeys(bill) {
@@ -163,6 +180,77 @@ function sameKey(a = {}, b = {}) {
 }
 
 /**
+ * Bring stored dedup keys to the current rule (supplier + invoice number
+ * ignoring punctuation / leading zeros + financial year). Runs on every
+ * startup and only writes rows whose key or base changed.
+ *
+ * Bills that only now count as duplicates: the earliest upload keeps the key;
+ * later ones give it up and are flagged for review. Nothing is deleted.
+ * Bills that already had no key (earlier duplicates) only get a base.
+ */
+export async function migrateBillDedupKeys(coll) {
+  const cursor = coll.find(
+    { $or: [{ bill_dedup_key: { $type: 'string' } }, { invoice_number: { $type: 'string' } }] },
+    { projection: { supplier_gstin: 1, supplier_pan: 1, invoice_number: 1, invoice_date: 1, bill_dedup_key: 1, bill_dedup_base: 1 } },
+  ).sort({ uploaded_at: 1, _id: 1 });
+
+  const owner = new Map(); // new key → _id of the bill keeping it
+  const ops = [];
+  const flagged = [];
+  for await (const row of cursor) {
+    const base = buildBillDedupBase(row);
+    const key = buildBillDedupKey(row);
+    const $set = {};
+    const $unset = {};
+    if (base && base !== row.bill_dedup_base) $set.bill_dedup_base = base;
+    if (!base && row.bill_dedup_base) $unset.bill_dedup_base = 1;
+    // No key under today's rules (e.g. a misread 14-character GSTIN saved by
+    // older code): keep the old key as it is.
+    if (typeof row.bill_dedup_key === 'string' && key) {
+      if (owner.has(key)) {
+        $unset.bill_dedup_key = 1;
+        flagged.push({ _id: row._id, original: owner.get(key), invoice_number: row.invoice_number, fy: financialYear(row.invoice_date) });
+      } else {
+        owner.set(key, row._id);
+        if (key !== row.bill_dedup_key) $set.bill_dedup_key = key;
+      }
+    }
+    const update = {};
+    if (Object.keys($set).length) update.$set = $set;
+    if (Object.keys($unset).length) update.$unset = $unset;
+    if (Object.keys(update).length) ops.push({ updateOne: { filter: { _id: row._id }, update } });
+  }
+
+  // Free the copies' keys first so no original collides with a copy's old key.
+  ops.sort((a, b) => Number(Boolean(b.updateOne.update.$unset?.bill_dedup_key)) - Number(Boolean(a.updateOne.update.$unset?.bill_dedup_key)));
+  if (ops.length) {
+    try {
+      await coll.bulkWrite(ops, { ordered: false });
+    } catch (err) {
+      console.warn(`[purchase-bills] dedup key migration: ${err?.writeErrors?.length ?? 1} write(s) failed:`, err?.message);
+    }
+  }
+
+  for (const f of flagged) {
+    const bill = await coll.findOne({ _id: f._id }, { projection: { check_results: 1, verification_status: 1 } });
+    const message = `Bill ${f.invoice_number} from this supplier already exists for ${f.fy ? `FY ${f.fy}` : 'any year (invoice date unknown)'} (bill ${String(f.original)}). Found when duplicate matching started ignoring punctuation and leading zeros.`;
+    const checks = (bill?.check_results || []).filter((r) => r.check_id !== 'DUPLICATE_BILL_NUMBER');
+    checks.push({
+      check_id: 'DUPLICATE_BILL_NUMBER', category: 'duplicate', level: 'blocking', status: 'fail',
+      message, expected: 'unique', actual: { existing_bill_id: String(f.original) },
+    });
+    const $set = {
+      check_results: checks,
+      blocking_failures_count: checks.filter((r) => r.level === 'blocking' && r.status === 'fail').length,
+    };
+    if (bill?.verification_status !== 'rejected') $set.verification_status = 'needs_review';
+    await coll.updateOne({ _id: f._id }, { $set });
+  }
+
+  console.log(`[purchase-bills] dedup keys: updated ${ops.length} bills, flagged ${flagged.length} new duplicates${flagged.length ? `: ${flagged.map((f) => `${f._id} (copy of ${f.original})`).join(', ')}` : ''}`);
+}
+
+/**
  * Backfill `location` on rows that predate it, drop unique indexes that still
  * index null (or the retired global voucher index), unset stored nulls, then
  * create partial unique indexes that only apply to real strings.
@@ -191,6 +279,12 @@ export async function repairPurchaseBillUniqueIndexes(Model) {
     );
     if (backfill.modifiedCount) {
       console.log(`[purchase-bills] set location=${DEFAULT_LOCATION} on ${backfill.modifiedCount} older bills`);
+    }
+
+    try {
+      await migrateBillDedupKeys(coll);
+    } catch (err) {
+      console.warn('[purchase-bills] dedup key migration failed:', err?.message || err);
     }
 
     const indexes = await coll.indexes();

@@ -107,6 +107,7 @@ test('index repair backfills KOL and swaps the global voucher index for a per-lo
   ];
   const coll = {
     indexes: async () => indexes,
+    find: () => ({ sort: () => [] }),
     dropIndex: async (name) => { calls.push(['drop', name]); indexes = indexes.filter((i) => i.name !== name); },
     createIndex: async (key, opts) => { calls.push(['create', opts.name]); indexes.push({ key, ...opts }); },
     updateMany: async (filter, update) => {

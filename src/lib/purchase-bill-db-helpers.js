@@ -4,18 +4,31 @@
  */
 import { PurchaseBill } from '../db-purchase-bills.js';
 import { DEFAULT_LOCATION, parseLocation } from '../config/cdc.js';
+import { listDedupBases, listSameYearDedupKeys } from './purchase-bill-dedup.js';
 
 export function buildDbHelpers(excludeId) {
   const exclude = excludeId ? { _id: { $ne: excludeId } } : {};
   return {
-    findExistingByDedupKey: async (key) => {
-      if (!key) return null;
-      return PurchaseBill.findOne({ bill_dedup_key: key, ...exclude }).lean();
+    // The original of this supplier + invoice + year. Only bills holding a key
+    // count: a bill flagged as a duplicate gives its key up, so the original
+    // is never reported as a duplicate of its copy.
+    findDuplicateOriginal: async (bill) => {
+      const bases = listDedupBases(bill);
+      if (bases.length === 0) return null;
+      const keys = listSameYearDedupKeys(bill);
+      const filter = keys.length
+        ? { bill_dedup_key: { $in: keys } }
+        : { bill_dedup_base: { $in: bases }, bill_dedup_key: { $type: 'string' } };
+      return PurchaseBill.findOne({ ...filter, ...exclude }).sort({ uploaded_at: 1 }).lean();
     },
-    findExistingByDedupKeys: async (keys) => {
-      const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
-      if (list.length === 0) return null;
-      return PurchaseBill.findOne({ bill_dedup_key: { $in: list }, ...exclude }).lean();
+    // Same supplier + invoice in another financial year (allowed, but worth a look).
+    findDedupOtherYears: async (bill) => {
+      const keys = listSameYearDedupKeys(bill);
+      if (keys.length === 0) return [];
+      return PurchaseBill.find(
+        { bill_dedup_base: { $in: listDedupBases(bill) }, bill_dedup_key: { $type: 'string', $nin: keys }, ...exclude },
+        '_id invoice_number invoice_date bill_dedup_key',
+      ).limit(5).lean();
     },
     // Voucher numbers repeat across locations, so only the bill's own location counts.
     findByTallyVoucher: async (no, _excludeId, location) => {
