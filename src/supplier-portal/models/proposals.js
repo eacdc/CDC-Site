@@ -184,6 +184,54 @@ mappingProposalSchema.index({ site: 1, status: 1, 'decision.itemId': 1 });
 mappingProposalSchema.index({ 'supplier.gstin': 1, status: 1 });
 appendOnly(mappingProposalSchema, { decidable: true });
 
+/**
+ * Who sent a quote, as an approver corrected it. The quote and its lines keep
+ * the supplier the run read; a correction is a new record, and the newest one
+ * for a quote is the supplier everyone sees (`withSuppliers`). Undoing one is
+ * another correction back.
+ */
+export const supplierCorrectionSchema = new Schema({
+  autoQuoteId: { type: Schema.Types.ObjectId, ref: 'SpAutoQuote', required: true, index: true },
+  supplier: { name: { type: String, required: true }, gstin: String },
+  /** The portal supplier it was picked from; null for a name typed in. */
+  supplierGroupId: { type: Schema.Types.ObjectId, ref: 'SpSupplierGroup', default: null },
+  previous: { name: String, gstin: String },
+  note: String,
+  by: { type: String, required: true },
+}, { collection: 'sp_supplierCorrections', timestamps: true });
+appendOnly(supplierCorrectionSchema);
+
+/** The newest correction for each quote, keyed by its autoQuoteId. */
+export function latestCorrections(corrections = []) {
+  const latest = new Map();
+  for (const c of corrections) {
+    const key = String(c.autoQuoteId);
+    const had = latest.get(key);
+    if (!had || new Date(c.createdAt) > new Date(had.createdAt)
+      || (+new Date(c.createdAt) === +new Date(had.createdAt) && String(c._id) > String(had._id))) latest.set(key, c);
+  }
+  return latest;
+}
+
+/**
+ * Records with the supplier corrected where an approver corrected it, and
+ * `supplierCorrected` saying who, when and what it was. A quote is matched by
+ * its own _id, a line by its autoQuoteId.
+ */
+export function applyCorrections(records = [], corrections = [], { quoteIdOf = (r) => r.autoQuoteId } = {}) {
+  const latest = corrections instanceof Map ? corrections : latestCorrections(corrections);
+  if (!latest.size) return records;
+  return records.map((r) => {
+    const c = latest.get(String(quoteIdOf(r)));
+    if (!c) return r;
+    return {
+      ...r,
+      supplier: { name: c.supplier.name, gstin: c.supplier.gstin || null },
+      supplierCorrected: { by: c.by, at: c.createdAt, previous: c.previous || null, note: c.note || null },
+    };
+  });
+}
+
 /** The quote line a proposal is about: its first proposal's id. */
 export const lineKey = (p) => String(p.refreshOf || p._id);
 

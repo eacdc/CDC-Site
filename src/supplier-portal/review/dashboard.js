@@ -8,7 +8,7 @@
  * name), never its rank, so a filter does not repaint the rest.
  */
 
-let tab = ['review', 'item', 'supplier'].includes(store.get('spTab')) ? store.get('spTab') : 'review';
+let tab = ['review', 'item', 'supplier', 'upload'].includes(store.get('spTab')) ? store.get('spTab') : 'review';
 let dashItem = store.get('spDashItem');
 let dashSupplier = store.get('spDashSupplier');
 let redraw = null; // draws the charts on screen again, at the new width
@@ -46,6 +46,7 @@ function showTab(t) {
   redraw = null;
   if (t === 'item') itemTab();
   if (t === 'supplier') supplierTab();
+  if (t === 'upload') uploadTab();
 }
 document.querySelectorAll('[data-tab]').forEach((b) => {
   b.onclick = () => { if (b.dataset.tab !== tab) { showTab(b.dataset.tab); window.scrollTo(0, 0); } };

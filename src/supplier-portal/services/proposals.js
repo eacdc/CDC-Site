@@ -12,10 +12,11 @@
 
 import { z } from 'zod';
 import {
-  ensureSupplierPortalReady, AutoQuote, MappingProposal, QuoteDocument,
+  ensureSupplierPortalReady, AutoQuote, MappingProposal, QuoteDocument, SupplierGroup, SupplierCorrection,
+  withSuppliers,
 } from '../db/mongo.js';
 import { decideProposal, currentProposals, lineKey } from '../models/proposals.js';
-import { SITES } from '../config/constants.js';
+import { SITES, PLANTS } from '../config/constants.js';
 import { sha256Of } from './quotes.js';
 import { getItem, getItems, paperItemsInGsmRange } from './erp-items.js';
 import {
@@ -210,7 +211,8 @@ export async function openUnmapped({ sites = SITES } = {}) {
   const all = await MappingProposal.find({ site: { $in: sites } })
     .select('autoQuoteId site supplier lineNo line rate proposal rulesVersion refreshOf status decision.at createdAt').lean();
   const lastDecisionAt = all.reduce((at, p) => (p.decision?.at && (!at || p.decision.at > at) ? p.decision.at : at), null);
-  const open = currentProposals(all).filter((p) => p.status === 'UNAPPROVED' && !p.proposal?.itemId && !p.proposal?.band?.quality);
+  const open = await withSuppliers(currentProposals(all)
+    .filter((p) => p.status === 'UNAPPROVED' && !p.proposal?.itemId && !p.proposal?.band?.quality));
   const classes = new Map((await AutoQuote.find({ _id: { $in: [...new Set(open.map((p) => String(p.autoQuoteId)))] } })
     .select('materialClass').lean()).map((q) => [String(q._id), q.materialClass || null]));
   return {
@@ -226,9 +228,9 @@ export async function openUnmapped({ sites = SITES } = {}) {
  */
 export async function proposalsForMatching({ sites = SITES } = {}) {
   await ensureSupplierPortalReady();
-  return currentProposals(await MappingProposal.find({ site: { $in: sites } })
-    .select('site supplier line rate proposal.itemId proposal.itemName proposal.band refreshOf status decision createdAt')
-    .lean());
+  return withSuppliers(currentProposals(await MappingProposal.find({ site: { $in: sites } })
+    .select('autoQuoteId site supplier line rate proposal.itemId proposal.itemName proposal.band refreshOf status decision createdAt')
+    .lean()));
 }
 
 /**
@@ -241,11 +243,116 @@ export async function pendingPortalUploads({ limit = 50 } = {}) {
   const docs = await QuoteDocument.find({
     _id: { $nin: read }, storageKey: { $ne: null }, status: { $nin: ['REJECTED', 'DELETED'] },
   }).sort({ createdAt: 1 }).limit(limit)
-    .select('_id originalFilename mimeType sha256 storageKey plantScope createdAt').lean();
+    .select('_id originalFilename mimeType sha256 storageKey plantScope supplierGroupId uploaderSupplier uploadNote uploadedBy createdAt').lean();
+  const groups = await groupsById(docs.map((d) => d.supplierGroupId));
   return Promise.all(docs.map(async (d) => ({
     portalDocumentId: d._id, fileName: d.originalFilename, mimeType: d.mimeType, sha256: d.sha256,
-    plantScope: d.plantScope || [], uploadedAt: d.createdAt, downloadUrl: await viewUrl(d.storageKey, 900),
+    plantScope: d.plantScope || [], uploadedAt: d.createdAt, uploadedBy: d.uploadedBy || null,
+    supplier: uploaderSupplier(d, groups), note: d.uploadNote || null,
+    downloadUrl: await viewUrl(d.storageKey, 900),
   })));
+}
+
+async function groupsById(ids = []) {
+  const want = [...new Set(ids.filter(Boolean).map(String))];
+  if (!want.length) return new Map();
+  return new Map((await SupplierGroup.find({ _id: { $in: want } }).select('name gstins').lean())
+    .map((g) => [String(g._id), g]));
+}
+
+/** The supplier the uploader named: picked from the portal's list, or typed in. Null if neither. */
+export function uploaderSupplier(doc, groups = new Map()) {
+  const g = doc.supplierGroupId && groups.get(String(doc.supplierGroupId));
+  if (g) return { name: g.name, gstin: g.gstins?.length === 1 ? g.gstins[0] : null, gstins: g.gstins || [], picked: true };
+  if (doc.uploaderSupplier?.name) return { name: doc.uploaderSupplier.name, gstin: null, gstins: [], picked: false };
+  return null;
+}
+
+/**
+ * Files uploaded on the review page at a site, newest first, each with whether
+ * the run has read it yet and, once it has, its quote.
+ */
+export async function recentPortalUploads({ site = null, limit = 50 } = {}) {
+  await ensureSupplierPortalReady();
+  const docs = await QuoteDocument.find({
+    storageKey: { $ne: null }, status: { $nin: ['DELETED'] },
+    // Uploads name the plant (KOLKATA); none named means either.
+    ...(site ? { $or: [{ plantScope: PLANTS[site] || site }, { plantScope: { $size: 0 } }] } : {}),
+  }).sort({ createdAt: -1 }).limit(Math.min(Number(limit) || 50, 200))
+    .select('_id originalFilename mimeType plantScope supplierGroupId uploaderSupplier uploadNote uploadedBy status createdAt').lean();
+  const quotes = await AutoQuote.find({ portalDocumentId: { $in: docs.map((d) => d._id) } })
+    .select('_id portalDocumentId supplier lineCount createdAt').lean();
+  const byDoc = new Map((await withSuppliers(quotes, { quoteIdOf: (q) => q._id })).map((q) => [String(q.portalDocumentId), q]));
+  const groups = await groupsById(docs.map((d) => d.supplierGroupId));
+  return docs.map((d) => {
+    const q = byDoc.get(String(d._id));
+    return {
+      _id: d._id, fileName: d.originalFilename, mimeType: d.mimeType, plantScope: d.plantScope || [],
+      uploadedBy: d.uploadedBy || null, uploadedAt: d.createdAt, note: d.uploadNote || null,
+      supplier: uploaderSupplier(d, groups),
+      state: q ? 'READ' : (d.status === 'REJECTED' ? 'REJECTED' : 'WAITING'),
+      quote: q ? { _id: q._id, supplier: q.supplier, lineCount: q.lineCount, readAt: q.createdAt } : null,
+    };
+  });
+}
+
+/** A typed supplier name, tidied; and a GSTIN, checked. */
+export function typedSupplier({ name, gstin } = {}) {
+  const clean = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!clean) throw fail(400, 'Choose a supplier or type its name.');
+  if (clean.length > 200) throw fail(400, 'That name is too long.');
+  const typed = String(gstin || '').replace(/\s+/g, '').toUpperCase();
+  if (typed && !/^[0-9A-Z]{15}$/.test(typed)) throw fail(400, 'A GSTIN is 15 letters and digits.');
+  return { name: clean, gstin: typed || null };
+}
+
+/**
+ * Correct who sent a quote: a new record, never a change to the quote or its
+ * lines. From a portal supplier (`supplierGroupId`), or a name typed in.
+ */
+export async function correctSupplier({
+  autoQuoteId, supplierGroupId = null, name = null, gstin = null, note = null, actor,
+}) {
+  await ensureSupplierPortalReady();
+  if (!actor) throw fail(401, 'Sign in to correct a supplier.');
+  if (!/^[0-9a-f]{24}$/.test(String(autoQuoteId))) throw fail(404, 'Quote not found.');
+  const found = await AutoQuote.findById(autoQuoteId).select('_id supplier').lean();
+  if (!found) throw fail(404, 'Quote not found.');
+  const [quote] = await withSuppliers([found], { quoteIdOf: (q) => q._id });
+  let supplier;
+  if (supplierGroupId) {
+    if (!/^[0-9a-f]{24}$/.test(String(supplierGroupId))) throw fail(404, 'Supplier not found.');
+    const group = await SupplierGroup.findById(supplierGroupId).select('name gstins').lean();
+    if (!group) throw fail(404, 'Supplier not found.');
+    const gstins = (group.gstins || []).map((g) => String(g).toUpperCase());
+    const typed = String(gstin || '').trim().toUpperCase();
+    const had = String(quote.supplier?.gstin || '').trim().toUpperCase();
+    supplier = {
+      name: group.name,
+      gstin: (typed && gstins.includes(typed) && typed) || (had && gstins.includes(had) && had) || gstins[0] || null,
+    };
+  } else {
+    supplier = typedSupplier({ name, gstin });
+  }
+  const same = (a, b) => String(a || '').trim().toUpperCase() === String(b || '').trim().toUpperCase();
+  if (same(supplier.name, quote.supplier?.name) && same(supplier.gstin, quote.supplier?.gstin)) {
+    throw fail(400, 'That is already the supplier on this quote.');
+  }
+  const record = await SupplierCorrection.create({
+    autoQuoteId: quote._id,
+    supplier,
+    supplierGroupId: supplierGroupId || null,
+    previous: { name: quote.supplier?.name || null, gstin: quote.supplier?.gstin || null },
+    note: String(note || '').trim().slice(0, 1000) || null,
+    by: actor,
+  });
+  return { correction: record.toObject(), supplier };
+}
+
+/** Every correction to one quote's supplier, newest first. */
+export async function supplierHistory(autoQuoteId) {
+  await ensureSupplierPortalReady();
+  return SupplierCorrection.find({ autoQuoteId }).sort({ createdAt: -1 }).lean();
 }
 
 // ── For reviewers ──────────────────────────────────────────────────────────
@@ -265,15 +372,16 @@ export async function listQuotes({ site = null, open = true, limit = 100 } = {})
   const counts = [...byQuote.values()];
   const quotes = await AutoQuote.find({ _id: { $in: counts.filter((c) => !open || c.unapproved > 0).map((c) => c._id) } })
     .sort({ createdAt: -1 }).limit(limit).lean();
-  return quotes.map((q) => ({ ...q, total: byQuote.get(String(q._id))?.total || 0, unapproved: byQuote.get(String(q._id))?.unapproved || 0 }));
+  return (await withSuppliers(quotes, { quoteIdOf: (q) => q._id })).map((q) => ({ ...q, total: byQuote.get(String(q._id))?.total || 0, unapproved: byQuote.get(String(q._id))?.unapproved || 0 }));
 }
 
 /** One quote, its file, and the proposal that stands for each line. */
 export async function quoteForReview(id) {
   await ensureSupplierPortalReady();
-  const quote = await AutoQuote.findById(id).lean();
-  if (!quote) throw fail(404, 'Quote not found.');
-  const proposals = currentProposals(await MappingProposal.find({ autoQuoteId: quote._id }).lean())
+  const found = await AutoQuote.findById(id).lean();
+  if (!found) throw fail(404, 'Quote not found.');
+  const [quote] = await withSuppliers([found], { quoteIdOf: (q) => q._id });
+  const proposals = (await withSuppliers(currentProposals(await MappingProposal.find({ autoQuoteId: quote._id }).lean())))
     .sort((a, b) => ((a.lineNo ?? Infinity) - (b.lineNo ?? Infinity)) || lineKey(a).localeCompare(lineKey(b)));
   return { quote: { ...quote, fileUrl: await viewUrl(quote.fileKey, 3600) }, proposals };
 }
@@ -395,7 +503,7 @@ export async function compareItem({ site, itemId }) {
     ? (await MappingProposal.find({ site, status: 'APPROVED', 'decision.band.quality': { $ne: null } }).select(select).lean())
       .filter((r) => itemInBand(item, r.decision.band))
     : [];
-  const rows = [...direct, ...banded].sort((a, b) => b.createdAt - a.createdAt);
+  const rows = (await withSuppliers([...direct, ...banded])).sort((a, b) => b.createdAt - a.createdAt);
   const latest = new Map();
   for (const r of rows) {
     const key = (r.supplier?.gstin || r.supplier?.name || '').toUpperCase();

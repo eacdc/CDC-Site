@@ -14,11 +14,15 @@
 
 import mongoose from 'mongoose';
 import { SCHEMAS as BASE_SCHEMAS } from '../models/schemas.js';
-import { autoQuoteSchema, mappingProposalSchema, lockModel } from '../models/proposals.js';
+import {
+  autoQuoteSchema, mappingProposalSchema, supplierCorrectionSchema, lockModel, applyCorrections,
+} from '../models/proposals.js';
 import { UOM_SEED, AMBIGUOUS_UOMS } from '../config/uom-seed.js';
 
 /** Append-only: insert, and a reviewer's decision, and nothing else (models/proposals.js). */
-const APPEND_ONLY = { SpAutoQuote: autoQuoteSchema, SpMappingProposal: mappingProposalSchema };
+const APPEND_ONLY = {
+  SpAutoQuote: autoQuoteSchema, SpMappingProposal: mappingProposalSchema, SpSupplierCorrection: supplierCorrectionSchema,
+};
 const SCHEMAS = { ...BASE_SCHEMAS, ...APPEND_ONLY };
 
 let connection = null;
@@ -44,13 +48,14 @@ export let PaperBrandRule = null;
 export let InkTermRule = null;
 export let AutoQuote = null;
 export let MappingProposal = null;
+export let SupplierCorrection = null;
 
 const BINDINGS = [
   'SpSupplierGroup', 'SpQuoteDocument', 'SpQuoteLine', 'SpSupplierItem',
   'SpItemMapping', 'SpRateHistory', 'SpMappingQueue', 'SpDocumentSet',
   'SpUomNormalisation', 'SpAuditLog', 'SpUser', 'SpSupplierUser',
   'SpSession', 'SpItemClassification', 'SpDeliveryDateSnapshot',
-  'SpPaperBrandRule', 'SpInkTermRule', 'SpAutoQuote', 'SpMappingProposal',
+  'SpPaperBrandRule', 'SpInkTermRule', 'SpAutoQuote', 'SpMappingProposal', 'SpSupplierCorrection',
 ];
 
 function assign(models) {
@@ -74,6 +79,7 @@ function assign(models) {
     SpInkTermRule: InkTermRule,
     SpAutoQuote: AutoQuote,
     SpMappingProposal: MappingProposal,
+    SpSupplierCorrection: SupplierCorrection,
   } = models);
 }
 
@@ -124,6 +130,18 @@ export async function ensureSupplierPortalReady() {
     clear();
     throw err;
   }
+}
+
+/**
+ * Quotes or their lines with the supplier an approver corrected to, where one
+ * did (models/proposals.js). A quote is found by its own _id, a line by its
+ * autoQuoteId: pass `{ quoteIdOf: (q) => q._id }` for quotes.
+ */
+export async function withSuppliers(records = [], { quoteIdOf = (r) => r.autoQuoteId } = {}) {
+  if (!records.length) return records;
+  const ids = [...new Set(records.map((r) => String(quoteIdOf(r))))];
+  const corrections = await SupplierCorrection.find({ autoQuoteId: { $in: ids } }).lean();
+  return applyCorrections(records, corrections, { quoteIdOf });
 }
 
 /**

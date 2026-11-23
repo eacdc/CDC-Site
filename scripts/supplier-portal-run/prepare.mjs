@@ -11,7 +11,7 @@
  * and page images to look at. Work/manifest.json lists them. No model calls.
  */
 
-import { readdirSync, statSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { readdirSync, statSync, readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs, sha256, contentTypeOf, api, imp } from './common.mjs';
 
@@ -27,7 +27,8 @@ async function layOut({ buffer, fileName, source }) {
   const hash = sha256(buffer);
   const dir = path.join(DIRS.work, hash.slice(0, 8));
   mkdirSync(dir, { recursive: true });
-  const stored = path.join(dir, fileName);
+  // basename: a portal upload's name is the uploader's, and must not climb out of dir.
+  const stored = path.join(dir, path.basename(fileName));
   writeFileSync(stored, buffer);
   const ext = path.extname(fileName).toLowerCase();
   const out = {
@@ -53,11 +54,26 @@ async function layOut({ buffer, fileName, source }) {
     } else if (ext === '.docx') {
       out.text = path.join(dir, 'text.txt');
       writeFileSync(out.text, docxTextLayer(buffer).text || '');
+    } else if (ext === '.csv' || ext === '.txt') {
+      out.text = path.join(dir, 'text.txt');
+      writeFileSync(out.text, buffer.toString('utf8'));
     } else {
       out.pages.push(stored);
     }
   } catch (err) { out.prepareError = err.message; }
   return out;
+}
+
+/** Portal/<YYYY-MM>/<date> <name>: the local copy of a portal upload. Kept once; a failed copy never stops the run. */
+function keepPortalCopy(buffer, u) {
+  try {
+    const at = new Date(u.uploadedAt || Date.now());
+    const month = path.join(DIRS.portal, at.toISOString().slice(0, 7));
+    mkdirSync(month, { recursive: true });
+    const safe = String(u.fileName || 'upload').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').slice(0, 150);
+    const target = path.join(month, `${at.toISOString().slice(0, 10)} ${String(u.sha256).slice(0, 8)} ${safe}`);
+    if (!existsSync(target)) writeFileSync(target, buffer);
+  } catch (err) { skipped.push({ name: u.fileName, why: `kept for reading, but the local copy failed (${err.message})` }); }
 }
 
 const items = [];
@@ -90,9 +106,13 @@ for (const u of uploads) {
   const res = await fetch(u.downloadUrl);
   if (!res.ok) { skipped.push({ name: u.fileName, why: `portal file download failed (${res.status})` }); continue; }
   const buffer = Buffer.from(await res.arrayBuffer());
+  keepPortalCopy(buffer, u);
   items.push(await layOut({
     buffer, fileName: u.fileName,
-    source: { portalDocumentId: String(u.portalDocumentId), plantScope: u.plantScope },
+    source: {
+      portalDocumentId: String(u.portalDocumentId), plantScope: u.plantScope,
+      uploadedBy: u.uploadedBy || null, supplier: u.supplier || null, note: u.note || null,
+    },
   }));
 }
 

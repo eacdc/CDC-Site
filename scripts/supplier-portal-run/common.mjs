@@ -27,6 +27,9 @@ export const DIRS = {
   done: path.join(ROOT, 'Done'),
   failed: path.join(ROOT, 'Failed'),
   work: path.join(ROOT, 'Work'),
+  // A copy of every file uploaded on the review page, by month: CDC's own
+  // folder of what was sent, beside the Inbox. Nothing reads from it.
+  portal: path.join(ROOT, 'Portal'),
 };
 export function ensureDirs() {
   for (const d of Object.values(DIRS)) if (!existsSync(d)) mkdirSync(d, { recursive: true });
@@ -39,6 +42,7 @@ const CONTENT_TYPES = {
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   '.xls': 'application/vnd.ms-excel',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.csv': 'text/csv', '.txt': 'text/plain',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
 };
 export const contentTypeOf = (file) => CONTENT_TYPES[path.extname(file).toLowerCase()] || null;

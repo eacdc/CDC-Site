@@ -191,6 +191,30 @@
   .kpi .k { font-size: 12px; color: var(--muted); font-weight: 600; }
   .kpi .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.25; }
   .kpi .s { font-size: 12px; color: var(--muted); }
+  /* Upload tab */
+  .up-pane { width: 100%; max-width: 980px; margin: 0 auto; padding: 18px; display: grid; gap: 14px; }
+  .up-pane h2 { margin: 0 0 2px; font-size: 18px; }
+  .drop { display: grid; gap: 4px; place-items: center; text-align: center; padding: 28px 16px; border: 2px dashed var(--line); border-radius: var(--radius); background: var(--raised); cursor: pointer; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .up-queue { display: grid; gap: 6px; }
+  .up-queue:empty { display: none; }
+  .up-file { display: grid; grid-template-columns: minmax(0, 1fr) auto 34px; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .up-name, .who-sup { display: grid; min-width: 0; }
+  .up-name strong { overflow-wrap: anywhere; }
+  .up-field { display: grid; gap: 6px; }
+  .up-label { font-weight: 600; }
+  .up-label small { font-weight: 400; margin-left: 4px; }
+  .up-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .up-actions .primary { min-width: 140px; }
+  .up-chosen { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+  .picker .results button .who-sup { text-align: left; }
+  #supDlg { width: min(560px, calc(100vw - 32px)); }
+  .sup-body { padding: 20px; display: grid; gap: 12px; }
+  .sup-body h3 { margin: 0; }
+  .sup-body details small { display: block; margin-top: 4px; }
+  .sup-body .buttons { display: flex; gap: 8px; justify-content: flex-end; }
   #dash .up { color: var(--bad); }
   #dash .down { color: var(--ok); }
   .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
@@ -267,8 +291,13 @@
     .actions button { flex: 1 1 calc(50% - 6px); min-height: 42px; }
     .detail-head .seg { width: 100%; }
     .detail-head .seg button { flex: 1; }
-    .tabs { order: 4; width: 100%; margin: 0; }
-    .tabs button { flex: 1; padding: 3px 6px; }
+    .tabs { order: 4; width: 100%; margin: 0; display: grid; grid-template-columns: 1fr 1fr; }
+    .tabs button { padding: 3px 6px; }
+    .up-pane { padding: 14px; }
+    .up-table thead { display: none; }
+    .up-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+    .up-table td { border: 0; padding: 0; }
+    .up-table td:first-child { grid-column: 1 / -1; }
     #dash { padding: 10px; gap: 10px; }
     .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
     .kpi .v { font-size: 18px; }
@@ -286,6 +315,7 @@
     <button type="button" data-tab="review" aria-pressed="true">Review</button>
     <button type="button" data-tab="item" aria-pressed="false">Item dashboard</button>
     <button type="button" data-tab="supplier" aria-pressed="false">Supplier dashboard</button>
+    <button type="button" data-tab="upload" aria-pressed="false">Upload</button>
   </nav>
   <div class="header-controls">
     <div class="seg" role="group" aria-label="Site">
@@ -334,6 +364,7 @@
     <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button value="ok" id="dlgOk" class="primary">Confirm</button></div>
   </form>
 </dialog>
+<dialog id="supDlg" aria-label="Change the supplier"><div id="supDlgBody" class="sup-body"></div></dialog>
 <dialog id="bandDlg" class="sheet" aria-label="Items in the band"><div id="bandDlgBody" class="sheet-body"></div></dialog>
 <div id="toast" role="status" hidden></div>
 
@@ -536,10 +567,12 @@ function renderQuote({ quote, proposals }) {
       <div class="back"><button class="ghost" id="back" style="padding-left:0">← All quotes</button></div>
       <div class="title-row">
         <h2>${esc(quote.supplier?.name || 'Unknown supplier')}</h2>
+        ${canDecide ? '<button type="button" id="fixSupplier">Change supplier</button>' : ''}
         ${quote.fileUrl ? `<a href="${esc(quote.fileUrl)}" target="_blank" rel="noopener"><button tabindex="-1">Open quote file ↗</button></a>` : ''}
       </div>
       <div class="meta">
         ${quote.supplier?.gstin ? `<span class="chip">GSTIN ${esc(quote.supplier.gstin)}</span>` : ''}
+        ${correctedChip(quote)}
         ${meta.map((m) => `<span class="chip">${esc(m)}</span>`).join('')}
       </div>
       <div class="muted" style="font-size:12px;word-break:break-all">${esc(quote.fileName)}</div>
@@ -552,6 +585,7 @@ function renderQuote({ quote, proposals }) {
     ${proposals.map((p) => row(p, canDecide)).join('')}
     <div class="empty" id="noLines" hidden></div>`;
   $('back').onclick = closeQuote;
+  $('fixSupplier')?.addEventListener('click', () => openSupplierFix(quote));
   document.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { lineFilter = b.dataset.filter; applyFilter(); }; });
   document.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.id, b.dataset.act, b); });
   document.querySelectorAll('[data-change]').forEach((b) => { b.onclick = () => openPicker(b.dataset.change); });
@@ -879,5 +913,6 @@ async function compare(itemId, button) {
 }());
 </script>
 <script src="dashboard.js"></script>
+<script src="upload.js"></script>
 </body>
 </html>
