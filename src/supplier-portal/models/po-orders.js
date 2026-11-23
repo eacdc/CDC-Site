@@ -81,9 +81,12 @@ const lineSchema = new Schema({
 
 export const poOrderSchema = new Schema({
   site: { type: String, enum: SITES, required: true, index: true },
+  // CREATE: a new PO. EDIT: a change to the ERP PO in erp.transactionId,
+  // kept here only while it waits for approval (and as the record after).
+  kind: { type: String, enum: ['CREATE', 'EDIT'], default: 'CREATE' },
   status: {
     type: String,
-    enum: ['AWAITING_APPROVAL', 'SAVED', 'SAVE_FAILED', 'CANCELLED'],
+    enum: ['AWAITING_APPROVAL', 'SAVED', 'SAVE_FAILED', 'CANCELLED', 'DELETED'],
     required: true,
     index: true,
   },
@@ -111,6 +114,9 @@ export const poOrderSchema = new Schema({
   },
   lastError: String,
   cancelled: { at: Date, by: String },
+  deleted: { at: Date, by: String, reason: String },
+  // On an EDIT: the PO as it stood, and what the edit changes.
+  editOf: { voucherNo: String, changes: [String] },
 }, { collection: 'sp_poOrders', timestamps: true });
 
 poOrderSchema.index({ site: 1, createdAt: -1 });

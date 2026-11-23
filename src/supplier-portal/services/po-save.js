@@ -71,8 +71,12 @@ export class PoRejected extends Error {
  * @param {Object} [opts]
  * @param {string} [opts.orderId]  a tool PO being saved after approval: its
  *   own requisition lines are not "held by another PO"
+ * @param {Object} [opts.edit]  editing an ERP PO: the PO as it stands
+ *   (po-edit.js loadPoForEdit). The supplier stays; a line left at its rate
+ *   keeps it, approved or not; a line keeps its requisition link and client;
+ *   and only a new line, or one ordering more kg, can need approval.
  */
-export async function preparePo(site, body, { orderId = null } = {}) {
+export async function preparePo(site, body, { orderId = null, edit = null } = {}) {
   assertSite(site);
   const b = body || {};
   const problems = [];
@@ -87,6 +91,9 @@ export async function preparePo(site, body, { orderId = null } = {}) {
     state: ledger.State || null,
     city: ledger.City || null,
   };
+  if (edit && supplier.ledgerId !== Number(edit.supplierLedgerId)) {
+    problems.push('The supplier of a PO cannot be changed. Delete it and make a new PO for the other supplier.');
+  }
 
   const address = (DELIVERY_ADDRESSES[site] || []).find((a) => a.id === b.deliveryAddressId);
   if (!address) problems.push('Choose where the goods are delivered.');
@@ -95,6 +102,9 @@ export async function preparePo(site, body, { orderId = null } = {}) {
 
   const raw = Array.isArray(b.lines) ? b.lines : [];
   if (!raw.length) problems.push('Add at least one item.');
+  // The ERP refuses to delete more than 50 lines at once (TR_BlockMassDelete_ITD),
+  // and an edit rewrites every line.
+  if (raw.length > 50) problems.push('A PO can have at most 50 lines.');
   // The ERP never puts an item twice on one PO; receipts match a PO line by
   // PO + item, so a second line for the same item could not be received.
   const seen = new Set();
@@ -105,7 +115,8 @@ export async function preparePo(site, body, { orderId = null } = {}) {
   if (problems.length) throw new PoRejected(problems);
 
   const ids = raw.map((l) => Number(l.itemId));
-  const reqLineIds = raw.flatMap((l) => (l.requisitionLineIds || []).map(String));
+  // On an edit, requisition links come from the PO as it stands, never from the screen.
+  const reqLineIds = edit ? [] : raw.flatMap((l) => (l.requisitionLineIds || []).map(String));
   const [items, hsn, resolve, reqs, held] = await Promise.all([
     getItems(site, ids),
     hsnForItems(site, ids),
@@ -131,24 +142,28 @@ export async function preparePo(site, body, { orderId = null } = {}) {
     const expectedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(l.expectedDate || '')) ? l.expectedDate : null;
     if (!expectedDate) lineProblems.push(`${label}: enter the expected delivery date.`);
 
-    // Only a price a person approved in the supplier portal, from this supplier.
+    // Only a price a person approved in the supplier portal, from this supplier -
+    // except a line on an edited PO left at the rate it already has.
+    const kept = edit ? edit.linesByItem.get(id) || null : null;
     const offers = await compareItem({ site, itemId: id });
     const mine = offers.find((o) => resolve(o.supplier)?.ledgerId === supplier.ledgerId) || null;
     const approvedRate = mine ? M.offerRate(mine, item.purchaseUnit) : null;
     const rate = Number(l.rate);
-    if (mine && approvedRate == null) {
+    const rateKept = Boolean(kept) && Math.abs(rate - kept.rate) < 0.00005;
+    if (!rateKept && mine && approvedRate == null) {
       lineProblems.push(`${label}: the approved price is per ${mine.rate?.uom || '?'} and cannot be turned into a price per ${item.purchaseUnit}.`);
     }
     for (const c of M.rateChecks({ rate, approvedRate: mine ? approvedRate : null, unit: item.purchaseUnit })) {
       if (c.severity !== 'BLOCK') continue;
+      if (rateKept && c.code !== 'NO_RATE') continue;
       if (c.code === 'NO_APPROVED_PRICE' && mine) continue; // the unit problem above says it better
       lineProblems.push(`${label}: ${c.message}`);
     }
 
     // Requisition lines: each must be this item's, still open, and not on
     // another tool PO waiting for approval.
-    const refs = [];
-    for (const reqLineId of (l.requisitionLineIds || []).map(String)) {
+    const refs = kept?.requisition ? [{ ...kept.requisition, clientId: kept.clientId, clientName: null }] : [];
+    for (const reqLineId of (edit ? [] : (l.requisitionLineIds || []).map(String))) {
       const r = reqs.get(reqLineId);
       if (!r) { lineProblems.push(`${label}: requisition line ${reqLineId} is not an open requisition.`); continue; }
       if (Number(r.ItemID) !== id) { lineProblems.push(`${label}: ${r.VoucherNo} asks for a different item.`); continue; }
@@ -170,14 +185,17 @@ export async function preparePo(site, body, { orderId = null } = {}) {
 
     // The client the stock is tagged to: the jobs' client when they share one.
     const clientIds = [...new Set(refs.map((r) => r.clientId).filter((c) => c != null))];
-    const clientId = clientIds.length === 1 ? clientIds[0] : null;
-    const clientName = clientId != null ? refs.find((r) => r.clientId === clientId).clientName : null;
+    const clientId = kept ? kept.clientId ?? null : (clientIds.length === 1 ? clientIds[0] : null);
+    const clientName = clientId != null ? (refs.find((r) => r.clientId === clientId)?.clientName || null) : null;
 
     const q = M.lineQuantities(item, qty, rate);
     const tax = M.lineTax(q.amount, item.gstPct, intraState);
     const kg = M.lineKg(item, qty);
     const stock = M.isPaperItem(item) ? await bufferStock(site, row, { clientId }) : [];
     const buffer = M.bufferCheck(kg, stock);
+    // An edit needs approval only for what it adds: a new line, or more kg.
+    const keptKg = kept ? M.lineKg(item, kept.qty) : null;
+    const needsApproval = buffer.needsApproval && !(kept && keptKg != null && kg <= keptKg + 0.001);
 
     lines.push({
       itemId: id,
@@ -214,8 +232,8 @@ export async function preparePo(site, body, { orderId = null } = {}) {
       kg,
       floorFreeKg: buffer.floorFree,
       onOrderFreeKg: buffer.onOrderFree,
-      needsApproval: buffer.needsApproval,
-      topStock: buffer.needsApproval ? M.topFloorStock(kg, stock).map(stockSummary) : [],
+      needsApproval,
+      topStock: needsApproval ? M.topFloorStock(kg, stock).map(stockSummary) : [],
     });
   }
   if (problems.length) throw new PoRejected(problems);

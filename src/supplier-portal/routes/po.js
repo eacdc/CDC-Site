@@ -17,6 +17,10 @@
  *   POST /po/orders/:id/save           save again a PO whose save failed
  *   POST /po/orders/:id/cancel         drop a PO waiting for approval
  *
+ *   GET  /po/erp/:transactionId        a PO in the ERP, shaped for the edit screen, with why it is locked
+ *   POST /po/erp/:transactionId/edit   save an edit (same body as POST /po/orders; dryRun too)
+ *   POST /po/erp/:transactionId/delete { reason }: mark it deleted, as the ERP does
+ *
  * Front end: eacdc/Create-PO, whose README holds the response shapes.
  */
 
@@ -29,8 +33,9 @@ import {
 import { reqLinesHeldByTool } from '../services/po-save.js';
 import {
   actorOf, createOrder, getOrder, approvalQueue, approveOrder, retrySave, cancelOrder,
-  approvalImageKey, listOrders,
+  approvalImageKey, listOrders, editOrder,
 } from '../services/po-orders.js';
+import { loadPoForEdit, deletePo } from '../services/po-edit.js';
 import { uploadBuffer, viewUrl } from '../../lib/r2-storage.js';
 import { erpToday } from '../lib/erp-time.js';
 
@@ -137,6 +142,33 @@ router.post('/orders/:id/save', async (req, res, next) => {
 
 router.post('/orders/:id/cancel', async (req, res, next) => {
   try { res.json({ order: await cancelOrder(req.sp.site, req.params.id, actorOf(req)) }); } catch (err) { sendError(res, next, err); }
+});
+
+function transactionIdParam(req) {
+  const tid = Number(req.params.transactionId);
+  if (!Number.isInteger(tid) || tid <= 0) throw Object.assign(new Error('Not a PO.'), { status: 400 });
+  return tid;
+}
+
+router.get('/erp/:transactionId', async (req, res, next) => {
+  try { res.json({ po: await loadPoForEdit(req.sp.site, transactionIdParam(req)) }); } catch (err) { sendError(res, next, err); }
+});
+
+router.post('/erp/:transactionId/edit', async (req, res, next) => {
+  try {
+    const order = await editOrder(req.sp.site, transactionIdParam(req), req.body || {}, actorOf(req));
+    if (order.dryRun) return res.json(order);
+    return res.json({ order });
+  } catch (err) { return sendError(res, next, err); }
+});
+
+router.post('/erp/:transactionId/delete', async (req, res, next) => {
+  try {
+    const actor = actorOf(req);
+    res.json(await deletePo(req.sp.site, transactionIdParam(req), {
+      userId: actor.erpUserId, actor, reason: req.body?.reason,
+    }));
+  } catch (err) { sendError(res, next, err); }
 });
 
 /** A refusal the buyer can act on goes back as itself, with every problem listed. */

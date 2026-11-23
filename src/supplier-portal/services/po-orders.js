@@ -10,14 +10,20 @@
  *   retrySave     for a PO approved but not written (SAVE_FAILED)
  *   cancelOrder   a PO waiting for approval that is no longer wanted
  *
+ *   editOrder     a change to a PO already in the ERP (po-edit.js): written at
+ *                 once, or - when it adds kg that free floor stock covers -
+ *                 kept as an EDIT awaiting approval, like a new PO
+ *
  *   listOrders    the Purchase orders tab: POs in a date range from the ERP
- *                 and from the tool, with where each came from
+ *                 and from the tool, with where each came from, deleted ones
+ *                 included, and why a PO can no longer be changed
  */
 
 import { query, assertSite, sql } from '../db/mssql.js';
-import { ensureSupplierPortalReady, PoOrder } from '../db/mongo.js';
+import { ensureSupplierPortalReady, PoOrder, AuditLog } from '../db/mongo.js';
 import { COMPANY_ID, VOUCHER } from '../config/constants.js';
 import { preparePo, writePoToErp, erpRows } from './po-save.js';
+import { loadPoForEdit, editBasis, writePoEdit, editSummary, poLocks } from './po-edit.js';
 import { erpWritesEnabled } from './erp-receiving.js';
 import { financialYearFor } from './erp-voucher.js';
 import { erpNow, erpToday } from '../lib/erp-time.js';
@@ -88,6 +94,70 @@ export async function createOrder(site, body, actor) {
   return toOrderJson(doc.toObject());
 }
 
+/**
+ * A change to a PO already in the ERP. The PO must still be free to change
+ * (po-edit.js poLocks); the same rules as a new PO apply, except that a line
+ * left at its rate keeps it and only added kg can need approval.
+ */
+export async function editOrder(site, transactionId, body, actor) {
+  await ensureSupplierPortalReady();
+  const before = await loadPoForEdit(site, transactionId);
+  if (before.lockedReason) {
+    throw Object.assign(new Error(`${before.voucherNo} cannot be changed. ${before.lockedReason}`), { status: 409 });
+  }
+  const prepared = await preparePo(site, body, { edit: editBasis(before) });
+  const changes = editSummary(before, prepared);
+  if (body?.dryRun) {
+    return {
+      dryRun: true,
+      writesEnabled: erpWritesEnabled(),
+      voucherNo: before.voucherNo,
+      approvalNeeded: prepared.approvalNeeded,
+      changes,
+      lines: prepared.lines,
+      totals: prepared.totals,
+      rows: erpRows(prepared, { userId: actor.erpUserId, voucherDate: before.voucherDate, fYear: before.fYear, now: erpNow() }),
+    };
+  }
+  const reason = String(body?.approvalReason || '').trim();
+  if (prepared.approvalNeeded && reason.length < 10) {
+    throw Object.assign(new Error('Free floor stock already covers what this edit adds. Write why it is still needed (at least a few words).'), { status: 422 });
+  }
+
+  const doc = new PoOrder({
+    site,
+    kind: 'EDIT',
+    status: prepared.approvalNeeded ? 'AWAITING_APPROVAL' : 'SAVED',
+    request: stripRequest(body),
+    supplier: prepared.supplier,
+    deliveryAddress: prepared.deliveryAddress,
+    lines: prepared.lines,
+    totals: prepared.totals,
+    createdBy: actor,
+    approval: { needed: prepared.approvalNeeded, reason: prepared.approvalNeeded ? reason : null },
+    erp: { transactionId: before.transactionId, voucherNo: before.voucherNo },
+    editOf: { voucherNo: before.voucherNo, changes },
+  });
+  if (prepared.approvalNeeded) {
+    await doc.save();
+    return toOrderJson(doc.toObject(), { full: true });
+  }
+  const written = await writePoEdit(site, before.transactionId, prepared, { userId: actor.erpUserId });
+  doc.erp = { ...written, savedAt: new Date() };
+  await doc.save();
+  await auditEdit(site, doc, actor);
+  return toOrderJson(doc.toObject());
+}
+
+async function auditEdit(site, doc, actor) {
+  await AuditLog.create({
+    action: 'PO_EDITED', entity: 'PO', entityId: `${site}:${doc.erp.transactionId}`, site,
+    actor: actor?.email || actor?.name || null, reason: doc.approval?.reason || null,
+    before: { voucherNo: doc.editOf?.voucherNo }, after: { changes: doc.editOf?.changes || [] },
+    meta: { orderId: String(doc._id), approvedOnSignedPage: Boolean(doc.approval?.needed) },
+  }).catch((err) => console.warn('[SP][po] audit of an edit failed:', err.message));
+}
+
 /** What the buyer sent, kept to re-check the PO when it is approved. */
 function stripRequest(body = {}) {
   const { approvalReason: _r, dryRun: _d, ...rest } = body;
@@ -124,14 +194,26 @@ export async function retrySave(site, id, actor) {
 
 async function saveApproved(site, doc, actor) {
   try {
-    const prepared = await preparePo(site, doc.request, { orderId: doc._id });
     // Written under the buyer who made it; the approver is on the tool's record.
-    const written = await writePoToErp(site, prepared, { userId: doc.createdBy?.erpUserId ?? actor.erpUserId });
+    const userId = doc.createdBy?.erpUserId ?? actor.erpUserId;
+    let prepared;
+    let written;
+    if (doc.kind === 'EDIT') {
+      const before = await loadPoForEdit(site, doc.erp.transactionId);
+      if (before.lockedReason) throw new Error(`${before.voucherNo} cannot be changed any more. ${before.lockedReason}`);
+      prepared = await preparePo(site, doc.request, { orderId: doc._id, edit: editBasis(before) });
+      written = await writePoEdit(site, before.transactionId, prepared, { userId });
+      doc.editOf = { voucherNo: before.voucherNo, changes: editSummary(before, prepared) };
+    } else {
+      prepared = await preparePo(site, doc.request, { orderId: doc._id });
+      written = await writePoToErp(site, prepared, { userId });
+    }
     doc.lines = prepared.lines;
     doc.totals = prepared.totals;
     doc.erp = { ...written, savedAt: new Date() };
     doc.status = 'SAVED';
     doc.lastError = null;
+    if (doc.kind === 'EDIT') await auditEdit(site, doc, actor);
   } catch (err) {
     doc.status = 'SAVE_FAILED';
     doc.lastError = err.message;
@@ -191,22 +273,25 @@ export async function listOrders(site, { from, to }) {
   const [erpRows, toolDocs] = await Promise.all([
     query(site, `
       SELECT ITM.TransactionID, ITM.VoucherNo, ITM.VoucherDate, ITM.LedgerID,
-             LM.LedgerName, ITM.NetAmount, U.UserName,
+             LM.LedgerName, ITM.NetAmount, U.UserName, ISNULL(ITM.IsDeletedTransaction,0) AS IsDeleted,
+             DU.UserName AS DeletedByName, ITM.DeletedDate,
              (SELECT COUNT(*) FROM ItemTransactionDetail D
-              WHERE D.TransactionID = ITM.TransactionID AND ISNULL(D.IsDeletedTransaction,0) = 0) AS LineCount
+              WHERE D.TransactionID = ITM.TransactionID
+                AND ISNULL(D.IsDeletedTransaction,0) = ISNULL(ITM.IsDeletedTransaction,0)) AS LineCount
       FROM ItemTransactionMain ITM
       LEFT JOIN LedgerMaster LM ON LM.LedgerID = ITM.LedgerID AND LM.CompanyID = ITM.CompanyID
       LEFT JOIN UserMaster U ON U.UserID = ITM.CreatedBy
+      LEFT JOIN UserMaster DU ON DU.UserID = ITM.DeletedBy
       WHERE ITM.CompanyID = @companyId
         AND ITM.VoucherID = @po
         AND ITM.VoucherDate >= @from AND ITM.VoucherDate < DATEADD(DAY, 1, @to)
-        AND ISNULL(ITM.IsDeletedTransaction,0) = 0
     `, {
       companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER,
       from: { type: sql.Date, value: from }, to: { type: sql.Date, value: to },
     }),
     PoOrder.find({
       site,
+      kind: { $ne: 'EDIT' },
       $or: [
         { 'erp.transactionId': { $ne: null } },
         { createdAt: { $gte: from, $lt: new Date(to.getTime() + 86400000) } },
@@ -215,8 +300,10 @@ export async function listOrders(site, { from, to }) {
   ]);
 
   const toolByTid = new Map(toolDocs.filter((d) => d.erp?.transactionId).map((d) => [Number(d.erp.transactionId), d]));
+  const locks = await poLocks(site, erpRows.filter((r) => !r.IsDeleted).map((r) => r.TransactionID));
   const rows = erpRows.map((r) => {
     const tool = toolByTid.get(Number(r.TransactionID));
+    const tid = Number(r.TransactionID);
     return {
       id: tool ? String(tool._id) : null,
       transactionId: Number(r.TransactionID),
@@ -226,9 +313,13 @@ export async function listOrders(site, { from, to }) {
       lineCount: Number(r.LineCount) || 0,
       netAmount: Number(r.NetAmount) || 0,
       source: tool ? 'Tool' : 'ERP',
-      status: 'SAVED',
+      status: r.IsDeleted ? 'DELETED' : 'SAVED',
       preparedBy: tool?.createdBy?.name || r.UserName || '',
       approvalNeeded: Boolean(tool?.approval?.needed),
+      // Why Edit and Delete are off for this PO; null when it is free to change.
+      lockedReason: r.IsDeleted ? 'Deleted.' : (locks.get(tid) || null),
+      deletedBy: r.IsDeleted ? (r.DeletedByName || null) : undefined,
+      deletedReason: r.IsDeleted ? (tool?.deleted?.reason || null) : undefined,
     };
   });
   const inErp = new Set(rows.map((r) => r.transactionId));
@@ -256,6 +347,8 @@ export function toOrderJson(d, { full = false } = {}) {
     status: d.status,
     preparedBy: d.createdBy?.name || d.createdBy?.email || '',
     approvalNeeded: Boolean(d.approval?.needed),
+    kind: d.kind || 'CREATE',
+    editOf: d.kind === 'EDIT' ? { voucherNo: d.editOf?.voucherNo || d.erp?.voucherNo || null, changes: d.editOf?.changes || [] } : undefined,
     lastError: d.lastError || null,
     duplicateOf: d.erp?.duplicateOf?.length ? d.erp.duplicateOf : undefined,
   };
