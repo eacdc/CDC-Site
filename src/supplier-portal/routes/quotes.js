@@ -174,6 +174,16 @@ async function uploadQuoteFile(req, res, next) {
   try {
     await ensureSupplierPortalReady();
     if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
+    if (!readableQuoteFile(req.file.originalname)) {
+      return res.status(415).json({
+        error: `The run cannot read ${req.file.originalname}. Upload a PDF, a photo (JPG, PNG, WEBP), Excel or CSV, Word (.docx) or a text file.`,
+      });
+    }
+    const supplierGroupId = /^[0-9a-f]{24}$/.test(String(req.body.supplierGroupId || '')) ? req.body.supplierGroupId : null;
+    if (supplierGroupId && !(await SupplierGroup.exists({ _id: supplierGroupId }))) {
+      return res.status(404).json({ error: 'Supplier not found.' });
+    }
+    const typedName = String(req.body.supplierName || '').replace(/\s+/g, ' ').trim().slice(0, 200);
 
     const sha256 = sha256Of(req.file.buffer);
     const dedup = await checkDuplicate({ sha256 });
@@ -204,7 +214,9 @@ async function uploadQuoteFile(req, res, next) {
     const storageKey = stored.key || stored;
 
     const doc = await QuoteDocument.create({
-      supplierGroupId: req.body.supplierGroupId || null,
+      supplierGroupId,
+      uploaderSupplier: !supplierGroupId && typedName ? { name: typedName } : undefined,
+      uploadNote: String(req.body.note || '').trim().slice(0, 1000) || undefined,
       docType: req.body.docType
         || docTypeFor({ mimeType: req.file.mimetype, originalFilename: req.file.originalname }),
       storageKey,
@@ -228,6 +240,10 @@ async function uploadQuoteFile(req, res, next) {
     });
   } catch (err) { return next(err); }
 }
+
+/** What the scheduled run can lay out for reading (scripts/supplier-portal-run/prepare.mjs). */
+export const READABLE_QUOTE_FILES = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.xlsx', '.xls', '.csv', '.docx', '.txt'];
+export const readableQuoteFile = (name) => READABLE_QUOTE_FILES.includes(String(name || '').toLowerCase().match(/\.[a-z0-9]+$/)?.[0]);
 
 const uploadGuards = [requireSite, requireRole('BUYER', 'APPROVER'), upload.single('file')];
 

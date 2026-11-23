@@ -13,7 +13,9 @@
  * rate per kg and a rate per piece are not cheaper or dearer than each other.
  */
 
-import { ensureSupplierPortalReady, AutoQuote, MappingProposal } from '../db/mongo.js';
+import {
+  ensureSupplierPortalReady, AutoQuote, MappingProposal, withSuppliers,
+} from '../db/mongo.js';
 import { currentProposals } from '../models/proposals.js';
 import { normaliseRate } from '../lib/uom.js';
 import {
@@ -230,7 +232,7 @@ export function supplierSummary(rows = [], { months = 12, now = new Date() } = {
 
 /** The standing record of every quote line at a site. */
 async function siteLines(site) {
-  return currentProposals(await MappingProposal.find({ site }).select(LINE_FIELDS).lean());
+  return withSuppliers(currentProposals(await MappingProposal.find({ site }).select(LINE_FIELDS).lean()));
 }
 
 async function quotesById(lines) {
@@ -293,7 +295,8 @@ export async function itemDashboard({ site, itemId }) {
 export async function supplierList({ site, q = '', limit = 50 }) {
   await ensureSupplierPortalReady();
   const needle = String(q || '').trim().toUpperCase();
-  const lines = currentProposals(await MappingProposal.find({ site }).select('autoQuoteId refreshOf supplier status createdAt').lean());
+  const lines = await withSuppliers(currentProposals(await MappingProposal.find({ site })
+    .select('autoQuoteId refreshOf supplier status createdAt').lean()));
   const bySupplier = new Map();
   for (const p of [...lines].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))) {
     const key = supplierKey(p.supplier);

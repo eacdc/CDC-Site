@@ -7,15 +7,20 @@
  *   POST /proposals/:id/band-preview       { band } -> how many Indus items it covers, a few of them named
  *   POST /proposals/:id/decision           { action: APPROVE | CHANGE | BAND | REJECT, itemId?, band?, note? }
  *   GET  /proposals/compare/:itemId        approved prices for an item, cheapest first
+ *   POST /proposals/quotes/:id/supplier    { supplierGroupId | name, gstin?, note? } -> correct who sent the quote
+ *   GET  /proposals/quotes/:id/supplier    every correction to the quote's supplier, newest first
+ *   GET  /proposals/uploads                files uploaded on the review page at the site, and whether they were read
  *
  * A decision is the only change any of these records ever takes, and it needs
- * a signed-in APPROVER: the automation key does not open this router.
+ * a signed-in APPROVER: the automation key does not open this router. A
+ * supplier correction is a new record beside the quote, also an APPROVER's.
  */
 
 import { Router } from 'express';
 import { requireAuth, requireRole, requireSite } from '../middleware/auth.js';
 import {
   listQuotes, quoteForReview, decide, compareItem, bandChoicesFor, previewBand,
+  correctSupplier, supplierHistory, recentPortalUploads,
 } from '../services/proposals.js';
 
 const router = Router();
@@ -29,6 +34,23 @@ router.get('/quotes', async (req, res, next) => {
 
 router.get('/quotes/:id', async (req, res, next) => {
   try { res.json(await quoteForReview(req.params.id)); } catch (err) { next(err); }
+});
+
+router.post('/quotes/:id/supplier', requireRole('APPROVER'), async (req, res, next) => {
+  try {
+    const { supplierGroupId = null, name = null, gstin = null, note = null } = req.body || {};
+    res.status(201).json(await correctSupplier({
+      autoQuoteId: req.params.id, supplierGroupId, name, gstin, note, actor: req.sp.actor,
+    }));
+  } catch (err) { next(err); }
+});
+
+router.get('/quotes/:id/supplier', async (req, res, next) => {
+  try { res.json({ corrections: await supplierHistory(req.params.id) }); } catch (err) { next(err); }
+});
+
+router.get('/uploads', requireSite, async (req, res, next) => {
+  try { res.json({ uploads: await recentPortalUploads({ site: req.sp.site, limit: req.query.limit }) }); } catch (err) { next(err); }
 });
 
 router.get('/:id/band-choices', async (req, res, next) => {

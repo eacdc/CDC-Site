@@ -395,6 +395,10 @@ export const quoteDocumentSchema = new Schema({
   },
   uploadedBy: String,
   uploadedAt: { type: Date, default: Date.now },
+  /** A supplier the uploader typed because it was not in the list; the run checks it against the document. */
+  uploaderSupplier: { name: String },
+  /** Anything the uploader wanted the reader to know ("rates from 1 Dec", "Ahmedabad only"). */
+  uploadNote: String,
   approvedBy: String,
   approvedAt: Date,
 }, { collection: 'sp_quoteDocuments', timestamps: true });
