@@ -164,10 +164,10 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
       if (paidRate != null) fallback = { ...paid, rateInPurchaseUnit: paidRate };
     }
 
-    // The buyer may override the price rules for a line, with a reason (Manu,
-    // 23 Nov 2026). Only the price rules: a rate must still be entered.
+    // The buyer may override the price rules for a line; a reason is optional
+    // (Manu, 23 Nov 2026). Only the price rules: a rate must still be entered.
     const overrideReason = String(l.priceOverride?.reason || '').trim();
-    const overridden = !rateKept && overrideReason.length >= 5;
+    const overridden = !rateKept && Boolean(l.priceOverride);
 
     if (rateKept || overridden) {
       if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
@@ -191,7 +191,7 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
     }
     // What the rate rests on, kept on the tool's record of the PO.
     const priceBasis = rateKept ? { kind: 'KEPT' }
-      : overridden ? { kind: 'OVERRIDE', reason: overrideReason.slice(0, 500), rate: approvedRate ?? fallback?.rateInPurchaseUnit ?? null }
+      : overridden ? { kind: 'OVERRIDE', reason: overrideReason.slice(0, 500) || null, rate: approvedRate ?? fallback?.rateInPurchaseUnit ?? null }
       : fallback ? { kind: 'LAST_PAID', rate: fallback.rateInPurchaseUnit, poNo: fallback.poNo, poDate: fallback.poDate }
         : { kind: 'APPROVED', proposalId: mine ? String(mine._id) : null, rate: approvedRate };
 

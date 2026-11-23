@@ -52,7 +52,7 @@ const lineSchema = new Schema({
   // What the rate rests on: APPROVED (a portal price), LAST_PAID (the
   // fallback: at most the last rate paid to this supplier, on poNo), KEPT
   // (a line of an edited PO left at its rate) or OVERRIDE (the buyer ignored
-  // the price rules, with `reason`; `rate` is the price they would have allowed).
+  // the price rules, with an optional `reason`; `rate` is the price they would have allowed).
   priceBasis: { kind: String, rate: Number, poNo: String, poDate: Date, proposalId: String, reason: String },
   amount: Number,
   gstPct: Number,
