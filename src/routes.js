@@ -6078,7 +6078,8 @@ router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
 // QC compliance reports (sql/qc/003_qc_compliance_reports.sql):
 //   machine-coverage     → rpt_QC_MachineProcessCoverage (1 check per hour per running machine + process)
 //   operator-performance → rpt_QC_OperatorPerformance    (2 checks per hour per QC operator shift)
-// Body: { database, startDate, endDate, mode?: 'SUMMARY'|'DETAIL', machineId?, processId?, userId? }
+// Body: { database, startDate, endDate, mode?: 'SUMMARY'|'DETAIL'|'ENTRIES', machineId?, processId?, userId? }
+// ENTRIES (machine-coverage only, machineId required): the machine's ERP production entries on those dates.
 const QC_COMPLIANCE_REPORTS = {
     'machine-coverage': 'rpt_QC_MachineProcessCoverage',
     'operator-performance': 'rpt_QC_OperatorPerformance',
@@ -6120,7 +6121,8 @@ router.post('/reports/qc-compliance/:report', async (req, res) => {
             return res.status(400).json({ status: false, error: 'Start date cannot be after end date' });
         }
         const mode = String(req.body.mode || 'SUMMARY').toUpperCase();
-        if (mode !== 'SUMMARY' && mode !== 'DETAIL') {
+        const entries = mode === 'ENTRIES' && req.params.report === 'machine-coverage';
+        if (mode !== 'SUMMARY' && mode !== 'DETAIL' && !entries) {
             return res.status(400).json({ status: false, error: 'Mode must be SUMMARY or DETAIL' });
         }
         const machineId = optionalId(req.body.machineId);
@@ -6128,6 +6130,9 @@ router.post('/reports/qc-compliance/:report', async (req, res) => {
         const userId = optionalId(req.body.userId);
         if ([machineId, processId, userId].some(Number.isNaN)) {
             return res.status(400).json({ status: false, error: 'machineId, processId and userId must be positive integers' });
+        }
+        if (entries && !machineId) {
+            return res.status(400).json({ status: false, error: 'machineId is required for ENTRIES' });
         }
 
         const pool = await getPool(selectedDatabase);

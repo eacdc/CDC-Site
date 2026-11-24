@@ -43,6 +43,7 @@ GO
   Report 1: machine + process coverage
   SUMMARY: one row per date, machine and process.
   DETAIL:  one row per unchecked hour slot, with its shift.
+  ENTRIES: the ERP production entries of one machine on the dates (eye icon).
 
   - Entries of one machine + process at most 5 minutes apart (or overlapping)
     are one continuous run.
@@ -92,6 +93,59 @@ BEGIN
             @LoadFrom       DATETIME = DATEADD(DAY, -7, CAST(@FromDate AS DATETIME)),
             @LoadTo         DATETIME = DATEADD(DAY, 2, CAST(@ToDate AS DATETIME)),
             @Plant          NVARCHAR(20) = CASE DB_NAME() WHEN N'IndusEnterprise2' THEN N'Ahmedabad' ELSE N'Kolkata' END;
+
+    -- ENTRIES: every ERP production entry of @MachineID (any process) touching the
+    -- dates, 8am to 8am, with its real times and the minutes that fall in the dates.
+    IF UPPER(@Mode) = 'ENTRIES'
+    BEGIN
+        DECLARE @DayStart DATETIME = DATEADD(HOUR, 8, CAST(@FromDate AS DATETIME)),
+                @DayEnd   DATETIME = DATEADD(HOUR, 8, DATEADD(DAY, 1, CAST(@ToDate AS DATETIME)));
+
+        SELECT
+            Plant             = @Plant,
+            ProductionID      = pe.ProductionID,
+            MachineName       = mm.MachineName,
+            JobNo             = jc.JobBookingNo,
+            JobName           = jc.JobName,
+            ProcessID         = pe.ProcessID,
+            ProcessName       = pm.ProcessName,
+            EntryStart        = pe.FromTime,
+            EntryEnd          = y.EndTime,
+            IsRunning         = CASE WHEN pe.ToTime IS NULL THEN 1 ELSE 0 END,
+            MinutesTaken      = DATEDIFF(SECOND, pe.FromTime, y.EndTime) / 60,
+            MinutesInDate     = DATEDIFF(SECOND,
+                                    CASE WHEN pe.FromTime > @DayStart THEN pe.FromTime ELSE @DayStart END,
+                                    CASE WHEN y.EndTime < @DayEnd THEN y.EndTime ELSE @DayEnd END) / 60,
+            EntryStatus       = pe.Status,
+            ProducedQty       = pe.ProductionQuantity,
+            Remark            = pe.Remark,
+            MachineOperator   = um.UserName,
+            HasQCChecklist    = CASE WHEN EXISTS (
+                                    SELECT 1 FROM dbo.ProcessInspectionParameters pip
+                                    WHERE pip.ProcessID = pe.ProcessID
+                                      AND ISNULL(pip.IsDeletedTransaction, 0) = 0) THEN 1 ELSE 0 END
+        FROM dbo.ProductionEntry pe
+        OUTER APPLY (
+            SELECT MIN(n.FromTime) AS NextStart
+            FROM dbo.ProductionEntry n
+            WHERE pe.ToTime IS NULL
+              AND n.MachineID = pe.MachineID
+              AND n.FromTime > pe.FromTime
+        ) nx
+        CROSS APPLY (SELECT EndTime = COALESCE(pe.ToTime, nx.NextStart, @Now)) x
+        CROSS APPLY (SELECT EndTime = CASE WHEN x.EndTime < pe.FromTime THEN pe.FromTime ELSE x.EndTime END) y
+        LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = pe.MachineID
+        LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = pe.ProcessID
+        LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = pe.JobBookingID
+        LEFT JOIN dbo.UserMaster um ON um.UserID = pe.UserID
+        WHERE pe.MachineID = @MachineID
+          AND pe.FromTime >= DATEADD(DAY, -7, @DayStart)
+          AND pe.FromTime <  @DayEnd
+          AND y.EndTime   >  @DayStart
+          AND (@CompanyID IS NULL OR pe.CompanyID = @CompanyID)
+        ORDER BY pe.FromTime, pe.ProductionID;
+        RETURN;
+    END
 
     -- 1. Production entries of processes that have a QC checklist
     SELECT
