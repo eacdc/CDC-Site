@@ -4422,7 +4422,8 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             .input('VoucherID', sql.Int, -19)
             .input('MatchLevel', sql.VarChar(20), 'JOB')
             .input('GsmTolerance', sql.Int, 10)
-            .execute('dbo.rpt_job_issue_register_v9');
+            .input('ComponentLevel', sql.Bit, 1)
+            .execute('dbo.rpt_job_issue_register_v10');
 
         const pick = (row, ...names) => {
             for (let i = 0; i < names.length; i += 1) {
@@ -4445,6 +4446,9 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             jobNum: pick(row, 'JobNUm', 'JobNum', 'JobNo', 'JobBookingNo', 'jobNum') ?? '',
             jobName: pick(row, 'Job Name', 'JobName', 'jobName') ?? '',
             clientName: pick(row, 'Client', 'ClientName', 'clientName') ?? '',
+            componentId: pick(row, 'Component ID', 'ComponentID', 'componentId') ?? null,
+            componentName: pick(row, 'Component', 'ComponentName', 'componentName') ?? '',
+            componentNo: pick(row, 'Component No', 'ComponentNo', 'componentNo') ?? '',
             requiredQty: pick(row, 'Required as per Job', 'RequiredQty', 'requiredQty') ?? 0,
             issuedQty: pick(row, 'Issued Qty (In same unit as required)', 'IssuedQty', 'issuedQty') ?? 0,
             openingIssued: pick(row, 'Opening Issued', 'OpeningIssued', 'openingIssued') ?? 0,
@@ -4452,7 +4456,10 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             unit: pick(row, 'Unit', 'unit') ?? '',
             excessShort: pick(row, 'Excess/(Short)', 'ExcessShort', 'excessShort') ?? 0,
             varPct: pick(row, 'Var %', 'VarPct', 'varPct') ?? 0,
-            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0
+            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0,
+            jobRequiredQty: pick(row, 'Job Required', 'JobRequired', 'jobRequiredQty') ?? 0,
+            jobCumulativeIssued: pick(row, 'Job Cumulative Issued', 'JobCumulativeIssued', 'jobCumulativeIssued') ?? 0,
+            jobOpeningIssued: pick(row, 'Job Opening Issued', 'JobOpeningIssued', 'jobOpeningIssued') ?? 0
         }));
 
         return res.json({ status: true, records });
