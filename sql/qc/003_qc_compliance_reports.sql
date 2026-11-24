@@ -42,16 +42,22 @@ GO
 /*------------------------------------------------------------------------------
   Report 1: machine + process coverage
   SUMMARY: one row per date, machine and process.
-  DETAIL:  one row per unchecked hour slot.
+  DETAIL:  one row per unchecked hour slot, with its shift.
 
   - Entries of one machine + process at most 5 minutes apart (or overlapping)
     are one continuous run.
-  - Each run is cut into 1-hour slots from its start. A final slot shorter
-    than 30 minutes is not checked for, nor is the slot still in progress on
-    a machine running now.
-  - A slot counts on the date it starts, so a run across midnight keeps one
-    slot clock. Run Start/End are the run's real start and end (they can be
-    on another date); Run Hours and the hour counts are that date's slots.
+  - Shifts: Shift 1 is 8am-8pm, Shift 2 is 8pm-8am. A date runs 8am to 8am,
+    so the night after it is its Shift 2 (12am-8am belongs to the date before).
+  - Each run is cut at the shift changes, and each piece into 1-hour slots
+    from its start (a run from 7:40am gets 7:40-8:00 in Shift 2 and slots
+    8-9, 9-10 ... in Shift 1). A final slot shorter than 30 minutes is not
+    checked for, nor is the slot still in progress on a machine running now.
+  - The last slot of a shift, when it ends in the shift's last hour, also
+    counts as checked if the machine + process was checked by 9pm / 9am
+    (one hour after the shift ends, for the handover).
+  - Run Start/End are the run's real start and end (they can be on another
+    date); Run Hours and the hour counts are that date's slots. ShiftN columns
+    are the same numbers for one shift; ShiftNRunStart/End are clipped to it.
   - Long Entries names production entries of 12 hours or more touching the
     date: usually a job left open in the ERP overnight, so the run time and
     any missed hours in it should be checked before blaming QC.
@@ -75,6 +81,10 @@ BEGIN
             @SlotSec        INT = 3600,
             @MinLastSlotSec INT = 1800,
             @LongEntrySec   INT = 43200,
+            @ShiftHours     INT = 12,
+            @GraceSec       INT = 3600,
+            -- Any 8am: shifts change every 12 hours from here.
+            @ShiftEpoch     DATETIME = '2000-01-01T08:00:00',
             @Now            DATETIME = GETDATE(),
             -- Load a week before so a run already going on @FromDate starts its
             -- slot clock at its real start, and two days after so the last
@@ -167,10 +177,7 @@ BEGIN
         RunNo        INT,
         RunStart     DATETIME,
         RunEnd       DATETIME,
-        IsOpen       INT,
-        RunSec       INT,
-        AllSlots     INT,
-        CountedSlots INT
+        IsOpen       INT
     );
 
     INSERT INTO #Runs (MachineID, ProcessID, RunNo, RunStart, RunEnd, IsOpen)
@@ -178,37 +185,84 @@ BEGIN
     FROM #EntryRuns
     GROUP BY MachineID, ProcessID, RunNo;
 
-    UPDATE #Runs SET RunSec = DATEDIFF(SECOND, RunStart, RunEnd);
-    UPDATE #Runs
-       SET AllSlots     = (RunSec + @SlotSec - 1) / @SlotSec,
-           CountedSlots = RunSec / @SlotSec
-                        + CASE WHEN IsOpen = 0 AND RunSec % @SlotSec >= @MinLastSlotSec THEN 1 ELSE 0 END;
+    -- 4. Cut runs at the shift changes (8am, 8pm)
+    CREATE TABLE #Segments (
+        SegID        INT IDENTITY(1,1) PRIMARY KEY,
+        RunID        INT,
+        ShiftNo      INT,
+        ShiftDate    DATE,
+        ShiftEnd     DATETIME,
+        SegStart     DATETIME,
+        SegEnd       DATETIME,
+        IsOpen       INT,
+        SegSec       INT,
+        AllSlots     INT,
+        CountedSlots INT
+    );
 
-    -- 4. Cut runs into 1-hour slots from the run start
     ;WITH E1(n) AS (SELECT 1 FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) v(n)),
           Tally(k) AS (
-              SELECT TOP (10000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
-              FROM E1 a CROSS JOIN E1 b CROSS JOIN E1 c CROSS JOIN E1 d)
-    SELECT
-        r.RunID,
-        SlotNo    = t.k,
-        SlotStart = DATEADD(SECOND, t.k * @SlotSec, r.RunStart),
-        SlotEnd   = CASE WHEN (t.k + 1) * @SlotSec < r.RunSec
-                         THEN DATEADD(SECOND, (t.k + 1) * @SlotSec, r.RunStart)
-                         ELSE r.RunEnd END,
-        SlotDate  = CAST(DATEADD(SECOND, t.k * @SlotSec, r.RunStart) AS DATE),
-        IsCounted = CASE WHEN t.k < r.CountedSlots THEN 1 ELSE 0 END,
-        Checks    = 0
-    INTO #Slots
-    FROM #Runs r
-    JOIN Tally t ON t.k < r.AllSlots;
+              SELECT TOP (1000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
+              FROM E1 a CROSS JOIN E1 b CROSS JOIN E1 c),
+          w AS (
+              SELECT r.RunID, r.RunStart, r.RunEnd, r.IsOpen,
+                     WinStart = DATEADD(HOUR, @ShiftHours * t.k, f.FirstWin)
+              FROM #Runs r
+              CROSS APPLY (SELECT FirstWin = DATEADD(HOUR,
+                               @ShiftHours * (DATEDIFF(HOUR, @ShiftEpoch, r.RunStart) / @ShiftHours), @ShiftEpoch)) f
+              JOIN Tally t ON t.k <= DATEDIFF(HOUR, f.FirstWin, r.RunEnd) / @ShiftHours
+              WHERE DATEADD(HOUR, @ShiftHours * t.k, f.FirstWin) < r.RunEnd)
+    INSERT INTO #Segments (RunID, ShiftNo, ShiftDate, ShiftEnd, SegStart, SegEnd, IsOpen)
+    SELECT w.RunID,
+           CASE WHEN DATEPART(HOUR, w.WinStart) = 8 THEN 1 ELSE 2 END,
+           CAST(DATEADD(HOUR, -8, w.WinStart) AS DATE),
+           e.WinEnd,
+           CASE WHEN w.RunStart > w.WinStart THEN w.RunStart ELSE w.WinStart END,
+           CASE WHEN w.RunEnd < e.WinEnd THEN w.RunEnd ELSE e.WinEnd END,
+           CASE WHEN w.IsOpen = 1 AND w.RunEnd <= e.WinEnd THEN 1 ELSE 0 END
+    FROM w
+    CROSS APPLY (SELECT WinEnd = DATEADD(HOUR, @ShiftHours, w.WinStart)) e;
 
-    -- 5. Put each check in its run and slot (a check exactly at run end is in the last slot)
+    UPDATE #Segments SET SegSec = DATEDIFF(SECOND, SegStart, SegEnd);
+    UPDATE #Segments
+       SET AllSlots     = (SegSec + @SlotSec - 1) / @SlotSec,
+           CountedSlots = SegSec / @SlotSec
+                        + CASE WHEN IsOpen = 0 AND SegSec % @SlotSec >= @MinLastSlotSec THEN 1 ELSE 0 END;
+
+    -- 5. Cut each piece into 1-hour slots from its start
+    ;WITH E1(n) AS (SELECT 1 FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) v(n)),
+          Tally(k) AS (SELECT TOP (100) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
+                       FROM E1 a CROSS JOIN E1 b)
     SELECT
-        r.RunID,
+        g.SegID,
+        g.RunID,
+        g.ShiftNo,
+        SlotNo    = t.k,
+        SlotStart = DATEADD(SECOND, t.k * @SlotSec, g.SegStart),
+        SlotEnd   = CASE WHEN (t.k + 1) * @SlotSec < g.SegSec
+                         THEN DATEADD(SECOND, (t.k + 1) * @SlotSec, g.SegStart)
+                         ELSE g.SegEnd END,
+        SlotDate  = g.ShiftDate,
+        IsCounted = CASE WHEN t.k < g.CountedSlots THEN 1 ELSE 0 END,
+        -- the shift's last slot, when it ends in the shift's last hour, can be checked until an hour after
+        GraceEnd  = CASE WHEN t.k = g.CountedSlots - 1
+                          AND (CASE WHEN (t.k + 1) * @SlotSec < g.SegSec
+                                    THEN DATEADD(SECOND, (t.k + 1) * @SlotSec, g.SegStart)
+                                    ELSE g.SegEnd END) > DATEADD(SECOND, -@SlotSec, g.ShiftEnd)
+                         THEN DATEADD(SECOND, @GraceSec, g.ShiftEnd) END,
+        Checks    = 0,
+        IsChecked = 0
+    INTO #Slots
+    FROM #Segments g
+    JOIN Tally t ON t.k < g.AllSlots;
+
+    -- 6. Put each check in its piece and slot (a check exactly at run end is in the last slot)
+    SELECT
+        g.RunID,
+        g.SegID,
         c.TransactionID,
         c.CheckTime,
-        SlotNo = CASE WHEN x.Sec >= r.AllSlots * @SlotSec THEN r.AllSlots - 1 ELSE x.Sec / @SlotSec END
+        SlotNo = CASE WHEN x.Sec >= g.AllSlots * @SlotSec THEN g.AllSlots - 1 ELSE x.Sec / @SlotSec END
     INTO #RunChecks
     FROM #Checks c
     JOIN #Runs r
@@ -216,20 +270,39 @@ BEGIN
         AND r.ProcessID = c.ProcessID
         AND c.CheckTime >= r.RunStart
         AND c.CheckTime <= r.RunEnd
-        AND r.AllSlots > 0
-    CROSS APPLY (SELECT Sec = DATEDIFF(SECOND, r.RunStart, c.CheckTime)) x;
+    JOIN #Segments g
+        ON  g.RunID = r.RunID
+        AND g.AllSlots > 0
+        AND c.CheckTime >= g.SegStart
+        AND (c.CheckTime < g.SegEnd OR (c.CheckTime = g.SegEnd AND g.SegEnd = r.RunEnd))
+    CROSS APPLY (SELECT Sec = DATEDIFF(SECOND, g.SegStart, c.CheckTime)) x;
 
     UPDATE s
-       SET Checks = rc.n
+       SET Checks = rc.n, IsChecked = 1
     FROM #Slots s
-    JOIN (SELECT RunID, SlotNo, COUNT(*) AS n FROM #RunChecks GROUP BY RunID, SlotNo) rc
-        ON rc.RunID = s.RunID AND rc.SlotNo = s.SlotNo;
+    JOIN (SELECT SegID, SlotNo, COUNT(*) AS n FROM #RunChecks GROUP BY SegID, SlotNo) rc
+        ON rc.SegID = s.SegID AND rc.SlotNo = s.SlotNo;
+
+    UPDATE s
+       SET IsChecked = 1
+    FROM #Slots s
+    JOIN #Runs r ON r.RunID = s.RunID
+    WHERE s.IsChecked = 0
+      AND s.GraceEnd IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM #Checks c
+          WHERE c.MachineID = r.MachineID
+            AND c.ProcessID = r.ProcessID
+            AND c.CheckTime >= s.SlotStart
+            AND c.CheckTime <= s.GraceEnd
+      );
 
     IF UPPER(@Mode) = 'DETAIL'
     BEGIN
         SELECT
             Plant           = @Plant,
             ReportDate      = s.SlotDate,
+            Shift           = s.ShiftNo,
             MachineID       = r.MachineID,
             MachineName     = mm.MachineName,
             ProcessID       = r.ProcessID,
@@ -263,27 +336,28 @@ BEGIN
             ) u
         ) ops
         WHERE s.IsCounted = 1
-          AND s.Checks = 0
+          AND s.IsChecked = 0
           AND s.SlotDate BETWEEN @FromDate AND @ToDate
         ORDER BY s.SlotDate, mm.MachineName, pm.ProcessName, s.SlotStart;
         RETURN;
     END
 
-    -- 6. One row per run and date
+    -- 7. One row per run, date and shift
     SELECT
         s.RunID,
         s.SlotDate,
+        s.ShiftNo,
         DayStart     = MIN(s.SlotStart),
         DayEnd       = MAX(s.SlotEnd),
         Slots        = SUM(s.IsCounted),
-        CheckedSlots = SUM(CASE WHEN s.IsCounted = 1 AND s.Checks > 0 THEN 1 ELSE 0 END),
+        CheckedSlots = SUM(CASE WHEN s.IsCounted = 1 AND s.IsChecked = 1 THEN 1 ELSE 0 END),
         Checks       = SUM(s.Checks)
     INTO #RunDays
     FROM #Slots s
     WHERE s.SlotDate BETWEEN @FromDate AND @ToDate
-    GROUP BY s.RunID, s.SlotDate;
+    GROUP BY s.RunID, s.SlotDate, s.ShiftNo;
 
-    -- 7. Longest stretch without a check, per run and date
+    -- 8. Longest stretch without a check, per run, date and shift
     ;WITH pts AS (
         SELECT RunID, T = RunStart FROM #Runs
         UNION ALL
@@ -295,7 +369,7 @@ BEGIN
         SELECT RunID, GapStart = T, GapEnd = LEAD(T) OVER (PARTITION BY RunID ORDER BY T)
         FROM pts
     )
-    SELECT d.RunID, d.SlotDate, LongestGapMin = MAX(DATEDIFF(SECOND, g.GapStart, g.GapEnd)) / 60
+    SELECT d.RunID, d.SlotDate, d.ShiftNo, LongestGapMin = MAX(DATEDIFF(SECOND, g.GapStart, g.GapEnd)) / 60
     INTO #DayGaps
     FROM #RunDays d
     JOIN gaps g
@@ -303,9 +377,9 @@ BEGIN
         AND g.GapEnd IS NOT NULL
         AND g.GapStart < d.DayEnd
         AND g.GapEnd > d.DayStart
-    GROUP BY d.RunID, d.SlotDate;
+    GROUP BY d.RunID, d.SlotDate, d.ShiftNo;
 
-    -- 8. Entries of 12 hours or more touching the date (usually left open)
+    -- 9. Entries of 12 hours or more touching the date (usually left open)
     SELECT
         d.SlotDate,
         r.MachineID,
@@ -316,7 +390,11 @@ BEGIN
                           N' (', CAST(DATEDIFF(SECOND, e.FromTime, e.EndTime) / 3600.0 AS DECIMAL(9, 1)), N' h)'), N', ')
                       WITHIN GROUP (ORDER BY e.FromTime)
     INTO #LongEntries
-    FROM #RunDays d
+    FROM (
+        SELECT RunID, SlotDate, DayStart = MIN(DayStart), DayEnd = MAX(DayEnd)
+        FROM #RunDays
+        GROUP BY RunID, SlotDate
+    ) d
     JOIN #Runs r ON r.RunID = d.RunID
     JOIN #EntryRuns e
         ON  e.MachineID = r.MachineID
@@ -344,10 +422,34 @@ BEGIN
         CoveragePct    = CAST(100.0 * SUM(d.CheckedSlots) / NULLIF(SUM(d.Slots), 0) AS DECIMAL(5, 1)),
         LongestGapMin  = MAX(dg.LongestGapMin),
         Status         = CASE WHEN SUM(d.Slots - d.CheckedSlots) > 0 THEN 'Missed' ELSE 'OK' END,
-        LongEntries    = MAX(le.LongEntries)
+        LongEntries    = MAX(le.LongEntries),
+        -- Shift 1 (8am-8pm), NULL when the machine did not run in it
+        Shift1RunStart       = MIN(CASE WHEN d.ShiftNo = 1 THEN d.DayStart END),
+        Shift1RunEnd         = MAX(CASE WHEN d.ShiftNo = 1 THEN d.DayEnd END),
+        Shift1RunHours       = CAST(SUM(CASE WHEN d.ShiftNo = 1 THEN DATEDIFF(SECOND, d.DayStart, d.DayEnd) END) / 3600.0 AS DECIMAL(9, 2)),
+        Shift1ChecksDone     = SUM(CASE WHEN d.ShiftNo = 1 THEN d.Checks END),
+        Shift1HoursChecked   = SUM(CASE WHEN d.ShiftNo = 1 THEN d.CheckedSlots END),
+        Shift1HoursUnchecked = SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots - d.CheckedSlots END),
+        Shift1CoveragePct    = CAST(100.0 * SUM(CASE WHEN d.ShiftNo = 1 THEN d.CheckedSlots END)
+                                    / NULLIF(SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots END), 0) AS DECIMAL(5, 1)),
+        Shift1LongestGapMin  = MAX(CASE WHEN d.ShiftNo = 1 THEN dg.LongestGapMin END),
+        Shift1Status         = CASE WHEN SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots - d.CheckedSlots END) > 0 THEN 'Missed'
+                                    WHEN MAX(CASE WHEN d.ShiftNo = 1 THEN 1 END) = 1 THEN 'OK' END,
+        -- Shift 2 (8pm-8am the night after)
+        Shift2RunStart       = MIN(CASE WHEN d.ShiftNo = 2 THEN d.DayStart END),
+        Shift2RunEnd         = MAX(CASE WHEN d.ShiftNo = 2 THEN d.DayEnd END),
+        Shift2RunHours       = CAST(SUM(CASE WHEN d.ShiftNo = 2 THEN DATEDIFF(SECOND, d.DayStart, d.DayEnd) END) / 3600.0 AS DECIMAL(9, 2)),
+        Shift2ChecksDone     = SUM(CASE WHEN d.ShiftNo = 2 THEN d.Checks END),
+        Shift2HoursChecked   = SUM(CASE WHEN d.ShiftNo = 2 THEN d.CheckedSlots END),
+        Shift2HoursUnchecked = SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots - d.CheckedSlots END),
+        Shift2CoveragePct    = CAST(100.0 * SUM(CASE WHEN d.ShiftNo = 2 THEN d.CheckedSlots END)
+                                    / NULLIF(SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots END), 0) AS DECIMAL(5, 1)),
+        Shift2LongestGapMin  = MAX(CASE WHEN d.ShiftNo = 2 THEN dg.LongestGapMin END),
+        Shift2Status         = CASE WHEN SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots - d.CheckedSlots END) > 0 THEN 'Missed'
+                                    WHEN MAX(CASE WHEN d.ShiftNo = 2 THEN 1 END) = 1 THEN 'OK' END
     FROM #RunDays d
     JOIN #Runs r ON r.RunID = d.RunID
-    LEFT JOIN #DayGaps dg ON dg.RunID = d.RunID AND dg.SlotDate = d.SlotDate
+    LEFT JOIN #DayGaps dg ON dg.RunID = d.RunID AND dg.SlotDate = d.SlotDate AND dg.ShiftNo = d.ShiftNo
     LEFT JOIN #LongEntries le
         ON  le.SlotDate  = d.SlotDate
         AND le.MachineID = r.MachineID
