@@ -4423,6 +4423,7 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             .input('MatchLevel', sql.VarChar(20), 'JOB')
             .input('GsmTolerance', sql.Int, 10)
             .input('ComponentLevel', sql.Bit, 1)
+            .input('ItemLevel', sql.Bit, 1)
             .execute('dbo.rpt_job_issue_register_v10');
 
         const pick = (row, ...names) => {
