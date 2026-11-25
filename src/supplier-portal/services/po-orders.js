@@ -166,8 +166,8 @@ function stripRequest(body = {}) {
 
 /**
  * The signed approval page is uploaded: that approves the PO. It is then
- * checked again and written to the ERP. A PO that no longer passes (a price
- * withdrawn, a requisition ordered elsewhere) stays approved but unsaved,
+ * checked again and written to the ERP. A PO that no longer passes (a rate
+ * now above the last one paid, a requisition ordered elsewhere) stays approved but unsaved,
  * with the reason, as SAVE_FAILED.
  */
 export async function approveOrder(site, id, { image, actor }) {

@@ -30,7 +30,7 @@
   /** Paper item groups the buffer-stock rule applies to. */
   var PAPER_GROUPS = [14, 2]; // 14 sheet paper, 2 reel
 
-  /** Rate warnings: above this share over the best price or the last paid. */
+  /** Rate warning: above this share over the last paid rate. */
   var WARN_OVER = 0.05;
   /** At or past twice (or half) the last paid rate, a typo is the likelier story. */
   var TYPO_FACTOR = 2;
@@ -116,8 +116,8 @@
   }
 
   /**
-   * A quoted rate in the line's purchase unit. Null when the two units
-   * cannot be converted - such a price is shown but cannot be ordered against.
+   * A rate in the line's purchase unit. Null when the two units cannot be
+   * converted - such a rate cannot be checked against.
    */
   function convertRate(rate, fromUnit, toUnit) {
     var r = Number(rate);
@@ -130,55 +130,31 @@
     return null;
   }
 
-  /** An offer's rate in the purchase unit, as the PO line would carry it. */
-  function offerRate(offer, purchaseUnit) {
-    var rate = offer && offer.rate ? offer.rate : {};
-    var value = rate.ratePerBaseUom != null ? rate.ratePerBaseUom : rate.rate;
-    return convertRate(value, rate.uom, purchaseUnit);
-  }
-
-  function sameSupplier(offer, supplier) {
-    if (!offer || !supplier) return false;
-    var a = String((offer.supplier && offer.supplier.gstin) || '').toUpperCase();
-    var b = String(supplier.gstin || '').toUpperCase();
-    if (a && b) return a === b;
-    return String((offer.supplier && offer.supplier.name) || '').trim().toUpperCase()
-      === String(supplier.name || '').trim().toUpperCase();
-  }
-
   /**
    * The checks on one line's rate.
    *
-   * A PO can only be made against a price a person approved in the supplier
-   * portal, so no approved price from this supplier, or a rate above it,
-   * blocks the line. Being well above the best price or the last paid rate is
-   * a warning; twice or half the last paid rate needs confirming as a likely
-   * typo.
+   * A rate above the last one paid to this supplier for the item
+   * (`supplierPaidRate`, in the purchase unit) blocks the line until the
+   * buyer lowers it or ignores the check; with nothing bought from the
+   * supplier lately, any rate goes. Being well above the last rate paid to
+   * anyone is a warning; twice or half it needs confirming as a likely typo.
    *
    * @returns [{ severity: 'BLOCK'|'CONFIRM'|'WARN', code, message }]
    */
   function rateChecks(input) {
     var out = [];
     var rate = Number(input.rate);
-    var approved = input.approvedRate;
+    var cap = input.supplierPaidRate;
     var unit = input.unit || '';
 
-    if (approved == null) {
-      out.push({ severity: 'BLOCK', code: 'NO_APPROVED_PRICE',
-        message: 'This supplier has no approved price for this item. A PO can only use an approved price.' });
-    }
     if (!(rate > 0)) {
       out.push({ severity: 'BLOCK', code: 'NO_RATE', message: 'Enter a rate.' });
       return out;
     }
-    if (approved != null && rate > approved + 0.00001) {
-      out.push({ severity: 'BLOCK', code: 'ABOVE_APPROVED',
-        message: 'Above this supplier\'s approved price of ' + money(approved) + '/' + unit + '.' });
-    }
-    if (input.bestRate != null && input.bestRate > 0 && rate > input.bestRate * (1 + WARN_OVER)) {
-      out.push({ severity: 'WARN', code: 'ABOVE_BEST',
-        message: pct((rate - input.bestRate) / input.bestRate) + ' above the best approved price ('
-          + money(input.bestRate) + (input.bestSupplier ? ', ' + input.bestSupplier : '') + ').' });
+    if (cap != null && rate > cap + 0.00001) {
+      out.push({ severity: 'BLOCK', code: 'ABOVE_LAST_PAID_SUPPLIER',
+        message: 'Above the last rate paid to this supplier, ' + money(cap) + '/' + unit
+          + (input.supplierPaidOn ? ' on ' + input.supplierPaidOn : '') + '.' });
     }
     var last = input.lastPaidRate;
     if (last != null && last > 0) {
@@ -321,8 +297,6 @@
     isIntraState: isIntraState,
     lineTax: lineTax,
     convertRate: convertRate,
-    offerRate: offerRate,
-    sameSupplier: sameSupplier,
     rateChecks: rateChecks,
     bufferCheck: bufferCheck,
     topFloorStock: topFloorStock,

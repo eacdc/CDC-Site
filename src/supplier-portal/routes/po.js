@@ -1,11 +1,11 @@
 /**
- * Create PO: purchase orders from approved supplier prices.
+ * Create PO: purchase orders written to the ERP, priced and checked from the ERP alone.
  *
  *   GET  /po/reference                 delivery points, terms, company block, next PO number
  *   GET  /po/requisitions              PREQ lines not yet fully on a PO
- *   GET  /po/suppliers                 suppliers with an approved price or a recent PO, as ERP ledgers
- *   GET  /po/items?q=&supplierLedgerId=  items with an approved price
- *   GET  /po/items/:itemId/context?clientId=   prices, last paid and buffer stock for a line
+ *   GET  /po/suppliers                 suppliers with a PO since last April, as ERP ledgers
+ *   GET  /po/items?q=&supplierLedgerId=  items bought lately, and any ERP item matching q
+ *   GET  /po/items/:itemId/context?clientId=   last paid rates and buffer stock for a line
  *
  *   GET  /po/orders?from=&to=          POs in a date range, from the ERP and the tool
  *   POST /po/orders                    check and save a PO: to the ERP, or to wait for approval

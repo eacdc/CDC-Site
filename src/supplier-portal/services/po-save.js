@@ -1,16 +1,17 @@
 /**
  * Create PO: checking a PO again on the server, and writing it to the ERP.
  *
- * A line may only use a price a person approved in the supplier portal - or,
- * while those approvals catch up, at most the last rate paid to the same
- * supplier for the item (po.js LAST_PAID_FALLBACK_DAYS; Manu, 23 Nov 2026).
+ * A line may go at most at the last rate paid to the same supplier for the
+ * item (po.js LAST_PAID_CAP_DAYS), unless the buyer ignores that check; an
+ * item not bought from the supplier lately can go at any rate. The supplier
+ * portal's prices are not used (Manu, 25 Nov 2026).
  *
  * The screen applies every rule as the buyer types (Create-PO po-math.js);
  * nothing it sends is trusted. `preparePo` works the whole PO out again from
- * the ERP and the supplier portal - the supplier's ledger, each item, the
- * approved price it may be bought at, the quantities and tax, the
- * requisition lines it closes and the free floor stock that makes it need
- * approval - with the same arithmetic (lib/po-math.cjs is that file).
+ * the ERP - the supplier's ledger, each item, the most it may be bought at,
+ * the quantities and tax, the requisition lines it closes and the free floor
+ * stock that makes it need approval - with the same arithmetic
+ * (lib/po-math.cjs is that file).
  *
  * `writePoToErp` writes what the ERP's own PO screen writes, studied on
  * PO04017_26_27 (saved once, from PREQ00620) and the FY 2026-27 lines:
@@ -35,13 +36,12 @@ import { COMPANY_ID, VOUCHER, VOUCHER_PREFIX } from '../config/constants.js';
 import { allocateVoucherNo, financialYearFor } from './erp-voucher.js';
 import { erpNow, erpToday } from '../lib/erp-time.js';
 import { erpWritesEnabled } from './erp-receiving.js';
-import { compareItem } from './proposals.js';
 import { getItems, hsnForItems } from './erp-items.js';
 import { supplierLedgers } from './erp-ledgers.js';
 import { normaliseGstin } from './supplier-groups.js';
 import {
   DELIVERY_ADDRESSES, PAYMENT_TERMS, TRANSPORT_MODES, PURCHASE_DIVISION, CURRENCY_CODE,
-  supplierResolver, bufferStock, toPoItem, firstJobNo, supplierLastPaid,
+  bufferStock, toPoItem, firstJobNo, supplierLastPaid,
 } from './po.js';
 
 const M = PoMath;
@@ -77,7 +77,7 @@ export class PoRejected extends Error {
  *   own requisition lines are not "held by another PO"
  * @param {Object} [opts.edit]  editing an ERP PO: the PO as it stands
  *   (po-edit.js loadPoForEdit). The supplier stays; a line left at its rate
- *   keeps it, approved or not; a line keeps its requisition link and client;
+ *   keeps it, above the last paid rate or not; a line keeps its requisition link and client;
  *   and only a new line, or one ordering more kg, can need approval.
  */
 export async function preparePo(site, body, { orderId = null, edit = null } = {}) {
@@ -121,10 +121,9 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
   const ids = raw.map((l) => Number(l.itemId));
   // On an edit, requisition links come from the PO as it stands, never from the screen.
   const reqLineIds = edit ? [] : raw.flatMap((l) => (l.requisitionLineIds || []).map(String));
-  const [items, hsn, resolve, reqs, held] = await Promise.all([
+  const [items, hsn, reqs, held] = await Promise.all([
     getItems(site, ids),
     hsnForItems(site, ids),
-    supplierResolver(site),
     requisitionLines(site, reqLineIds),
     reqLinesHeldByTool(site, { exceptOrderId: orderId }),
   ]);
@@ -146,54 +145,33 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
     const expectedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(l.expectedDate || '')) ? l.expectedDate : null;
     if (!expectedDate) lineProblems.push(`${label}: enter the expected delivery date.`);
 
-    // Only a price a person approved in the supplier portal, from this supplier -
-    // except a line on an edited PO left at the rate it already has.
+    // At most the last rate paid to this supplier for the item - except a
+    // line on an edited PO left at the rate it already has.
     const kept = edit ? edit.linesByItem.get(id) || null : null;
-    const offers = await compareItem({ site, itemId: id });
-    const mine = offers.find((o) => resolve(o.supplier)?.ledgerId === supplier.ledgerId) || null;
-    const approvedRate = mine ? M.offerRate(mine, item.purchaseUnit) : null;
     const rate = Number(l.rate);
     const rateKept = Boolean(kept) && Math.abs(rate - kept.rate) < 0.00005;
-
-    // No usable approved price: the last rate paid to this supplier for the
-    // item, while the portal's approvals catch up (LAST_PAID_FALLBACK_DAYS).
-    let fallback = null;
-    if (!rateKept && approvedRate == null) {
+    let cap = null;
+    if (!rateKept) {
       const paid = (await supplierLastPaid(site, id)).find((p) => p.ledgerId === supplier.ledgerId);
       const paidRate = paid ? M.convertRate(paid.rate, paid.unit, item.purchaseUnit) : null;
-      if (paidRate != null) fallback = { ...paid, rateInPurchaseUnit: paidRate };
+      if (paidRate != null) cap = { ...paid, rateInPurchaseUnit: paidRate };
     }
 
-    // The buyer may override the price rules for a line; a reason is optional
-    // (Manu, 23 Nov 2026). Only the price rules: a rate must still be entered.
+    // The buyer may ignore the price check for a line; a reason is optional
+    // (Manu, 23 Nov 2026). Only the price check: a rate must still be entered.
     const overrideReason = String(l.priceOverride?.reason || '').trim();
     const overridden = !rateKept && Boolean(l.priceOverride);
 
-    if (rateKept || overridden) {
-      if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
-    } else if (fallback) {
-      if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
-      else if (rate > fallback.rateInPurchaseUnit + 0.00001) {
-        lineProblems.push(`${label}: there is no approved price, and the rate is above the last one paid to this supplier `
-          + `(${fallback.rateInPurchaseUnit}/${item.purchaseUnit} on ${fallback.poNo}).`);
-      }
-    } else {
-      if (mine && approvedRate == null) {
-        lineProblems.push(`${label}: the approved price is per ${mine.rate?.uom || '?'} and cannot be turned into a price per ${item.purchaseUnit}.`);
-      }
-      for (const c of M.rateChecks({ rate, approvedRate: mine ? approvedRate : null, unit: item.purchaseUnit })) {
-        if (c.severity !== 'BLOCK') continue;
-        if (c.code === 'NO_APPROVED_PRICE' && mine) continue; // the unit problem above says it better
-        lineProblems.push(`${label}: ${c.code === 'NO_APPROVED_PRICE'
-          ? 'this supplier has no approved price for this item, and nothing was bought from it in the last year to go by.'
-          : c.message}`);
-      }
+    if (!(rate > 0)) lineProblems.push(`${label}: enter a rate.`);
+    else if (cap && !overridden && rate > cap.rateInPurchaseUnit + 0.00001) {
+      lineProblems.push(`${label}: the rate is above the last one paid to this supplier `
+        + `(${cap.rateInPurchaseUnit}/${item.purchaseUnit} on ${cap.poNo}).`);
     }
     // What the rate rests on, kept on the tool's record of the PO.
     const priceBasis = rateKept ? { kind: 'KEPT' }
-      : overridden ? { kind: 'OVERRIDE', reason: overrideReason.slice(0, 500) || null, rate: approvedRate ?? fallback?.rateInPurchaseUnit ?? null }
-      : fallback ? { kind: 'LAST_PAID', rate: fallback.rateInPurchaseUnit, poNo: fallback.poNo, poDate: fallback.poDate }
-        : { kind: 'APPROVED', proposalId: mine ? String(mine._id) : null, rate: approvedRate };
+      : overridden ? { kind: 'OVERRIDE', reason: overrideReason.slice(0, 500) || null, rate: cap?.rateInPurchaseUnit ?? null }
+      : cap ? { kind: 'LAST_PAID', rate: cap.rateInPurchaseUnit, poNo: cap.poNo, poDate: cap.poDate }
+        : { kind: 'NEW' };
 
     // Requisition lines: each must be this item's, still open, and not on
     // another tool PO waiting for approval.
@@ -247,8 +225,6 @@ export async function preparePo(site, body, { orderId = null, edit = null } = {}
       qtyPerPack: item.qtyPerPack || 1,
       packs: Math.round(q.stockQty / (item.qtyPerPack || 1)),
       rate,
-      approvedRate,
-      proposalId: mine ? String(mine._id) : null,
       priceBasis,
       amount: q.amount,
       gstPct: item.gstPct,

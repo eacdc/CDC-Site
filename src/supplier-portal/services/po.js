@@ -1,26 +1,23 @@
 /**
- * Purchase orders made from approved supplier prices: the reads.
+ * Create PO: the reads.
  *
- * Backs the Create PO tool (eacdc/Create-PO). A buyer may order an item only
- * at a price a person approved on the review page - an APPROVED proposal,
- * never an automatic match - and sees, before ordering, the free stock of the
- * same or a similar item from GetItemDetailsWithBufferTotal_Manu_v4, on the
- * floor and on open POs kept apart.
+ * Backs the Create PO tool (eacdc/Create-PO). Everything comes from the ERP:
+ * the tool does not use the supplier portal's prices or supplier groups
+ * (Manu, 25 Nov 2026: "no connection needed for now, we will re-establish it
+ * when needed"). A line's price is checked against the last rate paid to the
+ * same supplier for the item (LAST_PAID_CAP_DAYS), and the buyer sees, before
+ * ordering, the free stock of the same or a similar item from
+ * GetItemDetailsWithBufferTotal_Manu_v4, on the floor and on open POs kept apart.
  *
- * Everything here reads. Writing a PO to the ERP is a separate step and is not
- * built yet; see routes/po.js.
+ * Everything here reads; po-save.js writes.
  */
 
 import { query, assertSite, sql } from '../db/mssql.js';
-import { ensureSupplierPortalReady, MappingProposal, SupplierGroup } from '../db/mongo.js';
 import { COMPANY_ID, VOUCHER } from '../config/constants.js';
-import { compareItem } from './proposals.js';
-import { getItem, getItems, hsnForItems, lastPaidRates, paperItemsInGsmRange } from './erp-items.js';
+import { getItem, getItems, hsnForItems, lastPaidRates, searchItems } from './erp-items.js';
 import { supplierLedgers } from './erp-ledgers.js';
-import { normaliseGstin, suggestGroup, ledgerIdsForSite } from './supplier-groups.js';
-import { normaliseName } from '../lib/text.js';
-import { PAPER_GROUP_IDS, itemInBand } from './paper/band.js';
-import { AUTO_ACCEPT } from './quote-identify.js';
+import { normaliseGstin } from './supplier-groups.js';
+import { PAPER_GROUP_IDS } from './paper/band.js';
 
 /**
  * Where goods are delivered. The text is what the ERP's own POs carry
@@ -230,52 +227,7 @@ export function financialYearStart(date = new Date()) {
   return new Date(Date.UTC(year, 3, 1));
 }
 
-// ── suppliers behind approved prices ────────────────────────────────────────
-
-/**
- * Turns the supplier printed on a quote into an ERP ledger at this site.
- *
- * By GSTIN when the quote had one; otherwise by the supplier groups' names
- * and aliases, exactly first and then with the portal's own name scorer at
- * its auto-accept threshold. A supplier that does not resolve is still shown
- * with its price, but cannot be chosen for a PO: a PO needs a ledger.
- */
-export async function supplierResolver(site) {
-  assertSite(site);
-  await ensureSupplierPortalReady();
-  const [groups, ledgers] = await Promise.all([
-    SupplierGroup.find({ isInternal: { $ne: true } }).lean(),
-    supplierLedgers(site),
-  ]);
-  const byGstin = new Map();
-  const byName = new Map();
-  for (const g of groups) {
-    for (const gstin of g.gstins || []) byGstin.set(gstin, g);
-    for (const label of [g.name, ...(g.aliases || [])]) byName.set(normaliseName(label), g);
-  }
-  const ledgerById = new Map(ledgers.map((l) => [Number(l.LedgerID), l]));
-  const memo = new Map();
-
-  return function resolve(supplier = {}) {
-    const gstin = normaliseGstin(supplier.gstin);
-    const key = `${gstin || ''}|${supplier.name || ''}`;
-    if (memo.has(key)) return memo.get(key);
-
-    let group = (gstin && byGstin.get(gstin)) || byName.get(normaliseName(supplier.name || '')) || null;
-    if (!group && supplier.name) {
-      const best = suggestGroup(supplier.name, groups);
-      if (best && best.score >= AUTO_ACCEPT) group = best.group;
-    }
-    const ledgerIds = group ? ledgerIdsForSite(group, site) : [];
-    // A group can hold several ledgers at one site (a rename, a branch): prefer
-    // the one whose GSTIN the quote printed, then any active one.
-    const ledger = ledgerIds.map((id) => ledgerById.get(Number(id))).filter(Boolean)
-      .sort((a, b) => Number(normaliseGstin(b.GSTNo) === gstin) - Number(normaliseGstin(a.GSTNo) === gstin))[0] || null;
-    const result = ledger ? toSupplier(ledger) : null;
-    memo.set(key, result);
-    return result;
-  };
-}
+// ── suppliers and items ─────────────────────────────────────────────────────
 
 function toSupplier(ledger) {
   return {
@@ -287,63 +239,16 @@ function toSupplier(ledger) {
   };
 }
 
-/** Every approved price at this plant: proposals a person approved, as an item or as a paper band. */
-async function approvedProposals(site) {
-  await ensureSupplierPortalReady();
-  return MappingProposal.find({ site, status: 'APPROVED' })
-    .select('supplier line.productName rate decision createdAt autoQuoteId')
-    .lean();
-}
-
 /**
- * The items each approved proposal prices. A band covers every paper item
- * inside it; the ERP is asked once per distinct GSM range.
- */
-async function itemsPricedBy(site, proposals) {
-  const direct = new Map(); // itemId -> [proposal]
-  const add = (id, p) => {
-    const key = Number(id);
-    if (!direct.has(key)) direct.set(key, []);
-    direct.get(key).push(p);
-  };
-  const bands = [];
-  for (const p of proposals) {
-    if (p.decision?.itemId) add(p.decision.itemId, p);
-    else if (p.decision?.band?.quality) bands.push(p);
-  }
-  const ranges = new Map();
-  for (const p of bands) {
-    const b = p.decision.band;
-    const key = `${b.gsmFrom}-${b.gsmTo ?? b.gsmFrom}-${(b.groupIds?.length ? b.groupIds : PAPER_GROUP_IDS).join('.')}`;
-    if (!ranges.has(key)) ranges.set(key, { band: b, proposals: [] });
-    ranges.get(key).proposals.push(p);
-  }
-  for (const { band, proposals: ps } of ranges.values()) {
-    const items = await paperItemsInGsmRange(site, {
-      gsmFrom: band.gsmFrom, gsmTo: band.gsmTo ?? band.gsmFrom, itemGroupIds: band.groupIds?.length ? band.groupIds : PAPER_GROUP_IDS,
-    });
-    for (const item of items) {
-      for (const p of ps) if (itemInBand(item, p.decision.band)) add(item.ItemID, p);
-    }
-  }
-  return direct;
-}
-
-/**
- * The supplier dropdown: every supplier with an approved price at this plant,
- * plus every supplier ordered from since the start of last financial year
- * (about 150 in Kolkata), as the ERP lists them. A supplier without an
- * approved price can be picked, but its lines stay blocked until a price is
- * approved. Each carries the payment terms of its last PO, which the screen
- * starts with.
+ * The supplier dropdown: every supplier ordered from since the start of last
+ * financial year (about 150 in Kolkata), as the ERP lists them. Each carries
+ * the payment terms of its last PO, which the screen starts with.
  */
 export async function poSuppliers(site, { today = new Date() } = {}) {
   assertSite(site);
   const since = financialYearStart(today);
   since.setUTCFullYear(since.getUTCFullYear() - 1);
-  const [proposals, resolve, ledgers, lastPos] = await Promise.all([
-    approvedProposals(site),
-    supplierResolver(site),
+  const [ledgers, lastPos] = await Promise.all([
     supplierLedgers(site),
     query(site, `
       WITH P AS (
@@ -358,46 +263,33 @@ export async function poSuppliers(site, { today = new Date() } = {}) {
       SELECT LedgerID, TermsOfPayment, VoucherDate FROM P WHERE rn = 1
     `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, since: { type: sql.Date, value: since } }),
   ]);
-  const priced = await itemsPricedBy(site, proposals);
-  const approvedItems = new Map(); // ledgerId -> Set(itemId)
-  for (const [itemId, ps] of priced) {
-    for (const p of ps) {
-      const s = resolve(p.supplier);
-      if (!s) continue;
-      if (!approvedItems.has(s.ledgerId)) approvedItems.set(s.ledgerId, new Set());
-      approvedItems.get(s.ledgerId).add(itemId);
-    }
-  }
   const lastPo = new Map(lastPos.map((r) => [Number(r.LedgerID), r]));
   return ledgers
-    .filter((l) => approvedItems.has(Number(l.LedgerID)) || lastPo.has(Number(l.LedgerID)))
+    .filter((l) => lastPo.has(Number(l.LedgerID)))
     .map((l) => {
-      const id = Number(l.LedgerID);
-      const po = lastPo.get(id);
+      const po = lastPo.get(Number(l.LedgerID));
       return {
         ...toSupplier(l),
-        approvedItemCount: approvedItems.get(id)?.size || 0,
-        lastPoDate: po?.VoucherDate || null,
-        paymentTerms: normalisePaymentTerms(po?.TermsOfPayment),
+        lastPoDate: po.VoucherDate || null,
+        paymentTerms: normalisePaymentTerms(po.TermsOfPayment),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
- * Items that can go on a PO - from one supplier when `supplierLedgerId` is
- * given - for the "Add item" search: those with an approved price, and,
- * while the fallback is on, those bought (from that supplier) within
- * LAST_PAID_FALLBACK_DAYS. Approved ones come first.
+ * Items for the "Add item" search. Without search text: those bought - from
+ * `supplierLedgerId` when given - within LAST_PAID_CAP_DAYS. With text: also
+ * any active ERP item that matches, since an item never bought can be
+ * ordered too. Bought ones come first, each with the last rate paid to that
+ * supplier when one was given.
  */
 export async function poItems(site, { q = '', supplierLedgerId = null, limit = 100 } = {}) {
   assertSite(site);
-  const term = String(q || '').trim().toLowerCase();
+  const term = String(q || '').trim();
   const wanted = supplierLedgerId != null ? Number(supplierLedgerId) : null;
-  const [proposals, resolve, bought] = await Promise.all([
-    approvedProposals(site),
-    supplierResolver(site),
-    LAST_PAID_FALLBACK_DAYS > 0 ? query(site, `
+  const [bought, found] = await Promise.all([
+    LAST_PAID_CAP_DAYS > 0 ? query(site, `
       WITH L AS (
         SELECT ITD.ItemID, ITD.PurchaseRate, ITD.PurchaseUnit,
                ROW_NUMBER() OVER (PARTITION BY ITD.ItemID ORDER BY ITM.VoucherDate DESC, ITD.TransactionDetailID DESC) AS rn
@@ -416,17 +308,15 @@ export async function poItems(site, { q = '', supplierLedgerId = null, limit = 1
     `, {
       po: VOUCHER.PURCHASE_ORDER,
       companyId: COMPANY_ID,
-      days: { type: sql.Int, value: LAST_PAID_FALLBACK_DAYS },
+      days: { type: sql.Int, value: LAST_PAID_CAP_DAYS },
       ledgerId: { type: sql.BigInt, value: wanted },
       like: `%${term}%`,
     }) : [],
+    term ? searchItems(site, term, { limit: 200 }) : [],
   ]);
-  const priced = await itemsPricedBy(site, proposals);
 
-  const approvedIds = [...priced.keys()].filter((id) => wanted == null
-    || priced.get(id).some((p) => resolve(p.supplier)?.ledgerId === wanted));
   const lastPaid = new Map(bought.map((r) => [Number(r.ItemID), r]));
-  const ids = [...new Set([...approvedIds, ...lastPaid.keys()])];
+  const ids = [...new Set([...lastPaid.keys(), ...found.map((r) => Number(r.ItemID))])];
   if (!ids.length) return [];
 
   const [items, hsn] = await Promise.all([getItems(site, ids), hsnForItems(site, ids)]);
@@ -434,24 +324,18 @@ export async function poItems(site, { q = '', supplierLedgerId = null, limit = 1
   for (const id of ids) {
     const row = items.get(id) || items.get(String(id));
     if (!row) continue;
-    const item = toPoItem(row, hsn.get(row.ItemID) || hsn.get(String(row.ItemID)));
-    if (term && !`${item.itemName} ${item.itemCode}`.toLowerCase().includes(term)) continue;
-    const ps = approvedIds.includes(id) ? priced.get(id) : [];
-    const suppliers = new Set(ps.map((p) => (p.supplier?.gstin || p.supplier?.name || '').toUpperCase()));
-    const mine = wanted == null ? null
-      : ps.filter((p) => resolve(p.supplier)?.ledgerId === wanted)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
-    const paid = wanted != null ? lastPaid.get(id) : null;
+    const paid = lastPaid.get(id);
     out.push({
-      ...item,
-      supplierCount: suppliers.size,
-      approvedRate: mine ? mine.rate : null,
-      // From this supplier, for the fallback; only when a supplier was given.
-      lastPaidRate: paid ? { rate: Math.round(Number(paid.PurchaseRate) * 10000) / 10000, unit: String(paid.PurchaseUnit || '').trim() } : null,
+      ...toPoItem(row, hsn.get(row.ItemID) || hsn.get(String(row.ItemID))),
+      bought: Boolean(paid),
+      // From this supplier; only when a supplier was given.
+      lastPaidRate: paid && wanted != null
+        ? { rate: Math.round(Number(paid.PurchaseRate) * 10000) / 10000, unit: String(paid.PurchaseUnit || '').trim() }
+        : null,
     });
   }
   return out
-    .sort((a, b) => (Number(b.supplierCount > 0) - Number(a.supplierCount > 0)) || a.itemName.localeCompare(b.itemName))
+    .sort((a, b) => (Number(b.bought) - Number(a.bought)) || a.itemName.localeCompare(b.itemName))
     .slice(0, limit);
 }
 
@@ -484,9 +368,9 @@ function numberOrNull(v) {
 }
 
 /**
- * Everything one PO line shows: the item, every approved price for it
- * (cheapest first, each with its quote's effective date, delivery and credit,
- * and the supplier's ERP ledger), the last price paid, and the buffer stock.
+ * Everything one PO line shows: the item, the last rate paid to each
+ * supplier for it, the last price paid to anyone, the item master's rate and
+ * the buffer stock.
  */
 export async function itemContext(site, itemId, { clientId = null } = {}) {
   assertSite(site);
@@ -494,10 +378,8 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
   const row = await getItem(site, id);
   if (!row) return null;
 
-  const [hsn, offers, resolve, paid, master, bySupplier] = await Promise.all([
+  const [hsn, paid, master, bySupplier] = await Promise.all([
     hsnForItems(site, [id]),
-    compareItem({ site, itemId: id }),
-    supplierResolver(site),
     lastPaidRates(site, [id]),
     // The ERP's PO screen starts the rate here. Few items have it updated
     // (62 of 2,442 bought this year), so it is shown, never trusted as a price.
@@ -513,12 +395,8 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
   return {
     item,
     masterRate: masterRate != null ? { rate: masterRate, unit: item.purchaseUnit } : null,
-    // The fallback while approvals catch up: the last rate paid to each supplier.
+    // The most a line may be ordered at from each supplier (LAST_PAID_CAP_DAYS).
     lastPaidBySupplier: bySupplier,
-    offers: offers.map((o) => {
-      const s = resolve(o.supplier);
-      return { ...o, proposalId: String(o._id), supplierLedgerId: s ? s.ledgerId : null, supplierLedgerName: s ? s.name : null };
-    }),
     lastPaid: last ? {
       rate: last.rate, unit: last.uom, supplierName: last.supplierName, poNo: last.voucherNo, poDate: last.date,
     } : null,
@@ -527,20 +405,20 @@ export async function itemContext(site, itemId, { clientId = null } = {}) {
 }
 
 /**
- * Until the supplier portal's approvals catch up (none were approved on 23
- * Nov 2026), a line with no approved price from its supplier may be ordered
- * at or below the last rate paid to that same supplier for the item within
- * this many days (Manu, 23 Nov 2026). Set to 0 to require approved prices only.
+ * A line may be ordered at or below the last rate paid to the same supplier
+ * for the item within this many days; above it is a fix the buyer can
+ * ignore. An item not bought from the supplier in that time can go at any
+ * rate (Manu, 23 and 25 Nov 2026).
  */
-export const LAST_PAID_FALLBACK_DAYS = 365;
+export const LAST_PAID_CAP_DAYS = 365;
 
 /**
- * The last rate paid to each supplier for one item, within the fallback
- * window: what a line with no approved price may be ordered at.
+ * The last rate paid to each supplier for one item, within
+ * LAST_PAID_CAP_DAYS: the most a line from that supplier may be ordered at.
  *
  * @returns {Promise<Array<{ledgerId, supplierName, rate, unit, poNo, poDate}>>}
  */
-export async function supplierLastPaid(site, itemId, { days = LAST_PAID_FALLBACK_DAYS } = {}) {
+export async function supplierLastPaid(site, itemId, { days = LAST_PAID_CAP_DAYS } = {}) {
   assertSite(site);
   if (!(days > 0)) return [];
   const rows = await query(site, `
