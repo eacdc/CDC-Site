@@ -14,6 +14,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import OpenAI from 'openai';
 import { askText, MODELS } from './lib/claude.js';
+import { isQcNotOk, qcRemarkToEnglish, transcribeQcRemark, QC_SAMPLE_SIZES } from './lib/qc-remarks.js';
+import { uploadQcPhoto, isQcPhotoKey, qcPhotoUrls, QC_PHOTOS_MAX } from './lib/qc-photos.js';
 import {
     generateDispatchNotePdf,
     normalizeDispatchHeader,
@@ -1447,7 +1449,7 @@ router.get('/processes/pending', async (req, res) => {
 							.input('UserID', sql.Int, userIdNum)
 							.input('MachineID', sql.Int, machineIdNum)
 							.input('JobCardContentNo', sql.NVarChar(255), jobCardNumber.toString())
-							.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+							.execute('dbo.GetPendingProcesses_ForMachineAndContent_v3');
 						console.log('[PENDING2] processResult:', JSON.stringify(processResult.recordset));
             console.log('[PENDING2] machineIdNum, jobCardNumber:', machineIdNum, jobCardNumber);
 						// Add processes from this job card to our collection
@@ -1469,7 +1471,7 @@ router.get('/processes/pending', async (req, res) => {
 				.input('UserID', sql.Int, userIdNum)
 				.input('MachineID', sql.Int, machineIdNum)
 				.input('JobCardContentNo', sql.NVarChar(255), trimmedJobCardContentNo)
-				.execute('dbo.GetPendingProcesses_ForMachineAndContent');
+				.execute('dbo.GetPendingProcesses_ForMachineAndContent_v3');
         console.log('[PENDING3] result:', JSON.stringify(result.recordset));
 
 		}
@@ -1959,10 +1961,13 @@ router.get('/production/search-by-machine', async (req, res) => {
 });
 
 // Job diagnostics: every component, form and process of a job card, plus the
-// three conditions GetPendingProcesses_ForMachineAndContent applies, so a
+// three conditions GetPendingProcesses_ForMachineAndContent_v3 applies, so a
 // process that never shows up on a machine can be explained without opening
 // SSMS. ShowsInApp is that procedure's filter expressed as a flag — when it is
-// 0, the row tells you which of the three conditions failed.
+// 0, the row tells you which of the three conditions failed. An online
+// printing row shows only on presses that print one side per run (and not
+// once the form has had a printing run on a two-sided press), so for those
+// rows Machines lists just those presses.
 router.get('/jobs/diagnostics', async (req, res) => {
 	try {
 		const { jobNumber, database } = req.query || {};
@@ -1980,6 +1985,16 @@ router.get('/jobs/diagnostics', async (req, res) => {
 		const result = await pool.request()
 			.input('Search', sql.NVarChar(120), `%${search}%`)
 			.query(`
+				-- presses the ERP plans printing online on: both sides in one run
+				DECLARE @TwoSidedPresses TABLE (MachineID INT PRIMARY KEY);
+				INSERT INTO @TwoSidedPresses (MachineID)
+				SELECT DISTINCT MachineID
+				FROM dbo.JobScheduleRelease
+				WHERE ProcessID IN (10337, 279)
+				  AND ISNULL(IsOnlineProcess, 0) = 1
+				  AND ISNULL(IsDeletedTransaction, 0) = 0
+				  AND MachineID IS NOT NULL;
+
 				SELECT
 					c.JobCardContentNo,
 					c.PlanContName                                   AS ComponentName,
@@ -1993,13 +2008,13 @@ router.get('/jobs/diagnostics', async (req, res) => {
 					jsr.Status,
 					CAST(ISNULL(jsr.IsOnlineProcess, 0) AS INT)      AS IsOnlineProcess,
 					CAST(ISNULL(jsr.IsDeletedTransaction, 0) AS INT) AS IsDeleted,
-					(
+					CASE WHEN sep.Machines IS NOT NULL THEN sep.Machines ELSE (
 						SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName)
 						FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
 						JOIN dbo.MachineMaster mm
 						     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
 						    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
-					)                                                AS Machines,
+					) END                                            AS Machines,
 					ISNULL((
 						SELECT SUM(ISNULL(pe.ProductionQuantity, 0))
 						FROM dbo.ProductionEntry pe
@@ -2008,7 +2023,7 @@ router.get('/jobs/diagnostics', async (req, res) => {
 						  AND ISNULL(pe.JobCardFormNo, N'') = ISNULL(jsr.JobCardFormNo, N'')
 					), 0)                                            AS ProducedQty,
 					CASE WHEN jsr.Status IN (N'In Queue', N'Part Complete', N'Running')
-					      AND ISNULL(jsr.IsOnlineProcess, 0) = 0
+					      AND (ISNULL(jsr.IsOnlineProcess, 0) = 0 OR sep.Machines IS NOT NULL)
 					      AND ISNULL(jsr.IsDeletedTransaction, 0) = 0
 					     THEN 1 ELSE 0 END                           AS ShowsInApp
 				FROM dbo.JobBookingJobCardContents c
@@ -2019,6 +2034,25 @@ router.get('/jobs/diagnostics', async (req, res) => {
 				LEFT JOIN dbo.ProcessMaster pm
 				     ON pm.ProcessID = jsr.ProcessID
 				    AND ISNULL(pm.isdeletedtransaction, 0) = 0
+				OUTER APPLY (
+					-- online printing: the allowed presses that print one side per run,
+					-- unless the form already had a printing run on a two-sided press
+					SELECT STRING_AGG(mm.MachineName, ', ') WITHIN GROUP (ORDER BY mm.MachineName) AS Machines
+					FROM STRING_SPLIT(ISNULL(pm.allocattedmachineid, ''), ',') s
+					JOIN dbo.MachineMaster mm
+					     ON mm.MachineId = TRY_CONVERT(INT, LTRIM(RTRIM(s.value)))
+					    AND ISNULL(mm.IsDeletedTransaction, 0) = 0
+					WHERE ISNULL(jsr.IsOnlineProcess, 0) = 1
+					  AND jsr.ProcessID IN (10337, 279)
+					  AND mm.MachineId NOT IN (SELECT MachineID FROM @TwoSidedPresses)
+					  AND NOT EXISTS (
+					        SELECT 1
+					        FROM dbo.ProductionEntry pe
+					        WHERE pe.JobBookingJobCardContentsID = jsr.JobBookingJobCardContentsID
+					          AND pe.JobCardFormNo = jsr.JobCardFormNo
+					          AND pe.ProcessID IN (10337, 279)
+					          AND pe.MachineID IN (SELECT MachineID FROM @TwoSidedPresses))
+				) sep
 				WHERE c.JobCardContentNo LIKE @Search
 				ORDER BY c.JobCardContentNo, pm.ProcessName,
 				         LEN(jsr.JobCardFormNo), jsr.JobCardFormNo
@@ -4388,7 +4422,9 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             .input('VoucherID', sql.Int, -19)
             .input('MatchLevel', sql.VarChar(20), 'JOB')
             .input('GsmTolerance', sql.Int, 10)
-            .execute('dbo.rpt_job_issue_register_v9');
+            .input('ComponentLevel', sql.Bit, 1)
+            .input('ItemLevel', sql.Bit, 1)
+            .execute('dbo.rpt_job_issue_register_v10');
 
         const pick = (row, ...names) => {
             for (let i = 0; i < names.length; i += 1) {
@@ -4411,6 +4447,9 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             jobNum: pick(row, 'JobNUm', 'JobNum', 'JobNo', 'JobBookingNo', 'jobNum') ?? '',
             jobName: pick(row, 'Job Name', 'JobName', 'jobName') ?? '',
             clientName: pick(row, 'Client', 'ClientName', 'clientName') ?? '',
+            componentId: pick(row, 'Component ID', 'ComponentID', 'componentId') ?? null,
+            componentName: pick(row, 'Component', 'ComponentName', 'componentName') ?? '',
+            componentNo: pick(row, 'Component No', 'ComponentNo', 'componentNo') ?? '',
             requiredQty: pick(row, 'Required as per Job', 'RequiredQty', 'requiredQty') ?? 0,
             issuedQty: pick(row, 'Issued Qty (In same unit as required)', 'IssuedQty', 'issuedQty') ?? 0,
             openingIssued: pick(row, 'Opening Issued', 'OpeningIssued', 'openingIssued') ?? 0,
@@ -4418,7 +4457,10 @@ router.get('/inventory-summary/jobwise-issued', async (req, res) => {
             unit: pick(row, 'Unit', 'unit') ?? '',
             excessShort: pick(row, 'Excess/(Short)', 'ExcessShort', 'excessShort') ?? 0,
             varPct: pick(row, 'Var %', 'VarPct', 'varPct') ?? 0,
-            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0
+            issuedCost: pick(row, 'Issued Cost', 'IssuedCost', 'issuedCost') ?? 0,
+            jobRequiredQty: pick(row, 'Job Required', 'JobRequired', 'jobRequiredQty') ?? 0,
+            jobCumulativeIssued: pick(row, 'Job Cumulative Issued', 'JobCumulativeIssued', 'jobCumulativeIssued') ?? 0,
+            jobOpeningIssued: pick(row, 'Job Opening Issued', 'JobOpeningIssued', 'jobOpeningIssued') ?? 0
         }));
 
         return res.json({ status: true, records });
@@ -5660,10 +5702,107 @@ router.post('/qc/inspection-template', async (req, res) => {
     }
 });
 
+// POST /qc/remarks/transcribe — { audioBlob (base64), audioMimeType } → { transcription, english }
+router.post('/qc/remarks/transcribe', async (req, res) => {
+    try {
+        const { audioBlob, audioMimeType } = req.body || {};
+        if (!audioBlob || !audioMimeType) {
+            return res.status(400).json({ status: false, error: 'Missing audioBlob or audioMimeType' });
+        }
+        const { spoken, english } = await transcribeQcRemark(Buffer.from(audioBlob, 'base64'), audioMimeType);
+        if (!spoken) {
+            return res.status(422).json({ status: false, error: 'Could not hear anything in the recording. Please try again.' });
+        }
+        console.log(`[QC-REMARK] Transcribed "${spoken}" → "${english}"`);
+        return res.json({ status: true, transcription: spoken, english });
+    } catch (error) {
+        console.error('[QC-REMARK] Transcription failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to transcribe remark: ' + error.message });
+    }
+});
+
+// POST /qc/remarks/translate — { text } → { english }
+router.post('/qc/remarks/translate', async (req, res) => {
+    try {
+        const text = String(req.body?.text ?? '').trim();
+        if (!text) {
+            return res.status(400).json({ status: false, error: 'Missing text' });
+        }
+        const english = await qcRemarkToEnglish(text);
+        return res.json({ status: true, english });
+    } catch (error) {
+        console.error('[QC-REMARK] Translation failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to translate remark: ' + error.message });
+    }
+});
+
+// POST /qc/photos/upload — { database, image (base64 JPEG) } → { key, url }
+// The key goes into items[].images on save; url is a short-lived preview.
+router.post('/qc/photos/upload', async (req, res) => {
+    try {
+        const { image, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        if (!image) {
+            return res.status(400).json({ status: false, error: 'Missing image' });
+        }
+        let key;
+        try {
+            key = await uploadQcPhoto(Buffer.from(String(image), 'base64'), selectedDatabase);
+        } catch (rejected) {
+            return res.status(400).json({ status: false, error: rejected.message });
+        }
+        const [url] = await qcPhotoUrls(JSON.stringify([key]));
+        return res.json({ status: true, key, url });
+    } catch (error) {
+        console.error('[QC-PHOTO] Upload failed:', error);
+        return res.status(500).json({ status: false, error: 'Failed to upload photo: ' + error.message });
+    }
+});
+
+// POST /reports/qc-check-detail — { database, transactionId } → each parameter of one QC check
+// with its result, remark and signed photo URLs (sql/qc/004_inspection_photos.sql).
+router.post('/reports/qc-check-detail', async (req, res) => {
+    try {
+        const { database, transactionId } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        const id = parseInt(transactionId, 10);
+        if (!Number.isInteger(id) || id <= 0) {
+            return res.status(400).json({ status: false, error: 'Valid transactionId is required' });
+        }
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('TransactionID', sql.Int, id)
+            .query(`
+                SELECT d.ParameterName, d.Result, d.Remarks, d.ImageKeys
+                FROM dbo.ProductionEntryProcessInspectionDetail d
+                WHERE d.TransactionID = @TransactionID
+                  AND ISNULL(d.IsDeletedTransaction, 0) = 0
+                ORDER BY d.TransactionDetailID;
+            `);
+        const rows = await Promise.all((result.recordset || []).map(async (row) => ({
+            ParameterName: row.ParameterName,
+            Result: row.Result,
+            Remarks: row.Remarks,
+            NotOk: isQcNotOk(row.Result),
+            photos: await qcPhotoUrls(row.ImageKeys),
+        })));
+        return res.json({ status: true, data: rows });
+    } catch (error) {
+        console.error('[QC-REPORT] Check detail error:', error);
+        return res.status(500).json({ status: false, error: 'Failed to fetch check detail' });
+    }
+});
+
 // Save Process Inspection (QC Audit)
 router.post('/qc/save-inspection', async (req, res) => {
     try {
-        const { userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items, database } = req.body || {};
+        const { userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items, database, sampleSize } = req.body || {};
         const selectedDatabase = (database || '').toUpperCase();
         
         if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
@@ -5680,13 +5819,44 @@ router.post('/qc/save-inspection', async (req, res) => {
                 error: 'Missing required fields: userId, productionId, processId, jobBookingJobCardContentsId, jobBookingId, items'
             });
         }
-        
+
+        const missingRemarks = (Array.isArray(items) ? items : [])
+            .filter(item => isQcNotOk(item?.result) && !String(item?.remarks ?? '').trim())
+            .map(item => item?.parameter);
+        if (missingRemarks.length > 0) {
+            return res.status(400).json({
+                status: false,
+                error: 'Remarks are required for parameters marked Not OK: ' + missingRemarks.join(', ')
+            });
+        }
+
+        const badPhotos = (Array.isArray(items) ? items : [])
+            .filter(item => item?.images != null && (!Array.isArray(item.images) || item.images.length > QC_PHOTOS_MAX
+                || !item.images.every(key => isQcPhotoKey(key, selectedDatabase))))
+            .map(item => item?.parameter);
+        if (badPhotos.length > 0) {
+            return res.status(400).json({
+                status: false,
+                error: `Photos must be uploaded through the QC Tool, at most ${QC_PHOTOS_MAX} per parameter: ` + badPhotos.join(', ')
+            });
+        }
+
+        // The QC Tool makes Sample Size compulsory; an older cached page may still send none.
+        const hasSampleSize = sampleSize != null && sampleSize !== '';
+        if (hasSampleSize && !QC_SAMPLE_SIZES.includes(Number(sampleSize))) {
+            return res.status(400).json({
+                status: false,
+                error: 'Sample size must be one of: ' + QC_SAMPLE_SIZES.join(', ')
+            });
+        }
+
         // Build the inspection JSON
         const inspectionJson = {
             voucherPrefix: "QC",
             companyID: 2,
             jobBookingJobCardContentsID: jobBookingJobCardContentsId,
             jobBookingID: jobBookingId, // Use actual JobBookingID from GetLatestMachineStatusPerMachine
+            ...(hasSampleSize && { sampleSize: Number(sampleSize) }),
             items: items
         };
         
@@ -5701,7 +5871,7 @@ router.post('/qc/save-inspection', async (req, res) => {
             .input('ProductionID', sql.Int, productionId)
             .input('ProcessID', sql.Int, processId)
             .input('InspectionJson', sql.NVarChar(sql.MAX), JSON.stringify(inspectionJson))
-            .execute('SaveProcessInspection');
+            .execute('SaveProcessInspection_v2'); // v2 also saves items[].remarks and sampleSize (sql/qc/002_inspection_sample_size.sql)
         
         // Check SP return value: 0 = success, non-zero = failure (common SQL convention)
         const returnVal = result.returnValue;
@@ -5902,6 +6072,85 @@ router.post('/reports/qc-inspector-audit-detail', async (req, res) => {
             status: false,
             error: 'Failed to fetch audit detail'
         });
+    }
+});
+
+// QC compliance reports (sql/qc/003_qc_compliance_reports.sql):
+//   machine-coverage     → rpt_QC_MachineProcessCoverage (1 check per hour per running machine + process)
+//   operator-performance → rpt_QC_OperatorPerformance    (2 checks per hour per QC operator shift)
+// Body: { database, startDate, endDate, mode?: 'SUMMARY'|'DETAIL'|'ENTRIES', machineId?, processId?, userId? }
+// ENTRIES (machine-coverage only, machineId required): the machine's ERP production entries on those dates.
+const QC_COMPLIANCE_REPORTS = {
+    'machine-coverage': 'rpt_QC_MachineProcessCoverage',
+    'operator-performance': 'rpt_QC_OperatorPerformance',
+};
+const QC_REPORT_DATE_COLUMNS = new Set(['ReportDate', 'ShiftDate']);
+
+// Times are stored as IST wall clock and mssql reads them as UTC, so the ISO string is the wall clock.
+function formatQcReportRow(row) {
+    const out = {};
+    for (const [key, value] of Object.entries(row)) {
+        out[key] = value instanceof Date
+            ? (QC_REPORT_DATE_COLUMNS.has(key) ? value.toISOString().slice(0, 10) : value.toISOString().slice(0, 16).replace('T', ' '))
+            : value;
+    }
+    return out;
+}
+
+function optionalId(value) {
+    if (value == null || value === '') return null;
+    const n = parseInt(value, 10);
+    return Number.isInteger(n) && n > 0 ? n : NaN;
+}
+
+router.post('/reports/qc-compliance/:report', async (req, res) => {
+    const procedure = QC_COMPLIANCE_REPORTS[req.params.report];
+    if (!procedure) {
+        return res.status(404).json({ status: false, error: 'Unknown QC report: ' + req.params.report });
+    }
+    try {
+        const { startDate, endDate, database } = req.body || {};
+        const selectedDatabase = (database || '').toUpperCase();
+        if (selectedDatabase !== 'KOL' && selectedDatabase !== 'AHM') {
+            return res.status(400).json({ status: false, error: 'Invalid or missing database (must be KOL or AHM)' });
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
+            return res.status(400).json({ status: false, error: 'Start date and end date are required (YYYY-MM-DD)' });
+        }
+        if (startDate > endDate) {
+            return res.status(400).json({ status: false, error: 'Start date cannot be after end date' });
+        }
+        const mode = String(req.body.mode || 'SUMMARY').toUpperCase();
+        const entries = mode === 'ENTRIES' && req.params.report === 'machine-coverage';
+        if (mode !== 'SUMMARY' && mode !== 'DETAIL' && !entries) {
+            return res.status(400).json({ status: false, error: 'Mode must be SUMMARY or DETAIL' });
+        }
+        const machineId = optionalId(req.body.machineId);
+        const processId = optionalId(req.body.processId);
+        const userId = optionalId(req.body.userId);
+        if ([machineId, processId, userId].some(Number.isNaN)) {
+            return res.status(400).json({ status: false, error: 'machineId, processId and userId must be positive integers' });
+        }
+        if (entries && !machineId) {
+            return res.status(400).json({ status: false, error: 'machineId is required for ENTRIES' });
+        }
+
+        const pool = await getPool(selectedDatabase);
+        const result = await pool.request()
+            .input('FromDate', sql.Date, new Date(startDate))
+            .input('ToDate', sql.Date, new Date(endDate))
+            .input('MachineID', sql.Int, machineId)
+            .input('ProcessID', sql.Int, processId)
+            .input('UserID', sql.Int, userId)
+            .input('Mode', sql.VarChar(10), mode)
+            .execute(procedure);
+
+        const rows = (result.recordset || []).map(formatQcReportRow);
+        console.log(`[QC-REPORT] ${procedure} ${mode} ${selectedDatabase} ${startDate}..${endDate}: ${rows.length} rows`);
+        return res.json({ status: true, data: rows });
+    } catch (error) {
+        console.error(`[QC-REPORT] ${procedure} failed:`, error);
+        return res.status(500).json({ status: false, error: 'Failed to load QC report: ' + error.message });
     }
 });
 

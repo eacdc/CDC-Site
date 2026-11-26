@@ -16,6 +16,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { selectPlantLines, interpretPaperQuote } from '../services/paper/interpreter.js';
+import { PAPER_PAYLOAD_SHAPE, PAPER_RULES } from '../services/paper/paper-prompt.js';
+
+test('the reader is asked for each line\'s plant', () => {
+  // The filter below was right and never fired: the prompt's line shape had no
+  // plant and rule 11 said to leave it null, so a real NR reading came back with
+  // 48 unattributed lines and both halves kept all of them.
+  const lineShape = PAPER_PAYLOAD_SHAPE.slice(PAPER_PAYLOAD_SHAPE.indexOf('"lines"'));
+  assert.match(lineShape, /"plant": "KOLKATA"\|"AHMEDABAD"\|null/);
+  assert.match(PAPER_RULES, /set "plant" on EVERY line/);
+  assert.doesNotMatch(PAPER_RULES, /leave plant null,\s+and the caller will split/);
+});
 
 /** Three products, both plants, as the NR sheet prices them. */
 function bothPlants() {

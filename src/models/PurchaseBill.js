@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { DEFAULT_LOCATION, LOCATION_CODES } from '../config/cdc.js';
 
 const { Schema } = mongoose;
 
@@ -50,6 +51,9 @@ export const purchaseBillSchema = new Schema({
   // ---------- set metadata ----------
   set_type: { type: String, enum: ['grn', 'non_grn'], required: true, index: true },
   cdc_unit: { type: String, index: true },
+  // Which CDC location's Tally the voucher was booked in. Chosen at upload,
+  // never extracted: voucher numbers are only unique within one location.
+  location: { type: String, enum: LOCATION_CODES, default: DEFAULT_LOCATION, required: true },
 
   uploaded_by: { type: String, index: true },
   uploaded_at: { type: Date, default: Date.now, index: true },
@@ -130,6 +134,9 @@ export const purchaseBillSchema = new Schema({
   // Uniqueness is a partial index in repairPurchaseBillUniqueIndexes —
   // never store null (Mongo unique indexes treat null as a real value).
   bill_dedup_key: { type: String },
+  // Supplier + invoice without the year (purchase-bill-dedup.js). Not unique:
+  // finds the same invoice in other years, and every year when a date is unknown.
+  bill_dedup_base: { type: String, index: true },
   invoice_image_phash: String,
 }, {
   collection: 'PurchaseBills',
@@ -161,8 +168,9 @@ purchaseBillSchema.index(
   { bill_dedup_key: 1 },
   { unique: true, partialFilterExpression: { bill_dedup_key: { $type: 'string' } } },
 );
+// Each location's Tally numbers its own vouchers, so uniqueness is per location.
 purchaseBillSchema.index(
-  { tally_voucher_number: 1 },
+  { location: 1, tally_voucher_number: 1 },
   { unique: true, partialFilterExpression: { tally_voucher_number: { $type: 'string' } } },
 );
 

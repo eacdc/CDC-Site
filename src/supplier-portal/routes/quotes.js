@@ -174,6 +174,16 @@ async function uploadQuoteFile(req, res, next) {
   try {
     await ensureSupplierPortalReady();
     if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
+    if (!readableQuoteFile(req.file.originalname)) {
+      return res.status(415).json({
+        error: `The run cannot read ${req.file.originalname}. Upload a PDF, a photo (JPG, PNG, WEBP), Excel or CSV, Word (.docx) or a text file.`,
+      });
+    }
+    const supplierGroupId = /^[0-9a-f]{24}$/.test(String(req.body.supplierGroupId || '')) ? req.body.supplierGroupId : null;
+    if (supplierGroupId && !(await SupplierGroup.exists({ _id: supplierGroupId }))) {
+      return res.status(404).json({ error: 'Supplier not found.' });
+    }
+    const typedName = String(req.body.supplierName || '').replace(/\s+/g, ' ').trim().slice(0, 200);
 
     const sha256 = sha256Of(req.file.buffer);
     const dedup = await checkDuplicate({ sha256 });
@@ -204,7 +214,9 @@ async function uploadQuoteFile(req, res, next) {
     const storageKey = stored.key || stored;
 
     const doc = await QuoteDocument.create({
-      supplierGroupId: req.body.supplierGroupId || null,
+      supplierGroupId,
+      uploaderSupplier: !supplierGroupId && typedName ? { name: typedName } : undefined,
+      uploadNote: String(req.body.note || '').trim().slice(0, 1000) || undefined,
       docType: req.body.docType
         || docTypeFor({ mimeType: req.file.mimetype, originalFilename: req.file.originalname }),
       storageKey,
@@ -218,18 +230,20 @@ async function uploadQuoteFile(req, res, next) {
       checks: dedup.checks,
     });
 
-    const result = await extractDocument(doc._id, {
-      site: req.sp.site,
-      buffer: req.file.buffer,
-      // Images still need a URL the vision provider can fetch. A PDF does not:
-      // its text is read from the buffer above.
-      pages: [{ url: await viewUrl(storageKey), pageNo: 1, mimeType: req.file.mimetype }],
-      hints: { priceColumn: req.body.priceColumn, sheetName: req.body.sheetName },
+    // Stored, not read: the portal makes no model calls. The scheduled run
+    // picks this up from /automation/portal-uploads within the hour, and its
+    // proposals appear on the review page.
+    return res.status(202).json({
+      documentId: doc._id,
+      queued: true,
+      message: 'Uploaded. The scheduled run will read it within the hour; its proposals will appear on the review page.',
     });
-
-    return res.status(201).json({ documentId: doc._id, ...result });
   } catch (err) { return next(err); }
 }
+
+/** What the scheduled run can lay out for reading (scripts/supplier-portal-run/prepare.mjs). */
+export const READABLE_QUOTE_FILES = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.xlsx', '.xls', '.csv', '.docx', '.txt'];
+export const readableQuoteFile = (name) => READABLE_QUOTE_FILES.includes(String(name || '').toLowerCase().match(/\.[a-z0-9]+$/)?.[0]);
 
 const uploadGuards = [requireSite, requireRole('BUYER', 'APPROVER'), upload.single('file')];
 
@@ -621,7 +635,6 @@ router.post('/:id/match', requireSite, requireRole('BUYER', 'APPROVER'), async (
       documentId: doc._id,
       group,
       actor: req.sp.actor,
-      allowLlm: req.body?.allowLlm !== false,
     });
 
     // The magnitude guard runs after matching, because it compares against the

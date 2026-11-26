@@ -9,8 +9,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { rateAnchor, specTupleMatch, rank, quoteReadings } from '../services/matching.js';
-import { nameSimilarity, tokenSetRatio, normaliseName, hasBrandOrCodeToken } from '../lib/text.js';
+import { rateAnchor, specTupleMatch, rank, quoteReadings, corroborated, withinStatedGsm, matchLine } from '../services/matching.js';
+import { billHistoryMatch, historyEntries, sameSupplier } from '../services/bill-history.js';
+import { nameSimilarity, tokenSetRatio, normaliseName, hasBrandOrCodeToken, letterOverlap } from '../lib/text.js';
 import { parseGsmBand, gsmInBand, parseFilmType, parseMicron, buildSpecKey, itemMatchesSpecKey } from '../lib/spec.js';
 import { TOLERANCES } from '../config/constants.js';
 
@@ -251,4 +252,133 @@ test('a rate implausibly far from last paid is penalised', () => {
     { line, quoteRate: 1850 },
   );
   assert.match(ranked[0].rationale, /implausibly far/);
+});
+
+// ── August 2026 quotes: rate matches need the name, and the bills come first ──
+
+test('the anchor pairs share their letters, the coincidences do not', () => {
+  // Right: each was the same product at the same price.
+  for (const [quote, item] of [
+    ['CALCIUM FIX', 'CALCIUMFIX'], ['ROL O GEL', 'Rollo Gel'], ['BÖTTCHER PROTECTO', 'Protecto'],
+    ['BÖTTCHER PRO ROL-O-PAST', 'BOTTCHER- ROLL O PASTE'], ['KK EASY BOND', 'EAZY BOND'],
+  ]) assert.ok(letterOverlap(quote, item) >= 0.3, `${quote} ~ ${item}`);
+  // Wrong: an unrelated item last bought within half a percent of the quote.
+  for (const [quote, item] of [
+    ['Gum Powder - Pasting', 'Matrix-Cito-4 X 1.4'], ['SICURA PLAST 770HS REFLEX BLUE', 'Servo Greese MP3'],
+    ['ISO PROPYL ALCOHOL', 'Nova Nol'], ['Glazekleen', 'Ribbon Quater'], ['TEXTURE GLOSS', 'Technomelt 970N'],
+  ]) assert.ok(letterOverlap(quote, item) < 0.3, `${quote} !~ ${item}`);
+});
+
+test('a rate match with a contradicting size or unrelated name is dropped', () => {
+  const matches = [
+    { ItemID: 1, ItemName: 'Web Blanket 546(1) Orient 889 x 612', LastPaidRate: 5077 },
+    { ItemID: 2, ItemName: 'Ink kitchen, UV Gold Paste', LastPaidRate: 5077 },
+  ];
+  assert.deepEqual(corroborated(matches, 'Rubber Blanket EX6000 1.68 (889Gx595) With bar').map((c) => c.ItemID), []);
+  assert.deepEqual(corroborated(matches, 'Web Blanket 889 X 612').map((c) => c.ItemID), [1]);
+});
+
+test('a tie at one rate no longer stops the search', async () => {
+  // CAPRI 576 x 889 at 240.67 tied with a varnish and a tape; the name decides.
+  const candidates = [
+    { ItemID: 5874, ItemName: 'Plate-CTP-576 X 889', LastPaidRate: 240 },
+    { ItemID: 3633, ItemName: 'UV, Aqueous Matt Varnish', LastPaidRate: 240.5 },
+    { ItemID: 5866, ItemName: 'SOLVENT TISSUE TAPE 24 MM X 50 MTR', LastPaidRate: 240.3 },
+  ];
+  const line = { raw: { productName: 'Plate CTP 576 X 889' }, normalised: { rate: 240.67 } };
+  const r = await matchLine({ site: 'KOL', line, supplierItem: null, group: null, candidates, allowLlm: false });
+  assert.equal(r.itemId, 5874);
+  assert.equal(r.method, 'RATE_ANCHOR');
+});
+
+const BILLS = historyEntries([{
+  site: 'KOL',
+  bill: { supplierName: 'HENKEL ADHESIVES TECHNOLOGIES INDIA PVT LTD', supplierGstin: '19AAACH0000A1Z5', invoiceDate: new Date('2026-07-01') },
+  lines: [
+    { kind: 'GOODS', description: 'TECHNOMELT Q 718', suggestion: { itemId: 5668, itemName: 'Art Paper - Main Glue', confidence: 0.95 } },
+    { kind: 'GOODS', description: 'TECHNOMELT Q 970N', suggestion: { itemId: 9931, itemName: 'Technomelt 970N', confidence: 0.95 } },
+    { kind: 'GOODS', description: 'WEB BLANKET 889X612', suggestion: { itemId: 5728, itemName: 'Web Blanket 546(1) Orient 889 x 612', confidence: 0.95 } },
+    { kind: 'GOODS', description: 'GUESS', suggestion: { itemId: 1, itemName: 'x', confidence: 0.5 } },
+  ],
+}]);
+const HENKEL = { gstins: ['19AAACH0000A1Z5'], names: ['Henkel'] };
+
+test('bill history names what neither name nor rate could', () => {
+  assert.equal(BILLS.length, 3, 'an unconfident pairing is not history');
+  const m = billHistoryMatch(BILLS, { site: 'KOL', supplier: HENKEL, line: { raw: { productName: 'Technomelt Q 718 - 26kg', productCode: 'Q 718' } } });
+  assert.equal(m?.itemId, 5668);
+});
+
+test('bill history is the supplier\'s own, on the same site, and respects size', () => {
+  const line = { raw: { productName: 'Technomelt Q 718' } };
+  assert.equal(billHistoryMatch(BILLS, { site: 'AHM', supplier: HENKEL, line }), null);
+  assert.equal(billHistoryMatch(BILLS, { site: 'KOL', supplier: { gstins: ['24ZZZ'], names: ['Bindwel'] }, line }), null);
+  // The 889 x 576 blanket is not the 889 x 612 one, however alike the words.
+  assert.equal(billHistoryMatch(BILLS, { site: 'KOL', supplier: HENKEL, line: { raw: { productName: 'WEB BLANKET 889X576' } } }), null);
+  // A GSM band is a paper price, not an item.
+  assert.equal(billHistoryMatch(BILLS, { site: 'KOL', supplier: HENKEL, line: { raw: { productName: 'Technomelt Q 718', gsmFrom: 60, gsmTo: 90 } } }), null);
+});
+
+test('a supplier without a GSTIN on file is known by every distinctive word', () => {
+  const e = { supplierName: 'N.R. AGARWAL INDUSTRIES LTD', gstin: null };
+  // Initials are too short to count either way, so the surname carries it.
+  assert.equal(sameSupplier(e, { names: ['NR Agarwal'] }), true);
+  assert.equal(sameSupplier(e, { names: ['Agarwal Industries'] }), true);
+  assert.equal(sameSupplier({ supplierName: 'PRINT SALES', gstin: null }, { names: ['Print Sales Pvt Ltd'] }), true);
+  assert.equal(sameSupplier({ supplierName: 'SALES CORPORATION', gstin: null }, { names: ['Print Sales'] }), false);
+});
+
+test('a word of the trade does not make two firms one', () => {
+  const akt = { supplierName: 'A.K.TRADING (PAPER) PRIVATE LIMITED', gstin: null };
+  assert.equal(sameSupplier(akt, { names: ['SKM PAPER AND PACK LLP'] }), false);
+  assert.equal(sameSupplier(akt, { names: ['AK Trading'] }), true);
+});
+
+test('initials stand for the words they abbreviate', () => {
+  const hare = { supplierName: 'Hare Krishna Trading', gstin: null };
+  assert.equal(sameSupplier(hare, { names: ['Hk Trading'] }), true);
+  assert.equal(sameSupplier(hare, { names: ['H.K. TRADING'] }), true);
+  // Two letters and nothing else in common is a coincidence, not a firm.
+  assert.equal(sameSupplier(hare, { names: ['HK Paper Mart'] }), false);
+});
+
+test('matchLine takes the bills before the rate', async () => {
+  const candidates = [{ ItemID: 7000, ItemName: 'Servo Greese MP3', LastPaidRate: 300 }];
+  const line = { raw: { productName: 'Technomelt Q 970N' }, normalised: { rate: 300 } };
+  const r = await matchLine({
+    site: 'KOL', line, supplierItem: null, group: { name: 'Henkel', gstins: HENKEL.gstins },
+    candidates, billHistory: BILLS, allowLlm: false,
+  });
+  assert.equal(r.method, 'BILL_HISTORY');
+  assert.equal(r.itemId, 9931);
+});
+
+test('a rate match outside the quoted GSM band does not settle the line', async () => {
+  const candidates = [
+    { ItemID: 8101, ItemName: 'Devpriya PGB 390 GSM 700X1000', GSM: 390, LastPaidRate: 52 },
+    { ItemID: 8102, ItemName: 'Devpriya PGB 270 GSM 700X1000', GSM: 270, LastPaidRate: 61 },
+  ];
+  const band = { raw: { productName: 'Devpriya PGB', gsmFrom: 250, gsmTo: 284 }, normalised: { rate: 52 } };
+  assert.deepEqual(withinStatedGsm(candidates, band).map((c) => c.ItemID), [8102]);
+  const r = await matchLine({ site: 'KOL', line: band, supplierItem: null, group: null, candidates, allowLlm: false });
+  assert.notEqual(r.method, 'RATE_ANCHOR');
+  assert.notEqual(r.itemId, 8101);
+  // Inside the band the anchor still works.
+  const inBand = { raw: { productName: 'Devpriya PGB', gsmFrom: 250, gsmTo: 284 }, normalised: { rate: 61 } };
+  const ok = await matchLine({ site: 'KOL', line: inBand, supplierItem: null, group: null, candidates, allowLlm: false });
+  assert.equal(ok.method, 'RATE_ANCHOR');
+  assert.equal(ok.itemId, 8102);
+  // No GSM stated: nothing to check against.
+  assert.equal(withinStatedGsm(candidates, { raw: { productName: 'GUM POWDER' } }).length, 2);
+});
+
+test('a different model number or matrix size is not the same product', () => {
+  const near = [{ ItemID: 10601, ItemName: 'Technomelt COOL 4530', LastPaidRate: 300 }];
+  assert.deepEqual(corroborated(near, 'Technomelt COOL 4515 - 26kg'), []);
+  assert.equal(corroborated(near, 'Technomelt COOL 4530 - 26kg').length, 1);
+  const matrix = [{ ItemID: 5738, ItemName: 'Premium Matrix 0.4 x 1.3 mm', LastPaidRate: 50 }];
+  assert.deepEqual(corroborated(matrix, 'Matrix 0.4x1.4 Short Run'), []);
+  // A brand code beside a machine number is not two model numbers.
+  const blanket = [{ ItemID: 5730, ItemName: 'Web Blanket 578 Normal 889 X 647 X 1.7 MM', LastPaidRate: 5077 }];
+  assert.equal(corroborated(blanket, 'Rubber Blanket EX6000 1.68 (889GX647) With bar').length, 1);
 });

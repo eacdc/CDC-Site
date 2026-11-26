@@ -31,7 +31,7 @@ Return JSON only, matching this shape:
   "softQuoteEvidence": string|null,
   "plantMentions": string[]|null,
   "entityScope": string|null,
-  "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null}|null,
+  "commercialTerms": {"creditDays":string|null,"freightTerms":string|null,"insurance":string|null,"gstNote":string|null,"paymentTerms":string|null,"delivery":string|null}|null,
   "statedRules": [{"kind":string,"text":string,"value":string|null}]|null,
   "plantBlocks": [{"plant":string,"lineNos":number[]}]|null,
   "rateBasisNote": string|null,
@@ -256,11 +256,29 @@ A. IF YOU ARE GIVEN BOTH PAGE IMAGES AND A TEXT LAYER, USE BOTH, FOR DIFFERENT
    That is documentDate "10-07-2026" and effectiveFrom "15-07-2026". Copy the
    whole subject line into "subjectLine" as well.
 
+   DELIVERY is a term, like credit. Copy any lead time or delivery promise
+   into commercialTerms.delivery exactly as printed: "Delivery within 7-10
+   days from PO", "Ready stock", "3-4 weeks from order". The buyer compares it
+   beside the rate, because the cheapest quote is no good if it arrives too
+   late for the job. Leave it null when the document says nothing about
+   delivery. Do not infer one from a "Mill order" or "Ex-stock" heading over
+   the price rows: that is the line's supplyMode, not a promise of time. When
+   different rows promise different times, put each row's in its "notes".
+
 9. MULTI-COLUMN WORKSHEETS. A price list may show several price columns
    (e.g. "Price Before Increase", "Current Price", "Proposed Increase").
    Extract EVERY column's value into separate lines with the column name in
    "notes", and set "confidence" low. A human will nominate the live column.
    The same product code may legitimately appear several times.
+
+   ONE EXCEPTION: a price revision. When the document itself says which
+   column is superseded — "Old price" beside "New price", "Previous rate"
+   beside "Revised rate", a letter announcing a revision — the new column is
+   the price and the old one is history. Emit ONE line per product with the
+   new rate, and write the old figure in "notes" as "was 207". Emitting both
+   puts the superseded price into the comparison as if it were on offer.
+   A "Proposed" or "after increase" column is not settled in this way: that
+   is still a choice for a human, so the rule above holds.
 
 10. DOCUMENTS THAT ARE NOT PRICE LISTS are still valid rate sources: proforma
     invoices, email threads, handwritten notes, WhatsApp photos. Extract the
@@ -386,8 +404,15 @@ You will be given:
   - the quoted line as the supplier printed it
   - up to 8 candidate CDC items, each with its last-paid rate, the supplier it
     was last bought from, how many times it has been purchased, and its
-    sub-group
+    sub-group, and how this supplier's own bills described it
+    ("thisSupplierBilledItAs") when their bills were posted to it
   - the items this same supplier is already mapped to
+
+A bill description is the strongest evidence you get: CDC posted that
+supplier's own wording to that item. "LLDP Straech Film 18Inch*23Mic" billed
+as Carton Wrapping Roll means their stretch film IS that item, whatever the
+CDC name says. It still has to be the same product - a different size or
+grade on the bill is a different item.
 
 Judge like the coordinator would, not like a string matcher. The coordinator
 knows that this supplier only sells certain kinds of goods, that a rate of

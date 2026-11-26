@@ -17,7 +17,7 @@ import { extractAllSlotPages } from './purchase-bill-extract-slots.js';
 import { generatePhash } from './phash.js';
 import { resolveViewUrl } from './media-url.js';
 import { buildDbHelpers } from './purchase-bill-db-helpers.js';
-import { saveBillWithoutNullUniqueKeys } from './purchase-bill-unique-keys.js';
+import { releaseDedupKeyIfDuplicate, saveBillWithoutNullUniqueKeys } from './purchase-bill-unique-keys.js';
 
 // ---------- queue state ----------
 
@@ -115,6 +115,7 @@ async function processBill(billId) {
   bill.verification_status = status;
   bill.blocking_failures_count = blocking;
   bill.warning_failures_count = warning;
+  releaseDedupKeyIfDuplicate(bill);
 
   await saveBillWithoutNullUniqueKeys(bill);
   console.log('[extraction-queue] done bill', billId, '->', bill.verification_status);

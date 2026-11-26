@@ -290,6 +290,7 @@ export const InkQuoteSchema = z.object({
     insurance: text(),
     gstNote: text(),
     paymentTerms: text(),
+    delivery: text(),
   }).nullable().default(null),
 
   /** Rules stated in prose: "GST extra", "no further discount on the above price". */

@@ -116,6 +116,60 @@ export function nameSimilarity(a, b) {
   return round(0.75 * base + 0.25 * numAgreement, 4);
 }
 
+/** Units and filler that every name in a group shares, so agreeing on them says nothing. */
+const LETTER_NOISE = /\b(LTR|LTRS|ML|KG|KGS|GM|MTR|MTRS|METER|METERS|MM|CM|MIC|MICRON|X|WITH|BAR|AND|THE|INK|PAPER|BOARD|NONE|GSM)\b/g;
+
+/**
+ * Do two names share their letters, whatever the spacing? The share of
+ * three-letter runs of the shorter name, with spaces, digits and units taken
+ * out, found in the longer one.
+ *
+ * Token similarity misses the pairs a supplier spells differently: CALCIUM FIX
+ * and CALCIUMFIX share no token, nor do ROL O GEL and Rollo Gel. It is the test
+ * a rate match has to pass: on the August 2026 quotes, every rate match that
+ * scored under 0.3 here was a coincidence (Gum Powder at the price of a Matrix
+ * Cito, a Siegwerk ink at the price of a grease).
+ */
+export function letterOverlap(a, b) {
+  const grams = (s) => {
+    const t = normaliseName(s).replace(/\d+(\.\d+)?/g, ' ').replace(LETTER_NOISE, ' ').replace(/\s+/g, '');
+    const out = new Set();
+    for (let i = 0; i + 3 <= t.length; i += 1) out.add(t.slice(i, i + 3));
+    return out;
+  };
+  const A = grams(a);
+  const B = grams(b);
+  if (!A.size || !B.size) return 0;
+  let shared = 0;
+  for (const g of A) if (B.has(g)) shared += 1;
+  return round(shared / Math.min(A.size, B.size), 4);
+}
+
+/**
+ * Do two names give one product word different model numbers? "Technomelt
+ * COOL 4515" and "Technomelt COOL 4530" share every letter and are different
+ * glues. Only a bare number straight after a word both names use counts:
+ * "Blanket EX6000" against "Blanket 578" is a brand code against a machine,
+ * not two model numbers.
+ */
+export function differentModelNumber(a, b) {
+  const after = (s) => {
+    const tokens = normaliseName(s).split(' ');
+    const out = new Map();
+    for (let i = 0; i + 1 < tokens.length; i += 1) {
+      // "Blanket 889 X 612" opens a size, not a model number.
+      if (/^[A-Z]{3,}$/.test(tokens[i]) && /^\d{3,}$/.test(tokens[i + 1]) && tokens[i + 2] !== 'X') {
+        out.set(tokens[i], tokens[i + 1]);
+      }
+    }
+    return out;
+  };
+  const A = after(a);
+  const B = after(b);
+  for (const [word, n] of A) if (B.has(word) && B.get(word) !== n) return true;
+  return false;
+}
+
 /**
  * Numbers embedded in a name. Leading zeros are dropped by the ERP —
  * `Matrix-Cito-4 X 1.4` means 0.4 x 1.4 — so a bare digit that follows a

@@ -6,21 +6,35 @@
  *
  *   Tier 0  Candidate restriction     free, and removes most ambiguity
  *   Tier 1  Supplier product code     free, no AI, no human — makes month 2 free
- *   Tier 2  Rate anchor               free, and remarkably strong
- *   Tier 3  Spec tuple                free, for attribute-generated names
- *   Tier 4  Name similarity           free, weakest signal
- *   Tier 5  LLM adjudication          costs money, needs context to work
+ *   Tier 2  Bill history              free: what this supplier's bills were posted as
+ *   Tier 3  Rate anchor               free, only when the name agrees too
+ *   Tier 4  Spec tuple                free, for attribute-generated names
+ *   Tier 5  Name similarity           free, weakest signal
+
+ * Ahead of all of them, reviewers' decisions on the scheduled run's
+ * proposals (proposal-evidence.js): this supplier's approved mapping for the
+ * same wording is the answer, and an item a reviewer rejected for it is never
+ * offered again. There is no model tier. A line the rules cannot settle comes
+ * back with its evidence - the bills' wording for each candidate, and similar
+ * approved and unapproved proposals - for the scheduled run to judge.
  *
- * The tier that matters most is Tier 2. CDC's last-paid rate and the quoted
- * rate agreeing to within half a percent is near-conclusive evidence, and it
- * survives what text matching cannot:
+ * Tier 2 is the supplier's own word: Supplier Portal v2 read their GRN bills
+ * and paired every line with the Indus item it was posted as.
+ *
+ * Tier 3 survives what text matching cannot:
  *
  *   CrownJewel TS        ↔ "BROWN JEWEL TS"        (supplier typo)
  *   DP WASH              ↔ "WASH DP"               (word order reversed)
  *   BOTTCHER-ROLL O PASTE ↔ "BÖTTCHER PRO ROL-O-PAST" (diacritic + truncation)
  *
- * None of those three would clear a name-similarity threshold. All three match
- * their last-paid rate exactly.
+ * But a rate alone is not evidence. Against six thousand items, some unrelated
+ * item was last bought within half a percent of almost any price: on the
+ * August 2026 quotes half the bare rate matches were coincidences — Gum Powder
+ * at a Matrix Cito's price, a Siegwerk ink at a grease's. So a rate match is
+ * taken only when the names share their letters as well (`letterOverlap`),
+ * which all three pairs above do, and a tie at one rate never stops the search:
+ * a quote that has not moved its price is the minority, and a revised price is
+ * exactly what this portal exists to catch.
  */
 
 import {
@@ -30,9 +44,16 @@ import { TOLERANCES, ITEM_LEVEL_GROUPS } from '../config/constants.js';
 import { assertSite } from '../db/mssql.js';
 import { matchingCandidates, annualSpend } from './erp-items.js';
 import { ledgerIdsForSite } from './supplier-groups.js';
-import { normaliseName, nameSimilarity } from '../lib/text.js';
-import { itemSpecTuple, quoteSpecTuple, compareSpecTuples } from '../lib/spec.js';
-import { getProvider } from './extraction/provider.js';
+import { normaliseName, nameSimilarity, letterOverlap, differentModelNumber } from '../lib/text.js';
+import { itemSpecTuple, quoteSpecTuple, compareSpecTuples, gsmInBand } from '../lib/spec.js';
+import { proposalEvidence } from './proposal-evidence.js';
+import { bandLabel } from './paper/band.js';
+import { billHistoryMatch, billedDescriptions, loadBillHistory } from './bill-history.js';
+import { nameFeatures, contradicts } from '../../bill-lines/line-match.js';
+
+/** Letter overlap, or name similarity, a rate match needs before it counts. */
+const RATE_NAME_LETTERS = 0.3;
+const RATE_NAME_SIMILARITY = 0.5;
 
 /**
  * Match one quote line to a CDC item.
@@ -44,21 +65,60 @@ import { getProvider } from './extraction/provider.js';
  * @param {Object} input.group           the supplier group
  * @param {Array}  input.candidates      from `loadCandidates()`
  * @param {Array}  [input.alreadyMapped] this supplier's existing mappings
- * @param {boolean} [input.allowLlm]
+ * @param {Array}  [input.billHistory]   from `loadBillHistory()`
+ * @param {Array}  [input.proposals]     earlier proposals and their decisions (/automation/proposals)
  * @returns {Promise<MatchResult>}
  *
  * @typedef {Object} MatchResult
- * @property {'PRODUCT_CODE'|'RATE_ANCHOR'|'SPEC_TUPLE'|'NAME_SIMILARITY'|'LLM'|null} method
+ * @property {'APPROVED_MAPPING'|'PRODUCT_CODE'|'BILL_HISTORY'|'RATE_ANCHOR'|'SPEC_TUPLE'|'NAME_SIMILARITY'|null} method
  * @property {number|null} itemId
+ * @property {Object|null} [band]      a paper band a reviewer approved this wording as (paper/band.js)
  * @property {number} confidence
  * @property {string} rationale
  * @property {Array} rankedCandidates  always populated, for the queue
  * @property {string|null} queueReason
  */
 export async function matchLine({
-  site, line, supplierItem, group, candidates, alreadyMapped = [], allowLlm = true,
+  site, line, supplierItem, group, candidates, alreadyMapped = [], billHistory = [], proposals = [],
 }) {
   assertSite(site);
+  const supplier = group
+    ? { gstins: group.gstins || [], names: [group.name, ...(group.aliases || [])].filter(Boolean) }
+    : null;
+  const evidence = proposals.length && supplier
+    ? proposalEvidence(proposals, { site, supplier, line: line.raw || {} })
+    : null;
+
+  // ── Approved first: a reviewer has already said what this line is ──────
+  if (evidence?.bind) {
+    const p = evidence.bind.proposal;
+    return result({
+      method: 'APPROVED_MAPPING',
+      itemId: evidence.bind.itemId,
+      band: evidence.bind.band || null,
+      confidence: 0.99,
+      rationale: `Approved${evidence.bind.band ? ` as the band ${bandLabel(evidence.bind.band)}` : ''} by ${p.decision?.by || 'a reviewer'}${p.decision?.at ? ` on ${formatDate(p.decision.at)}` : ''} for "${p.line?.productName}"`,
+      proposalEvidence: evidence,
+    });
+  }
+
+  const excluded = new Set(evidence?.excludeItemIds || []);
+  const allowed = excluded.size ? (candidates || []).filter((c) => !excluded.has(Number(c.ItemID))) : candidates;
+  const found = await matchByRules({ site, line, supplierItem, group, candidates: allowed, billHistory });
+  if (found.itemId && excluded.has(Number(found.itemId))) {
+    return result({
+      ...found, method: null, itemId: null, confidence: 0, queueReason: 'LOW_CONFIDENCE',
+      rationale: `${found.rationale}; but a reviewer rejected that item for this wording before`,
+      proposalEvidence: evidence,
+    });
+  }
+  return evidence ? { ...found, proposalEvidence: evidence } : found;
+}
+
+/** Tiers 1 to 5. */
+async function matchByRules({
+  site, line, supplierItem, group, candidates, billHistory = [],
+}) {
   /**
    * The quote is passed around as an object rather than a number so every
    * tier can see the pack size. CDC's master and the supplier frequently
@@ -87,6 +147,27 @@ export async function matchLine({
     });
   }
 
+  // ── Tier 2: bill history ─────────────────────────────────────────────────
+  // Before the candidate check: the bills can name an item outside the
+  // candidate window, and they are the stronger evidence either way.
+  if (billHistory.length && group) {
+    const billed = billHistoryMatch(billHistory, {
+      site,
+      supplier: { gstins: group.gstins || [], names: [group.name, ...(group.aliases || [])].filter(Boolean) },
+      line,
+    });
+    if (billed) {
+      const e = billed.entry;
+      return result({
+        method: 'BILL_HISTORY',
+        itemId: billed.itemId,
+        confidence: round(Math.min(0.95, billed.score), 3),
+        rationale: `Their bill${e.date ? ` of ${formatDate(e.date)}` : ''} said "${e.description}", posted in Indus as ${billed.itemName}`,
+        rankedCandidates: candidates?.length ? rank(candidates, { line, quote }).slice(0, 8) : [],
+      });
+    }
+  }
+
   if (!candidates?.length) {
     return result({
       method: null, itemId: null, confidence: 0,
@@ -95,10 +176,11 @@ export async function matchLine({
     });
   }
 
-  // ── Tier 2: rate anchor ──────────────────────────────────────────────────
-  const anchored = rateAnchor(candidates, quote);
-  if (anchored.unique) {
-    const c = anchored.matches[0];
+  // ── Tier 3: rate anchor, when the name agrees ────────────────────────────
+  const anchored = withinStatedGsm(corroborated(rateAnchor(candidates, quote).matches, productName), line);
+  const anchorPick = anchored.length === 1 ? anchored[0] : clearNameWinner(anchored, productName);
+  if (anchorPick) {
+    const c = anchorPick;
     // Saying which basis matched matters: "₹149/kg × 15 kg = ₹2,235" is the
     // evidence, and "₹149 matches ₹2,235" would read as a mistake.
     const basis = c._anchoredOn === 'PER_PACK'
@@ -107,25 +189,14 @@ export async function matchLine({
     return result({
       method: 'RATE_ANCHOR',
       itemId: c.ItemID,
-      confidence: 0.97,
-      rationale: `Last paid ₹${c.LastPaidRate} matches the quoted ${basis} within ${(TOLERANCES.rateAnchorPct * 100).toFixed(1)}%`,
+      confidence: 0.95,
+      rationale: `Last paid ₹${c.LastPaidRate} matches the quoted ${basis} within ${(TOLERANCES.rateAnchorPct * 100).toFixed(1)}%, and the names agree`
+        + (anchored.length > 1 ? ` (best named of ${anchored.length} at this rate)` : ''),
       rankedCandidates: rank(candidates, { line, quote }).slice(0, 8),
     });
   }
 
-  // Several candidates at the same rate is genuine ambiguity — often CDC
-  // duplicate master rows for one product. It goes to a human, but with the
-  // rate evidence attached so the decision is quick.
-  if (anchored.matches.length > 1) {
-    return result({
-      method: null, itemId: null, confidence: 0,
-      rationale: `${anchored.matches.length} items share this last-paid rate — likely duplicate master rows`,
-      rankedCandidates: anchored.matches.map(toCandidateRow).slice(0, 8),
-      queueReason: 'AMBIGUOUS',
-    });
-  }
-
-  // ── Tier 3: spec tuple ───────────────────────────────────────────────────
+  // ── Tier 4: spec tuple ───────────────────────────────────────────────────
   const quoteTuple = quoteSpecTuple(line);
   const specMatches = specTupleMatch(candidates, quoteTuple);
   if (specMatches.unique) {
@@ -139,7 +210,7 @@ export async function matchLine({
     });
   }
 
-  // ── Tier 4: name similarity within sub-group ─────────────────────────────
+  // ── Tier 5: name similarity within sub-group ─────────────────────────────
   const scored = rank(candidates, { line, quote });
   const best = scored[0];
   const runnerUp = scored[1];
@@ -149,7 +220,9 @@ export async function matchLine({
     // Two candidates both at 0.85 is a coin toss, and a coin toss belongs to a
     // human.
     const isClear = !runnerUp || best.score - runnerUp.score >= 0.05;
-    if (isClear) {
+    // A close name is no help when the GSM is outside the quoted band.
+    const bestItem = candidates.filter((c) => Number(c.ItemID) === Number(best.itemId));
+    if (isClear && withinStatedGsm(bestItem, line).length) {
       return result({
         method: 'NAME_SIMILARITY',
         itemId: best.itemId,
@@ -160,45 +233,40 @@ export async function matchLine({
     }
   }
 
-  // ── Tier 5: LLM adjudication ─────────────────────────────────────────────
-  if (allowLlm) {
-    try {
-      const adjudication = await adjudicate({
-        line, productName, group, candidates: scored.slice(0, 8), alreadyMapped,
-      });
+  // Nothing settled it. What the supplier's own bills called each of the top
+  // candidates goes back with the line, for the scheduled run to judge.
+  const shortlist = scored.slice(0, 8);
+  const billedAs = billHistory.length && group
+    ? Object.fromEntries(billedDescriptions(billHistory, {
+      site,
+      supplier: { gstins: group.gstins || [], names: [group.name, ...(group.aliases || [])].filter(Boolean) },
+      itemIds: shortlist.map((c) => c.itemId),
+    }))
+    : {};
 
-      if (adjudication.cdcItemId && adjudication.confidence >= TOLERANCES.llmConfidenceAccept) {
-        return result({
-          method: 'LLM',
-          itemId: adjudication.cdcItemId,
-          confidence: adjudication.confidence,
-          rationale: adjudication.rationale,
-          rankedCandidates: scored.slice(0, 8),
-        });
-      }
-
-      return result({
-        method: null, itemId: null, confidence: adjudication.confidence,
-        rationale: adjudication.rationale,
-        rankedCandidates: scored.slice(0, 8),
-        // The model answering "none of these" is a different situation from it
-        // being unsure, and the queue reason says which.
-        queueReason: adjudication.cdcItemId ? 'LOW_CONFIDENCE' : 'NO_CANDIDATE',
-      });
-    } catch (err) {
-      // An adjudication failure must not lose the line. It falls through to
-      // the queue with whatever the cheaper tiers found.
-      console.warn('[SP][matching] LLM adjudication failed:', err.message);
-    }
+  // Several well-named items at the quoted rate, none clearly the one: often
+  // CDC duplicate master rows for one product. A person decides, with the rate
+  // evidence attached so the decision is quick.
+  if (anchored.length > 1) {
+    return result({
+      method: null, itemId: null, confidence: 0,
+      rationale: `${anchored.length} items at this last-paid rate share the name — likely duplicate master rows`,
+      rankedCandidates: anchored.map(toCandidateRow).slice(0, 8),
+      billedAs,
+      queueReason: 'AMBIGUOUS',
+    });
   }
 
   return result({
     method: null, itemId: null,
     confidence: best ? round(best.score, 3) : 0,
-    rationale: best
+    rationale: best && best.score >= TOLERANCES.nameSimilarityAccept
+      ? `Best name similarity was ${best.score} to "${best.itemName}", but not clear of the next or outside the quoted GSM`
+      : best
       ? `Best name similarity was ${best.score}, below the ${TOLERANCES.nameSimilarityAccept} threshold`
       : 'No candidate scored above zero',
-    rankedCandidates: scored.slice(0, 8),
+    rankedCandidates: shortlist,
+    billedAs,
     queueReason: 'LOW_CONFIDENCE',
   });
 }
@@ -268,6 +336,102 @@ export function rateAnchor(candidates, quote, tolerance = TOLERANCES.rateAnchorP
   }
 
   return { matches, unique: matches.length === 1 };
+}
+
+/**
+ * The rate matches whose names agree with the quote: letters shared, or the
+ * names similar, and nothing contradicting (colour, size, GSM).
+ */
+export function corroborated(matches, productName) {
+  const quoteFeatures = nameFeatures(productName, { sizePairs: true });
+  return matches.filter((c) => {
+    const name = `${c.ItemName || ''} ${c.ItemDescription || ''}`;
+    if (contradicts(quoteFeatures, nameFeatures(c.ItemName, { indus: true }), { allSizes: true })) return false;
+    if (differentModelNumber(productName, c.ItemName)) return false;
+    if (differentKind(productName, c.ItemName)) return false;
+    return letterOverlap(productName, name) >= RATE_NAME_LETTERS
+      || nameSimilarity(productName, name) >= RATE_NAME_SIMILARITY;
+  });
+}
+
+/**
+ * The rate matches whose GSM sits inside the GSM the quote line states.
+ *
+ * A paper price list gives one price per GSM band, so many items share it and
+ * the rate alone says nothing about which GSM was quoted. Emami's 250-284 band
+ * was anchored to a 390 GSM item, SKM's coloured maplitho 65 to a 70 GSM one.
+ * An item whose GSM is unknown is left to the other checks.
+ */
+export function withinStatedGsm(matches, line) {
+  const t = quoteSpecTuple(line || {});
+  const band = Number.isFinite(t.gsmFrom) || Number.isFinite(t.gsmTo)
+    ? { gsmFrom: t.gsmFrom, gsmTo: t.gsmTo }
+    : Number.isFinite(t.gsm) ? { gsmFrom: t.gsm, gsmTo: t.gsm } : null;
+  if (!band) return matches;
+  return matches.filter((c) => {
+    const gsm = itemSpecTuple(c).gsm;
+    return !Number.isFinite(gsm) || gsmInBand(gsm, band);
+  });
+}
+
+/**
+ * Of several rate matches, the one whose name is clearly closest, or null.
+ * DIC's Radicure colours share one price; "Radicure Magenta" names one of them.
+ */
+function clearNameWinner(matches, productName) {
+  if (matches.length < 2) return null;
+  const scored = matches
+    .map((c) => ({ c, score: nameSimilarity(productName, `${c.ItemName || ''} ${c.ItemDescription || ''}`) }))
+    .sort((a, b) => b.score - a.score);
+  return scored[0].score - scored[1].score >= 0.1 ? scored[0].c : null;
+}
+
+/**
+ * Ink and coating chemistries. A UV coating and an aqueous one can share a
+ * price and most of a name ("texture matt"); they are not the same purchase.
+ * Indus writes aqueous as an "Aq," prefix.
+ */
+const CHEMISTRIES = [
+  ['UV', /\buv\b/],
+  ['AQUEOUS', /\b(aq|aqueous|water\s*based)\b/],
+  ['SOLVENT', /\bsolvent\b/],
+];
+
+/** Words that open a name without naming a product line. */
+const GENERIC_LEADS = new Set([
+  'ink', 'inks', 'uv', 'aq', 'process', 'offset', 'gloss', 'matt', 'matte', 'super', 'special', 'spl', 'new',
+  'the', 'pantone', 'texture', 'coating', 'varnish', 'paste', 'liquid', 'fast',
+]);
+const SERIES_COLOURS = new Set(['black', 'white', 'red', 'blue', 'green', 'yellow', 'cyan', 'magenta', 'violet',
+  'orange', 'gold', 'silver', 'rubine', 'reflex', 'warm', 'grey', 'gray', 'brown', 'pink', 'purple']);
+
+/**
+ * Do the two names say they are different kinds of the same thing?
+ *
+ * Either a different chemistry, when both state one, or a different series of
+ * the same brand: "VEGA PRIME ... PASTE" is Siegwerk's paste ink and "Vega pro
+ * rich HG" a press-ready one, and a rate match between them is a coincidence.
+ * The series is the word after a shared brand word that leads both names
+ * (Indus's "Group, " prefix set aside); only words that could be a series
+ * count, not colours, numbers or generic words.
+ */
+export function differentKind(quoteName, itemName) {
+  const q = String(quoteName || '').toLowerCase();
+  const i = String(itemName || '').toLowerCase();
+  const qChem = CHEMISTRIES.filter(([, re]) => re.test(q)).map(([k]) => k);
+  const iChem = CHEMISTRIES.filter(([, re]) => re.test(i)).map(([k]) => k);
+  if (qChem.length && iChem.length && !qChem.some((k) => iChem.includes(k))) return true;
+
+  const words = (s) => s.split(/[^a-z0-9]+/).filter(Boolean);
+  const qw = words(q);
+  const iw = words(i.replace(/^[^,]*,\s*/, ''));
+  if (qw.length < 2 || iw.length < 2 || qw[0] !== iw[0] || GENERIC_LEADS.has(qw[0])) return false;
+  const series = (w) => /^[a-z]{3,}$/.test(w) && !GENERIC_LEADS.has(w) && !SERIES_COLOURS.has(w);
+  const [a, b] = [qw[1], iw[1]];
+  // A spelling apart is the same word: "vitaliser" and "vitalizer".
+  let common = 0;
+  while (common < Math.min(a.length, b.length) && a[common] === b[common]) common += 1;
+  return series(a) && series(b) && common < Math.min(4, a.length, b.length);
 }
 
 /**
@@ -433,47 +597,6 @@ function subGroupHint(line, candidate) {
   return subGroup.split(' ').some((token) => token.length > 3 && hint.includes(token));
 }
 
-// ── Tier 5: LLM adjudication ────────────────────────────────────────────────
-
-/**
- * Ask the model, with the context that makes the answer worth having.
- *
- * A coordinator does not string-match. They know this supplier only sells
- * inks, that there is an open PO for exactly this, and that ₹1,850 is not
- * plausible for something last bought at ₹285. The candidates are therefore
- * sent with their last-paid rate, last supplier, purchase count and sub-group,
- * along with what this supplier is already mapped to. Without that context the
- * model confidently invents mappings.
- */
-async function adjudicate({ line, productName, group, candidates, alreadyMapped }) {
-  const provider = await getProvider();
-  return provider.adjudicate({
-    line: {
-      supplier: group?.name || null,
-      productName,
-      productCode: line.raw?.productCode || null,
-      packSize: line.raw?.packSize || null,
-      quotedRate: line.normalised?.rate ?? null,
-      quotedUom: line.normalised?.uom ?? null,
-      ratePerBaseUom: line.normalised?.ratePerBaseUom ?? null,
-      rawText: line.raw?.text || null,
-    },
-    candidates: candidates.map((c) => ({
-      cdcItemId: c.itemId,
-      itemName: c.itemName,
-      subGroup: c.subGroupName,
-      lastPaidRate: c.lastPaidRate,
-      lastSupplier: c.lastSupplier,
-      purchaseCount: c.purchaseCount,
-    })),
-    mapped: alreadyMapped.map((m) => ({
-      supplierProduct: m.supplierProductName,
-      cdcItemId: m.itemRef?.itemId,
-      cdcItemName: m.itemName,
-    })),
-  });
-}
-
 // ── Persistence ─────────────────────────────────────────────────────────────
 
 /** Existing active mapping for a supplier item at a site. */
@@ -626,7 +749,7 @@ export async function resolveQueueEntry({ queueId, itemId, status, actor, note, 
  * line: the candidate query is the expensive part, and it is identical for
  * every line of one supplier's quote.
  */
-export async function matchDocument({ site, documentId, group, actor = 'system', allowLlm = true }) {
+export async function matchDocument({ site, documentId, group, actor = 'system' }) {
   await ensureSupplierPortalReady();
   assertSite(site);
   const { QuoteLine } = await import('../db/mongo.js');
@@ -634,9 +757,14 @@ export async function matchDocument({ site, documentId, group, actor = 'system',
   const lines = await QuoteLine.find({ quoteDocumentId: documentId, supersededByLineId: null }).lean();
   if (!lines.length) return { matched: 0, queued: 0, skipped: 0 };
 
-  const [candidates, spendByItem] = await Promise.all([
+  const [candidates, spendByItem, billHistory] = await Promise.all([
     loadCandidates(site, group),
     annualSpend(site),
+    // The bills are extra evidence: a matcher without them still works.
+    loadBillHistory().catch((err) => {
+      console.warn('[SP][matching] bill history unavailable:', err.message);
+      return [];
+    }),
   ]);
 
   const alreadyMapped = await mappedItemsForGroup(site, group?._id);
@@ -649,7 +777,7 @@ export async function matchDocument({ site, documentId, group, actor = 'system',
     if (!supplierItem) { skipped += 1; continue; }
 
     const match = await matchLine({
-      site, line, supplierItem, group, candidates, alreadyMapped, allowLlm,
+      site, line, supplierItem, group, candidates, alreadyMapped, billHistory,
     });
 
     const outcome = await persistMatch({

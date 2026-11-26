@@ -28,6 +28,7 @@
 import { canonicalPaperTypes, resolvePaperType } from '../../config/paper-vocabulary.js';
 import { checkHandoff } from './paper-quote-schema.js';
 import { buildInterpretationMessage, PAPER_SYSTEM_PROMPT } from './paper-prompt.js';
+import { applyBilledTypes } from './billed-types.js';
 
 /** How many times the model may be asked to repair its own output. */
 const MAX_REPAIRS = 2;
@@ -236,6 +237,8 @@ export async function interpretPaperQuote({
   documentFacts = null,
   ownedPlant = null,
   settledTokens = [],
+  // From loadBillHistory(): trade names CDC has bought before need no question.
+  billHistory = [],
   send,
 } = {}) {
   if (typeof send !== 'function') throw new Error('interpretPaperQuote needs a send function');
@@ -287,7 +290,9 @@ export async function interpretPaperQuote({
     const reply = await send({ system: PAPER_SYSTEM_PROMPT, message, pages });
 
     const withKnown = resolveKnownTypes(reply?.payload || {});
-    const folded = applyAnswers(applyDocumentFacts(selectPlantLines(withKnown.payload, ownedPlant), documentFacts), answers);
+    // After the person's answers, so a taught type is never overridden by a bill.
+    const answered = applyAnswers(applyDocumentFacts(selectPlantLines(withKnown.payload, ownedPlant), documentFacts), answers);
+    const folded = { ...answered, payload: applyBilledTypes(answered.payload, billHistory).payload };
     const gate = checkHandoff(folded.payload, { settledTokens: allSettled });
 
     last = {

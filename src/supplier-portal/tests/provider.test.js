@@ -62,6 +62,17 @@ test('every provider honours the interface the rest of the app calls', async () 
   });
 });
 
+test('quotes get no model call: only invoices are read through a provider', async () => {
+  await withEnv({ ANTHROPIC_API_KEY: 'test-key' }, async () => {
+    for (const name of ['anthropic', 'openai']) {
+      const provider = await getProvider(name);
+      await assert.rejects(provider.extractQuote({ pages: [{ url: 'x' }] }), { code: 'MODEL_CALLS_REMOVED' });
+      await assert.rejects(provider.adjudicate({ line: {}, candidates: [] }), { code: 'MODEL_CALLS_REMOVED' });
+      assert.throws(() => { provider.extractQuote = null; }, TypeError, 'the view cannot be patched');
+    }
+  });
+});
+
 test('an unknown provider names what is actually available', async () => {
   // The original message said "Available: none" and read as a configuration
   // problem. Listing the real names is what turns it back into a fixable one.

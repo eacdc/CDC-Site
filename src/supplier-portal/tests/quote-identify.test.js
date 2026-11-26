@@ -189,6 +189,12 @@ test('commercial terms are carried through, credit days as a number', () => {
   assert.equal(credit.value.creditDays, 45);
 });
 
+test('delivery is carried through as printed, and is null when the quote says nothing', () => {
+  assert.equal(readTerms(PRINT_SALES).value.delivery, null);
+  const stated = readTerms({ commercialTerms: { delivery: 'Within 7-10 days from PO' } });
+  assert.equal(stated.value.delivery, 'Within 7-10 days from PO');
+});
+
 test('a quote stating no terms scores zero rather than an empty pass', () => {
   assert.equal(readTerms({}).confidence, 0);
 });
@@ -226,4 +232,14 @@ test('the identification blocks cannot be overridden with a reason', () => {
   const checks = identificationChecks({ needsAttention: ['supplier', 'plant'], supplier: {}, plant: {} });
   assert.equal(warningsNeedingReason(checks).length, 0);
   assert.ok(checks.every((c) => c.severity === 'BLOCK'));
+});
+
+test('the file name is the last, unconfirmed, word on the plant', () => {
+  const plant = identifyPlant({ addressedTo: null, plantMentions: null }, { filename: 'SAKATA - AHM.pdf' });
+  assert.deepEqual(plant.value, [PLANTS.AHM]);
+  assert.ok(plant.confidence < AUTO_ACCEPT, 'a file name is a proposal, not an answer');
+  assert.deepEqual(identifyPlant({ addressedTo: null }, { filename: 'Technova AHM.pdf' }).value, [PLANTS.AHM]);
+  assert.deepEqual(identifyPlant({ addressedTo: null }, { filename: 'Kodak.pdf' }).value, []);
+  // A plant the document states beats the file's name.
+  assert.deepEqual(identifyPlant({ addressedTo: { address: 'Panchla, Howrah' } }, { filename: 'x AHM.pdf' }).value, [PLANTS.KOL]);
 });

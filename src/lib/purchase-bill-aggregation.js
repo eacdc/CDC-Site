@@ -1,4 +1,5 @@
 import {
+  buildBillDedupBase,
   buildBillDedupKey,
   normalizeGstin,
   normalizeInvoiceNumber,
@@ -160,11 +161,8 @@ export function buildCanonicalFields(slots, { setType }) {
   if (i > 0 && (c === 0 || c == null) && (s === 0 || s == null)) tax_type = 'inter_state';
   else if ((c > 0 || s > 0) && (i === 0 || i == null)) tax_type = 'intra_state';
 
-  const dedupKey = buildBillDedupKey({
-    supplier_gstin,
-    supplier_pan,
-    invoice_number,
-  });
+  const invoice_date = parseDate(invoice.invoice_date);
+  const dedupFields = { supplier_gstin, supplier_pan, invoice_number, invoice_date };
 
   return {
     set_type: setType,
@@ -181,7 +179,7 @@ export function buildCanonicalFields(slots, { setType }) {
     grn_voucher_date: parseDate(grn.grn_voucher_date),
 
     invoice_number,
-    invoice_date: parseDate(invoice.invoice_date),
+    invoice_date,
 
     supplier_name: voucher.supplier_name
       ? String(voucher.supplier_name).trim().toUpperCase()
@@ -211,7 +209,8 @@ export function buildCanonicalFields(slots, { setType }) {
     eway_valid_until: parseDate(eway.valid_until),
     vehicle_number: eway.vehicle_number || null,
 
-    bill_dedup_key: dedupKey,
+    bill_dedup_key: buildBillDedupKey(dedupFields),
+    bill_dedup_base: buildBillDedupBase(dedupFields),
   };
 }
 

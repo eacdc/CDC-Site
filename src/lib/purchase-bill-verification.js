@@ -11,9 +11,11 @@
  * verification_status.
  */
 
-import { CDC_CONFIG, TOLERANCES, EWAY_THRESHOLDS, isCdcGstin, panFromGstin } from '../config/cdc.js';
+import {
+  CDC_CONFIG, TOLERANCES, EWAY_THRESHOLDS, isCdcGstin, locationConfig, panFromGstin,
+} from '../config/cdc.js';
 import { hammingDistance } from './phash.js';
-import { listDedupKeys } from './purchase-bill-dedup.js';
+import { financialYear, listDedupBases } from './purchase-bill-dedup.js';
 
 const PASS = 'pass';
 const FAIL = 'fail';
@@ -90,8 +92,9 @@ function mk(check_id, category, level, status, message, expected, actual) {
 /**
  * @param {object} bill                Bill document (slot fields aggregated, plus canonical fields)
  * @param {object} dbHelpers           injected DB helpers for async checks
- *   - findExistingByDedupKey(key, excludeId) => Promise<bill|null>
- *   - findByTallyVoucher(no, excludeId)      => Promise<bill|null>
+ *   - findDuplicateOriginal(bill) => Promise<bill|null> (same supplier + invoice + financial year)
+ *   - findDedupOtherYears(bill) => Promise<bill[]> (same supplier + invoice, other years)
+ *   - findByTallyVoucher(no, excludeId, location) => Promise<bill|null> (same location only)
  *   - findByImageHashCandidates(phash, excludeId) => Promise<bill[]> (coarse candidates to compare)
  *   - findSimilarBills(gstin, date, amount, tolerance, daysBack, excludeId) => Promise<bill[]>
  */
@@ -176,8 +179,9 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
   // ================================================================
   const grandTotal = bill.grand_total ?? invoice.grand_total ?? 0;
   const supplierState = (invoice.supplier_state || '').toString();
-  const isInterState = supplierState && supplierState.toLowerCase() !== CDC_CONFIG.state.toLowerCase();
-  const isIntraState = supplierState && supplierState.toLowerCase() === CDC_CONFIG.state.toLowerCase();
+  const cdcState = locationConfig(bill.location).state.toLowerCase();
+  const isInterState = supplierState && supplierState.toLowerCase() !== cdcState;
+  const isIntraState = supplierState && supplierState.toLowerCase() === cdcState;
 
   if (isInterState && grandTotal > EWAY_THRESHOLDS.interstate) {
     results.push(mk(
@@ -351,6 +355,24 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
       results.push(mk('BUYER_GSTIN_IS_CDC', 'buyer_identity', BLOCKING, FAIL,
         `Invoice buyer GSTIN ${buyerGstin} is not a known CDC GSTIN.`,
         CDC_CONFIG.gstins.join(', '), buyerGstin));
+    }
+  }
+
+  // A CDC GSTIN from the other location means the bill was filed under the
+  // wrong location, which also puts its voucher number in the wrong series.
+  {
+    const buyerGstin = (invoice.buyer_gstin || '').toString().trim().toUpperCase().replace(/\s+/g, '');
+    const loc = locationConfig(bill.location);
+    if (!buyerGstin || !isCdcGstin(buyerGstin)) {
+      results.push(mk('BUYER_GSTIN_MATCHES_LOCATION', 'buyer_identity', WARNING, SKIP,
+        'No CDC buyer GSTIN on the invoice to compare with the location.'));
+    } else if (buyerGstin === loc.gstin) {
+      results.push(mk('BUYER_GSTIN_MATCHES_LOCATION', 'buyer_identity', WARNING, PASS,
+        `Invoice is addressed to CDC ${loc.label} (${buyerGstin}).`));
+    } else {
+      results.push(mk('BUYER_GSTIN_MATCHES_LOCATION', 'buyer_identity', WARNING, FAIL,
+        `Bill is filed under ${loc.label} but the invoice is addressed to CDC GSTIN ${buyerGstin}. Check the location.`,
+        loc.gstin, buyerGstin));
     }
   }
 
@@ -618,10 +640,13 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
   // ================================================================
   const excludeId = bill._id || bill.id || null;
 
-  // #46 — exact (GSTIN+invoice, or PAN+invoice when GSTIN is missing)
+  // #46 — same supplier (GSTIN, or PAN when GSTIN is missing) + invoice number
+  // (ignoring punctuation and leading zeros) + financial year. No invoice
+  // date → checked against every year.
   {
-    const keys = listDedupKeys(bill);
-    if (!keys.length) {
+    const fy = financialYear(bill.invoice_date);
+    const fyText = fy ? `FY ${fy}` : 'any year (invoice date unknown)';
+    if (!listDedupBases(bill).length) {
       results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, FAIL,
         'Cannot build dedup key: supplier GSTIN and PAN both missing, or invoice number missing.',
         'GSTIN or PAN + invoice number', {
@@ -632,18 +657,46 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
     } else {
       let existing = null;
       try {
-        existing = await dbHelpers.findExistingByDedupKeys?.(keys, excludeId)
-          ?? await dbHelpers.findExistingByDedupKey?.(keys[0], excludeId);
+        existing = await dbHelpers.findDuplicateOriginal?.(bill);
       } catch (err) {
         console.warn('[verify] dedup lookup failed:', err?.message);
       }
       if (existing) {
+        const same = existing.invoice_number === bill.invoice_number ? '' : ` as ${existing.invoice_number}`;
         results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, FAIL,
-          `Bill ${bill.invoice_number} from this supplier already exists (uploaded by ${existing.uploaded_by || 'unknown'} on ${existing.uploaded_at?.toISOString?.().slice(0,10) || 'unknown date'}).`,
+          `Bill ${bill.invoice_number} from this supplier already exists${same} for ${fyText} (uploaded by ${existing.uploaded_by || 'unknown'} on ${existing.uploaded_at?.toISOString?.().slice(0,10) || 'unknown date'}).`,
           'unique', { existing_bill_id: String(existing._id) }));
       } else {
         results.push(mk('DUPLICATE_BILL_NUMBER', 'duplicate', BLOCKING, PASS,
-          'No existing bill found with this supplier GSTIN/PAN + invoice number.'));
+          `No existing bill from this supplier with this invoice number for ${fyText}.`));
+      }
+    }
+  }
+
+  // #46b — same supplier + invoice number in another financial year. Allowed
+  // (suppliers restart numbering), but a misread invoice date would hide a
+  // real duplicate.
+  {
+    const fy = financialYear(bill.invoice_date);
+    if (!fy || !listDedupBases(bill).length) {
+      results.push(mk('DUPLICATE_BILL_NUMBER_OTHER_YEAR', 'duplicate', WARNING, SKIP,
+        'Invoice date, supplier or invoice number missing.'));
+    } else {
+      let others = [];
+      try {
+        others = await dbHelpers.findDedupOtherYears?.(bill) || [];
+      } catch (err) {
+        console.warn('[verify] other-year dedup lookup failed:', err?.message);
+      }
+      if (others.length) {
+        const years = [...new Set(others.map((o) => financialYear(o.invoice_date) || 'unknown'))].join(', ');
+        results.push(mk('DUPLICATE_BILL_NUMBER_OTHER_YEAR', 'duplicate', WARNING, FAIL,
+          `Invoice ${bill.invoice_number} from this supplier was also uploaded for FY ${years}. Fine if the supplier restarted numbering; otherwise check the invoice date.`,
+          `no bill in another year`,
+          others.map((o) => ({ existing_bill_id: String(o._id), invoice_number: o.invoice_number, invoice_date: o.invoice_date }))));
+      } else {
+        results.push(mk('DUPLICATE_BILL_NUMBER_OTHER_YEAR', 'duplicate', WARNING, PASS,
+          'No bill with this supplier and invoice number in other years.'));
       }
     }
   }
@@ -656,17 +709,17 @@ export async function runVerificationChecks(bill, dbHelpers = {}) {
     } else {
       let existing = null;
       try {
-        existing = await dbHelpers.findByTallyVoucher?.(bill.tally_voucher_number, excludeId);
+        existing = await dbHelpers.findByTallyVoucher?.(bill.tally_voucher_number, excludeId, bill.location);
       } catch (err) {
         console.warn('[verify] tally dedup lookup failed:', err?.message);
       }
       if (existing) {
         results.push(mk('DUPLICATE_TALLY_VOUCHER', 'duplicate', BLOCKING, FAIL,
-          `Tally voucher ${bill.tally_voucher_number} was already uploaded (bill ${String(existing._id)}).`,
+          `Tally voucher ${bill.tally_voucher_number} was already uploaded for ${locationConfig(bill.location).label} (bill ${String(existing._id)}).`,
           'unique', { existing_bill_id: String(existing._id) }));
       } else {
         results.push(mk('DUPLICATE_TALLY_VOUCHER', 'duplicate', BLOCKING, PASS,
-          'No existing bill found with this Tally voucher number.'));
+          `No existing ${locationConfig(bill.location).label} bill found with this Tally voucher number.`));
       }
     }
   }

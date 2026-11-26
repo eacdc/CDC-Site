@@ -235,6 +235,8 @@ export const quoteDocumentSchema = new Schema({
     insurance: String,
     gstNote: String,
     paymentTerms: String,
+    /** Lead time as printed: "7-10 days from PO", "ready stock". */
+    delivery: String,
   },
 
   /**
@@ -393,6 +395,10 @@ export const quoteDocumentSchema = new Schema({
   },
   uploadedBy: String,
   uploadedAt: { type: Date, default: Date.now },
+  /** A supplier the uploader typed because it was not in the list; the run checks it against the document. */
+  uploaderSupplier: { name: String },
+  /** Anything the uploader wanted the reader to know ("rates from 1 Dec", "Ahmedabad only"). */
+  uploadNote: String,
   approvedBy: String,
   approvedAt: Date,
 }, { collection: 'sp_quoteDocuments', timestamps: true });
@@ -620,7 +626,7 @@ export const itemMappingSchema = new Schema({
   confidence: Number,
   method: {
     type: String,
-    enum: ['PRODUCT_CODE', 'RATE_ANCHOR', 'SPEC_TUPLE', 'NAME_SIMILARITY', 'LLM', 'HUMAN'],
+    enum: ['PRODUCT_CODE', 'BILL_HISTORY', 'RATE_ANCHOR', 'SPEC_TUPLE', 'NAME_SIMILARITY', 'LLM', 'HUMAN'],
     required: true,
   },
   evidence: {

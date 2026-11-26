@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Quote Mapping Review</title>
+<script>
+  // Before first paint, so a dark choice never flashes light.
+  try { const t = localStorage.getItem('spTheme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch { /* storage blocked */ }
+</script>
+<style>
+  :root {
+    --bg: #f3f5f8; --panel: #ffffff; --raised: #f8f9fb; --ink: #18202c; --muted: #5f6a7b; --line: #e1e5ec;
+    --accent: #2457c5; --accent-ink: #ffffff; --accent-soft: #e8effc;
+    --ok: #1d7a4b; --ok-soft: #e4f4ec; --warn: #95600a; --warn-soft: #fdf3e1; --bad: #b3261e; --bad-soft: #fbe9e7;
+    --chip: #eef1f6; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+    /* Chart series, in fixed order (dataviz reference palette) */
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948; --s-other: #9aa3b2;
+    --radius: 10px; --header: 56px;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1319; --panel: #171c24; --raised: #1d232d; --ink: #e7eaf0; --muted: #9ba5b6; --line: #2a323e;
+    --accent: #7ea4ff; --accent-ink: #0d1422; --accent-soft: #1d2a45;
+    --ok: #5fd197; --ok-soft: #15301f; --warn: #f1b75e; --warn-soft: #34270f; --bad: #ff8d84; --bad-soft: #3a1714;
+    --chip: #232a35; --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s-other: #6b7585;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1319; --panel: #171c24; --raised: #1d232d; --ink: #e7eaf0; --muted: #9ba5b6; --line: #2a323e;
+      --accent: #7ea4ff; --accent-ink: #0d1422; --accent-soft: #1d2a45;
+      --ok: #5fd197; --ok-soft: #15301f; --warn: #f1b75e; --warn-soft: #34270f; --bad: #ff8d84; --bad-soft: #3a1714;
+      --chip: #232a35; --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s-other: #6b7585;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+  a { color: var(--accent); }
+  .muted, small { color: var(--muted); }
+  .err { color: var(--bad); }
+  [hidden] { display: none !important; }
+
+  /* Controls */
+  button, select, input, textarea { font: inherit; color: inherit; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 6px 12px;
+    border: 1px solid var(--line); background: var(--panel); border-radius: 8px; cursor: pointer; font-weight: 500; white-space: nowrap; }
+  button:hover:not(:disabled) { background: var(--chip); }
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, .quote:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  button.ok { background: var(--ok); border-color: var(--ok); color: var(--panel); }
+  button.ok:hover:not(:disabled) { background: var(--ok); filter: brightness(1.08); }
+  button.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+  button.bad:hover:not(:disabled) { background: var(--bad-soft); }
+  button.ghost { border-color: transparent; background: transparent; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select, textarea { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 10px; min-height: 36px; min-width: 0; }
+  textarea { width: 100%; resize: vertical; min-height: 72px; }
+  label { display: inline-flex; align-items: center; gap: 6px; }
+  input[type=checkbox] { min-height: 0; width: 16px; height: 16px; accent-color: var(--accent); }
+
+  /* Header */
+  header { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 10px; min-height: var(--header);
+    padding: 8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left));
+    background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; font-size: 11px; flex: none; }
+  .brand h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-controls { display: flex; align-items: center; gap: 10px; }
+  .seg { display: inline-flex; padding: 3px; background: var(--chip); border-radius: 9px; gap: 2px; }
+  .seg button { min-height: 28px; padding: 3px 10px; border: 0; background: transparent; border-radius: 7px; color: var(--muted); }
+  .seg button:hover:not(:disabled) { background: transparent; color: var(--ink); }
+  .seg button[aria-pressed="true"] { background: var(--panel); color: var(--ink); box-shadow: var(--shadow); }
+  .who { display: flex; align-items: center; gap: 4px; color: var(--muted); max-width: 300px; }
+  .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icon-btn { width: 36px; padding: 0; }
+  .icon-btn svg { width: 18px; height: 18px; }
+
+  /* Sign in */
+  #login { max-width: 380px; margin: 9vh auto; padding: 24px; display: grid; gap: 12px; }
+  #login h2 { margin: 0; font-size: 18px; }
+  #login input, #login button { width: 100%; min-height: 42px; }
+  .divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+  .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+  /* Layout: two panes on a desktop, one at a time on a phone */
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
+  main { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; gap: 16px; padding: 16px; max-width: 1600px; margin: 0 auto; align-items: start; }
+  .list-pane { position: sticky; top: calc(var(--header) + 16px); height: calc(100vh - var(--header) - 32px); display: flex; flex-direction: column; overflow: hidden; }
+  .list-head { padding: 12px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+  .list-head .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .list-head strong { font-size: 15px; }
+  .list-head input[type=search] { width: 100%; }
+  #quotes { overflow-y: auto; padding: 8px; display: grid; gap: 6px; align-content: start; flex: 1; }
+  .detail-pane { overflow: hidden; }
+  .back { display: none; }
+
+  /* Quote list */
+  .quote { display: grid; gap: 6px; padding: 10px 12px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+  .quote:hover { background: var(--raised); }
+  .quote.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .quote .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .quote .file { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .quote .foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+  .bar { height: 4px; border-radius: 4px; background: var(--chip); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--ok); border-radius: 4px; }
+
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .chip.APPROVED { color: var(--ok); background: var(--ok-soft); }
+  .chip.REJECTED { color: var(--bad); background: var(--bad-soft); }
+  .chip.UNAPPROVED { color: var(--warn); background: var(--warn-soft); }
+
+  /* Quote detail */
+  .detail-head { padding: 16px; border-bottom: 1px solid var(--line); display: grid; gap: 10px; }
+  .title-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .title-row h2 { margin: 0; font-size: 18px; margin-right: auto; }
+  .title-row a { text-decoration: none; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; }
+  .question { border-left: 3px solid var(--warn); background: var(--warn-soft); border-radius: 0 8px 8px 0; padding: 8px 10px; margin: 0; }
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+
+  /* One quote line: four columns on a wide screen, two on a medium one, stacked on a phone */
+  .line, .line-head { display: grid; grid-template-columns: minmax(180px, 1.2fr) 130px minmax(240px, 2fr) 160px; gap: 16px; padding: 14px 16px; }
+  .line { border-bottom: 1px solid var(--line); }
+  .line:last-of-type { border-bottom: 0; }
+  .line.decided { background: var(--raised); }
+  .line .no { display: inline-block; min-width: 22px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .line .lbl { display: none; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+  .line .rate { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .line-head { padding-top: 8px; padding-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); background: var(--raised); }
+  .item .method { font-size: 12px; color: var(--muted); }
+  details { margin-top: 6px; }
+  details summary { cursor: pointer; color: var(--accent); font-size: 13px; width: fit-content; }
+  details .why { margin-top: 6px; display: grid; gap: 4px; padding: 10px; background: var(--raised); border-radius: 8px; font-size: 13px; }
+  .line.decided details .why { background: var(--panel); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .status small { display: block; }
+
+  .picker { margin-top: 10px; display: grid; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .picker input { width: 100%; }
+  .picker .results { display: grid; gap: 2px; max-height: 280px; overflow-y: auto; }
+  .picker .results button { justify-content: flex-start; text-align: left; white-space: normal; border: 0; font-weight: 400; min-height: 38px; }
+  .band { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); display: grid; gap: 10px; }
+  .band .field { display: grid; gap: 4px; }
+  .band .field > span { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .band .gsm { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .band input[type=number] { width: 84px; }
+  .band select { width: 100%; }
+  .band .mills { display: flex; flex-wrap: wrap; gap: 6px 14px; max-height: 140px; overflow-y: auto; padding: 2px; }
+  .band .preview { padding: 8px 10px; background: var(--raised); border-radius: 8px; font-size: 13px; }
+  .link { border: 0; background: none; padding: 0; min-height: 0; color: var(--accent); font-weight: 600; text-decoration: underline; cursor: pointer; font-size: inherit; }
+  .bi-head { display: flex; gap: 8px; align-items: flex-start; }
+  .bi-head > div { flex: 1; display: grid; gap: 2px; }
+  .bi-add { display: grid; gap: 2px; max-height: 180px; overflow-y: auto; }
+  .bi-add button { justify-content: flex-start; text-align: left; white-space: normal; font-weight: 400; min-height: 36px; }
+  .bi-wrap { flex: 1 1 auto; min-height: 120px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  dialog.sheet { width: min(980px, calc(100vw - 32px)); height: min(820px, calc(100vh - 48px)); }
+  dialog.sheet[open] { display: flex; flex-direction: column; }
+  .sheet-body { flex: 1; min-height: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .bi-head strong { font-size: 15px; }
+  .bi { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .bi th { position: sticky; top: 0; background: var(--raised); text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px 8px; z-index: 1; }
+  .bi td { padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+  .bi td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bi tr.out td:not(:first-child) { color: var(--muted); text-decoration: line-through; }
+  .bi label { display: flex; padding: 2px; cursor: pointer; }
+  .bi .tag { font-size: 11px; color: var(--ok); font-weight: 600; }
+  .bi-foot { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+
+  /* Tabs: review, item dashboard, supplier dashboard */
+  .tabs { margin-right: 8px; }
+  .tabs button { min-height: 30px; }
+
+  /* Dashboards */
+  #dash { max-width: 1600px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .dash-search { padding: 14px; display: grid; gap: 8px; }
+  .dash-search input { width: 100%; }
+  .dash-hits { display: grid; gap: 2px; max-height: 320px; overflow-y: auto; }
+  .dash-hits button { justify-content: flex-start; text-align: left; white-space: normal; border: 0; font-weight: 400; min-height: 38px; }
+  .dash-title { padding: 14px 16px; display: grid; gap: 6px; }
+  .dash-title h2 { margin: 0; font-size: 18px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .kpi { padding: 12px 14px; display: grid; gap: 2px; align-content: start; }
+  .kpi .k { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .kpi .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.25; }
+  .kpi .s { font-size: 12px; color: var(--muted); }
+  /* Upload tab */
+  .up-pane { width: 100%; max-width: 980px; margin: 0 auto; padding: 18px; display: grid; gap: 14px; }
+  .up-pane h2 { margin: 0 0 2px; font-size: 18px; }
+  .drop { display: grid; gap: 4px; place-items: center; text-align: center; padding: 28px 16px; border: 2px dashed var(--line); border-radius: var(--radius); background: var(--raised); cursor: pointer; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .up-queue { display: grid; gap: 6px; }
+  .up-queue:empty { display: none; }
+  .up-file { display: grid; grid-template-columns: minmax(0, 1fr) auto 34px; gap: 8px; align-items: center; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .up-name, .who-sup { display: grid; min-width: 0; }
+  .up-name strong { overflow-wrap: anywhere; }
+  .up-field { display: grid; gap: 6px; }
+  .up-label { font-weight: 600; }
+  .up-label small { font-weight: 400; margin-left: 4px; }
+  .up-actions { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .up-actions .primary { min-width: 140px; }
+  .up-chosen { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; }
+  .picker .results button .who-sup { text-align: left; }
+  #supDlg { width: min(560px, calc(100vw - 32px)); }
+  .sup-body { padding: 20px; display: grid; gap: 12px; }
+  .sup-body h3 { margin: 0; }
+  .sup-body details small { display: block; margin-top: 4px; }
+  .sup-body .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+  #dash .up { color: var(--bad); }
+  #dash .down { color: var(--ok); }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; }
+  .chart { padding: 14px 16px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .chart h3, .dash-table h3 { margin: 0; font-size: 14px; }
+  .chart .sub { font-size: 12px; color: var(--muted); margin-top: -6px; }
+  .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .chart svg text { fill: var(--muted); font-size: 11px; }
+  .chart svg .grid { stroke: var(--line); stroke-width: 1; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .legend i.hollow { background: transparent !important; border: 2px solid var(--muted); border-radius: 50%; }
+  .legend i.dash { height: 0; border-top: 2px dashed var(--ink); border-radius: 0; width: 14px; vertical-align: 3px; }
+  .chart .none { padding: 24px 0; text-align: center; color: var(--muted); font-size: 13px; }
+  #tip { position: fixed; z-index: 60; pointer-events: none; padding: 6px 9px; border-radius: 8px; background: var(--ink); color: var(--bg); font-size: 12px; line-height: 1.4; max-width: 280px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); }
+  .dash-table { overflow: hidden; }
+  .dash-table .head { padding: 12px 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .dash-table .head h3 { margin-right: auto; }
+  .dt-wrap { overflow-x: auto; }
+  .dt { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .dt th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px 10px; background: var(--raised); white-space: nowrap; }
+  .dt td { padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+  .dt td.num, .dt th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dt small { display: block; }
+  .dt tr.rej td { color: var(--muted); }
+  .chip.PENDING { color: var(--warn); background: var(--warn-soft); }
+  .chip.UNMAPPED { color: var(--muted); }
+  .line.flash { animation: flash 2s ease-out; }
+  @keyframes flash { from { background: var(--accent-soft); } }
+  @media (prefers-reduced-motion: reduce) { .line.flash { animation: none; outline: 2px solid var(--accent); } }
+
+  /* Dialog and toast */
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 0; width: min(440px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0, 0, 0, .25); }
+  dialog::backdrop { background: rgba(10, 14, 20, .5); }
+  dialog form { padding: 20px; display: grid; gap: 12px; }
+  dialog h3 { margin: 0; font-size: 16px; }
+  dialog p { margin: 0; }
+  dialog .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+  #toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 50;
+    padding: 10px 16px; border-radius: 10px; background: var(--ink); color: var(--bg); box-shadow: 0 8px 24px rgba(0, 0, 0, .25); max-width: calc(100vw - 32px); }
+  #toast.err { background: var(--bad); color: #fff; }
+
+  .skeleton { height: 64px; border-radius: 8px; background: linear-gradient(90deg, var(--chip), var(--raised), var(--chip)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+  @media (max-width: 1099px) {
+    .line-head { display: none; }
+    .line { grid-template-columns: 1fr auto; gap: 10px 16px; }
+    .line .cell-status { grid-row: 1; grid-column: 2; text-align: right; }
+    .line .cell-rate { grid-column: 1 / -1; }
+    .line .cell-item { grid-column: 1 / -1; }
+    .line .lbl { display: block; }
+  }
+
+  /* Phone: one pane at a time, thumb-sized buttons */
+  @media (max-width: 760px) {
+    :root { --header: 52px; }
+    header { flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
+    .brand h1 { font-size: 15px; }
+    .header-controls { order: 3; width: 100%; justify-content: space-between; }
+    .who span { max-width: 150px; font-size: 12px; }
+    main { grid-template-columns: 1fr; padding: 10px; gap: 10px; }
+    .list-pane { position: static; height: auto; overflow: visible; }
+    #quotes { overflow: visible; }
+    body.viewing .list-pane { display: none; }
+    body:not(.viewing) .detail-pane { display: none; }
+    .back { display: inline-flex; }
+    .detail-head { padding: 12px; }
+    .line { padding: 12px; }
+    .bi .wide { display: none; }
+    dialog.sheet { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; }
+    .sheet-body { padding: 12px 16px; }
+    .actions button { flex: 1 1 calc(50% - 6px); min-height: 42px; }
+    .detail-head .seg { width: 100%; }
+    .detail-head .seg button { flex: 1; }
+    .tabs { order: 4; width: 100%; margin: 0; display: grid; grid-template-columns: 1fr 1fr; }
+    .tabs button { padding: 3px 6px; }
+    .up-pane { padding: 14px; }
+    .up-table thead { display: none; }
+    .up-table tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+    .up-table td { border: 0; padding: 0; }
+    .up-table td:first-child { grid-column: 1 / -1; }
+    #dash { padding: 10px; gap: 10px; }
+    .kpis { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .kpi .v { font-size: 18px; }
+    .dt .wide { display: none; }
+    button { min-height: 40px; }
+    .seg button { min-height: 32px; }
+    input, select { min-height: 42px; font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo">CDC</div><h1>Quote mapping review</h1></div>
+  <nav class="seg tabs" id="tabs" aria-label="View" hidden>
+    <button type="button" data-tab="review" aria-pressed="true">Review</button>
+    <button type="button" data-tab="item" aria-pressed="false">Item dashboard</button>
+    <button type="button" data-tab="supplier" aria-pressed="false">Supplier dashboard</button>
+    <button type="button" data-tab="upload" aria-pressed="false">Upload</button>
+  </nav>
+  <div class="header-controls">
+    <div class="seg" role="group" aria-label="Site">
+      <button type="button" data-site="KOL" aria-pressed="true">Kolkata</button>
+      <button type="button" data-site="AHM" aria-pressed="false">Ahmedabad</button>
+    </div>
+    <div class="who" id="whoBox" hidden><span id="who"></span><button id="logout" class="ghost">Sign out</button></div>
+  </div>
+  <button id="theme" class="icon-btn ghost" type="button"></button>
+</header>
+
+<section id="login" class="panel" hidden>
+  <h2>Sign in</h2>
+  <span class="muted">Review the Indus items proposed for supplier quotes.</span>
+  <form id="pwForm" style="display:grid;gap:10px">
+    <input id="email" type="email" placeholder="Email" autocomplete="username">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button class="primary">Sign in</button>
+  </form>
+  <form id="erpForm" style="display:grid;gap:10px" hidden>
+    <div class="divider">or with your ERP user name</div>
+    <input id="erpUser" placeholder="ERP user name" autocomplete="username">
+    <button>Sign in with ERP name</button>
+  </form>
+  <span id="loginErr" class="err" role="alert"></span>
+</section>
+
+<main id="app" hidden>
+  <section class="panel list-pane">
+    <div class="list-head">
+      <div class="row"><strong>Quotes</strong><label class="muted"><input type="checkbox" id="showAll"> Show decided</label></div>
+      <input type="search" id="search" placeholder="Search supplier or file" aria-label="Search quotes">
+    </div>
+    <div id="quotes"></div>
+  </section>
+  <section class="panel detail-pane" id="detail"></section>
+</main>
+<section id="dash" hidden></section>
+<div id="tip" hidden></div>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlgTitle"></h3>
+    <p id="dlgText" class="muted"></p>
+    <label id="dlgNoteWrap" style="display:grid;gap:4px"><span class="muted">Note (optional)</span><textarea id="dlgNote"></textarea></label>
+    <div class="buttons"><button value="cancel" formnovalidate>Cancel</button><button value="ok" id="dlgOk" class="primary">Confirm</button></div>
+  </form>
+</dialog>
+<dialog id="supDlg" aria-label="Change the supplier"><div id="supDlgBody" class="sup-body"></div></dialog>
+<dialog id="bandDlg" class="sheet" aria-label="Items in the band"><div id="bandDlgBody" class="sheet-body"></div></dialog>
+<div id="toast" role="status" hidden></div>
+
+<script>
+const API = '/api/supplier-portal';
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/** Same wording as paper/band.js on the server. */
+const bandLabel = (b) => {
+  const groups = b.groupIds?.length ? b.groupIds : [2, 14];
+  const form = groups.length === 1 ? (groups[0] === 14 ? 'sheet' : 'reel') : 'sheet or reel';
+  const gsm = b.gsmTo && b.gsmTo !== b.gsmFrom ? `${b.gsmFrom}–${b.gsmTo}` : `${b.gsmFrom}`;
+  const edits = [b.excludeItemIds?.length && `${b.excludeItemIds.length} left out`, b.includeItemIds?.length && `${b.includeItemIds.length} added`].filter(Boolean);
+  return [b.quality, b.mills?.length ? b.mills.join(' or ') : 'any mill', form, `${gsm} GSM`].join(', ') + (edits.length ? ` (${edits.join(', ')})` : '');
+};
+const money = (v) => (v == null || v === '' ? '—' : `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
+const when = (d) => new Date(d).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const phone = () => matchMedia('(max-width: 760px)').matches;
+const NO_QUOTE = '<div class="empty">Choose a quote to review its lines.</div>';
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch { /* private window */ } },
+};
+let user = null;
+let current = null;
+let site = 'KOL';
+let quotes = [];
+let lineFilter = 'WAITING';
+let lines = new Map(); // proposal id -> proposal, for the quote on screen
+
+/* Theme: follows the device until the toggle is used, then keeps the choice. */
+const ICONS = {
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+};
+const darkNow = () => document.documentElement.dataset.theme === 'dark'
+  || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+function showThemeButton() {
+  const next = darkNow() ? 'light' : 'dark';
+  $('theme').innerHTML = ICONS[next];
+  $('theme').title = `Switch to ${next} mode`;
+  $('theme').setAttribute('aria-label', `Switch to ${next} mode`);
+}
+$('theme').onclick = () => {
+  const next = darkNow() ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem('spTheme', next); } catch { /* storage blocked */ }
+  showThemeButton();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', showThemeButton);
+showThemeButton();
+
+let toastTimer = null;
+function toast(msg, isErr = false) {
+  const t = $('toast');
+  t.textContent = msg; t.className = isErr ? 'err' : ''; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 6000 : 3000);
+}
+
+/** In-page confirm: resolves to the note ('' when none) or null when cancelled. */
+function ask({ title, text, note = false, ok = 'Confirm', danger = false }) {
+  const d = $('dlg');
+  $('dlgTitle').textContent = title; $('dlgText').textContent = text;
+  $('dlgNoteWrap').hidden = !note; $('dlgNote').value = '';
+  $('dlgOk').textContent = ok; $('dlgOk').className = danger ? 'bad' : 'primary';
+  d.returnValue = '';
+  d.showModal();
+  (note ? $('dlgNote') : $('dlgOk')).focus();
+  return new Promise((resolve) => {
+    d.addEventListener('close', () => resolve(d.returnValue === 'ok' ? $('dlgNote').value.trim() : null), { once: true });
+  });
+}
+
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(API + path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-SP-Site': site,
+      ...(store.get('spToken') ? { Authorization: `Bearer ${store.get('spToken')}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { signedOut(); throw new Error('Please sign in again.'); }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
+function signedOut() {
+  store.set('spToken', null); user = null;
+  $('app').hidden = true; $('login').hidden = false; $('whoBox').hidden = true; $('who').textContent = '';
+  $('dash').hidden = true; $('tabs').hidden = true;
+}
+
+async function signedIn(result) {
+  store.set('spToken', result.token);
+  user = result.user;
+  $('login').hidden = true; $('app').hidden = false; $('whoBox').hidden = false;
+  const viewOnly = !(user.roles?.includes('APPROVER') || user.roles?.includes('ADMIN'));
+  $('who').textContent = `${user.displayName || user.email || ''}${viewOnly ? ' · view only' : ''}`;
+  $('who').title = viewOnly ? 'Approving needs the APPROVER role' : '';
+  closeQuote();
+  loadQuotes();
+  showTab(tab);
+}
+
+async function login(path, body) {
+  $('loginErr').textContent = '';
+  try { await signedIn(await api(path, { method: 'POST', body: { ...body, site } })); }
+  catch (e) { $('loginErr').textContent = e.message; }
+}
+
+function setSite(s) {
+  site = s;
+  document.querySelectorAll('[data-site]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.site === s)));
+}
+
+$('pwForm').onsubmit = (e) => { e.preventDefault(); login('/auth/login', { email: $('email').value, password: $('password').value }); };
+$('erpForm').onsubmit = (e) => { e.preventDefault(); login('/auth/erp-login', { username: $('erpUser').value }); };
+$('logout').onclick = async () => { try { await api('/auth/logout', { method: 'POST' }); } catch { /* already out */ } signedOut(); };
+document.querySelectorAll('[data-site]').forEach((b) => {
+  b.onclick = () => {
+    if (b.dataset.site === site) return;
+    setSite(b.dataset.site); store.set('spSite', site);
+    if (user) { closeQuote(); loadQuotes(); dashSiteChanged(); }
+  };
+});
+$('showAll').onchange = () => user && loadQuotes();
+$('search').oninput = () => renderQuotes();
+
+async function loadQuotes() {
+  $('quotes').innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+  try {
+    ({ quotes } = await api(`/proposals/quotes?site=${site}${$('showAll').checked ? '&all=1' : ''}`));
+    renderQuotes();
+  } catch (e) { $('quotes').innerHTML = `<p class="err" style="padding:8px">${esc(e.message)}</p>`; }
+}
+
+function renderQuotes() {
+  const q = $('search').value.trim().toLowerCase();
+  const shown = quotes.filter((x) => !q || `${x.supplier?.name || ''} ${x.fileName || ''}`.toLowerCase().includes(q));
+  if (!quotes.length) { $('quotes').innerHTML = '<div class="empty">Nothing waiting for review.</div>'; return; }
+  if (!shown.length) { $('quotes').innerHTML = '<div class="empty">No quote matches the search.</div>'; return; }
+  $('quotes').innerHTML = shown.map((x) => {
+    const done = x.total ? Math.round(((x.total - x.unapproved) / x.total) * 100) : 0;
+    return `<div class="quote${current === x._id ? ' active' : ''}" data-id="${esc(x._id)}" tabindex="0" role="button">
+      <div class="name">${esc(x.supplier?.name || 'Unknown supplier')}</div>
+      <div class="file">${esc(x.fileName)} · ${when(x.createdAt)}</div>
+      <div class="bar" title="${done}% decided"><i style="width:${done}%"></i></div>
+      <div class="foot">
+        ${x.unapproved ? `<span class="chip UNAPPROVED">${x.unapproved} waiting</span>` : '<span class="chip APPROVED">All decided</span>'}
+        <span class="muted">of ${x.total} lines</span>
+        ${x.questions?.length ? `<span class="chip">${x.questions.length} question${x.questions.length > 1 ? 's' : ''}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.quote').forEach((el) => {
+    el.onclick = () => openQuote(el.dataset.id);
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openQuote(el.dataset.id); } };
+  });
+}
+
+function closeQuote() {
+  current = null;
+  document.body.classList.remove('viewing');
+  $('detail').innerHTML = NO_QUOTE;
+  document.querySelectorAll('.quote').forEach((el) => el.classList.remove('active'));
+}
+
+async function openQuote(id, { keepScroll = false } = {}) {
+  const y = window.scrollY;
+  if (current !== id) {
+    lineFilter = 'WAITING';
+    $('detail').innerHTML = '<div style="padding:16px;display:grid;gap:10px"><div class="skeleton"></div><div class="skeleton"></div></div>';
+    if (phone()) window.scrollTo(0, 0);
+  }
+  current = id;
+  document.body.classList.add('viewing');
+  document.querySelectorAll('.quote').forEach((el) => el.classList.toggle('active', el.dataset.id === id));
+  try {
+    renderQuote(await api(`/proposals/quotes/${id}`));
+    if (keepScroll) window.scrollTo(0, y);
+  } catch (e) { $('detail').innerHTML = `<p class="err" style="padding:16px">${esc(e.message)}</p>`; }
+}
+
+function renderQuote({ quote, proposals }) {
+  const canDecide = user?.roles?.includes('APPROVER') || user?.roles?.includes('ADMIN');
+  lines = new Map(proposals.map((p) => [String(p._id), p]));
+  const waiting = proposals.filter((p) => p.status === 'UNAPPROVED').length;
+  if (!waiting && lineFilter === 'WAITING') lineFilter = 'ALL';
+  const counts = { WAITING: waiting, ALL: proposals.length, DECIDED: proposals.length - waiting };
+  const meta = [
+    quote.documentDate && `Dated ${quote.documentDate}`, quote.effectiveFrom && `Effective ${quote.effectiveFrom}`,
+    `Delivery: ${quote.terms?.delivery || 'not stated'}`, quote.terms?.credit && `Credit ${quote.terms.credit}`,
+    quote.materialClass, quote.rulesVersion && `Rules ${quote.rulesVersion}`,
+  ].filter(Boolean);
+  $('detail').innerHTML = `
+    <div class="detail-head">
+      <div class="back"><button class="ghost" id="back" style="padding-left:0">← All quotes</button></div>
+      <div class="title-row">
+        <h2>${esc(quote.supplier?.name || 'Unknown supplier')}</h2>
+        ${canDecide ? '<button type="button" id="fixSupplier">Change supplier</button>' : ''}
+        ${quote.fileUrl ? `<a href="${esc(quote.fileUrl)}" target="_blank" rel="noopener"><button tabindex="-1">Open quote file ↗</button></a>` : ''}
+      </div>
+      <div class="meta">
+        ${quote.supplier?.gstin ? `<span class="chip">GSTIN ${esc(quote.supplier.gstin)}</span>` : ''}
+        ${correctedChip(quote)}
+        ${meta.map((m) => `<span class="chip">${esc(m)}</span>`).join('')}
+      </div>
+      <div class="muted" style="font-size:12px;word-break:break-all">${esc(quote.fileName)}</div>
+      ${(quote.questions || []).map((q) => `<p class="question"><strong>${esc(q.kind)}</strong> ${esc(q.text)}${q.lineNos?.length ? ` <small>(lines ${q.lineNos.join(', ')})</small>` : ''}</p>`).join('')}
+      <div><div class="seg" role="group" aria-label="Show lines">
+        ${['WAITING', 'ALL', 'DECIDED'].map((f) => `<button type="button" data-filter="${f}" aria-pressed="${lineFilter === f}">${{ WAITING: 'Waiting', ALL: 'All', DECIDED: 'Decided' }[f]}&nbsp;<span class="muted">${counts[f]}</span></button>`).join('')}
+      </div></div>
+    </div>
+    <div class="line-head"><div>Quote line</div><div>Rate</div><div>Proposed Indus item</div><div>Status</div></div>
+    ${proposals.map((p) => row(p, canDecide)).join('')}
+    <div class="empty" id="noLines" hidden></div>`;
+  $('back').onclick = closeQuote;
+  $('fixSupplier')?.addEventListener('click', () => openSupplierFix(quote));
+  document.querySelectorAll('[data-filter]').forEach((b) => { b.onclick = () => { lineFilter = b.dataset.filter; applyFilter(); }; });
+  document.querySelectorAll('[data-act]').forEach((b) => { b.onclick = () => act(b.dataset.id, b.dataset.act, b); });
+  document.querySelectorAll('[data-change]').forEach((b) => { b.onclick = () => openPicker(b.dataset.change); });
+  document.querySelectorAll('[data-band]').forEach((b) => { b.onclick = () => openBand(b.dataset.band, {}, lines.get(b.dataset.band)?.proposal?.band); });
+  document.querySelectorAll('[data-items]').forEach((b) => {
+    const p = lines.get(b.dataset.items);
+    const decidedBand = p.status !== 'UNAPPROVED' ? p.decision?.band : null;
+    b.onclick = () => openBandItems(p._id, decidedBand || p.proposal.band, { readOnly: Boolean(decidedBand) || !canDecide, proposed: !decidedBand });
+  });
+  document.querySelectorAll('[data-compare]').forEach((b) => { b.onclick = () => compare(b.dataset.compare, b); });
+  applyFilter();
+}
+
+function applyFilter() {
+  let shown = 0;
+  document.querySelectorAll('.line').forEach((el) => {
+    const waiting = el.dataset.status === 'UNAPPROVED';
+    const show = lineFilter === 'ALL' || (lineFilter === 'WAITING') === waiting;
+    el.hidden = !show; shown += show;
+  });
+  document.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === lineFilter)));
+  $('noLines').hidden = shown > 0;
+  $('noLines').textContent = lineFilter === 'WAITING' ? 'Every line of this quote is decided.' : 'No decided lines yet.';
+}
+
+function row(p, canDecide) {
+  const l = p.line || {}; const r = p.rate || {}; const pr = p.proposal || {};
+  const spec = [l.brand, l.grade, l.gsmFrom ? `${l.gsmFrom}${l.gsmTo && l.gsmTo !== l.gsmFrom ? `–${l.gsmTo}` : ''} GSM` : null, l.sizeText, l.packSize].filter(Boolean).join(' · ');
+  const decided = p.status !== 'UNAPPROVED';
+  const paper = Boolean(l.gsmFrom || l.gsmTo || pr.band);
+  const band = (b) => `<strong>Band:</strong> ${esc(bandLabel(b))}<div><button class="link" data-items="${esc(p._id)}" title="See every Indus item in this band${decided ? '' : ', untick or add items'}">${b.itemCount ? `${esc(b.itemCount)} Indus items` : 'Show the Indus items'}</button></div>`;
+  let item;
+  if (decided && p.decision?.band?.quality) item = band(p.decision.band);
+  else if (decided && p.decision?.itemId) item = `<strong>${esc(p.decision.itemId)}</strong> ${esc(p.decision.itemName || '')}`;
+  else if (pr.itemId) item = `<strong>${esc(pr.itemId)}</strong> ${esc(pr.itemName || '')}`;
+  else if (pr.band?.quality) item = band(pr.band);
+  else item = '<span class="muted">No item proposed</span>';
+  const statusText = { UNAPPROVED: 'Waiting', APPROVED: 'Approved', REJECTED: 'Rejected' }[p.status] || p.status;
+  return `<div class="line${decided ? ' decided' : ''}" data-status="${esc(p.status)}">
+    <div class="cell-line">
+      <span class="no">${esc(p.lineNo ?? '')}</span> <strong>${esc(l.productName)}</strong>${l.productCode ? ` <small>${esc(l.productCode)}</small>` : ''}
+      ${spec ? `<div><small>${esc(spec)}</small></div>` : ''}
+    </div>
+    <div class="cell-rate"><div class="lbl">Rate</div>
+      <span class="rate">${money(r.rate)}</span>${r.uom ? `<small> / ${esc(r.uom)}</small>` : ''}
+      ${r.ratePerBaseUom != null && r.ratePerBaseUom !== r.rate ? `<div><small>= ${money(r.ratePerBaseUom)} per base unit</small></div>` : ''}
+      ${r.flags?.length ? `<div><small>${esc(r.flags.join(', '))}</small></div>` : ''}
+    </div>
+    <div class="cell-item item"><div class="lbl">Proposed Indus item</div>
+      <div>${item}</div>
+      <div class="method">${esc(pr.method || '')}${pr.confidence != null ? ` · ${Math.round(pr.confidence * 100)}% sure` : ''}</div>
+      ${p.refreshes ? `<div><small title="The rules changed after this line was first read, and found this">Refreshed ${when(p.createdAt)} by rules ${esc(p.rulesVersion)}</small></div>` : ''}
+      ${pr.question ? `<p class="question" style="margin-top:6px">${esc(pr.question)}</p>` : ''}
+      ${pr.rationale || pr.evidence?.length || pr.alternatives?.length ? `<details><summary>Why this item</summary><div class="why">
+        ${pr.rationale ? `<div>${esc(pr.rationale)}</div>` : ''}
+        ${(pr.evidence || []).map((e) => `<div><span class="chip">${esc(e.kind)}</span> ${esc(e.text)}</div>`).join('')}
+        ${pr.alternatives?.length ? `<div class="muted" style="margin-top:4px">Other candidates</div>${pr.alternatives.map((a) => `<div>${esc(a.itemId)} ${esc(a.itemName || '')} <small>last paid ${money(a.lastPaidRate)}</small></div>`).join('')}` : ''}
+      </div></details>` : ''}
+      ${!decided && canDecide ? `<div class="actions">
+        <button class="ok" data-act="APPROVE" data-id="${esc(p._id)}" ${pr.itemId || pr.band?.quality ? '' : `disabled title="Nothing proposed: use ${paper ? 'Approve as paper band or ' : ''}Change item"`}>✓ Approve</button>
+        ${paper ? `<button data-band="${esc(p._id)}" title="Choose the quality, mills, form and GSM range of the band">${pr.band?.quality ? 'Change the band' : 'Approve as paper band'}</button>` : ''}
+        <button data-change="${esc(p._id)}">Change item</button>
+        <button class="bad" data-act="REJECT" data-id="${esc(p._id)}">Reject</button>
+      </div>` : ''}<div id="pick-${esc(p._id)}"></div>
+    </div>
+    <div class="cell-status status">
+      <span class="chip ${esc(p.status)}">${esc(statusText)}</span>
+      ${decided ? `<small style="margin-top:4px">${esc(p.decision?.action || '')} by ${esc(p.decision?.by || '')}</small><small>${p.decision?.at ? when(p.decision.at) : ''}</small>${p.decision?.note ? `<small style="color:var(--ink)">“${esc(p.decision.note)}”</small>` : ''}` : ''}
+      ${p.status === 'APPROVED' && p.decision?.itemId ? `<button data-compare="${esc(p.decision.itemId)}" style="margin-top:6px">Compare suppliers</button><div id="cmp-${esc(p.decision.itemId)}" style="font-size:13px"></div>` : ''}
+    </div>
+  </div>`;
+}
+
+async function act(id, action, button, itemId = null, band = null, itemName = '') {
+  const what = {
+    APPROVE: { title: 'Approve this line?', ok: 'Approve' },
+    REJECT: { title: 'Reject this line?', ok: 'Reject', danger: true, note: true },
+    CHANGE: { title: `Map to item ${itemId}?`, ok: 'Map to this item', note: true, text: itemName },
+    BAND: { title: 'Approve as a paper band?', ok: 'Approve band', text: band && bandLabel(band) },
+  }[action];
+  const note = await ask({ ...what, text: [what.text, 'A decision cannot be changed afterwards.'].filter(Boolean).join('. ') });
+  if (note === null) return;
+  if (button) button.disabled = true;
+  try {
+    await api(`/proposals/${id}/decision`, { method: 'POST', body: { action, itemId, band, note: note || null } });
+    toast({ APPROVE: 'Approved', REJECT: 'Rejected', CHANGE: `Mapped to ${itemId}`, BAND: 'Band approved' }[action]);
+    await openQuote(current, { keepScroll: true }); loadQuotes();
+    return true;
+  } catch (e) { toast(e.message, true); if (button) button.disabled = false; return false; }
+}
+
+function openPicker(id) {
+  const box = $(`pick-${id}`);
+  box.innerHTML = '<div class="picker"><input type="search" placeholder="Search Indus items by name, code or ID"><div class="results muted">Type at least 2 characters.</div><div><button data-cancel class="ghost">Cancel</button></div></div>';
+  const input = box.querySelector('input'); const out = box.querySelector('.results');
+  box.querySelector('[data-cancel]').onclick = () => { box.innerHTML = ''; };
+  let timer = null;
+  input.oninput = () => {
+    clearTimeout(timer);
+    if (input.value.trim().length < 2) { out.textContent = 'Type at least 2 characters.'; return; }
+    out.textContent = 'Searching…';
+    timer = setTimeout(async () => {
+      try {
+        const { results } = await api(`/items/search?q=${encodeURIComponent(input.value.trim())}&limit=15`);
+        out.innerHTML = results.length ? results.map((it) => `<button class="ghost" data-item="${esc(it.ItemID ?? it.itemId)}" data-name="${esc(it.ItemName ?? it.itemName)}"><span><strong>${esc(it.ItemID ?? it.itemId)}</strong> ${esc(it.ItemName ?? it.itemName)} <small>${esc(it.StockUnit || '')}</small></span></button>`).join('') : 'No items found.';
+        out.querySelectorAll('[data-item]').forEach((d) => { d.onclick = () => act(id, 'CHANGE', null, Number(d.dataset.item), null, d.dataset.name); });
+      } catch (e) { out.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    }, 250);
+  };
+  input.focus();
+}
+
+/**
+ * Approve a paper line as a band: one Indus quality, the mills it covers (none
+ * ticked means any), sheet and/or reel, over a GSM range. The count and a few
+ * item names update as the choice changes, so the reviewer sees what the
+ * line's rate will price before approving it.
+ */
+async function openBand(id, range = {}, preset = null) {
+  const box = $(`pick-${id}`);
+  box.innerHTML = '<div class="band muted">Loading the Indus qualities in this GSM range…</div>';
+  const gsmRow = (from, to, label) => `<div class="field"><span>GSM range</span><div class="gsm"><input type="number" inputmode="numeric" data-f="from" value="${esc(from ?? '')}"> to <input type="number" inputmode="numeric" data-f="to" value="${esc(to ?? '')}"> <button data-look>${label}</button></div></div>`;
+  const lookAgain = () => { box.querySelector('[data-look]').onclick = () => openBand(id, { gsmFrom: box.querySelector('[data-f=from]').value, gsmTo: box.querySelector('[data-f=to]').value }, preset); };
+  if (preset?.quality && !range.gsmFrom) range = { gsmFrom: preset.gsmFrom, gsmTo: preset.gsmTo };
+  let data;
+  try {
+    const q = range.gsmFrom ? `?gsmFrom=${encodeURIComponent(range.gsmFrom)}&gsmTo=${encodeURIComponent(range.gsmTo || range.gsmFrom)}` : '';
+    data = await api(`/proposals/${id}/band-choices${q}`);
+  } catch (e) {
+    box.innerHTML = `<div class="band"><span class="err">${esc(e.message)}</span>${gsmRow(range.gsmFrom, range.gsmTo, 'Look')}</div>`;
+    lookAgain();
+    return;
+  }
+  if (!data.choices.length) {
+    box.innerHTML = `<div class="band"><span class="muted">No paper or board item in Indus is ${esc(data.gsmFrom)}–${esc(data.gsmTo)} GSM.</span>${gsmRow(data.gsmFrom, data.gsmTo, 'Look again')}</div>`;
+    lookAgain();
+    return;
+  }
+  const presetAt = preset?.quality ? data.choices.findIndex((c) => c.quality.toLowerCase() === preset.quality.toLowerCase()) : -1;
+  const opt = (c, i) => `<option value="${i}"${i === presetAt ? ' selected' : ''}>${esc(c.quality)} — ${c.byGroup[14] || 0} sheet, ${c.byGroup[2] || 0} reel</option>`;
+  box.innerHTML = `<div class="band">
+    ${gsmRow(data.gsmFrom, data.gsmTo, 'Look again')}
+    <div class="field"><span>Indus quality</span><select data-f="quality">${data.choices.map(opt).join('')}</select></div>
+    <div class="field"><span>Form</span><div style="display:flex;gap:16px"><label><input type="checkbox" data-g="14"> Sheet</label><label><input type="checkbox" data-g="2"> Reel</label></div></div>
+    <div class="field"><span>Mills (none ticked = any mill)</span><div class="mills" data-f="mills"></div></div>
+    <div data-f="preview" class="preview muted"></div>
+    <div class="actions" style="margin-top:0"><button class="ok" data-f="approve" disabled>✓ Approve this band</button><button data-f="items" disabled>Check the items</button><button data-f="cancel">Cancel</button></div>
+  </div>`;
+  lookAgain();
+  const el = (f) => box.querySelector(`[data-f="${f}"]`);
+  const choice = () => data.choices[Number(el('quality').value)];
+  const band = () => ({
+    quality: choice().quality,
+    mills: [...box.querySelectorAll('[data-mill]:checked')].map((m) => m.dataset.mill),
+    groupIds: [...box.querySelectorAll('[data-g]:checked')].map((g) => Number(g.dataset.g)),
+    gsmFrom: Number(el('from').value), gsmTo: Number(el('to').value),
+  });
+  let seq = 0;
+  const preview = async () => {
+    const mine = ++seq;
+    el('approve').disabled = true; el('items').disabled = true;
+    const b = band();
+    if (!b.groupIds.length) { el('preview').textContent = 'Tick sheet, reel or both.'; return; }
+    el('preview').textContent = 'Counting…';
+    try {
+      const r = await api(`/proposals/${id}/band-preview`, { method: 'POST', body: { band: b } });
+      if (mine !== seq) return;
+      el('preview').innerHTML = r.itemCount
+        ? `<button class="link" data-f="count">${r.itemCount} Indus items</button> will take this line's rate, for example:<br>${r.sample.map((s) => `${esc(s.itemId)} ${esc(s.itemName)} <small>(${esc(s.mill || '—')})</small>`).join('<br>')}${r.itemCount > r.sample.length ? '<br>…' : ''}`
+        : '<span class="err">No Indus item is inside this band.</span>';
+      el('approve').disabled = !r.itemCount; el('items').disabled = !r.itemCount;
+      if (r.itemCount) el('count').onclick = () => openBandItems(id, b, { back: true });
+    } catch (e) { if (mine === seq) el('preview').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  };
+  let first = presetAt >= 0;
+  const showQuality = () => {
+    const c = choice();
+    const usePreset = first; first = false;
+    box.querySelectorAll('[data-g]').forEach((g) => {
+      const n = c.byGroup[g.dataset.g] || 0;
+      g.checked = n > 0 && (!usePreset || !preset.groupIds?.length || preset.groupIds.includes(Number(g.dataset.g)));
+      g.disabled = !n;
+    });
+    const ticked = (m) => usePreset && preset.mills?.some((x) => x.toLowerCase() === m.toLowerCase());
+    el('mills').innerHTML = c.mills.map((m) => `<label><input type="checkbox" data-mill="${esc(m.mill)}"${ticked(m.mill) ? ' checked' : ''}> ${esc(m.mill)} <small>${m.items}</small></label>`).join('') || '<span class="muted">No mill recorded</span>';
+    preview();
+  };
+  el('quality').onchange = showQuality;
+  box.querySelectorAll('[data-g]').forEach((g) => { g.onchange = preview; });
+  el('mills').onchange = preview;
+  el('cancel').onclick = () => { box.innerHTML = ''; };
+  el('approve').onclick = () => act(id, 'BAND', el('approve'), null, band());
+  el('items').onclick = () => openBandItems(id, band(), { back: true });
+  showQuality();
+}
+
+const sameIds = (a = [], b = []) => a.length === b.length && [...a].sort((x, y) => x - y).join() === [...b].sort((x, y) => x - y).join();
+
+/**
+ * Every Indus item in a band, ticked unless left out, with a search on top
+ * that narrows the list and adds paper or board items from Indus. Unticking
+ * leaves an item out of the band; an added item is in it whatever its quality
+ * or GSM. A proposed band left as it is approves as proposed; a changed one
+ * approves as the reviewer's band.
+ */
+async function openBandItems(id, band, { readOnly = false, proposed = false, back = false } = {}) {
+  const dlg = $('bandDlg'); const host = $('bandDlgBody');
+  host.innerHTML = '<div class="muted">Loading the Indus items in this band…</div><div class="bi-foot"><button data-f="close">Close</button></div>';
+  host.querySelector('[data-f="close"]').onclick = () => dlg.close();
+  if (!dlg.open) dlg.showModal();
+  let data;
+  try { data = await api(`/proposals/${id}/band-preview`, { method: 'POST', body: { band } }); }
+  catch (e) { host.firstElementChild.outerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  const rows = new Map(data.items.map((r) => [r.itemId, r]));
+  const form = (g) => ({ 14: 'Sheet', 2: 'Reel' }[g] || '');
+  const size = (r) => (Number(r.sizeW) ? `${r.sizeW}${Number(r.sizeL) ? ` × ${r.sizeL}` : ''}` : '');
+  host.innerHTML = `
+    <div class="bi-head"><div><strong>${esc(data.label)}</strong><span data-f="count" class="muted"></span></div><button class="ghost" data-f="x" aria-label="Close">✕</button></div>
+    ${readOnly ? '' : `<input type="search" data-f="q" placeholder="Search this list, or Indus to add an item" aria-label="Search or add items">
+    <div class="bi-add" data-f="add"></div>`}
+    <div class="bi-wrap"><table class="bi">
+      <thead><tr>${readOnly ? '' : '<th><input type="checkbox" data-f="all" aria-label="Tick all shown" title="Tick or untick every item shown"></th>'}<th>Item</th><th>GSM</th><th class="wide">Size</th><th>Mill</th><th class="wide">Form</th></tr></thead>
+      <tbody data-f="rows"></tbody>
+    </table></div>
+    ${readOnly ? `<div class="muted" style="font-size:12px">The items in Indus today${band.itemCount ? `; ${esc(band.itemCount)} when it was approved` : ''}.</div><div class="bi-foot"><button data-f="close">Close</button></div>`
+    : `<div class="bi-foot"><button class="ok" data-f="approve">✓ Approve band</button>${back ? '<button data-f="back">← Back to the band</button>' : ''}<button data-f="close">Cancel</button></div>`}`;
+  const el = (f) => host.querySelector(`[data-f="${f}"]`);
+  const shownRows = () => {
+    const q = readOnly ? '' : el('q').value.trim().toLowerCase();
+    return [...rows.values()].filter((r) => (!readOnly || r.inBand) && (!q || `${r.itemId} ${r.itemName} ${r.mill || ''}`.toLowerCase().includes(q)));
+  };
+  const count = () => {
+    const n = [...rows.values()].filter((r) => r.inBand).length;
+    el('count').textContent = readOnly ? `${n} Indus items` : `${n} of ${rows.size} items in the band`;
+    if (!readOnly) { el('approve').disabled = !n; el('approve').textContent = `✓ Approve band with ${n} item${n === 1 ? '' : 's'}`; }
+  };
+  const syncAll = () => {
+    const shown = shownRows();
+    el('all').checked = shown.length > 0 && shown.every((r) => r.inBand);
+    el('all').indeterminate = shown.some((r) => r.inBand) && !el('all').checked;
+  };
+  const draw = () => {
+    el('rows').innerHTML = shownRows().map((r) => `<tr class="${r.inBand ? '' : 'out'}">
+      ${readOnly ? '' : `<td><label><input type="checkbox" data-id="${esc(r.itemId)}"${r.inBand ? ' checked' : ''} aria-label="Keep ${esc(r.itemName)} in the band"></label></td>`}
+      <td><strong>${esc(r.itemId)}</strong> ${esc(r.itemName)}${r.added ? ' <span class="tag">added</span>' : ''}</td>
+      <td class="num">${esc(r.gsm ?? '')}</td><td class="num wide">${esc(size(r))}</td><td>${esc(r.mill || '—')}</td><td class="wide">${esc(form(r.groupId))}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="muted">${rows.size ? 'No item in the list matches.' : 'No item yet: search Indus above to add one.'}</td></tr>`;
+    if (!readOnly) {
+      el('rows').querySelectorAll('[data-id]').forEach((c) => {
+        c.onchange = () => { rows.get(Number(c.dataset.id)).inBand = c.checked; c.closest('tr').className = c.checked ? '' : 'out'; count(); syncAll(); };
+      });
+      syncAll();
+    }
+    count();
+  };
+  draw();
+  el('close').onclick = () => dlg.close();
+  el('x').onclick = () => dlg.close();
+  if (readOnly) return;
+  if (back) el('back').onclick = () => dlg.close();
+  el('all').onchange = () => { shownRows().forEach((r) => { r.inBand = el('all').checked; }); draw(); };
+  let timer = null; let seq = 0;
+  el('q').oninput = () => {
+    draw();
+    clearTimeout(timer);
+    const q = el('q').value.trim();
+    if (q.length < 2) { el('add').innerHTML = ''; return; }
+    timer = setTimeout(async () => {
+      const mine = ++seq;
+      try {
+        const { results } = await api(`/items/search?q=${encodeURIComponent(q)}&groups=2,14&limit=15`);
+        if (mine !== seq) return;
+        const fresh = results.filter((it) => !rows.has(Number(it.ItemID ?? it.itemId)));
+        el('add').innerHTML = fresh.length ? `<span class="muted" style="font-size:12px">Add from Indus</span>${fresh.map((it, i) => `<button class="ghost" data-add="${i}"><span>+ <strong>${esc(it.ItemID ?? it.itemId)}</strong> ${esc(it.ItemName ?? it.itemName)} <small>${it.GSM ? `${esc(it.GSM)} GSM` : ''}${it.Manufecturer ? ` · ${esc(it.Manufecturer)}` : ''}</small></span></button>`).join('')}` : '';
+        el('add').querySelectorAll('[data-add]').forEach((b) => {
+          b.onclick = () => {
+            const it = fresh[Number(b.dataset.add)];
+            const r = {
+              itemId: Number(it.ItemID ?? it.itemId), itemName: it.ItemName ?? it.itemName, gsm: it.GSM, mill: it.Manufecturer,
+              groupId: Number(it.ItemGroupID), sizeW: it.SizeW, sizeL: it.SizeL, added: true, inBand: true,
+            };
+            rows.set(r.itemId, r);
+            el('q').value = ''; el('add').innerHTML = '';
+            draw(); el('q').focus();
+          };
+        });
+      } catch (e) { if (mine === seq) el('add').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    }, 250);
+  };
+  el('approve').onclick = async () => {
+    const all = [...rows.values()];
+    const edited = {
+      quality: data.band.quality, mills: data.band.mills, groupIds: data.band.groupIds, gsmFrom: data.band.gsmFrom, gsmTo: data.band.gsmTo,
+      excludeItemIds: all.filter((r) => !r.added && !r.inBand).map((r) => r.itemId),
+      includeItemIds: all.filter((r) => r.added && r.inBand).map((r) => r.itemId),
+    };
+    const unchanged = proposed && sameIds(edited.excludeItemIds, data.band.excludeItemIds) && sameIds(edited.includeItemIds, data.band.includeItemIds);
+    if (await act(id, unchanged ? 'APPROVE' : 'BAND', el('approve'), null, unchanged ? null : edited)) dlg.close();
+  };
+}
+
+/** When the rate took effect and how soon the goods come, beside each offer. */
+function offerTerms(o) {
+  const effective = o.quote?.effectiveFrom || new Date(o.createdAt).toLocaleDateString('en-IN');
+  return `effective ${effective} · delivery ${o.quote?.delivery || 'not stated'}`;
+}
+
+async function compare(itemId, button) {
+  const box = $(`cmp-${itemId}`);
+  button.disabled = true;
+  try {
+    const { offers } = await api(`/proposals/compare/${itemId}`);
+    box.innerHTML = offers.length ? offers.map((o, i) => `<div>${i === 0 ? '<strong>Cheapest:</strong> ' : ''}${esc(o.supplier?.name || '')} ${money(o.rate?.ratePerBaseUom ?? o.rate?.rate)} <small>${esc(offerTerms(o))}</small></div>`).join('') : '<small>No other approved prices yet.</small>';
+  } catch (e) { box.innerHTML = `<small class="err">${esc(e.message)}</small>`; }
+  button.disabled = false;
+}
+
+(async function start() {
+  const saved = store.get('spSite'); if (saved === 'KOL' || saved === 'AHM') setSite(saved);
+  $('detail').innerHTML = NO_QUOTE;
+  try { const m = await fetch(`${API}/auth/methods`).then((r) => r.json()); $('erpForm').hidden = !m.erp; } catch { /* password only */ }
+  if (!store.get('spToken')) return signedOut();
+  try { const me = await api('/auth/me'); await signedIn({ token: store.get('spToken'), user: me.user || me }); }
+  catch { signedOut(); }
+}());
+</script>
+<script src="dashboard.js"></script>
+<script src="upload.js"></script>
+</body>
+</html>

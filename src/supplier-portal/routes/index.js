@@ -52,6 +52,11 @@
  *   POST   /receiving/document-sets/:id/extract
  *   POST   /receiving/document-sets/:id/match
  *   POST   /receiving/document-sets/:id/post
+ *
+ *   /automation/*   the scheduled run's add-only API (automation key)
+ *   /proposals/*    reviewing and deciding its proposals (APPROVER)
+ *   /dashboard/*    quote lines by item and by supplier, read-only (routes/dashboard.js)
+ *   /po/*           Create PO: purchase orders from approved prices (routes/po.js)
  */
 
 import { Router } from 'express';
@@ -67,6 +72,10 @@ import mappingRoutes from './mappings.js';
 import reportRoutes from './reports.js';
 import poCheckRoutes from './po-check.js';
 import receivingRoutes from './receiving.js';
+import automationRoutes from './automation.js';
+import proposalRoutes from './proposals.js';
+import dashboardRoutes from './dashboard.js';
+import poRoutes from './po.js';
 import { ensureSupplierPortalReady } from '../db/mongo.js';
 
 const router = Router();
@@ -102,6 +111,10 @@ router.use('/mappings', mappingRoutes);
 router.use('/reports', reportRoutes);
 router.use('/po-check', poCheckRoutes);
 router.use('/receiving', receivingRoutes);
+router.use('/automation', automationRoutes);
+router.use('/proposals', proposalRoutes);
+router.use('/dashboard', dashboardRoutes);
+router.use('/po', poRoutes);
 
 /**
  * Error handler.

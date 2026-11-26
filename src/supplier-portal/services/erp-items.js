@@ -65,7 +65,8 @@ export async function getItems(site, itemIds = []) {
 /** One item, or null. */
 export async function getItem(site, itemId) {
   const map = await getItems(site, [itemId]);
-  return map.get(Number(itemId)) || null;
+  // The driver returns ItemID as text, so the map is keyed by strings.
+  return map.get(Number(itemId)) || map.get(String(itemId)) || null;
 }
 
 /**
@@ -252,6 +253,30 @@ export async function itemRateHistory(site, itemId, { months = 24 } = {}) {
       ${ITM_FILTER}
     ORDER BY ITM.VoucherDate ASC
   `, { companyId: COMPANY_ID, po: VOUCHER.PURCHASE_ORDER, itemId: Number(itemId), months });
+}
+
+/**
+ * Active paper and board items in a GSM range, for approving a paper quote
+ * line as a band (paper/band.js). Narrowing by quality and mill is the
+ * caller's, so the reviewer can see every choice the range offers.
+ */
+export async function paperItemsInGsmRange(site, { gsmFrom, gsmTo, itemGroupIds = [2, 14] } = {}) {
+  assertSite(site);
+  const groups = itemGroupIds.map(Number).filter(Number.isFinite);
+  if (!groups.length) return [];
+  return query(site, `
+    SELECT ${ITEM_COLUMNS}
+    FROM ItemMaster IM
+    WHERE IM.CompanyID = @companyId
+      AND ISNULL(IM.IsDeleted,0) = 0
+      AND IM.ISItemActive = 1
+      AND IM.ItemGroupID IN (${groups.join(',')})
+      AND IM.GSM BETWEEN @gsmFrom AND @gsmTo
+  `, {
+    companyId: COMPANY_ID,
+    gsmFrom: { type: sql.Float, value: Number(gsmFrom) },
+    gsmTo: { type: sql.Float, value: Number(gsmTo ?? gsmFrom) },
+  });
 }
 
 /**

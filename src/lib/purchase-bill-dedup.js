@@ -1,10 +1,17 @@
 /**
  * Dedup identity for purchase bills.
  *
- * Key format:
- *   GSTIN present → `{GSTIN}_{INVOICE}`  (unchanged, matches existing rows)
+ * A bill is a duplicate when the same supplier sent the same invoice number
+ * in the same financial year. The invoice number is compared ignoring
+ * punctuation, spaces and leading zeros, so INV/001, INV-001 and INV 1 match.
+ *
+ * Base (supplier + invoice, any year):
+ *   GSTIN present → `{GSTIN}_{INVOICE}`
  *   GSTIN missing, PAN present → `P:{PAN}_{INVOICE}`
  *   both missing, or no invoice → null  (unhandled case — fail in review)
+ * Key (unique): `{BASE}_{FY}`, e.g. `19AAACX1234A1Z5_INV-1_2026-27`, or
+ *   `{BASE}_NOFY` when the invoice date is unknown. A bill without a date is
+ *   checked against every year.
  */
 import { CDC_CONFIG, isCdcGstin, panFromGstin } from '../config/cdc.js';
 
@@ -74,31 +81,64 @@ export function supplierPanFromFields({ supplier_gstin, supplier_pan } = {}) {
 }
 
 /**
- * Primary unique key, or null when GSTIN and PAN are both missing (or invoice is).
+ * Invoice number as compared for duplicates: letter and digit runs only,
+ * leading zeros dropped from each number. `SA/0009/26-27` → `SA-9-26-27`.
  */
-export function buildBillDedupKey({ supplier_gstin, supplier_pan, invoice_number } = {}) {
-  const invoice = normalizeInvoiceNumber(invoice_number);
-  if (!invoice) return null;
+export function dedupInvoiceNumber(raw) {
+  const runs = String(raw ?? '').toUpperCase().match(/[A-Z]+|[0-9]+/g) || [];
+  if (runs.length === 0) return null;
+  return runs.map((r) => (/^[0-9]/.test(r) ? r.replace(/^0+(?=.)/, '') : r)).join('-');
+}
 
+/** Indian financial year (April–March) of a date, as `2026-27`; null if unknown. */
+export function financialYear(date) {
+  if (date == null || date === '') return null;
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  const ist = new Date(d.getTime() + 5.5 * 3600 * 1000);
+  const y = ist.getUTCFullYear();
+  const start = ist.getUTCMonth() >= 3 ? y : y - 1;
+  return `${start}-${String((start + 1) % 100).padStart(2, '0')}`;
+}
+
+export const NO_FY = 'NOFY';
+
+/**
+ * Supplier + invoice identities, any year: the GSTIN one and the PAN one, so a
+ * GSTIN bill still matches an earlier URP/PAN bill. First entry is primary.
+ */
+export function listDedupBases({ supplier_gstin, supplier_pan, invoice_number } = {}) {
+  const invoice = dedupInvoiceNumber(invoice_number);
+  if (!invoice) return [];
   const gstin = normalizeGstin(supplier_gstin);
-  if (gstin) return `${gstin}_${invoice}`;
-
   const pan = supplierPanFromFields({ supplier_gstin, supplier_pan });
-  if (pan) return `P:${pan}_${invoice}`;
+  const bases = [];
+  if (gstin) bases.push(`${gstin}_${invoice}`);
+  if (pan) bases.push(`P:${pan}_${invoice}`);
+  return bases;
+}
 
-  return null;
+/** Primary supplier + invoice identity (any year), or null. */
+export function buildBillDedupBase(fields = {}) {
+  return listDedupBases(fields)[0] || null;
 }
 
 /**
- * All keys that could represent the same supplier+invoice (GSTIN bill vs earlier URP/PAN bill).
+ * Primary unique key (supplier + invoice + financial year), or null when GSTIN
+ * and PAN are both missing (or invoice is).
  */
-export function listDedupKeys({ supplier_gstin, supplier_pan, invoice_number, bill_dedup_key } = {}) {
-  const invoice = normalizeInvoiceNumber(invoice_number);
-  const gstin = normalizeGstin(supplier_gstin);
-  const pan = supplierPanFromFields({ supplier_gstin, supplier_pan });
-  const keys = new Set();
-  if (bill_dedup_key) keys.add(String(bill_dedup_key).trim());
-  if (gstin && invoice) keys.add(`${gstin}_${invoice}`);
-  if (pan && invoice) keys.add(`P:${pan}_${invoice}`);
-  return [...keys].filter(Boolean);
+export function buildBillDedupKey(fields = {}) {
+  const base = buildBillDedupBase(fields);
+  return base ? `${base}_${financialYear(fields.invoice_date) || NO_FY}` : null;
+}
+
+/**
+ * Keys an earlier bill could hold if it is the same supplier + invoice + year:
+ * same year, or a bill whose year was unknown. Empty when this bill's own year
+ * is unknown — then every year counts (match on bases instead).
+ */
+export function listSameYearDedupKeys(fields = {}) {
+  const fy = financialYear(fields.invoice_date);
+  if (!fy) return [];
+  return listDedupBases(fields).flatMap((b) => [`${b}_${fy}`, `${b}_${NO_FY}`]);
 }

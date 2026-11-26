@@ -1,0 +1,721 @@
+/*
+================================================================================
+  In-process QC compliance reports
+================================================================================
+  dbo.rpt_QC_MachineProcessCoverage  - was every machine + process checked at
+                                       least once per hour while it ran?
+  dbo.rpt_QC_OperatorPerformance     - did every QC operator do at least two
+                                       checks per hour of their shift?
+
+  Both are read-only and take the same parameters:
+      @FromDate, @ToDate              required
+      @MachineID, @ProcessID, @UserID optional filters (NULL = all)
+      @CompanyID                      optional
+      @Mode                           'SUMMARY' (default) or 'DETAIL'
+
+  Facts these rely on (checked in both databases, Nov 2026):
+  - A check is one row of ProductionEntryProcessInspectionMain, timed by
+    CreatedDate. Its machine comes from ProductionEntry via ProductionID. About
+    1.5% of checks point at a production entry that was later deleted; those
+    take the machine that ran the same job content + process nearest in time.
+  - Run time comes from ProductionEntry.FromTime/ToTime. Status is only
+    Complete, Part Complete or Running; no idle, stop or make-ready time is
+    recorded anywhere, so all entry time is run time. A Running entry has no
+    ToTime: it ends where the machine's next entry starts, else now.
+  - CreatedDate and FromTime/ToTime are both server time, which is IST, so
+    they are compared as stored.
+  - Ahmedabad's ProductionEntry has no IsDeleted column (Kolkata's is always
+    0), so it is not filtered on.
+  - Only processes with a QC checklist (ProcessInspectionParameters) are
+    expected to be checked.
+
+  Run 004_inspection_photos.sql first (OperatorPerformance reads SampleSize
+  and ImageKeys). Idempotent. Run on BOTH databases:
+      USE IndusEnterprise;   -- Kolkata
+      USE IndusEnterprise2;  -- Ahmedabad
+================================================================================
+*/
+
+SET NOCOUNT ON;
+GO
+
+/*------------------------------------------------------------------------------
+  Report 1: machine + process coverage
+  SUMMARY: one row per date, machine and process.
+  DETAIL:  one row per unchecked hour slot, with its shift.
+  ENTRIES: the ERP production entries of one machine on the dates (eye icon).
+
+  - Entries of one machine + process at most 5 minutes apart (or overlapping)
+    are one continuous run.
+  - Shifts: Shift 1 is 8am-8pm, Shift 2 is 8pm-8am. A date runs 8am to 8am,
+    so the night after it is its Shift 2 (12am-8am belongs to the date before).
+  - Each run is cut at the shift changes, and each piece into 1-hour slots
+    from its start (a run from 7:40am gets 7:40-8:00 in Shift 2 and slots
+    8-9, 9-10 ... in Shift 1). A final slot shorter than 30 minutes is not
+    checked for, nor is the slot still in progress on a machine running now.
+  - The last slot of a shift, when it ends in the shift's last hour, also
+    counts as checked if the machine + process was checked by 9pm / 9am
+    (one hour after the shift ends, for the handover).
+  - Run Start/End are the run's real start and end (they can be on another
+    date); Run Hours and the hour counts are that date's slots. ShiftN columns
+    are the same numbers for one shift; ShiftNRunStart/End are clipped to it.
+  - Long Entries names production entries of 12 hours or more touching the
+    date: usually a job left open in the ERP overnight, so the run time and
+    any missed hours in it should be checked before blaming QC.
+  - Longest gap: the longest stretch of a run with no check (run start to the
+    first check, between checks, last check to run end) that touches the date.
+  - @UserID counts only that QC operator's checks.
+------------------------------------------------------------------------------*/
+CREATE OR ALTER PROCEDURE dbo.rpt_QC_MachineProcessCoverage
+    @FromDate  DATE,
+    @ToDate    DATE,
+    @MachineID INT         = NULL,
+    @ProcessID INT         = NULL,
+    @UserID    INT         = NULL,
+    @CompanyID INT         = NULL,
+    @Mode      VARCHAR(10) = 'SUMMARY'
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @MergeGapSec    INT = 300,
+            @SlotSec        INT = 3600,
+            @MinLastSlotSec INT = 1800,
+            @LongEntrySec   INT = 43200,
+            @ShiftHours     INT = 12,
+            @GraceSec       INT = 3600,
+            -- Any 8am: shifts change every 12 hours from here.
+            @ShiftEpoch     DATETIME = '2000-01-01T08:00:00',
+            @Now            DATETIME = GETDATE(),
+            -- Load a week before so a run already going on @FromDate starts its
+            -- slot clock at its real start, and two days after so the last
+            -- slots of @ToDate see where the run really ended.
+            @LoadFrom       DATETIME = DATEADD(DAY, -7, CAST(@FromDate AS DATETIME)),
+            @LoadTo         DATETIME = DATEADD(DAY, 2, CAST(@ToDate AS DATETIME)),
+            @Plant          NVARCHAR(20) = CASE DB_NAME() WHEN N'IndusEnterprise2' THEN N'Ahmedabad' ELSE N'Kolkata' END;
+
+    -- ENTRIES: every ERP production entry of @MachineID (any process) touching the
+    -- dates, 8am to 8am, with its real times and the minutes that fall in the dates.
+    IF UPPER(@Mode) = 'ENTRIES'
+    BEGIN
+        DECLARE @DayStart DATETIME = DATEADD(HOUR, 8, CAST(@FromDate AS DATETIME)),
+                @DayEnd   DATETIME = DATEADD(HOUR, 8, DATEADD(DAY, 1, CAST(@ToDate AS DATETIME)));
+
+        SELECT
+            Plant             = @Plant,
+            ProductionID      = pe.ProductionID,
+            MachineName       = mm.MachineName,
+            JobNo             = jc.JobBookingNo,
+            JobName           = jc.JobName,
+            ProcessID         = pe.ProcessID,
+            ProcessName       = pm.ProcessName,
+            EntryStart        = pe.FromTime,
+            EntryEnd          = y.EndTime,
+            IsRunning         = CASE WHEN pe.ToTime IS NULL THEN 1 ELSE 0 END,
+            MinutesTaken      = DATEDIFF(SECOND, pe.FromTime, y.EndTime) / 60,
+            MinutesInDate     = DATEDIFF(SECOND,
+                                    CASE WHEN pe.FromTime > @DayStart THEN pe.FromTime ELSE @DayStart END,
+                                    CASE WHEN y.EndTime < @DayEnd THEN y.EndTime ELSE @DayEnd END) / 60,
+            EntryStatus       = pe.Status,
+            ProducedQty       = pe.ProductionQuantity,
+            Remark            = pe.Remark,
+            MachineOperator   = um.UserName,
+            HasQCChecklist    = CASE WHEN EXISTS (
+                                    SELECT 1 FROM dbo.ProcessInspectionParameters pip
+                                    WHERE pip.ProcessID = pe.ProcessID
+                                      AND ISNULL(pip.IsDeletedTransaction, 0) = 0) THEN 1 ELSE 0 END
+        FROM dbo.ProductionEntry pe
+        OUTER APPLY (
+            SELECT MIN(n.FromTime) AS NextStart
+            FROM dbo.ProductionEntry n
+            WHERE pe.ToTime IS NULL
+              AND n.MachineID = pe.MachineID
+              AND n.FromTime > pe.FromTime
+        ) nx
+        CROSS APPLY (SELECT EndTime = COALESCE(pe.ToTime, nx.NextStart, @Now)) x
+        CROSS APPLY (SELECT EndTime = CASE WHEN x.EndTime < pe.FromTime THEN pe.FromTime ELSE x.EndTime END) y
+        LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = pe.MachineID
+        LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = pe.ProcessID
+        LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = pe.JobBookingID
+        LEFT JOIN dbo.UserMaster um ON um.UserID = pe.UserID
+        WHERE pe.MachineID = @MachineID
+          AND pe.FromTime >= DATEADD(DAY, -7, @DayStart)
+          AND pe.FromTime <  @DayEnd
+          AND y.EndTime   >  @DayStart
+          AND (@CompanyID IS NULL OR pe.CompanyID = @CompanyID)
+        ORDER BY pe.FromTime, pe.ProductionID;
+        RETURN;
+    END
+
+    -- 1. Production entries of processes that have a QC checklist
+    SELECT
+        pe.ProductionID,
+        pe.MachineID,
+        pe.ProcessID,
+        pe.JobBookingID,
+        pe.UserID AS OperatorID,
+        pe.FromTime,
+        EndTime = CASE WHEN x.EndTime < pe.FromTime THEN pe.FromTime ELSE x.EndTime END,
+        IsOpen  = CASE WHEN pe.ToTime IS NULL AND nx.NextStart IS NULL THEN 1 ELSE 0 END
+    INTO #Entries
+    FROM dbo.ProductionEntry pe
+    OUTER APPLY (
+        SELECT MIN(n.FromTime) AS NextStart
+        FROM dbo.ProductionEntry n
+        WHERE pe.ToTime IS NULL
+          AND n.MachineID = pe.MachineID
+          AND n.FromTime > pe.FromTime
+    ) nx
+    CROSS APPLY (SELECT EndTime = COALESCE(pe.ToTime, nx.NextStart, @Now)) x
+    WHERE pe.FromTime >= @LoadFrom
+      AND pe.FromTime <  @LoadTo
+      AND ISNULL(pe.MachineID, 0) > 0
+      AND (@MachineID IS NULL OR pe.MachineID = @MachineID)
+      AND (@ProcessID IS NULL OR pe.ProcessID = @ProcessID)
+      AND (@CompanyID IS NULL OR pe.CompanyID = @CompanyID)
+      AND EXISTS (
+          SELECT 1 FROM dbo.ProcessInspectionParameters pip
+          WHERE pip.ProcessID = pe.ProcessID
+            AND ISNULL(pip.IsDeletedTransaction, 0) = 0
+      );
+
+    -- 2. Checks, with the machine they were made on
+    SELECT
+        m.TransactionID,
+        m.UserID,
+        m.ProcessID,
+        CheckTime = m.CreatedDate,
+        MachineID = COALESCE(pe.MachineID, fb.MachineID)
+    INTO #Checks
+    FROM dbo.ProductionEntryProcessInspectionMain m
+    LEFT JOIN dbo.ProductionEntry pe
+        ON pe.ProductionID = m.ProductionID
+    OUTER APPLY (
+        SELECT TOP (1) p2.MachineID
+        FROM dbo.ProductionEntry p2
+        WHERE pe.ProductionID IS NULL
+          AND p2.JobBookingJobCardContentsID = m.JobBookingJobCardContentsID
+          AND p2.ProcessID = m.ProcessID
+          AND ISNULL(p2.MachineID, 0) > 0
+        ORDER BY ABS(DATEDIFF(SECOND, p2.FromTime, m.CreatedDate))
+    ) fb
+    WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
+      AND m.CreatedDate >= @LoadFrom
+      AND m.CreatedDate <  @LoadTo
+      AND (@UserID IS NULL OR m.UserID = @UserID)
+      AND (@CompanyID IS NULL OR m.CompanyID = @CompanyID);
+
+    -- 3. Merge entries into continuous runs
+    ;WITH o AS (
+        SELECT e.*,
+               PrevEnd = MAX(e.EndTime) OVER (
+                   PARTITION BY e.MachineID, e.ProcessID
+                   ORDER BY e.FromTime, e.ProductionID
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        FROM #Entries e
+    )
+    SELECT o.ProductionID, o.MachineID, o.ProcessID, o.JobBookingID, o.OperatorID,
+           o.FromTime, o.EndTime, o.IsOpen,
+           RunNo = SUM(CASE WHEN o.PrevEnd IS NULL OR DATEDIFF(SECOND, o.PrevEnd, o.FromTime) > @MergeGapSec
+                            THEN 1 ELSE 0 END)
+                   OVER (PARTITION BY o.MachineID, o.ProcessID
+                         ORDER BY o.FromTime, o.ProductionID
+                         ROWS UNBOUNDED PRECEDING)
+    INTO #EntryRuns
+    FROM o;
+
+    CREATE TABLE #Runs (
+        RunID        INT IDENTITY(1,1) PRIMARY KEY,
+        MachineID    BIGINT,
+        ProcessID    BIGINT,
+        RunNo        INT,
+        RunStart     DATETIME,
+        RunEnd       DATETIME,
+        IsOpen       INT
+    );
+
+    INSERT INTO #Runs (MachineID, ProcessID, RunNo, RunStart, RunEnd, IsOpen)
+    SELECT MachineID, ProcessID, RunNo, MIN(FromTime), MAX(EndTime), MAX(IsOpen)
+    FROM #EntryRuns
+    GROUP BY MachineID, ProcessID, RunNo;
+
+    -- 4. Cut runs at the shift changes (8am, 8pm)
+    CREATE TABLE #Segments (
+        SegID        INT IDENTITY(1,1) PRIMARY KEY,
+        RunID        INT,
+        ShiftNo      INT,
+        ShiftDate    DATE,
+        ShiftEnd     DATETIME,
+        SegStart     DATETIME,
+        SegEnd       DATETIME,
+        IsOpen       INT,
+        SegSec       INT,
+        AllSlots     INT,
+        CountedSlots INT
+    );
+
+    ;WITH E1(n) AS (SELECT 1 FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) v(n)),
+          Tally(k) AS (
+              SELECT TOP (1000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
+              FROM E1 a CROSS JOIN E1 b CROSS JOIN E1 c),
+          w AS (
+              SELECT r.RunID, r.RunStart, r.RunEnd, r.IsOpen,
+                     WinStart = DATEADD(HOUR, @ShiftHours * t.k, f.FirstWin)
+              FROM #Runs r
+              CROSS APPLY (SELECT FirstWin = DATEADD(HOUR,
+                               @ShiftHours * (DATEDIFF(HOUR, @ShiftEpoch, r.RunStart) / @ShiftHours), @ShiftEpoch)) f
+              JOIN Tally t ON t.k <= DATEDIFF(HOUR, f.FirstWin, r.RunEnd) / @ShiftHours
+              WHERE DATEADD(HOUR, @ShiftHours * t.k, f.FirstWin) < r.RunEnd)
+    INSERT INTO #Segments (RunID, ShiftNo, ShiftDate, ShiftEnd, SegStart, SegEnd, IsOpen)
+    SELECT w.RunID,
+           CASE WHEN DATEPART(HOUR, w.WinStart) = 8 THEN 1 ELSE 2 END,
+           CAST(DATEADD(HOUR, -8, w.WinStart) AS DATE),
+           e.WinEnd,
+           CASE WHEN w.RunStart > w.WinStart THEN w.RunStart ELSE w.WinStart END,
+           CASE WHEN w.RunEnd < e.WinEnd THEN w.RunEnd ELSE e.WinEnd END,
+           CASE WHEN w.IsOpen = 1 AND w.RunEnd <= e.WinEnd THEN 1 ELSE 0 END
+    FROM w
+    CROSS APPLY (SELECT WinEnd = DATEADD(HOUR, @ShiftHours, w.WinStart)) e;
+
+    UPDATE #Segments SET SegSec = DATEDIFF(SECOND, SegStart, SegEnd);
+    UPDATE #Segments
+       SET AllSlots     = (SegSec + @SlotSec - 1) / @SlotSec,
+           CountedSlots = SegSec / @SlotSec
+                        + CASE WHEN IsOpen = 0 AND SegSec % @SlotSec >= @MinLastSlotSec THEN 1 ELSE 0 END;
+
+    -- 5. Cut each piece into 1-hour slots from its start
+    ;WITH E1(n) AS (SELECT 1 FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) v(n)),
+          Tally(k) AS (SELECT TOP (100) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
+                       FROM E1 a CROSS JOIN E1 b)
+    SELECT
+        g.SegID,
+        g.RunID,
+        g.ShiftNo,
+        SlotNo    = t.k,
+        SlotStart = DATEADD(SECOND, t.k * @SlotSec, g.SegStart),
+        SlotEnd   = CASE WHEN (t.k + 1) * @SlotSec < g.SegSec
+                         THEN DATEADD(SECOND, (t.k + 1) * @SlotSec, g.SegStart)
+                         ELSE g.SegEnd END,
+        SlotDate  = g.ShiftDate,
+        IsCounted = CASE WHEN t.k < g.CountedSlots THEN 1 ELSE 0 END,
+        -- the shift's last slot, when it ends in the shift's last hour, can be checked until an hour after
+        GraceEnd  = CASE WHEN t.k = g.CountedSlots - 1
+                          AND (CASE WHEN (t.k + 1) * @SlotSec < g.SegSec
+                                    THEN DATEADD(SECOND, (t.k + 1) * @SlotSec, g.SegStart)
+                                    ELSE g.SegEnd END) > DATEADD(SECOND, -@SlotSec, g.ShiftEnd)
+                         THEN DATEADD(SECOND, @GraceSec, g.ShiftEnd) END,
+        Checks    = 0,
+        IsChecked = 0
+    INTO #Slots
+    FROM #Segments g
+    JOIN Tally t ON t.k < g.AllSlots;
+
+    -- 6. Put each check in its piece and slot (a check exactly at run end is in the last slot)
+    SELECT
+        g.RunID,
+        g.SegID,
+        c.TransactionID,
+        c.CheckTime,
+        SlotNo = CASE WHEN x.Sec >= g.AllSlots * @SlotSec THEN g.AllSlots - 1 ELSE x.Sec / @SlotSec END
+    INTO #RunChecks
+    FROM #Checks c
+    JOIN #Runs r
+        ON  r.MachineID = c.MachineID
+        AND r.ProcessID = c.ProcessID
+        AND c.CheckTime >= r.RunStart
+        AND c.CheckTime <= r.RunEnd
+    JOIN #Segments g
+        ON  g.RunID = r.RunID
+        AND g.AllSlots > 0
+        AND c.CheckTime >= g.SegStart
+        AND (c.CheckTime < g.SegEnd OR (c.CheckTime = g.SegEnd AND g.SegEnd = r.RunEnd))
+    CROSS APPLY (SELECT Sec = DATEDIFF(SECOND, g.SegStart, c.CheckTime)) x;
+
+    UPDATE s
+       SET Checks = rc.n, IsChecked = 1
+    FROM #Slots s
+    JOIN (SELECT SegID, SlotNo, COUNT(*) AS n FROM #RunChecks GROUP BY SegID, SlotNo) rc
+        ON rc.SegID = s.SegID AND rc.SlotNo = s.SlotNo;
+
+    UPDATE s
+       SET IsChecked = 1
+    FROM #Slots s
+    JOIN #Runs r ON r.RunID = s.RunID
+    WHERE s.IsChecked = 0
+      AND s.GraceEnd IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM #Checks c
+          WHERE c.MachineID = r.MachineID
+            AND c.ProcessID = r.ProcessID
+            AND c.CheckTime >= s.SlotStart
+            AND c.CheckTime <= s.GraceEnd
+      );
+
+    IF UPPER(@Mode) = 'DETAIL'
+    BEGIN
+        SELECT
+            Plant           = @Plant,
+            ReportDate      = s.SlotDate,
+            Shift           = s.ShiftNo,
+            MachineID       = r.MachineID,
+            MachineName     = mm.MachineName,
+            ProcessID       = r.ProcessID,
+            ProcessName     = pm.ProcessName,
+            SlotStart       = s.SlotStart,
+            SlotEnd         = s.SlotEnd,
+            JobNo           = jobs.JobNo,
+            MachineOperator = ops.Operators
+        FROM #Slots s
+        JOIN #Runs r ON r.RunID = s.RunID
+        LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = r.MachineID
+        LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = r.ProcessID
+        OUTER APPLY (
+            SELECT STRING_AGG(j.JobBookingNo, N', ') WITHIN GROUP (ORDER BY j.JobBookingNo) AS JobNo
+            FROM (
+                SELECT DISTINCT jc.JobBookingNo
+                FROM #EntryRuns e
+                JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = e.JobBookingID
+                WHERE e.MachineID = r.MachineID AND e.ProcessID = r.ProcessID AND e.RunNo = r.RunNo
+                  AND e.FromTime < s.SlotEnd AND e.EndTime > s.SlotStart
+            ) j
+        ) jobs
+        OUTER APPLY (
+            SELECT STRING_AGG(u.UserName, N', ') WITHIN GROUP (ORDER BY u.UserName) AS Operators
+            FROM (
+                SELECT DISTINCT um.UserName
+                FROM #EntryRuns e
+                JOIN dbo.UserMaster um ON um.UserID = e.OperatorID
+                WHERE e.MachineID = r.MachineID AND e.ProcessID = r.ProcessID AND e.RunNo = r.RunNo
+                  AND e.FromTime < s.SlotEnd AND e.EndTime > s.SlotStart
+            ) u
+        ) ops
+        WHERE s.IsCounted = 1
+          AND s.IsChecked = 0
+          AND s.SlotDate BETWEEN @FromDate AND @ToDate
+        ORDER BY s.SlotDate, mm.MachineName, pm.ProcessName, s.SlotStart;
+        RETURN;
+    END
+
+    -- 7. One row per run, date and shift
+    SELECT
+        s.RunID,
+        s.SlotDate,
+        s.ShiftNo,
+        DayStart     = MIN(s.SlotStart),
+        DayEnd       = MAX(s.SlotEnd),
+        Slots        = SUM(s.IsCounted),
+        CheckedSlots = SUM(CASE WHEN s.IsCounted = 1 AND s.IsChecked = 1 THEN 1 ELSE 0 END),
+        Checks       = SUM(s.Checks)
+    INTO #RunDays
+    FROM #Slots s
+    WHERE s.SlotDate BETWEEN @FromDate AND @ToDate
+    GROUP BY s.RunID, s.SlotDate, s.ShiftNo;
+
+    -- 8. Longest stretch without a check, per run, date and shift
+    ;WITH pts AS (
+        SELECT RunID, T = RunStart FROM #Runs
+        UNION ALL
+        SELECT RunID, CheckTime FROM #RunChecks
+        UNION ALL
+        SELECT RunID, RunEnd FROM #Runs
+    ),
+    gaps AS (
+        SELECT RunID, GapStart = T, GapEnd = LEAD(T) OVER (PARTITION BY RunID ORDER BY T)
+        FROM pts
+    )
+    SELECT d.RunID, d.SlotDate, d.ShiftNo, LongestGapMin = MAX(DATEDIFF(SECOND, g.GapStart, g.GapEnd)) / 60
+    INTO #DayGaps
+    FROM #RunDays d
+    JOIN gaps g
+        ON  g.RunID = d.RunID
+        AND g.GapEnd IS NOT NULL
+        AND g.GapStart < d.DayEnd
+        AND g.GapEnd > d.DayStart
+    GROUP BY d.RunID, d.SlotDate, d.ShiftNo;
+
+    -- 9. Entries of 12 hours or more touching the date (usually left open)
+    SELECT
+        d.SlotDate,
+        r.MachineID,
+        r.ProcessID,
+        LongEntries = STRING_AGG(CONCAT(
+                          ISNULL(jc.JobBookingNo, CONCAT(N'Entry ', e.ProductionID)), N': ',
+                          FORMAT(e.FromTime, N'dd MMM HH:mm'), N' to ', FORMAT(e.EndTime, N'dd MMM HH:mm'),
+                          N' (', CAST(DATEDIFF(SECOND, e.FromTime, e.EndTime) / 3600.0 AS DECIMAL(9, 1)), N' h)'), N', ')
+                      WITHIN GROUP (ORDER BY e.FromTime)
+    INTO #LongEntries
+    FROM (
+        SELECT RunID, SlotDate, DayStart = MIN(DayStart), DayEnd = MAX(DayEnd)
+        FROM #RunDays
+        GROUP BY RunID, SlotDate
+    ) d
+    JOIN #Runs r ON r.RunID = d.RunID
+    JOIN #EntryRuns e
+        ON  e.MachineID = r.MachineID
+        AND e.ProcessID = r.ProcessID
+        AND e.RunNo     = r.RunNo
+    LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = e.JobBookingID
+    WHERE DATEDIFF(SECOND, e.FromTime, e.EndTime) >= @LongEntrySec
+      AND e.FromTime < d.DayEnd
+      AND e.EndTime  > d.DayStart
+    GROUP BY d.SlotDate, r.MachineID, r.ProcessID;
+
+    SELECT
+        Plant          = @Plant,
+        ReportDate     = d.SlotDate,
+        MachineID      = r.MachineID,
+        MachineName    = mm.MachineName,
+        ProcessID      = r.ProcessID,
+        ProcessName    = pm.ProcessName,
+        RunStart       = MIN(r.RunStart),
+        RunEnd         = MAX(r.RunEnd),
+        RunHours       = CAST(SUM(DATEDIFF(SECOND, d.DayStart, d.DayEnd)) / 3600.0 AS DECIMAL(9, 2)),
+        ChecksDone     = SUM(d.Checks),
+        HoursChecked   = SUM(d.CheckedSlots),
+        HoursUnchecked = SUM(d.Slots - d.CheckedSlots),
+        CoveragePct    = CAST(100.0 * SUM(d.CheckedSlots) / NULLIF(SUM(d.Slots), 0) AS DECIMAL(5, 1)),
+        LongestGapMin  = MAX(dg.LongestGapMin),
+        Status         = CASE WHEN SUM(d.Slots - d.CheckedSlots) > 0 THEN 'Missed' ELSE 'OK' END,
+        LongEntries    = MAX(le.LongEntries),
+        -- Shift 1 (8am-8pm), NULL when the machine did not run in it
+        Shift1RunStart       = MIN(CASE WHEN d.ShiftNo = 1 THEN d.DayStart END),
+        Shift1RunEnd         = MAX(CASE WHEN d.ShiftNo = 1 THEN d.DayEnd END),
+        Shift1RunHours       = CAST(SUM(CASE WHEN d.ShiftNo = 1 THEN DATEDIFF(SECOND, d.DayStart, d.DayEnd) END) / 3600.0 AS DECIMAL(9, 2)),
+        Shift1ChecksDone     = SUM(CASE WHEN d.ShiftNo = 1 THEN d.Checks END),
+        Shift1HoursChecked   = SUM(CASE WHEN d.ShiftNo = 1 THEN d.CheckedSlots END),
+        Shift1HoursUnchecked = SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots - d.CheckedSlots END),
+        Shift1CoveragePct    = CAST(100.0 * SUM(CASE WHEN d.ShiftNo = 1 THEN d.CheckedSlots END)
+                                    / NULLIF(SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots END), 0) AS DECIMAL(5, 1)),
+        Shift1LongestGapMin  = MAX(CASE WHEN d.ShiftNo = 1 THEN dg.LongestGapMin END),
+        Shift1Status         = CASE WHEN SUM(CASE WHEN d.ShiftNo = 1 THEN d.Slots - d.CheckedSlots END) > 0 THEN 'Missed'
+                                    WHEN MAX(CASE WHEN d.ShiftNo = 1 THEN 1 END) = 1 THEN 'OK' END,
+        -- Shift 2 (8pm-8am the night after)
+        Shift2RunStart       = MIN(CASE WHEN d.ShiftNo = 2 THEN d.DayStart END),
+        Shift2RunEnd         = MAX(CASE WHEN d.ShiftNo = 2 THEN d.DayEnd END),
+        Shift2RunHours       = CAST(SUM(CASE WHEN d.ShiftNo = 2 THEN DATEDIFF(SECOND, d.DayStart, d.DayEnd) END) / 3600.0 AS DECIMAL(9, 2)),
+        Shift2ChecksDone     = SUM(CASE WHEN d.ShiftNo = 2 THEN d.Checks END),
+        Shift2HoursChecked   = SUM(CASE WHEN d.ShiftNo = 2 THEN d.CheckedSlots END),
+        Shift2HoursUnchecked = SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots - d.CheckedSlots END),
+        Shift2CoveragePct    = CAST(100.0 * SUM(CASE WHEN d.ShiftNo = 2 THEN d.CheckedSlots END)
+                                    / NULLIF(SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots END), 0) AS DECIMAL(5, 1)),
+        Shift2LongestGapMin  = MAX(CASE WHEN d.ShiftNo = 2 THEN dg.LongestGapMin END),
+        Shift2Status         = CASE WHEN SUM(CASE WHEN d.ShiftNo = 2 THEN d.Slots - d.CheckedSlots END) > 0 THEN 'Missed'
+                                    WHEN MAX(CASE WHEN d.ShiftNo = 2 THEN 1 END) = 1 THEN 'OK' END
+    FROM #RunDays d
+    JOIN #Runs r ON r.RunID = d.RunID
+    LEFT JOIN #DayGaps dg ON dg.RunID = d.RunID AND dg.SlotDate = d.SlotDate AND dg.ShiftNo = d.ShiftNo
+    LEFT JOIN #LongEntries le
+        ON  le.SlotDate  = d.SlotDate
+        AND le.MachineID = r.MachineID
+        AND le.ProcessID = r.ProcessID
+    LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = r.MachineID
+    LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = r.ProcessID
+    GROUP BY d.SlotDate, r.MachineID, mm.MachineName, r.ProcessID, pm.ProcessName
+    ORDER BY d.SlotDate, mm.MachineName, pm.ProcessName;
+END
+GO
+
+/*------------------------------------------------------------------------------
+  Report 2: QC operator performance
+  SUMMARY: one row per QC operator and shift session.
+  DETAIL:  one row per check in those sessions, with how many parameters
+           were Not OK and how many photos were attached.
+
+  - An operator's checks in time order; a gap of more than 4 hours starts a
+    new session, so a night shift across midnight stays one row. Shift Date
+    is the date of the session's first check.
+  - Span = last check - first check, at least 1 hour.
+  - The span is cut into 1-hour slots from the first check. A final slot
+    shorter than 30 minutes joins the slot before it (it holds the last
+    check). Hours Below 2 Checks = slots with fewer than 2 checks.
+  - Below Standard if checks per hour < 2 or any hour had fewer than 2.
+  - @MachineID / @ProcessID keep the sessions with at least one check on that
+    machine / process; the session's numbers still count all its checks.
+------------------------------------------------------------------------------*/
+CREATE OR ALTER PROCEDURE dbo.rpt_QC_OperatorPerformance
+    @FromDate  DATE,
+    @ToDate    DATE,
+    @MachineID INT         = NULL,
+    @ProcessID INT         = NULL,
+    @UserID    INT         = NULL,
+    @CompanyID INT         = NULL,
+    @Mode      VARCHAR(10) = 'SUMMARY'
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SessionGapSec  INT = 4 * 3600,
+            @SlotSec        INT = 3600,
+            @MinLastSlotSec INT = 1800,
+            @TargetPerHour  INT = 2,
+            -- A session on @FromDate may have started the evening before; one on
+            -- @ToDate may run past midnight.
+            @LoadFrom       DATETIME = DATEADD(DAY, -1, CAST(@FromDate AS DATETIME)),
+            @LoadTo         DATETIME = DATEADD(DAY, 2, CAST(@ToDate AS DATETIME)),
+            @Plant          NVARCHAR(20) = CASE DB_NAME() WHEN N'IndusEnterprise2' THEN N'Ahmedabad' ELSE N'Kolkata' END;
+
+    -- 1. Checks, with the machine they were made on
+    SELECT
+        m.TransactionID,
+        m.VoucherNo,
+        m.UserID,
+        m.ProcessID,
+        m.JobBookingID,
+        m.SampleSize,
+        CheckTime = m.CreatedDate,
+        MachineID = COALESCE(pe.MachineID, fb.MachineID)
+    INTO #Checks
+    FROM dbo.ProductionEntryProcessInspectionMain m
+    LEFT JOIN dbo.ProductionEntry pe
+        ON pe.ProductionID = m.ProductionID
+    OUTER APPLY (
+        SELECT TOP (1) p2.MachineID
+        FROM dbo.ProductionEntry p2
+        WHERE pe.ProductionID IS NULL
+          AND p2.JobBookingJobCardContentsID = m.JobBookingJobCardContentsID
+          AND p2.ProcessID = m.ProcessID
+          AND ISNULL(p2.MachineID, 0) > 0
+        ORDER BY ABS(DATEDIFF(SECOND, p2.FromTime, m.CreatedDate))
+    ) fb
+    WHERE ISNULL(m.IsDeletedTransaction, 0) = 0
+      AND m.CreatedDate >= @LoadFrom
+      AND m.CreatedDate <  @LoadTo
+      AND ISNULL(m.UserID, 0) > 0
+      AND (@UserID IS NULL OR m.UserID = @UserID)
+      AND (@CompanyID IS NULL OR m.CompanyID = @CompanyID);
+
+    -- 2. Split each operator's checks into shift sessions
+    ;WITH o AS (
+        SELECT c.*,
+               PrevTime = LAG(c.CheckTime) OVER (PARTITION BY c.UserID ORDER BY c.CheckTime, c.TransactionID)
+        FROM #Checks c
+    )
+    SELECT o.*,
+           SessionNo = SUM(CASE WHEN o.PrevTime IS NULL OR DATEDIFF(SECOND, o.PrevTime, o.CheckTime) > @SessionGapSec
+                                THEN 1 ELSE 0 END)
+                       OVER (PARTITION BY o.UserID ORDER BY o.CheckTime, o.TransactionID ROWS UNBOUNDED PRECEDING)
+    INTO #SessionChecks
+    FROM o;
+
+    CREATE TABLE #Sessions (
+        UserID     INT,
+        SessionNo  INT,
+        FirstCheck DATETIME,
+        LastCheck  DATETIME,
+        SpanSec    INT,
+        Slots      INT,
+        Checks     INT,
+        Machines   INT,
+        PRIMARY KEY (UserID, SessionNo)
+    );
+
+    INSERT INTO #Sessions (UserID, SessionNo, FirstCheck, LastCheck, SpanSec, Checks, Machines)
+    SELECT UserID, SessionNo, MIN(CheckTime), MAX(CheckTime),
+           DATEDIFF(SECOND, MIN(CheckTime), MAX(CheckTime)), COUNT(*), COUNT(DISTINCT MachineID)
+    FROM #SessionChecks
+    GROUP BY UserID, SessionNo;
+
+    DELETE s
+    FROM #Sessions s
+    WHERE CAST(s.FirstCheck AS DATE) NOT BETWEEN @FromDate AND @ToDate
+       OR ((@MachineID IS NOT NULL OR @ProcessID IS NOT NULL)
+           AND NOT EXISTS (
+               SELECT 1 FROM #SessionChecks c
+               WHERE c.UserID = s.UserID AND c.SessionNo = s.SessionNo
+                 AND (@MachineID IS NULL OR c.MachineID = @MachineID)
+                 AND (@ProcessID IS NULL OR c.ProcessID = @ProcessID)));
+
+    UPDATE #Sessions
+       SET Slots = CASE WHEN SpanSec < @SlotSec THEN 1
+                        ELSE SpanSec / @SlotSec
+                           + CASE WHEN SpanSec % @SlotSec >= @MinLastSlotSec THEN 1 ELSE 0 END
+                   END;
+
+    IF UPPER(@Mode) = 'DETAIL'
+    BEGIN
+        SELECT
+            Plant            = @Plant,
+            ShiftDate        = CAST(s.FirstCheck AS DATE),
+            UserID           = s.UserID,
+            QCOperator       = um.UserName,
+            SessionStart     = s.FirstCheck,
+            CheckTime        = c.CheckTime,
+            MachineName      = mm.MachineName,
+            ProcessName      = pm.ProcessName,
+            JobNo            = jc.JobBookingNo,
+            VoucherNo        = c.VoucherNo,
+            SampleSize       = c.SampleSize,
+            MinutesSincePrev = CAST(DATEDIFF(SECOND, c.PrevTime, c.CheckTime) / 60.0 AS DECIMAL(9, 1)),
+            TransactionID    = c.TransactionID,
+            NotOkCount       = ISNULL(dt.NotOkCount, 0),
+            PhotoCount       = ISNULL(dt.PhotoCount, 0)
+        FROM #Sessions s
+        JOIN #SessionChecks c ON c.UserID = s.UserID AND c.SessionNo = s.SessionNo
+        LEFT JOIN dbo.UserMaster um ON um.UserID = s.UserID
+        LEFT JOIN dbo.MachineMaster mm ON mm.MachineID = c.MachineID
+        LEFT JOIN dbo.ProcessMaster pm ON pm.ProcessID = c.ProcessID
+        LEFT JOIN dbo.JobBookingJobCard jc ON jc.JobBookingID = c.JobBookingID
+        -- Same spellings of Not OK as the QC Tool ("NOT OK", "Not Ok", "NOK", "Fail")
+        OUTER APPLY (
+            SELECT NotOkCount = SUM(CASE WHEN UPPER(REPLACE(REPLACE(REPLACE(d.Result, N' ', N''), N'.', N''), N'-', N''))
+                                              IN (N'NOTOK', N'NOK', N'NOT', N'FAIL') THEN 1 ELSE 0 END),
+                   PhotoCount = SUM(ph.Photos)
+            FROM dbo.ProductionEntryProcessInspectionDetail d
+            CROSS APPLY (SELECT Photos = COUNT(*) FROM OPENJSON(d.ImageKeys)) ph
+            WHERE d.TransactionID = c.TransactionID
+              AND ISNULL(d.IsDeletedTransaction, 0) = 0
+        ) dt
+        ORDER BY um.UserName, c.CheckTime, c.TransactionID;
+        RETURN;
+    END
+
+    -- 3. Count checks in each hour slot of each session; the short last slot joins the one before
+    ;WITH E1(n) AS (SELECT 1 FROM (VALUES (1),(1),(1),(1),(1),(1),(1),(1),(1),(1)) v(n)),
+          Tally(k) AS (
+              SELECT TOP (1000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS INT) - 1
+              FROM E1 a CROSS JOIN E1 b CROSS JOIN E1 c),
+          SlotChecks AS (
+              SELECT c.UserID, c.SessionNo, x.SlotNo, COUNT(*) AS n
+              FROM #SessionChecks c
+              JOIN #Sessions s ON s.UserID = c.UserID AND s.SessionNo = c.SessionNo
+              CROSS APPLY (
+                  SELECT SlotNo = CASE WHEN DATEDIFF(SECOND, s.FirstCheck, c.CheckTime) / @SlotSec >= s.Slots
+                                       THEN s.Slots - 1
+                                       ELSE DATEDIFF(SECOND, s.FirstCheck, c.CheckTime) / @SlotSec END
+              ) x
+              GROUP BY c.UserID, c.SessionNo, x.SlotNo)
+    SELECT s.UserID, s.SessionNo,
+           HoursBelow = SUM(CASE WHEN ISNULL(sc.n, 0) < @TargetPerHour THEN 1 ELSE 0 END)
+    INTO #SessionSlots
+    FROM #Sessions s
+    JOIN Tally t ON t.k < s.Slots
+    LEFT JOIN SlotChecks sc ON sc.UserID = s.UserID AND sc.SessionNo = s.SessionNo AND sc.SlotNo = t.k
+    GROUP BY s.UserID, s.SessionNo;
+
+    SELECT
+        Plant           = @Plant,
+        ShiftDate       = CAST(s.FirstCheck AS DATE),
+        UserID          = s.UserID,
+        QCOperator      = um.UserName,
+        FirstCheck      = s.FirstCheck,
+        LastCheck       = s.LastCheck,
+        SpanHours       = CAST(h.SpanHours AS DECIMAL(9, 2)),
+        ChecksDone      = s.Checks,
+        TargetChecks    = CAST(@TargetPerHour * h.SpanHours AS DECIMAL(9, 1)),
+        Shortfall       = CAST(CASE WHEN @TargetPerHour * h.SpanHours > s.Checks
+                                    THEN @TargetPerHour * h.SpanHours - s.Checks ELSE 0 END AS DECIMAL(9, 1)),
+        ChecksPerHour   = CAST(s.Checks / h.SpanHours AS DECIMAL(9, 2)),
+        HoursBelow2     = ss.HoursBelow,
+        MachinesCovered = s.Machines,
+        Status          = CASE WHEN s.Checks / h.SpanHours < @TargetPerHour OR ss.HoursBelow > 0
+                               THEN 'Below Standard' ELSE 'OK' END
+    FROM #Sessions s
+    JOIN #SessionSlots ss ON ss.UserID = s.UserID AND ss.SessionNo = s.SessionNo
+    CROSS APPLY (SELECT SpanHours = CASE WHEN s.SpanSec < @SlotSec THEN 1.0 ELSE s.SpanSec / 3600.0 END) h
+    LEFT JOIN dbo.UserMaster um ON um.UserID = s.UserID
+    ORDER BY ShiftDate, um.UserName, s.FirstCheck;
+END
+GO
+
+PRINT 'rpt_QC_MachineProcessCoverage and rpt_QC_OperatorPerformance ready';
+GO

@@ -76,11 +76,11 @@ const GSTIN_STATE_PLANT = { 19: PLANTS.KOL, 24: PLANTS.AHM };
  * @param {Object} input.extracted        the provider's ExtractedQuote
  * @returns {Promise<Identification>}
  */
-export async function identifyQuote({ site, extracted }) {
+export async function identifyQuote({ site, extracted, filename = null }) {
   await ensureSupplierPortalReady();
 
   const supplier = await identifySupplier({ site, extracted });
-  const plant = identifyPlant(extracted);
+  const plant = identifyPlant(extracted, { filename });
   const validity = readValidity(extracted);
   const strength = readStrength(extracted);
   const terms = readTerms(extracted);
@@ -305,7 +305,7 @@ async function suggestFromLedgers({ site, name }) {
  * Kolkata and Ahmedabad in separate blocks — so both are returned and the
  * rates get written per plant.
  */
-export function identifyPlant(extracted) {
+export function identifyPlant(extracted, { filename = null } = {}) {
   const addressee = extracted.addressedTo || {};
   const addressText = [addressee.company, addressee.address].filter(Boolean).join(' ');
 
@@ -355,6 +355,20 @@ export function identifyPlant(extracted) {
     };
   }
 
+  // Last, the file's name: buyers file "SAKATA - AHM.pdf" and "Technova AHM.pdf"
+  // when the quote itself names no plant. Someone else named the file, so it
+  // stays below AUTO_ACCEPT: a proposal for a person to confirm.
+  const named = plantFromFilename(filename);
+  if (named) {
+    return {
+      value: [named],
+      unit: null,
+      confidence: 0.6,
+      evidence: `The document names no plant; its file name "${filename}" says ${titleCase(named)}`,
+      readAddress: addressText || null,
+    };
+  }
+
   return {
     value: [],
     unit: null,
@@ -382,6 +396,14 @@ function plantFromGstin(gstin) {
     unit: plant === PLANTS.AHM ? 'Ahmedabad' : null,
     state: code === 19 ? 'West Bengal' : 'Gujarat',
   };
+}
+
+/** A plant in a file name: the words, or the short forms buyers use (AHM, KOL). */
+export function plantFromFilename(filename) {
+  const t = String(filename ?? '').toUpperCase().replace(/\.[A-Z0-9]+$/, '').replace(/[^A-Z0-9]+/g, ' ');
+  if (/\b(AHM|AMD|AHMEDABAD|GUJARAT)\b/.test(t)) return PLANTS.AHM;
+  if (/\b(KOL|KOLKATA|CALCUTTA|TANGRA|PANCHLA)\b/.test(t)) return PLANTS.KOL;
+  return null;
 }
 
 export function plantFromText(text) {
@@ -461,6 +483,7 @@ export function readTerms(extracted) {
       freightTerms: terms.freightTerms || null,
       insurance: terms.insurance || null,
       gstNote: terms.gstNote || null,
+      delivery: terms.delivery || null,
     },
     confidence: present.length ? 0.85 : 0,
     evidence: present.length

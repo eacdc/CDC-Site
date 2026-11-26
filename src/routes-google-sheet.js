@@ -737,7 +737,8 @@ router.get('/google-sheet/delivery-otif', async (req, res) => {
 
 /**
  * GET /api/google-sheet/process?database=KOL
- * Runs GetCoordinatorChecklist with StartDate = 6 months ago, EndDate = today,
+ * Runs GetCoordinatorChecklist_v2 with StartDate = 6 months ago, EndDate = today,
+ * (v2 skips sale-order lines whose job card was deleted and not replaced)
  * then appends MongoDB ArtworkUnordered rows (same columns) for MIS reporting.
  * Returns 2D array (headers + rows) for Google Sheets.
  */
@@ -790,7 +791,7 @@ router.get('/google-sheet/process', async (req, res) => {
       .request()
       .input('StartDate', sql.VarChar(10), startDateStr)
       .input('EndDate', sql.VarChar(10), endDateStr)
-      .query('EXEC GetCoordinatorChecklist @StartDate, @EndDate');
+      .query('EXEC GetCoordinatorChecklist_v2 @StartDate, @EndDate');
 
     const recordset = result.recordset ?? [];
     const headers = recordset.length > 0
@@ -957,6 +958,7 @@ router.get('/google-sheet/cdc-bills-mis', async (req, res) => {
       manually_reviewed_at: 1,
       manually_overridden: 1,
       review_comment: 1,
+      location: 1,
     };
 
     const bills = await PurchaseBill.find(query, projection)
@@ -1002,6 +1004,8 @@ router.get('/google-sheet/cdc-bills-mis', async (req, res) => {
       ['Manually Reviewed At',     b => b.manually_reviewed_at ? formatDateDDMMYYYY(b.manually_reviewed_at) : ''],
       ['Manually Overridden',      b => b.manually_overridden ? 'Yes' : 'No'],
       ['Review Comment',           b => b.review_comment || ''],
+      // Appended last so existing sheet column positions don't shift.
+      ['Location',                 b => b.location || 'KOL'],
     ];
 
     const headers = columns.map(c => c[0]);
