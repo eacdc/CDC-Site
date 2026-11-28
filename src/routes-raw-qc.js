@@ -1,6 +1,6 @@
 /**
  * Raw Material QC Tool API
- * - POST /raw-qc/grn-pending — list GRNs not yet QC'd (ItemTransactionMain, VoucherDate >= 2026-02-22)
+ * - POST /raw-qc/grn-pending — list GRNs not yet QC'd (ItemTransactionMain, VoucherDate >= PENDING_GRN_CUTOFF_DATE: KOL 2026-03-23, AHM 2026-11-23)
  * - POST /raw-qc/inspection-parameters — get parameters for a GRN (ItemGroupParameters + ItemMaster standard values)
  * - POST /raw-qc/save-inspection — save QC (RawMaterialQCMain + RawMaterialQCDetail) with ValidationStatus
  * - POST /raw-qc/reports/inspector-performance — dashboard by user/date
@@ -15,7 +15,9 @@ import sql from 'mssql';
 
 const router = Router();
 const GRN_VOUCHER_ID = -14;
-const PENDING_GRN_CUTOFF_DATE = '2026-03-23';
+// Pending GRN list starts from the date each plant went live on the tool.
+// AHM started 23 Nov 2026; older AHM GRNs are not shown as pending.
+const PENDING_GRN_CUTOFF_DATE = { KOL: '2026-03-23', AHM: '2026-11-23' };
 
 function getDb(body = {}) {
   const db = (body.database || '').toString().trim().toUpperCase();
@@ -91,7 +93,7 @@ router.post('/raw-qc/grn-pending', async (req, res) => {
     const pool = await getPool(db);
     const result = await pool.request()
       .input('VoucherIdGrn', sql.Int, GRN_VOUCHER_ID)
-      .input('CutoffDate', sql.Date, PENDING_GRN_CUTOFF_DATE)
+      .input('CutoffDate', sql.Date, PENDING_GRN_CUTOFF_DATE[db])
       .query(`
         ;WITH PendingBase AS (
           SELECT
