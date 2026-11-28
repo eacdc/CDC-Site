@@ -262,6 +262,83 @@ ORDER BY JBC.PlyNo ASC
 `;
 
 /**
+ * CTEs that give one row per JobBookingID with the job's main text component:
+ * NoOfPages (JobNoOfPages), BookSize ("H x L" in mm, from SizeHeight / SizeLength)
+ * and NoOfForms (form-wise rows). Values are read from ContentSizeValues, e.g.
+ * "SizeHeight=210AndOrSizeLength=148AndOr...AndOrJobNoOfPages=96AndOr...".
+ * Only components with pages > 0 count, so cartons etc. get no row.
+ * Ends without a trailing comma; the last CTE is named BookDetails.
+ */
+const BOOK_DETAILS_CTES = `
+ContentSizeParsed AS (
+    SELECT
+        C.JobBookingID,
+        C.JobBookingJobCardContentsID,
+        CASE WHEN P.PagesAt > 0 THEN TRY_CONVERT(FLOAT,
+            SUBSTRING(S.Txt, P.PagesAt + 13, CHARINDEX('AndOr', S.Txt, P.PagesAt + 13) - P.PagesAt - 13)) END AS Pages,
+        CASE WHEN P.HeightAt > 0 THEN TRY_CONVERT(FLOAT,
+            SUBSTRING(S.Txt, P.HeightAt + 11, CHARINDEX('AndOr', S.Txt, P.HeightAt + 11) - P.HeightAt - 11)) END AS SizeH,
+        CASE WHEN P.LengthAt > 0 THEN TRY_CONVERT(FLOAT,
+            SUBSTRING(S.Txt, P.LengthAt + 11, CHARINDEX('AndOr', S.Txt, P.LengthAt + 11) - P.LengthAt - 11)) END AS SizeL
+    FROM dbo.JobBookingJobCardContents C
+    CROSS APPLY (SELECT CAST(ISNULL(C.ContentSizeValues, '') AS NVARCHAR(MAX)) + N'AndOr' AS Txt) S
+    CROSS APPLY (SELECT
+        CHARINDEX('JobNoOfPages=', S.Txt) AS PagesAt,
+        CHARINDEX('SizeHeight=',   S.Txt) AS HeightAt,
+        CHARINDEX('SizeLength=',   S.Txt) AS LengthAt) P
+    WHERE ISNULL(C.IsDeletedTransaction, 0) = 0
+),
+
+MainTextContent AS (
+    SELECT
+        CSP.*,
+        ROW_NUMBER() OVER (PARTITION BY CSP.JobBookingID
+                           ORDER BY CSP.Pages DESC, CSP.JobBookingJobCardContentsID) AS Rn
+    FROM ContentSizeParsed CSP
+    WHERE CSP.Pages > 0
+),
+
+FormsByContent AS (
+    SELECT F.JobBookingJobCardContentsID, COUNT(*) AS Forms
+    FROM dbo.JobBookingJobCardFormWiseDetails F
+    WHERE ISNULL(F.IsDeletedTransaction, 0) = 0
+    GROUP BY F.JobBookingJobCardContentsID
+),
+
+BookDetails AS (
+    SELECT
+        MTC.JobBookingID,
+        CAST(ROUND(MTC.Pages, 0) AS INT) AS NoOfPages,
+        CASE WHEN ISNULL(MTC.SizeH, 0) > 0 AND ISNULL(MTC.SizeL, 0) > 0 THEN
+            CASE WHEN ROUND(MTC.SizeH, 1) = ROUND(MTC.SizeH, 0)
+                 THEN CAST(CAST(ROUND(MTC.SizeH, 0) AS INT) AS VARCHAR(20))
+                 ELSE CAST(CAST(ROUND(MTC.SizeH, 1) AS DECIMAL(10, 1)) AS VARCHAR(20)) END
+            + ' x ' +
+            CASE WHEN ROUND(MTC.SizeL, 1) = ROUND(MTC.SizeL, 0)
+                 THEN CAST(CAST(ROUND(MTC.SizeL, 0) AS INT) AS VARCHAR(20))
+                 ELSE CAST(CAST(ROUND(MTC.SizeL, 1) AS DECIMAL(10, 1)) AS VARCHAR(20)) END
+        END AS BookSize,
+        ISNULL(FBC.Forms, 0) AS NoOfForms
+    FROM MainTextContent MTC
+    LEFT JOIN FormsByContent FBC
+        ON FBC.JobBookingJobCardContentsID = MTC.JobBookingJobCardContentsID
+    WHERE MTC.Rn = 1
+)`;
+
+/** Book size filter: distinct main-text-component sizes with how many jobs use each (most used first). */
+export const BookSizesFilterQuery = `
+WITH ${BOOK_DETAILS_CTES}
+SELECT BD.BookSize, COUNT(*) AS JobCount
+FROM BookDetails BD
+JOIN dbo.JobBookingJobCard JB
+    ON JB.JobBookingID = BD.JobBookingID
+WHERE BD.BookSize IS NOT NULL
+  AND ISNULL(JB.IsDeletedTransaction, 0) = 0
+GROUP BY BD.BookSize
+ORDER BY COUNT(*) DESC, BD.BookSize;
+`;
+
+/**
  * Job card search for UI: filter by JobBookingNo, ClientName, SalesPersonID, FromJobDate, ToJobDate.
  * Returns TOP 10 rows for download selection.
  */
@@ -385,7 +462,13 @@ DispatchAgg AS (
       AND ISNULL(fgm.IsDeletedTransaction, 0) = 0
       AND ISNULL(fgd.IsDeletedTransaction, 0) = 0
     GROUP BY fgd.JobBookingID
-)
+),
+
+-- ============================================================
+-- Book details: pages, size (H x L mm) and forms of the main
+-- text component = the component with the most pages
+-- ============================================================
+${BOOK_DETAILS_CTES}
 
 -- ============================================================
 -- Main Query
@@ -492,7 +575,12 @@ SELECT TOP 1000
     LM2.LedgerName                                      AS CoordinatorName,
     DISP.LastDeliveryDate                               AS DeliveryDate,
     JB.ProductCode,
-    JB.RefProductMasterCode
+    JB.RefProductMasterCode,
+
+    -- Book details (NULL for jobs without a page count, e.g. cartons)
+    BD.NoOfPages,
+    BD.BookSize,
+    BD.NoOfForms
 
 FROM JobBookingJobCard JB
 
@@ -536,7 +624,15 @@ LEFT JOIN BindingAgg BA
 LEFT JOIN PrintingByJob PBJ
     ON PBJ.JobBookingID = JB.JobBookingID
 
+LEFT JOIN BookDetails BD
+    ON BD.JobBookingID = JB.JobBookingID
+
 WHERE ( @JobBookingNo IS NULL OR JB.JobBookingNo LIKE '%' + @JobBookingNo + '%' )
+  AND ( @MinPages IS NULL OR BD.NoOfPages >= @MinPages )
+  AND ( @MaxPages IS NULL OR BD.NoOfPages <= @MaxPages )
+  AND ( @BookSize IS NULL OR @BookSize = '' OR BD.BookSize = @BookSize )
+  AND ( @MinForms IS NULL OR BD.NoOfForms >= @MinForms )
+  AND ( @MaxForms IS NULL OR BD.NoOfForms <= @MaxForms )
   AND ( @ClientName IS NULL OR @ClientName = ''
         OR ISNULL(JB.ClientName, LM_CLIENT.LedgerName) LIKE '%' + @ClientName + '%' )
   AND ( @SalesPersonID IS NULL OR JB.SalesEmployeeID = @SalesPersonID )

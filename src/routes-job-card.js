@@ -17,6 +17,7 @@ import {
   DeliveryBreakdownQuery,
   SalesPersonsFilterQuery,
   ClientNamesFilterQuery,
+  BookSizesFilterQuery,
   JobProductionSummaryQuery,
   JobComponentPaperQuery,
   JobBookingBatchDetailsQuery
@@ -603,8 +604,45 @@ router.get('/job-card/filters/client-names', async (req, res) => {
   }
 });
 
-/** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&jobStatus=&database=KOL
- *  jobStatus filter: pending | completed | cancelled — matches SQL status Pending | Closed | Cancelled */
+/** GET /api/job-card/filters/book-sizes?database=KOL → [{ bookSize: '210 x 148', jobCount: 812 }, ...] */
+router.get('/job-card/filters/book-sizes', async (req, res) => {
+  const { database } = req.query || {};
+  const db = (str(database) || 'KOL').toUpperCase();
+  if (db !== 'KOL' && db !== 'AHM') return res.status(400).json({ error: 'database must be KOL or AHM' });
+  try {
+    const pool = await getPool(db);
+    const result = await pool.request().query(BookSizesFilterQuery);
+    const rows = (result.recordset || [])
+      .map(r => ({ bookSize: str(get(r, 'BookSize')), jobCount: Number(get(r, 'JobCount')) || 0 }))
+      .filter(r => r.bookSize);
+    return res.json(rows);
+  } catch (e) {
+    console.error('[job-card] book-sizes filter failed:', e);
+    return res.status(500).json({ error: e.message || 'Failed' });
+  }
+});
+
+/** Whole number >= 0 from a query value, or null when blank / invalid. */
+function toCountOrNull(v) {
+  const s = str(v);
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null;
+}
+
+/** Bind the search query's optional book filters (pages, size, forms); null = not filtered. */
+function bindBookFilters(request, { minPages, maxPages, bookSize, minForms, maxForms } = {}) {
+  request.input('MinPages', sql.Int, toCountOrNull(minPages));
+  request.input('MaxPages', sql.Int, toCountOrNull(maxPages));
+  request.input('BookSize', sql.VarChar(50), str(bookSize) || null);
+  request.input('MinForms', sql.Int, toCountOrNull(minForms));
+  request.input('MaxForms', sql.Int, toCountOrNull(maxForms));
+}
+
+/** GET /api/job-card/search?jobBookingNo=&clientName=&salesPersonID=&fromJobDate=&toJobDate=&jobStatus=
+ *    &minPages=&maxPages=&bookSize=&minForms=&maxForms=&database=KOL
+ *  jobStatus filter: pending | completed | cancelled — matches SQL status Pending | Closed | Cancelled
+ *  Pages / book size / forms are those of the job's main text component (most pages). */
 router.get('/job-card/search', async (req, res) => {
   const { jobBookingNo, clientName, salesPersonID, fromJobDate, toJobDate, jobStatus, database } = req.query || {};
   const db = (str(database) || 'KOL').toUpperCase();
@@ -623,6 +661,7 @@ router.get('/job-card/search', async (req, res) => {
     const toDate = str(toJobDate) ? new Date(toJobDate) : null;
     request.input('FromJobDate', sql.Date, fromDate && !isNaN(fromDate.getTime()) ? fromDate : null);
     request.input('ToJobDate', sql.Date, toDate && !isNaN(toDate.getTime()) ? toDate : null);
+    bindBookFilters(request, req.query || {});
     const result = await request.query(JobCardSearchQuery);
     console.log('[PENDING] result:', JSON.stringify(result.recordset));
     const rawRows = rowsFromQueryResult(result);
@@ -668,7 +707,10 @@ router.get('/job-card/search', async (req, res) => {
         coordinatorName: get(r, 'CoordinatorName'),
         deliveryDate: get(r, 'DeliveryDate'),
         productCode: get(r, 'ProductCode'),
-        refProductMasterCode: get(r, 'RefProductMasterCode')
+        refProductMasterCode: get(r, 'RefProductMasterCode'),
+        noOfPages: get(r, 'NoOfPages'),
+        bookSize: get(r, 'BookSize'),
+        noOfForms: get(r, 'NoOfForms')
       };
     });
     const filteredRows = normalizedJobStatus
@@ -906,6 +948,7 @@ router.get('/job-card', async (req, res) => {
         request.input('SalesPersonID', sql.Int, null);
         request.input('FromJobDate', sql.Date, null);
         request.input('ToJobDate', sql.Date, null);
+        bindBookFilters(request);
         const searchRes = await request.query(JobCardSearchQuery);
         const searchRows = rowsFromQueryResult(searchRes);
         const searchRow = searchRows.find(r => str(get(r, 'JobBookingNo')) === jobNo) || searchRows[0];
