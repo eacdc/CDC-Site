@@ -1,6 +1,6 @@
 /**
  * Raw Material QC Tool API
- * - POST /raw-qc/grn-pending — list GRNs not yet QC'd (ItemTransactionMain, VoucherDate >= PENDING_GRN_CUTOFF_DATE: KOL 2026-03-23, AHM 2026-11-23)
+ * - POST /raw-qc/grn-pending — list GRNs not yet QC'd (ItemTransactionMain, VoucherDate >= PENDING_GRN_CUTOFF_DATE: KOL 2026-03-23, AHM 2026-11-01)
  * - POST /raw-qc/inspection-parameters — get parameters for a GRN (ItemGroupParameters + ItemMaster standard values)
  * - POST /raw-qc/save-inspection — save QC (RawMaterialQCMain + RawMaterialQCDetail) with ValidationStatus
  * - POST /raw-qc/reports/inspector-performance — dashboard by user/date
@@ -16,8 +16,8 @@ import sql from 'mssql';
 const router = Router();
 const GRN_VOUCHER_ID = -14;
 // Pending GRN list starts from the date each plant went live on the tool.
-// AHM started 23 Nov 2026; older AHM GRNs are not shown as pending.
-const PENDING_GRN_CUTOFF_DATE = { KOL: '2026-03-23', AHM: '2026-11-23' };
+// AHM starts from 1 Nov 2026; older AHM GRNs are not shown as pending.
+const PENDING_GRN_CUTOFF_DATE = { KOL: '2026-03-23', AHM: '2026-11-01' };
 
 function getDb(body = {}) {
   const db = (body.database || '').toString().trim().toUpperCase();
